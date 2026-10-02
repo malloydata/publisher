@@ -380,7 +380,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                           |
 | `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                       |
 | `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat calls in one index sync (default `300`). A package cannot raise it.                                                                                                                 |
-| `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request, counted across refine and rerank (default `20`; a positive integer). A package cannot raise it. See "Refine and rerank".                        |
+| `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request, counted across source match, refine and rerank (default `20`; a positive integer). A package cannot raise it. See "Refine and rerank".          |
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                             |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                        |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.            |
@@ -440,20 +440,22 @@ on reload (and a reload that changes nothing keeps the warm index):
     "keyphrases": "auto",
     "refine": { "enabled": "auto", "minLevel": "MEDIUM" },
     "rerank": { "enabled": "auto", "topSources": 8 },
+    "sourceMatch": { "enabled": "auto" },
     "prompts": { "keyphrase": "prompts/keyphrase.md" }
   }
 }
 ```
 
-| Key                                                     | Values                    | Default  | Meaning                                                                                                                                                                         |
-| ------------------------------------------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `representation`                                        | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                       |
-| `keyphrases`                                            | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                               |
-| `refine.enabled`                                        | `auto`, `true`, `false`   | `auto`   | See "Refine and rerank". `auto`: on when the operator has an LLM configured. `true` with no LLM configured is an error at package load.                                         |
-| `refine.minLevel`                                       | `LOW`, `MEDIUM`, `HIGH`   | `MEDIUM` | Candidates the model rates below this are dropped.                                                                                                                              |
-| `rerank.enabled`                                        | `auto`, `true`, `false`   | `auto`   | As for `refine.enabled`.                                                                                                                                                        |
-| `rerank.topSources`                                     | a positive integer        | `8`      | Sources scored; the rest are dropped from the answer but still counted in `total_available`.                                                                                    |
-| `prompts.keyphrase`, `prompts.refine`, `prompts.rerank` | a path inside the package | built in | A file holding the instructions the LLM gets for that step. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
+| Key                                                                            | Values                    | Default  | Meaning                                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `representation`                                                               | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                       |
+| `keyphrases`                                                                   | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                               |
+| `refine.enabled`                                                               | `auto`, `true`, `false`   | `auto`   | See "Refine and rerank". `auto`: on when the operator has an LLM configured. `true` with no LLM configured is an error at package load.                                         |
+| `refine.minLevel`                                                              | `LOW`, `MEDIUM`, `HIGH`   | `MEDIUM` | Candidates the model rates below this are dropped.                                                                                                                              |
+| `rerank.enabled`                                                               | `auto`, `true`, `false`   | `auto`   | As for `refine.enabled`.                                                                                                                                                        |
+| `rerank.topSources`                                                            | a positive integer        | `8`      | Sources scored; the rest are dropped from the answer but still counted in `total_available`.                                                                                    |
+| `sourceMatch.enabled`                                                          | `auto`, `true`, `false`   | `auto`   | See "Source-target search". As for `refine.enabled`.                                                                                                                            |
+| `prompts.keyphrase`, `prompts.refine`, `prompts.rerank`, `prompts.sourceMatch` | a path inside the package | built in | A file holding the instructions the LLM gets for that step. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
 
 An unknown key is an error that names the valid keys, and the package is not served until it is
 fixed (HTTP 424, like any unusable publisher.json).
@@ -579,6 +581,38 @@ cannot leave the process whatever the egress preset says. Dimension values would
 sources) or `failed`. `in` and `out` count ranked rows for refine and sources for rerank. The
 header is a diagnostic only: it changes no result, and without it the response has no
 `retrieval_trace` key. It applies to ranked responses and to the error a failed step returns.
+
+### Source-target search
+
+With an LLM configured, a `source` search target that has `search_text` is answered by asking the
+model which sources it means, instead of ranking sources by embedding or keyword. A `source` target
+with no text (a listing), and every entity target, work as before.
+
+The candidates are every source in scope (the request's `scopes`). A source that the package's
+`index.malloy` hides is not an entity, and a source whose `#(authorize)` is an unconditional
+`false` is dropped when the index is built, so neither is ever sent. The server sends them in
+batches of 10, up to `retrieval.llm.concurrency` batches at a time. Each candidate is
+`[i] package/model/source` and a `Documentation:` line: the source's `#(doc)` text on one line, cut
+to 500 characters with `...`, or, if it has none, `Source <name> with joined sources: a, b` (or
+`Source <name> (no joined sources)`). The model rates a source `HIGH` when the phrase is about what
+one row of the source is, `MEDIUM` when the source holds a meaningful part of it, and leaves the
+rest out. If more than 8 sources rate `HIGH` for a target, its `MEDIUM` ones are dropped.
+
+A rated source is returned as a source card with no entities, like any matched source. Its raw
+score is 3 (`HIGH`) or 2 (`MEDIUM`), published through the same map as refine: 0.9 and 0.7. Rerank
+and the response size budget apply to these cards as usual. Because the retrievers no longer rank
+the source targets, a request that has only source targets does not wait for the embedding index,
+and `total_entities` in the semantic response counts only the entities the other targets can claim.
+
+`sourceMatch.enabled` follows the same rules as `refine.enabled`: `auto` is on when an LLM is
+configured, `true` with none configured stops the package from loading, `false` turns it off.
+`prompts.sourceMatch` replaces the instructions (a file inside the package, with the same path
+rules); the question, the phrase, the candidates and the reply format are added by the server.
+Calls count against `retrieval.llm.maxCallsPerRequest`, and the trace names the step
+`source_match`. If a call fails after the provider layer's retries and its one re-ask,
+`get_context` returns an error result naming `source_match` with `retrieval_stage: "source_match"`.
+It never falls back to embeddings. The text sent is the same kind as for rerank: names, paths and
+`#(doc)` text only.
 
 ## Semantic ranking for `search_database_schema`
 

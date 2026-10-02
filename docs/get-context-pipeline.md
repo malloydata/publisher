@@ -109,17 +109,18 @@ result.
 
 **Package settings (`publisher.json`):**
 
-| Key                                                                       | Values                                                                                                     | Default                   |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `retrieval.representation`                                                | `single`, `facets`                                                                                         | `single`                  |
-| `retrieval.keyphrases`                                                    | `auto`, `never`, `always`                                                                                  | `auto`                    |
-| `retrieval.sourceSummary`                                                 | on/off                                                                                                     | off                       |
-| `retrieval.refine`                                                        | `enabled`, `minLevel`                                                                                      | off, `MEDIUM`             |
-| `retrieval.rerank`                                                        | `enabled`, `topSources`                                                                                    | off, 8                    |
-| `retrieval.rephrase`                                                      | `enabled`                                                                                                  | off (stage not built yet) |
-| `retrieval.minSimilarity`, `perTargetLimit`, `maxEntitiesPerSourceTarget` | numbers                                                                                                    | today's behaviour         |
-| `retrieval.prompts`                                                       | `refine`, `rerank`, `rephrase`, `keyphrase`, `summary`: a file path inside the package (no inline strings) | built-in prompts          |
-| `retrieval.values`                                                        | `mode`, `include`, `exclude`                                                                               | off (feature deferred)    |
+| Key                                                                       | Values                                                                                                                    | Default                   |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `retrieval.representation`                                                | `single`, `facets`                                                                                                        | `single`                  |
+| `retrieval.keyphrases`                                                    | `auto`, `never`, `always`                                                                                                 | `auto`                    |
+| `retrieval.sourceSummary`                                                 | on/off                                                                                                                    | off                       |
+| `retrieval.refine`                                                        | `enabled`, `minLevel`                                                                                                     | off, `MEDIUM`             |
+| `retrieval.rerank`                                                        | `enabled`, `topSources`                                                                                                   | off, 8                    |
+| `retrieval.sourceMatch`                                                   | `enabled`                                                                                                                 | `auto`                    |
+| `retrieval.rephrase`                                                      | `enabled`                                                                                                                 | off (stage not built yet) |
+| `retrieval.minSimilarity`, `perTargetLimit`, `maxEntitiesPerSourceTarget` | numbers                                                                                                                   | today's behaviour         |
+| `retrieval.prompts`                                                       | `refine`, `rerank`, `sourceMatch`, `rephrase`, `keyphrase`, `summary`: a file path inside the package (no inline strings) | built-in prompts          |
+| `retrieval.values`                                                        | `mode`, `include`, `exclude`                                                                                              | off (feature deferred)    |
 
 **Server settings (`publisher.config.json`):**
 
@@ -284,7 +285,7 @@ The hosted endpoint itself was not called.
 | Join damping         | `0.9 ** (hops + 1)` on the whole score, so one hop is 0.81                                         | none                                                            | at assembly                                            |
 | Source relevance     | best entity score                                                                                  | rank of the best entity                                         | same                                                   |
 | Source rerank        | LLM 0 to 3, top 8 sources only, the rest discarded, drops below 2 unless the scope pins the source | absent                                                          | built (2.10)                                           |
-| Source-target search | separate LLM match over all sources, batches of 10; if more than 8 rate HIGH, MEDIUM is dropped    | embedding or lexical path                                       | later step                                             |
+| Source-target search | separate LLM match over all sources, batches of 10; if more than 8 rate HIGH, MEDIUM is dropped    | embedding or lexical path                                       | built (2.11)                                           |
 | Dimension values     | every distinct value of `#(index)` dimensions, then LLM refine                                     | not indexed                                                     | later step                                             |
 | Access-gated sources | values withheld; the card names the unsearched dimensions                                          | absent                                                          | later step                                             |
 | Join topology depth  | 10 levels                                                                                          | 2                                                               | 10, at assembly only                                   |
@@ -378,6 +379,24 @@ unrefined fallback. `retrieval.llm.maxCallsPerRequest` (default 20) bounds the c
 runner records `{name, status, ms, in, out, llmCalls, tokens}` per stage, returned as `retrieval_trace` when the
 request carries `X-Publisher-Retrieval-Trace: summary`. With no LLM configured nothing runs and the response is
 unchanged. Both stages run only on the semantic ranking. Settings: [configuration.md](configuration.md).
+
+### 2.11 Source-target search
+
+This step answers a `source` search target that has search text with an LLM match instead of the embedding or
+keyword ranking, when an LLM is configured. The candidates are every source in scope, ten to a model call and up to
+`retrieval.llm.concurrency` calls at once. Each candidate line is `[i] package/model/source` followed by the
+source's `#(doc)` text on one line (cut to 500 characters with `...`), or, for a source with no doc, a line built
+from its joins. The model rates the sources that fit HIGH (the phrase is about what one row of the source is) or
+MEDIUM (the source holds part of it), and leaves the rest out. If more than 8 sources rate HIGH for a target, its
+MEDIUM ones are dropped. A rated source becomes a source row with raw score 3 or 2, published through the knots as
+0.9 or 0.7, so assembly, rerank, paging and the size budget treat it like any other source row. Sources a
+discovery surface hides are not entities, and a source with an unconditional deny-all `#(authorize)` is dropped
+when the index is built, so neither is ever sent to the model. Entity targets and listings are unchanged. The
+retrievers no longer see the source targets while this runs, so a request with only source targets does not wait
+for the embedding index. The stage is `auto` (`retrieval.sourceMatch.enabled`), uses a built-in prompt or
+`retrieval.prompts.sourceMatch`, counts against `retrieval.llm.maxCallsPerRequest`, and shows in the trace as
+`source_match`. A failure returns an error result naming `source_match`; there is no embedding fallback. With no
+LLM configured, source targets rank as before. Settings: [configuration.md](configuration.md).
 
 ## 3. Pull request sequence
 
