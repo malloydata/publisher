@@ -19,6 +19,7 @@ import {
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
 import { getImpersonatedAuthClient } from "./gcp_impersonation";
+import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import { ApiConnection } from "./model";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -170,6 +171,7 @@ async function createBigQueryClient(
       process.env.GOOGLE_APPLICATION_CREDENTIALS
    ) {
       // Note: The BigQuery client will infer the project ID from the ADC file.
+      assertGoogleCredentialsIsNotADirectory();
       config.keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
    } else {
       throw new Error(

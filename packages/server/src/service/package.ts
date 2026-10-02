@@ -794,6 +794,10 @@ export class Package {
             }
             throw new ServiceUnavailableError(
                `Package-load worker pool unavailable: ${realError.message}`,
+               // The worker's failure may be a refused filesystem access on
+               // the package's own files, which the error mapper reads from
+               // the cause; a bare 503 would read as "retry".
+               { cause: realError },
             );
          });
       const [outcome, databases] = await Promise.all([
@@ -2586,6 +2590,7 @@ export class Package {
          }
          throw new ServiceUnavailableError(
             `Package-load worker pool unavailable: ${realError.message}`,
+            { cause: realError },
          );
       }
 
@@ -3627,7 +3632,12 @@ export class Package {
       );
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+      } catch (error) {
+         // A missing manifest, or a package path that is not a directory,
+         // is "does not exist". Anything else, an EACCES on the package
+         // directory above all, is rethrown so it is reported as what it is.
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
          throw new PackageNotFoundError(
             `Package manifest for ${packagePath} does not exist.`,

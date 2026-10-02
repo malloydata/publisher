@@ -51,6 +51,17 @@ Concretely:
   registration; it has no authentication of its own, so on a reachable server it sits behind the
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
+- **Error bodies name the server's own paths, deliberately.** A filesystem access the server
+  cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
+  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
+  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  the message is composed from the errno's fields, never copied from a driver or an SDK. Every
+  other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
+  or a connection string, and a recorded load failure never says more than the response did.
+  A caller who can reach the port can already register a package at any readable path, so
+  naming the path of a refused one widens nothing; it does mean an unauthenticated reader of
+  `/status` learns the layout of the server's data directory, which the gateway in front is
+  expected to keep from the public.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
