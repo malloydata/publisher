@@ -2072,7 +2072,7 @@ export async function spliceDashboardDocument(
    requested: DashboardDocument,
    options: SpliceOptions = {},
 ): Promise<SpliceResult> {
-   const before = await readDashboardDocument(sourceText);
+   const before = await readDashboardDocument(sourceText, options.modelPath);
    if (readFailed(before)) {
       return {
          ok: false,
@@ -2214,7 +2214,7 @@ export async function spliceDashboardDocument(
    // The second gate. Read back what was actually written and compare it
    // against what was asked for. Comments survived because they were never
    // rewritten; correctness is established here rather than assumed.
-   const after = await readDashboardDocument(spliced);
+   const after = await readDashboardDocument(spliced, options.modelPath);
    if (readFailed(after)) {
       return {
          ok: false,

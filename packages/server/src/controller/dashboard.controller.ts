@@ -22,7 +22,7 @@ import {
    claimsToBeANotebook,
    documentKind,
 } from "../service/notebook";
-import { dashboardSlug } from "../service/dashboard";
+import { dashboardSlug, factsCarryArtifactTag } from "../service/dashboard";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
@@ -295,11 +295,15 @@ export class DashboardController {
                );
             await written.getModel();
             // The textual tag check can pass for a file discovery then drops (a tag in a comment, a slug another file holds).
-            const served =
-               kind === "dashboard"
-                  ? reloaded.getDashboard(dashboardSlug(modelPath))?.path ===
-                    modelPath
-                  : reloaded.isServedNotebook(modelPath);
+            let served: boolean;
+            if (kind === "dashboard") {
+               const holder = reloaded.getDashboard(dashboardSlug(modelPath));
+               // A tile-less dashboard yields no manifest, so the compiled tag is the evidence unless another file holds the slug.
+               const facts = written.getDashboardModelFacts();
+               served = holder
+                  ? holder.path === modelPath
+                  : facts !== undefined && factsCarryArtifactTag(facts);
+            } else served = reloaded.isServedNotebook(modelPath);
             if (!served)
                throw new Error(
                   `\`${modelPath}\` is not served as a ${kind} once the package reloads`,

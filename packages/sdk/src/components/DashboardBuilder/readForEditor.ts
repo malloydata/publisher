@@ -21,8 +21,11 @@ const withLine = (reason: string, line: number | undefined) =>
       : reason;
 
 /** Read `text` for the builder, converting a cell-format notebook rather than refusing it. */
-export async function readForEditor(text: string): Promise<EditorOpen> {
-   const read = await readDashboardDocument(text);
+export async function readForEditor(
+   text: string,
+   modelPath?: string,
+): Promise<EditorOpen> {
+   const read = await readDashboardDocument(text, modelPath);
    if (!readFailed(read)) return { ok: true, document: read.document };
    if (!read.legacyNotebook)
       return { ok: false, reason: withLine(read.reason, read.line) };
@@ -30,7 +33,7 @@ export async function readForEditor(text: string): Promise<EditorOpen> {
    const converted = await convertLegacyNotebook(text);
    if (conversionRefused(converted))
       return { ok: false, reason: withLine(converted.refused, converted.line) };
-   const reread = await readDashboardDocument(converted.text);
+   const reread = await readDashboardDocument(converted.text, modelPath);
    if (readFailed(reread))
       return {
          ok: false,

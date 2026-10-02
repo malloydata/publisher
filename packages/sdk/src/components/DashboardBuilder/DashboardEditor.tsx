@@ -338,7 +338,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readForEditor(opening)
+      void readForEditor(opening, modelPath)
          .then((result) => {
             if (stale) return;
             if (result.ok === false) {
@@ -390,7 +390,15 @@ export function DashboardEditor(props: DashboardEditorProps) {
       return () => {
          stale = true;
       };
-   }, [opening, draftChecked, blockedOnRecord, notebook, noun, refusedEvent]);
+   }, [
+      opening,
+      modelPath,
+      draftChecked,
+      blockedOnRecord,
+      notebook,
+      noun,
+      refusedEvent,
+   ]);
 
    useEffect(() => {
       if (legacyFormat)

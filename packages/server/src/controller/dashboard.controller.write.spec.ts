@@ -46,6 +46,8 @@ function harness(
       served?: boolean;
       /** The compiled model the package held for the path before the write, and the file holding the slug. */
       loaded?: { note: boolean; holder?: string };
+      /** The `##` notes the reloaded model carries, as dashboard facts. */
+      reloadedNotes?: string[];
    } = {},
 ) {
    const model = {
@@ -53,6 +55,11 @@ function harness(
          options.reloadCompiles === false
             ? sinon.stub().rejects(new Error("Cannot redefine 'x'"))
             : sinon.stub().resolves({}),
+      getDashboardModelFacts: () =>
+         options.reloadedNotes && {
+            modelAnnotations: options.reloadedNotes,
+            queries: [],
+         },
    };
    let written = "";
    const served = options.served ?? true;
@@ -307,6 +314,39 @@ describe("DashboardController.putDashboardSource", () => {
       const { controller } = harness({ served: false });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
+   it("accepts a tile-less dashboard, which has no manifest, when the reloaded model carries the artifact tag", async () => {
+      const { controller, pkg } = harness({
+         reloadedNotes: ['## artifact { kind=dashboard tiles=[] }'],
+      });
+      pkg.getDashboard = () => undefined;
+      const result = await controller.putDashboardSource("env", "pkg", PATH, {
+         source: "## artifact { kind=dashboard tiles=[] }\n",
+      });
+      expect(result.created).toBe(true);
+   });
+
+   it("rolls back a tile-less dashboard whose reloaded model carries no artifact tag", async () => {
+      const { controller, pkg } = harness({ reloadedNotes: [] });
+      pkg.getDashboard = () => undefined;
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: "/*\n## artifact { kind=dashboard tiles=[] }\n*/\n",
+         }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+   });
+
+   it("rolls back a tagged tile-less dashboard whose slug another file holds", async () => {
+      const { controller, pkg } = harness({
+         reloadedNotes: ['## artifact { kind=dashboard tiles=[] }'],
+      });
+      pkg.getDashboard = () => ({ path: "dashboards/other.malloy" });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: "## artifact { kind=dashboard tiles=[] }\n",
+         }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 

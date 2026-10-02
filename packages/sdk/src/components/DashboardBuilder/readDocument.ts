@@ -277,9 +277,10 @@ const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
    sourceText: string,
+   modelPath?: string,
 ): Promise<ReadResult> {
    try {
-      return await readDocumentText(sourceText);
+      return await readDocumentText(sourceText, modelPath);
    } catch (error) {
       return {
          ok: false,
@@ -288,7 +289,10 @@ export async function readDashboardDocument(
    }
 }
 
-async function readDocumentText(sourceText: string): Promise<ReadResult> {
+async function readDocumentText(
+   sourceText: string,
+   modelPath: string | undefined,
+): Promise<ReadResult> {
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
    const lines = sourceText.split("\n");
 
@@ -315,8 +319,11 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       tagAnnotation(artifactAt.text),
    ]);
    const artifactTag = tag?.tag("artifact");
+   const tagKind = artifactTag?.text("kind");
+   // The server's rule: a tag that names no kind takes the folder's.
    const kind =
-      artifactTag?.text("kind") === "notebook"
+      tagKind === "notebook" ||
+      (tagKind !== "dashboard" && modelPath?.startsWith("notebooks/"))
          ? ("notebook" as const)
          : undefined;
    const list = readTileList(artifactAt.text);

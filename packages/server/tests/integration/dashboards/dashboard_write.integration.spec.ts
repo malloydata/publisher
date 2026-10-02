@@ -219,6 +219,50 @@ describe("PUT model source: dashboards", () => {
       expect(await titleOf("created")).toBe("Replaced");
    });
 
+   describe("a dashboard with no tiles yet", () => {
+      const EMPTY = `##! experimental.givens
+## artifact { title="Empty start" kind=dashboard tiles=[] }
+`;
+
+      it("writes the empty layout, a tile into it, and the empty text back with the returned hash", async () => {
+         const created = await put("dashboards/empty-start.malloy", {
+            source: EMPTY,
+         });
+         expect(created.status).toBe(201);
+         const first = (await created.json()) as { contentHash: string };
+         expect(first.contentHash).toBe(hashOf(EMPTY));
+
+         const withTile = `##! experimental.givens
+import { orders } from '../orders.malloy'
+## artifact { title="Empty start" kind=dashboard tiles=["orders -> totals"] }
+`;
+         const filled = await put("dashboards/empty-start.malloy", {
+            source: withTile,
+            expectedHash: first.contentHash,
+         });
+         expect(filled.status).toBe(200);
+         const second = (await filled.json()) as { contentHash: string };
+
+         const undone = await put("dashboards/empty-start.malloy", {
+            source: EMPTY,
+            expectedHash: second.contentHash,
+         });
+         expect(undone.status).toBe(200);
+         expect(await sourceOf("dashboards/empty-start.malloy")).toBe(EMPTY);
+      });
+
+      it("still rolls back an empty layout whose tag is inside a comment, and says why", async () => {
+         const res = await put("dashboards/commented-empty.malloy", {
+            source: "/*\n## artifact { kind=dashboard tiles=[] }\n*/\n",
+         });
+         expect(res.status).toBe(500);
+         expect(await res.text()).toContain("is not served as a dashboard");
+         expect(await sourceOf("dashboards/commented-empty.malloy")).toBe(
+            undefined,
+         );
+      });
+   });
+
    it("refuses source that does not compile with 400, naming where", async () => {
       const res = await put("dashboards/broken.malloy", {
          source: `##! experimental.givens

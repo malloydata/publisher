@@ -1865,9 +1865,11 @@ export class Environment {
                modelPath,
                error,
             });
+            const reason = error instanceof Error ? error.message : undefined;
             throw new WriteRolledBackError(
-               `The package did not reload with the new \`${modelPath}\`, so ` +
-                  `the previous text was put back and nothing changed.`,
+               `The package did not reload with the new \`${modelPath}\`` +
+                  `${reason ? ` (${reason})` : ""}, so the previous text was ` +
+                  `put back and nothing changed.`,
             );
          }
       });
