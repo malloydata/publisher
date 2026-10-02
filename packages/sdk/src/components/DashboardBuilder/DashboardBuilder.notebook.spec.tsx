@@ -128,6 +128,50 @@ describe("DashboardBuilder: a notebook is one column", () => {
       expect(written).not.toContain("columns");
    });
 
+   it("inserts a tile between two tiles from the + on the edge between them", async () => {
+      let written: string | undefined;
+      await mountText(NOTEBOOK, {
+         withCatalog: true,
+         onSave: (source) => {
+            written = source;
+         },
+      });
+      fireEvent.click(screen.getByLabelText("Insert tile after intro"));
+      fireEvent.click(screen.getByRole("button", { name: "Text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         'tiles=[intro { kind=text }, text_1 { kind=text }, "a -> by_cat"]',
+      );
+   });
+
+   it("adds a tile at the end from the section-level +", async () => {
+      let written: string | undefined;
+      await mountText(NOTEBOOK, {
+         withCatalog: true,
+         onSave: (source) => {
+            written = source;
+         },
+      });
+      fireEvent.click(screen.getByLabelText("Insert tile after intro"));
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      fireEvent.click(screen.getByLabelText("Add tile at the end"));
+      fireEvent.click(screen.getByRole("button", { name: "Text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         'tiles=[intro { kind=text }, "a -> by_cat", text_1 { kind=text }]',
+      );
+   });
+
+   it("offers no insert + in a dashboard, where position is a grid cell", async () => {
+      await mountText(DASHBOARD, { withCatalog: true });
+      expect(screen.queryByLabelText(/^Insert tile after/)).toBeNull();
+      expect(screen.queryByLabelText("Add tile at the end")).toBeNull();
+   });
+
    it("reports notebook events, with the cell count", async () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       await mountText(NOTEBOOK, { onSave: () => {}, onEvent });

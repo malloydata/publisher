@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DragDropProvider } from "@dnd-kit/react";
+import AddIcon from "@mui/icons-material/Add";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import {
    useCallback,
@@ -262,6 +263,12 @@ export function DashboardBuilder({
    >(undefined);
    // The add-tile picker.
    const [addingTile, setAddingTile] = useState(false);
+   // Where the next added tile lands; undefined appends.
+   const [insertAt, setInsertAt] = useState<number | undefined>(undefined);
+   const openAdd = (at?: number) => {
+      setInsertAt(at);
+      setAddingTile(true);
+   };
    // The clickable-cells window, for one tile's source.
    const [drillSource, setDrillSource] = useState<string | undefined>(
       undefined,
@@ -524,7 +531,7 @@ export function DashboardBuilder({
          );
          let name = `${tile.view}_tile`;
          for (let n = 2; used.has(name); n++) name = `${tile.view}_tile_${n}`;
-         draft.tiles.push({
+         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
             name,
             source: extension.name,
             declaration: { kind: "reference", from: tile.view },
@@ -534,7 +541,7 @@ export function DashboardBuilder({
             ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
          });
       });
-      setSelected(editor.document.tiles.length);
+      setSelected(insertAt ?? editor.document.tiles.length);
    };
 
    /** An empty text tile at the end, named for the first free `text_N`. */
@@ -546,14 +553,14 @@ export function DashboardBuilder({
          );
          let n = 1;
          while (taken.has(`text_${n}`)) n++;
-         draft.tiles.push({
+         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
             kind: "text",
             name: `text_${n}`,
             markdown: "",
             ...(notebook ? {} : { colspan: columns }),
          });
       });
-      setSelected(editor.document.tiles.length);
+      setSelected(insertAt ?? editor.document.tiles.length);
    };
 
    /** Change one tile where it stands, found by key so a preview order cannot misdirect it. */
@@ -659,7 +666,7 @@ export function DashboardBuilder({
          <BuilderToolbar
             {...session.toolbarProps}
             {...(toolbar ? { actions: toolbar } : {})}
-            {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
+            {...(catalog ? { onAddTile: () => openAdd() } : {})}
             onSettings={setSettingsAnchor}
             savesTo={savesTo}
          />
@@ -725,7 +732,7 @@ export function DashboardBuilder({
                      <Button
                         size="small"
                         variant="contained"
-                        onClick={() => setAddingTile(true)}
+                        onClick={() => openAdd()}
                      >
                         Add tile
                      </Button>
@@ -787,6 +794,9 @@ export function DashboardBuilder({
                               }
                               columns={columns}
                               resizable={!notebook}
+                              {...(notebook && catalog
+                                 ? { onInsertAfter: () => openAdd(index + 1) }
+                                 : {})}
                               onSelect={() => setSelected(index)}
                               onOpenMenu={(anchor) => {
                                  setSelected(index);
@@ -831,6 +841,17 @@ export function DashboardBuilder({
                   />
                </Box>
             </DragDropProvider>
+            {notebook && catalog && !empty && (
+               <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  aria-label="Add tile at the end"
+                  onClick={() => openAdd()}
+                  sx={{ alignSelf: "center" }}
+               >
+                  Add tile
+               </Button>
+            )}
             <FilterDialog
                open={filterDialog !== undefined}
                document={editor.document}

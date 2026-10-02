@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import AddIcon from "@mui/icons-material/Add";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { Box, IconButton, Typography } from "@mui/material";
@@ -37,6 +38,7 @@ export function TileFrame({
    resizeSpan,
    columns,
    resizable = true,
+   onInsertAfter,
    onSelect,
    onOpenMenu,
    onResizeStart,
@@ -56,6 +58,8 @@ export function TileFrame({
    columns: number;
    /** Whether the right edge sets the width: not in a one-column document, where every tile is full width. */
    resizable?: boolean;
+   /** Offers a "+" on the bottom edge that adds a tile after this one; set where tiles stack in one column. */
+   onInsertAfter?: () => void;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
    onResizeStart: (event: PointerEvent<HTMLDivElement>) => void;
@@ -235,6 +239,38 @@ export function TileFrame({
                      }}
                   >
                      <MoreVertIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+               )}
+
+               {onInsertAfter && (
+                  <IconButton
+                     className="builder-affordance"
+                     size="small"
+                     aria-label={`Insert tile after ${tileLabel(tile)}`}
+                     onClick={(event) => {
+                        event.stopPropagation();
+                        onInsertAfter();
+                     }}
+                     sx={{
+                        position: "absolute",
+                        bottom: "-18px",
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        width: 20,
+                        height: 20,
+                        zIndex: 3,
+                        color: theme.tileTitle,
+                        bgcolor: theme.tile,
+                        border: theme.cardBorder,
+                        opacity: 0,
+                        transition: "opacity 120ms",
+                        "&:hover, &:focus-visible": {
+                           opacity: 1,
+                           bgcolor: theme.tile,
+                        },
+                     }}
+                  >
+                     <AddIcon sx={{ fontSize: 14 }} />
                   </IconButton>
                )}
 
