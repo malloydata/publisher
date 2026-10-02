@@ -738,6 +738,7 @@ export function DashboardBuilder({
                   unknownFieldsOf={unknownFieldsOf}
                   onEdit={(control) => setFilterDialog({ control })}
                   onAdd={() => setFilterDialog({})}
+                  onRemove={dropControl}
                >
                   {controls}
                </FilterStrip>

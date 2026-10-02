@@ -9,6 +9,7 @@ import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
+import { tileFilterLabels } from "../Dashboard/TileFilterTag";
 import type { BuilderEvent } from "./telemetry";
 import { now } from "../../utils/clock";
 import { encodeResourceUri } from "../../utils/formatting";
@@ -990,6 +991,7 @@ function Surface({
                   givens={applied}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
+                  filterLabels={tileFilterLabels(query.givenNames, specs)}
                   height={TILE_MAX_HEIGHT}
                />
             );
@@ -1004,6 +1006,7 @@ function Surface({
          modelPath,
          applied,
          declaredTypes,
+         specs,
       ],
    );
 

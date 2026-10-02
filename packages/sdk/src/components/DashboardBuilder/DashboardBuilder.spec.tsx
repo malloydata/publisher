@@ -298,6 +298,30 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       expect(written).not.toContain("given: SINCE");
    });
 
+   it("takes a control off from the × on its chip, the same outcome as its window's Remove", async () => {
+      let written: string | undefined;
+      const source = SOURCE.replace(
+         'import "../data_app.malloy"',
+         'import "../data_app.malloy"\n\n# label="Category"\ngiven: CATEGORY :: filter<string> is f\'\'',
+      );
+      const document = await openDocument(source);
+      render(
+         <DashboardBuilder
+            source={source}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Remove filter CATEGORY"));
+      expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).not.toContain("CATEGORY");
+      expect(written).toContain("view: by_cat is by_category\n");
+   });
+
    it("takes a control it declared off the dashboard, bindings and all", async () => {
       let written: string | undefined;
       const source = SOURCE.replace(
