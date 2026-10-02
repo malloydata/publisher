@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
+## [0.9.1] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
 
 0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount at boot, whose `loadErrors` entry now carries the errno instead of only `Failed to mount local directory`. An unreadable package directory, which answered 404 `Package manifest … does not exist.`, now names the errno too.
 
