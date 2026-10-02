@@ -46,7 +46,17 @@ test.describe("builder chart type", () => {
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/category-review/edit`);
       await editorOpen(page);
       // Opened as an unsaved conversion, whose tiles are placeholders until it is saved.
+      await expect(queryTiles(page)).toHaveCount(3, { timeout: 60_000 });
+      await expect(
+         page.getByText("order_items_tiles → revenue_by_month", {
+            exact: true,
+         }),
+      ).toBeVisible();
+      await expect(page.locator("[data-malloy-render-as]")).toHaveCount(0);
       await saveChanges(page);
+      await expect(page.locator("[data-malloy-render-as]")).toHaveCount(3, {
+         timeout: 60_000,
+      });
       // The monthly query carries an explicit `# line_chart`.
       const tile = queryTiles(page).first();
       await expect(renderAs(tile)).toHaveAttribute(
