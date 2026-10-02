@@ -1719,6 +1719,12 @@ paths:
         lock, so two saves racing on one file cannot both pass the check, and a
         rollback cannot revert the other writer's text instead of its own.
 
+        A dashboard whose name (the file's basename) another file already holds
+        is refused with 409 before anything is written, since the name is its
+        URL and its `# drill` target. A file the reloaded package does not serve
+        as the kind its tag claims (an untagged `dashboards/` file, or a tag
+        inside a comment or a string) is rolled back and answers 500.
+
         A create answers 201 and an update 200; `created` in the body says the
         same thing.
 
@@ -1779,8 +1785,9 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, or already exists and
-            no `expectedHash` was sent
+            The file changed since the caller opened it, already exists and
+            no `expectedHash` was sent, or is a dashboard whose name another
+            file already holds
           content:
             application/json:
               schema:
@@ -1926,10 +1933,12 @@ paths:
       operationId: list-dashboards
       summary: List package dashboards
       description: |
-        Lists the dashboards in the specified package — every `.malloy` file in
-        the package's `dashboards/` directory that carries an `# artifact` (or
-        model-level `## artifact`) annotation. A file in that directory with no
-        artifact tag is a shared include and is not listed, whether or not it
+        Lists the dashboards in the specified package — every tagged `.malloy`
+        file at the top of `dashboards/` or `notebooks/` carrying an
+        `# artifact` (or model-level `## artifact`) annotation whose `kind` is
+        `dashboard`, or names none under `dashboards/`. A `kind=notebook` file is
+        listed as a notebook instead, whichever folder it sits in. A file with
+        no artifact tag is a shared include and is not listed, whether or not it
         compiles.
 
         A tagged dashboard that failed to compile is listed carrying its
@@ -3889,8 +3898,8 @@ components:
     Dashboard:
       type: object
       description: |
-        A dashboard within a Malloy package: a self-contained `.malloy` file in
-        the package's `dashboards/` directory carrying an `# artifact` (or
+        A dashboard within a Malloy package: a self-contained `.malloy` file at
+        the top of the package's `dashboards/` or `notebooks/` directory carrying an `# artifact` (or
         model-level `## artifact`) annotation. The list entry; see
         DashboardManifest for the detail a viewer needs to render one.
       properties:
@@ -3975,7 +3984,9 @@ components:
             What the document is, from the `kind` property of its artifact tag
             (the folder only decides the default when the tag says nothing). A
             `notebook` is laid out as one column: `dashboardColumns` is 1
-            whatever the file says.
+            whatever the file says. Always `dashboard` on
+            `GET …/dashboards/{dashboardName}`; a notebook's manifest is the
+            `dashboard` field of `GET …/notebooks/{path}`.
         query:
           type: string
           description: >-

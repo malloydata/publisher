@@ -39,29 +39,47 @@ share one set of tools: drag tiles into order, pick a chart, add filters, and ad
 which hold markdown. Dashboards gain text tiles too. Everything is click-to-edit, with no edit icon:
 click a title, a description, a text tile or a tile's heading and type. Insert a tile between two
 with its **+**, and switch a document between **Dashboard** and **Notebook** under **Settings → Show
-as** (a tag edit on the same file). Imports are edited there as a source picker.
+as**: a tag edit on the same file, in place. Switching to Notebook writes `kind=notebook` and drops
+the `dashboard { columns=N }` line, since a notebook is one column; switching a file under
+`notebooks/` to Dashboard writes `kind=dashboard` explicitly, so the server serves it as one.
+Imports are edited there as a source picker.
 
 **Save writes at once.** There is no review step before a save any more, for notebooks or for
 dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
 shows **View change**, the file's diff read-only, and **Undo save**, which writes the file back as
-it was. The save target is named under the button, and the exit button reads **Close**. Wording elsewhere is plainer: **Viz type**, **Drill-through**, "On or after a date", and a **Filters** heading over the filter strip.
+it was. The save target is named under the button, and the exit button reads **Close**. Wording
+elsewhere is plainer: **Viz type**, **Drill-through**, "On or after a date", and a **Filters**
+heading over the filter strip.
 
 **Cell-format notebooks convert when saved.** A notebook written the older way, with `(markdown)`
 cells, opens converted to the tile layout and unsaved; Save writes the layout and Undo save puts the
 original text back. Nothing is written until you save. Save writes to the host's record when the host
 has one, and otherwise to the package, so the Console on a server that does not take writes has no
-Save. A notebook the editor cannot convert opens read-only and says why. The write route
-(`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`.
+Save. A notebook the editor cannot convert opens read-only and says why: a `run:` that is not
+`<source> -> <view or body>` (an inline `extend` before the arrow, a source that is not a name,
+nothing after the arrow), a refinement of a multi-stage query, a run defined through more than ten
+other named queries, a tag value Malloy cannot read (a malformed date such as `@2024-13-01`), and
+the read-level refusals that were already there (a statement above the tag, text after a block
+closer, a comment straddling two cells, a lone carriage return). The write route
+(`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`; an
+untagged write to `notebooks/` is refused with 400. Two refusals are new: a dashboard whose name
+another file already holds answers 409 and nothing is written, and a file the reloaded package does
+not serve as the kind its tag claims (an untagged `dashboards/` file, or a tag inside a comment) is
+rolled back and answers 500 where it used to land unserved.
 
 **What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
 (`dashboard` or `notebook`), and a tagged file is listed and served from wherever the package puts
-it. The tag can be written in block form (`##|`). Notebooks are authored as layouts
+it. A file whose tag names no `kind` is edited as its folder's kind (`notebooks/` is a notebook).
+The tag can be written in block form (`##|`). Notebooks are authored as layouts
 (`tiles=[…]`), the shape the builder writes, and a layout notebook's read view has no cards around
 its tiles.
 
-**API contract.** `DashboardTile` gains `kind` and `markdown`, and `query` is absent on a text tile,
-so a client that runs a dashboard's tiles should skip `kind=text` tiles when running queries.
-`DashboardManifest` gains `kind`, and `RawNotebook` gains `dashboard`.
+**API contract.** `DashboardTile` gains `kind` (`query` or `text`), `name` and `markdown`; `query` is
+absent on a text tile, so a client that runs a dashboard's tiles should skip `kind=text` tiles when
+running queries, and a text tile's `colspan` and `break` come from its `tiles=[…]` entry.
+`DashboardManifest` gains `kind` (always `dashboard` on `GET …/dashboards/{name}`), and
+`RawNotebook` gains `dashboard`, the layout of a notebook written as tiles, with `kind` `notebook`
+and one column.
 
 **For hosts that mount the builders.**
 
@@ -74,8 +92,8 @@ so a client that runs a dashboard's tiles should skip `kind=text` tiles when run
 - Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
 - The read view's `DashboardView` takes a `chrome` prop, and a narrowed tile now narrows instead of keeping the width of the chart it replaced.
 
-The package page has a **New** menu with **Dashboard** and **Notebook**: choose a model, the first
-view and a title, and the file is created and opened in its editor. On the Console it creates the
+The package page has a **New** menu with **Dashboard** and **Notebook**: choose a type (Dashboard or
+Notebook), a model, a source and its view (one select), and a title, and the file is created and opened in its editor. On the Console it creates the
 file in the package and refuses to overwrite one that exists; on a host with an authoritative record
 it creates the document there. The menu is offered when the server takes writes or a host keeps the
 record and can store; it is not offered when neither route exists, on a record that cannot store, or
@@ -85,12 +103,13 @@ on a pinned version of a package. The same primitives (`createDocument`, `create
 that carries `notebook.created` (both `{ where }` only; additive, but a host that switches
 exhaustively over `DashboardEvent` will see one new case).
 
-A dashboard tile and a notebook query cell each get a **Viz type** picker: From the view (the view's own
-chart), Table, Line, Bar, Big value (offered when every output of the view is an
-aggregate), Scatter, and a map only when the view already carries one. The picker writes one chart
+A dashboard tile gets a **Viz type** picker: From the view (the view's own chart), Table, Line, Bar,
+Big value, Scatter, Shape map and Segment map. Every choice is listed; one the view cannot render is
+disabled with its reason beside it (Big value needs a view with only totals, a map needs a view that
+already carries a map chart). The picker writes one chart
 line that turns off the chart tags the view carries (all the others when the catalog does not know the view). A chart line it did not write (for example
 `# bar_chart { size=spark }`) is kept byte for byte on every edit, and the picker is disabled for
-that tile or cell with the reason shown.
+that tile with the reason shown.
 
 A dashboard with no tiles now opens in the editor instead of being refused. It is not served until it
 has a tile (its page 404s and the load lint warns), and the editor will not remove the last tile.
@@ -109,12 +128,10 @@ For hosts that mount an editor themselves, the builders now draw "Close" and tak
 
 Smaller changes in the same pass:
 
-- **Text cells** have a Cancel button that discards the draft, Cmd/Ctrl+Enter commits it, Cmd/Ctrl+S saves from inside the field, and an empty or invalid cell is flagged while you type instead of at Save. A newly added text cell that ends empty is dropped.
-- **Disabled controls say why.** Remove tile on a saved dashboard's last tile, and the notebook cell buttons that cannot act (move past a definition, add a query above setup lines), stay focusable and show their reason on screen.
-- **The chart picker lists every chart type**, with the ones that do not fit the view disabled and their reason beside them, rather than hiding them.
+- **Text tiles** have a Cancel button that drops the draft; Escape, Done or Cmd/Ctrl+Enter keeps it, and Cmd/Ctrl+S saves from inside the field.
+- **Disabled controls say why.** Remove tile on a saved dashboard's last tile, and a Viz type choice the view cannot render, stay focusable and show their reason on screen.
 - **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
 - **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
-- **A failed notebook save** now offers Copy my changes, so a refused or conflicting save does not cost the text.
 
 ## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
 

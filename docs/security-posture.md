@@ -45,29 +45,31 @@ Concretely:
   close registration on a deployment where that matters. A `.zip` environment or package that
   contains a symlink entry is refused, and nothing from it is left on disk, because the
   extractor would otherwise follow the link out of the destination directory.
-- **Writing a dashboard or a notebook is an operator action too.** `PUT …/models/dashboards/<slug>.malloy`
-  and `PUT …/models/notebooks/<slug>.malloy` — the builder's save — write a file into a package and
-  reload it. They accept only those two kinds of file, compile the text before writing, and are
-  gated by `frozenConfig` like package registration; they have no authentication of their own, so
-  on a reachable server they sit behind the same gateway or are closed by the same setting. An
-  attacker who can reach them can already register a package, so they open no door that was shut.
-  What a document is comes from the `kind` in its `## artifact` tag, and where it may live from the
-  two folders: either route takes either kind, so a notebook can sit in `dashboards/` and the
-  confinement to the top of those two directories is unchanged. Notebooks share the route safely for three reasons: the same compile-first rule applies, the
-  path is confined to the top of `notebooks/`, and the text must carry an `## artifact` tag (an
-  untagged file there is a shared include that other models import, and is refused with 400). The
-  compile-first gate is per file, and the reload verify checks only the written model, so a model
-  that imports the written file is not checked; that is the same for dashboards today. The editor's
-  own edits are invisible to an importer, since markdown and `run:` order define nothing. The tag
-  is read as discovery reads it, off the compiled model (off the text only for a file that does not
-  compile): a write whose only `## artifact` sits inside a `/* */` comment or a string passes the
-  first textual check, but the reload verify finds no model-level note and rolls it back with a 500,
-  so no unserved file lands in `notebooks/`. The text goes through the same caller-text guard as
-  `/compile`, so a dashboard or notebook save that declares a real `#(authorize)` or
-  `#(access_filter)` gate outside prose is refused with 400; gates live in the model file. A tagged write
-  over an existing file in `notebooks/` that the package does not serve as a notebook is refused
-  with 400, including one whose only tag is commented out, so a shared include cannot be
-  overwritten into a notebook. `dashboards/` has no tag gate at all.
+- **Writing a dashboard or a notebook is an operator action too.** `PUT …/models/{path}` — the
+  builder's save — writes a file into a package and reloads it. It accepts two path shapes and
+  nothing else, `dashboards/<slug>.malloy` and `notebooks/<slug>.malloy`, compiles the text before
+  writing, and is gated by `frozenConfig` like package registration; it has no authentication of
+  its own, so on a reachable server it sits behind the same gateway or is closed by the same
+  setting. An attacker who can reach it can already register a package, so it opens no door that
+  was shut. What a document is comes from the `kind` in its `## artifact` tag; the path only
+  confines where it may live, to the top of those two directories, so a notebook can sit in
+  `dashboards/` and a dashboard in `notebooks/` and the confinement is unchanged. Notebook paths
+  carry one gate the dashboard paths do not: the text must carry an `## artifact` tag (an untagged
+  file there is a shared include that other models import, and is refused with 400), and a tagged
+  write over an existing `notebooks/` file the package does not serve as a notebook is refused with
+  400, including one whose only tag is commented out, so a shared include cannot be overwritten
+  into a notebook. Both path shapes then share the same post-write check: after the reload the
+  written file must be served as the kind its tag claims, read as discovery reads it, off the
+  compiled model (off the text only for a file that does not compile). A write whose only
+  `## artifact` sits inside a `/* */` comment or a string, or an untagged `dashboards/` file,
+  passes compile and is then rolled back with a 500, so no unserved file lands in either folder; and
+  a dashboard whose name another file already holds is refused with 409 before anything is
+  written, since the name is its URL and its `# drill` target. The compile-first gate is per file,
+  and the reload verify checks only the written model, so a model that imports the written file is
+  not checked; the editor's own edits are invisible to an importer, since markdown and `run:` order
+  define nothing. The text goes through the same caller-text guard as `/compile`, so a save that
+  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with 400;
+  gates live in the model file.
 - **Error bodies name the server's own paths, deliberately.** A filesystem access the server
   cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
   path, and `/api/v0/status` names the config path in `initError` and the failing path in a

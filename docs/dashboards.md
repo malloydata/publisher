@@ -671,7 +671,7 @@ and a reload that fails to compile leaves the previously compiled model serving.
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
 dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Dashboards or Notebooks section also offers its own **New dashboard** or **New notebook**): pick a
-source and its view (one select), a type (Dashboard or Notebook), and a title, and the file is written into the package and opened in the builder. From there it is
+type (Dashboard or Notebook), a model, a source and its view (one select), and a title, and the file is written into the package and opened in the builder. From there it is
 the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
 view, label and chart from its own menu, and add filters from the strip above the grid.** Titles,
 descriptions and text tiles are click-to-edit where they stand. A **text tile** is markdown, added
@@ -707,9 +707,12 @@ The builder's **Save** writes at once, with no review step, and then shows a not
 before that save. The notice stays until the next edit or save. The caption under the button says
 where Save writes. A notebook is the same builder over a one-column document (**Settings → Show as**
 switches the tag); a cell-format notebook opens converted and unsaved, and Undo save restores the
-original text. Save writes back through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
-atomically, reloads the package in place, and restores the previous text if the reload does not
-take it; a copy someone else changed since you opened it is refused (409), never merged. The
+original text. A file whose tag names no `kind` is edited as the kind its folder implies
+(`notebooks/` is a notebook). Save writes back through `PUT …/models/dashboards/<name>.malloy` (or
+`notebooks/<name>.malloy`), which compiles the text first, writes it atomically, reloads the package
+in place, and restores the previous text if the reload does not take it, or does not serve the file
+as the kind its tag claims (500); a copy someone else changed since you opened it is refused (409),
+never merged, and so is a dashboard whose name another file already holds. The
 check, the write, the reload and the restore all happen under one hold of the package lock, so two
 saves racing on one file cannot both pass the check, and a rollback cannot revert the other
 writer's text instead of its own. On a

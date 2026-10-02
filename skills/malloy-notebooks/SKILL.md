@@ -66,7 +66,7 @@ source: category_tiles is order_items extend {
 - **A query tile is a `view:` on a source**, named as `"source -> view"`. Put the views on a `<source>_tiles` extension as thin wrappers (`view: revenue_trend is sales_by_month + { where: … }`): the modelled view keeps its chart tag, the wrapper says which controls the tile answers to and carries the tile's `# label`. A `run:` in a layout notebook is never shown, and the lint reports it (`notebook-layout-run`): define a view, list it in `tiles`, and delete the `run:`.
 - **A prose tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. Every text entry needs its block, and every named block needs an entry written with `{ kind=text }`: a bare `intro` without it is the query-tile form (it names a `query:` in the file), so a block of that name is not shown.
 - **Place the file in one order: header, imports and givens, then the prose blocks in tile order, then the `<source>_tiles` extension.** Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the extension is the convention the builder writes, and it inserts a new block after the last one.
-- **Chart tags go on the view** (`# line_chart`, `# label="…"`), as on a dashboard; `skill:malloy-dashboards` has the tag set and the lint.
+- **Chart tags go on the view** (`# line_chart`, `# label="…"`), as on a dashboard; the `malloy-dashboards` skill has the tag set and the lint.
 - **Givens work as in any notebook**: declare `given:` above the view that reads it as `$NAME`, with the controls tags shown.
 - **Tiles run through the model query endpoint**, and the notebook also carries cells made from its tiles, so cell runs, `get_context` and notebook chat work on it as on any notebook.
 - **The tag's `kind=` decides the document's kind, not the folder.** Keep notebooks in `notebooks/` and dashboards in `dashboards/`; a file in the other folder works, and the lint notes it (`notebook-other-folder`). An untagged `.malloy` file in `notebooks/` is a shared include.
@@ -259,25 +259,29 @@ Define each listed view on the `_tiles` extension (thin wrappers over the modell
 ## Editing in the Console
 
 A person can edit a `notebooks/*.malloy` notebook in the Console (an **Edit** button; **New** on the
-package page starts one). Saving a notebook written as `run:` cells in the Console converts it to the tile layout. The editor rewrites, adds, removes and reorders markdown cells, and adds or
-removes query cells, and Save splices into the file, so a notebook you wrote by hand survives it. Write
-the file so the editor can place it:
+package page starts one). A layout notebook is edited in place: tiles are reordered, added and
+removed, text blocks and the tag are rewritten, and everything else in the file survives byte for
+byte. A cell notebook opens converted and unsaved, and Save writes the conversion: each `run:`
+becomes a `view:` on a `<source>_tiles` extension appended to the file (a `query:` used by exactly
+one run is folded into its view), each prose note becomes a `##|(markdown) text_N` block, and
+definitions, imports, givens and comments stay where they were. Undo save puts the original text
+back. Write a cell notebook so it converts:
 
-- Keep definitions (`given:`, `source:`, `import`) together near the top, then the queries. The
-  editor never edits a definition or the text of an existing query, and adds a query only below every
-  definition.
-- A query added in the editor follows the notebook's controls only if its source reads a given as
-  `$NAME`.
-- A chart line the editor does not model (for example `# bar_chart { size=spark }`) is left alone.
+- Every `run:` is `<source> -> <view or query body>` with a named source. An inline `extend` before
+  the arrow, a source that is not a name, or a refinement (`q + { … }`) of a multi-stage query is
+  refused, and so is a run that resolves through more than ten named queries.
+- A chart line the editor does not model (for example `# bar_chart { size=spark }`) is kept, and the
+  Viz type picker is disabled for that tile with the reason shown.
 - The editor opens a notebook **read-only**, saying why, when it cannot place cells one by one:
   two statements or notes on one line, text after a block closer, a comment straddling two cells, a
-  lone carriage return (use LF or CRLF), a statement above the `## artifact` tag, or a statement no
-  cell can hold.
+  lone carriage return (use LF or CRLF), a statement above the `## artifact` tag, a statement no
+  cell can hold, or a tag value Malloy cannot read, such as a malformed date literal
+  (`@2024-13-01`).
 - A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is
   refused with a 400. Put gates in a model file the notebook imports.
 
-Viz type choices are From the view, Table, Line, Bar, Big value (only for a view whose outputs are
-all aggregates), Scatter, and a map only when the view already carries one.
+Viz type choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment map.
+Every choice is listed; one the view cannot render is disabled with its reason beside it.
 
 ## Existing `.malloynb` files
 

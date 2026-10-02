@@ -66,8 +66,8 @@ is a Console convenience.
 - **Browse a package** — one section each for **Dashboards**, **Notebooks**, **Data Apps**,
   **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
   `README.malloynb` rendered underneath. Data Apps is hidden when the package has none. Dashboards
-  and Notebooks are hidden when empty too, unless creating is offered: then each shows an **Add**
-  button and, with nothing in it, an empty row. Every kind has its own icon and its own color, so a
+  and Notebooks are hidden when empty too, unless creating is offered: then each shows an empty row
+  with its own **New dashboard** or **New notebook** button. Every kind has its own icon and its own color, so a
   row's type reads before its name does.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
@@ -83,8 +83,8 @@ is a Console convenience.
   review. **Save** writes the `dashboards/*.malloy` back into the package at once, then offers
   **View change** (the diff, read-only) and **Undo save**
   ([dashboards.md](dashboards.md#editing-in-the-console)).
-- **Create a dashboard or notebook** — the package page's **New** menu takes a model, the first view
-  and a title, writes the file into the package (it never overwrites an existing one) and opens it in
+- **Create a dashboard or notebook** — the package page's **New** menu takes a type (Dashboard or Notebook), a
+  model, a source and its view (one select), and a title, writes the file into the package (it never overwrites an existing one) and opens it in
   its editor. A host with its own record creates it there instead. It is offered when the server takes
   writes (the file goes into the package) or when a host keeps the record and can store; a workspace
   that keeps drafts in the browser beside a writable server still gets it, and writes to the package.
@@ -115,7 +115,7 @@ is a Console convenience.
   (the package file, this browser, or where the host app keeps it). A notice then offers
   **View change**, the file's diff read-only, and **Undo save**, which writes the file back as it was
   before that save. The notice stays until the next edit or save. **Close** leaves, and asks first
-  when edits are unsaved. On a server that does not take writes, Save is off. A save whose text
+  when edits are unsaved. On a server that does not take writes there is no Save; while the server's answer is still loading, the caption under the button says so. A save whose text
   declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so
   the builder opens such a file but cannot save it from the Console; gates live in the model file.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
