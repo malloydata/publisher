@@ -2028,6 +2028,22 @@ function buildSourceContext(
 // is dropped automatically (WeakMap) and the next call rebuilds.
 const indexCache = new WeakMap<Package, PackageIndex>();
 
+/**
+ * The entities the semantic index embeds and searches. With joins made at
+ * assembly that is the direct fields only: a joined copy would be embedded
+ * again under a longer name, take a window slot from the field it copies and
+ * never be damped. The lexical path is not affected; it ranks
+ * `retrievalEntities`.
+ */
+export function embeddedEntitiesOf(
+   pkgIndex: PackageIndex,
+   settings: PipelineSettings,
+): readonly Entity[] {
+   return settings.joins === "assembly"
+      ? pkgIndex.directEntities
+      : pkgIndex.retrievalEntities;
+}
+
 /** Get, or lazily build and cache, the lunr entity index for a package. */
 export async function getPackageIndex(
    environmentStore: EnvironmentStore,
@@ -2392,15 +2408,16 @@ const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
 const RANK_STAGES: RankStage[] = [];
 const CARD_STAGES: CardStage[] = [];
 
-/** Today's behaviour, spelled out. Changing a value here changes responses. */
+/**
+ * The values the server runs with; changing one changes responses. Joins are
+ * made at assembly on the semantic path only: the lexical path always ranks
+ * the index's own joined copies.
+ */
 const PIPELINE_SETTINGS: PipelineSettings = {
-   joins: "index",
-   entityWindow: {
-      where: "post-rank",
-      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
-   },
-   joinMaxDepth: MAX_JOIN_PATH_DEPTH,
-   joinDamping: null,
+   joins: "assembly",
+   entityWindow: { perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET },
+   joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
+   joinDamping: 0.9,
    scoring: "cosine",
    maxChars: null,
    reserveChars: 1_000,
@@ -2861,7 +2878,7 @@ export async function getPackageEmbeddingStatus(
       provider,
       environmentName,
       packageName,
-      pkgIndex.retrievalEntities,
+      embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
    );
 }
 
@@ -2897,7 +2914,7 @@ export function startPackageEmbeddingSync(
          return {
             db: environmentStore.storageManager.getDuckDbConnection(),
             provider,
-            entities: pkgIndex.retrievalEntities,
+            entities: embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
          };
       },
    });

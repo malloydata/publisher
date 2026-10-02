@@ -369,10 +369,7 @@
       "returned": 1,
       "retrieval": "semantic",
       "below_cutoff_count": 0,
-      "total_entities": 12,
-      "warnings": [
-         "2 further entities matched but were cut at 10 per source per target. Scope to one source to list all of its fields."
-      ]
+      "total_entities": 12
    },
    "semantic/query with little overlap": {
       "sources": [

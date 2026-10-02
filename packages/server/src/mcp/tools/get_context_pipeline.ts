@@ -25,11 +25,7 @@ import type {
    RetrievalReason,
 } from "./get_context_tool";
 
-/**
- * Every switch a later stage or hosted mode will read, in one place. The
- * values runContextQuery passes are today's behaviour; fields marked
- * "unused" are not read by anything yet.
- */
+/** Every switch the pipeline reads, in one place. */
 export interface PipelineSettings {
    /**
     * "index": joined copies are index rows, searched like any field.
@@ -37,10 +33,12 @@ export interface PipelineSettings {
     * makes the joined copies from the join topology, damped.
     */
    joins: "index" | "assembly";
-   /** Where the per-source cap applies and how many rows it admits. */
    entityWindow: {
-      /** Unused: the cap always runs in assembly, after the rank stages. */
-      where: "post-rank" | "retrieve";
+      /**
+       * Rows kept per source, per search target: the semantic scan's window
+       * (best rows by distance in each source) and, in assembly, the most
+       * entities a card carries for one target.
+       */
       perSourcePerTarget: number;
    };
    /**

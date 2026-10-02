@@ -330,7 +330,7 @@ describe("trySemanticSearch", () => {
             entity("gamma", "src"),
          ],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const first = await trySemanticSearch(args);
@@ -375,7 +375,7 @@ describe("trySemanticSearch", () => {
          queries: [
             { targetIndex: 0, text: "total revenue", kinds: ["measure"] },
          ],
-         limit: 2,
+         perSourceWindow: 2,
       });
       if (!("hits" in ready)) throw new Error("expected hits");
       expect(ready.hits.map((h) => h.name)).toEqual(["revenue"]);
@@ -398,7 +398,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({ ...base, pkg: {} as unknown as Package });
@@ -432,7 +432,7 @@ describe("trySemanticSearch", () => {
          packageName: "reload-warm",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({ ...base, pkg: instance() });
@@ -462,7 +462,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "reload-edited",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
@@ -514,7 +514,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
@@ -563,7 +563,7 @@ describe("trySemanticSearch", () => {
          packageName: "twopath",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const ready = await searchReady(args);
@@ -605,7 +605,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
@@ -664,7 +664,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "status",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       };
 
@@ -727,7 +727,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "dims-ignored",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       });
       // The rows are usable: retrieval reads them by the observed length.
@@ -764,7 +764,7 @@ describe("trySemanticSearch", () => {
          packageName: "restart",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
 
       // Drops every process-memory record of the sync while leaving the rows
@@ -801,7 +801,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "doc-edit",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const before = [
          entity("alpha", "src", "first draft"),
@@ -854,7 +854,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "model-switch",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       });
       expect(
@@ -902,7 +902,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "swapped",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: before,
       });
       expect(
@@ -955,7 +955,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "cutoff",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "src"),
             entity("beta", "src"),
@@ -988,7 +988,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [entity("alpha", "src")],
       });
       if (!("hits" in result)) throw new Error("expected hits");
@@ -1006,7 +1006,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "scoped-cutoff",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "a"),
             entity("gamma", "a"),
@@ -1068,7 +1068,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [entity("fclt_building_hist", "src", doc)],
       });
       if (!("hits" in result)) throw new Error("expected hits");
@@ -1093,7 +1093,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "dilution",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "src", "a long aside about unrelated matters"),
             entity("beta", "src", "alpha-ish"),
@@ -1116,7 +1116,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "undoc",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // A fresh Package per call: the sync memo is per instance, exactly as
       // a reload swaps the instance in production.
@@ -1146,7 +1146,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src"), entity("beta", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1187,7 +1187,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({ ...base, provider: first.provider });
 
@@ -1210,7 +1210,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1238,7 +1238,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "orders"), entity("beta", "customers")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          sourceName: "customers",
       };
       const result = await searchReady(args);
@@ -1253,7 +1253,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1280,7 +1280,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1321,7 +1321,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
@@ -1377,7 +1377,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1426,7 +1426,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({
@@ -1469,7 +1469,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({ ...base, provider, pkg: pkgA });
@@ -1527,7 +1527,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({
@@ -1628,7 +1628,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({ ...base, pkg: pkgA });
@@ -1670,7 +1670,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // Sync 1 (holds the mutex at its embed once it starts).
       const s1 = trySemanticSearch({
@@ -1717,7 +1717,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const pkgA = {} as unknown as Package;
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
@@ -1822,7 +1822,7 @@ describe("trySemanticSearch", () => {
          db,
          provider,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1866,7 +1866,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
@@ -1930,7 +1930,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // Sync at 3 dims, then flip to 4: one purge + resync leaves 4-dim rows.
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -1997,7 +1997,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       await searchReady({
@@ -2051,7 +2051,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg-a",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       let a = await trySemanticSearch(argsA);
       expect(a).toEqual({ unavailable: "indexing" });
@@ -2073,7 +2073,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg-b",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
       expect("hits" in b).toBe(true);
    });
@@ -2092,7 +2092,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const first = await trySemanticSearch(args);
@@ -2126,70 +2126,10 @@ describe("trySemanticSearch", () => {
          packageName: "huge",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
       expect(result).toEqual({ unavailable: "too-many-entities" });
       expect(counts.size).toBe(0);
-   });
-});
-
-describe("equal scores are ordered and cut the same way every time", () => {
-   // The same field name in two sources embeds identically, so the two rows
-   // tie exactly. Which one comes first, and which one fits a window of one,
-   // used to depend on the order the rows were written.
-   const run = async (
-      sources: string[],
-      packageName: string,
-      limit: number,
-   ) => {
-      const { provider } = mapProvider({
-         "total amount": [1, 0, 0],
-         "find total": [1, 0, 0],
-      });
-      const result = await searchReady({
-         db,
-         provider,
-         pkg: {} as unknown as Package,
-         environmentName: "env",
-         packageName,
-         entities: sources.map((s) => entity("total_amount", s)),
-         queries: [{ targetIndex: 0, text: "find total", kinds: ["measure"] }],
-         limit,
-      });
-      if (!("hits" in result)) throw new Error("expected hits");
-      return result.hits.map((h) => h.source);
-   };
-
-   it("lists tied rows by source, whichever was written first", async () => {
-      expect(await run(["zeta", "alpha", "mid"], "tie-1", 10)).toEqual([
-         "alpha",
-         "mid",
-         "zeta",
-      ]);
-      expect(await run(["mid", "alpha", "zeta"], "tie-2", 10)).toEqual([
-         "alpha",
-         "mid",
-         "zeta",
-      ]);
-   });
-
-   it("keeps the same tied row when the window cannot hold them all", async () => {
-      expect(await run(["zeta", "alpha", "mid"], "tie-3", 1)).toEqual([
-         "alpha",
-      ]);
-      expect(await run(["mid", "zeta", "alpha"], "tie-4", 1)).toEqual([
-         "alpha",
-      ]);
-   });
-
-   it("gives the same order on repeated queries", async () => {
-      const orders = new Set<string>();
-      for (let i = 0; i < 5; i++) {
-         orders.add(
-            JSON.stringify(await run(["c", "a", "b"], `tie-repeat-${i}`, 10)),
-         );
-      }
-      expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
    });
 });
 
@@ -2210,7 +2150,7 @@ describe("sync saves each batch and retries transient failures", () => {
       packageName: "pkg",
       entities: four,
       queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-      limit: 10,
+      perSourceWindow: 10,
    });
    const storedNames = async () =>
       (
@@ -2317,7 +2257,7 @@ describe("the entity cap is the configured value", () => {
          entity(i === 0 ? "alpha" : `e${i}`, "src"),
       ),
       queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-      limit: 10,
+      perSourceWindow: 10,
    });
 
    it("refuses a package one entity over the cap, and embeds one at the cap", async () => {
@@ -2381,7 +2321,7 @@ describe("deleting a package stops its running sync", () => {
       packageName: "doomed",
       entities: four,
       queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-      limit: 10,
+      perSourceWindow: 10,
    });
    const rowsFor = async () =>
       (
@@ -2453,5 +2393,167 @@ describe("deleting a package stops its running sync", () => {
 
       expect(requests).toBe(1);
       expect(await rowsFor()).toBe(0);
+   });
+});
+
+describe("the candidate window is per source", () => {
+   // One source that matches the query on every field would take a global
+   // window whole and leave the narrow source with no card at all.
+   const wide = Array.from({ length: 15 }, (_, i) =>
+      entity(`w${String(i).padStart(2, "0")}`, "wide"),
+   );
+   const tiny = entity("t00", "tiny");
+   const vectorFor = (e: EmbeddableEntity, v: number[]) => [
+      embeddingText(e),
+      v,
+   ];
+   const vectors = () =>
+      Object.fromEntries([
+         // Closer to the query as the index falls: w00 is the best.
+         ...wide.map((e, i) => vectorFor(e, [1, 0.05 * i, 0])),
+         // Above the 0.2 floor, but well below every wide row.
+         vectorFor(tiny, [0.5, 0.866, 0]),
+         ["find it", [1, 0, 0]],
+      ]);
+
+   const search = async (perSourceWindow: number, packageName: string) => {
+      const { provider } = mapProvider(vectors());
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName,
+         entities: [...wide, tiny],
+         queries: [{ targetIndex: 0, text: "find it", kinds: ["measure"] }],
+         perSourceWindow,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      return result.hits;
+   };
+
+   it("keeps the best rows of each source, and every source", async () => {
+      const hits = await search(10, "window-1");
+      expect(
+         hits.filter((h) => h.source === "wide").map((h) => h.name),
+      ).toEqual(wide.slice(0, 10).map((e) => e.name));
+      // A global window of 10 would have been all wide.
+      expect(hits.filter((h) => h.source === "tiny")).toHaveLength(1);
+      expect(hits).toHaveLength(11);
+   });
+
+   it("cuts each source to the window, not the package", async () => {
+      const hits = await search(3, "window-2");
+      expect(
+         hits.filter((h) => h.source === "wide").map((h) => h.name),
+      ).toEqual(wide.slice(0, 3).map((e) => e.name));
+      expect(hits.filter((h) => h.source === "tiny")).toHaveLength(1);
+   });
+
+   it("still counts the rows the window cut as weighed, not rejected", async () => {
+      const { provider } = mapProvider(vectors());
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "window-3",
+         entities: [...wide, tiny],
+         queries: [{ targetIndex: 0, text: "find it", kinds: ["measure"] }],
+         perSourceWindow: 1,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.totalEntities).toBe(16);
+      expect(result.belowCutoffCount).toBe(0);
+   });
+});
+
+describe("equal scores are ordered and cut the same way every time", () => {
+   // The same field name in two sources embeds identically, so the two rows
+   // tie exactly. Which one comes first, and which one fits a window of one,
+   // used to depend on the order the rows were written.
+   const run = async (
+      sources: string[],
+      packageName: string,
+      limit: number,
+   ) => {
+      const { provider } = mapProvider({
+         "total amount": [1, 0, 0],
+         "find total": [1, 0, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName,
+         entities: sources.map((s) => entity("total_amount", s)),
+         queries: [{ targetIndex: 0, text: "find total", kinds: ["measure"] }],
+         perSourceWindow: limit,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      return result.hits.map((h) => h.source);
+   };
+
+   it("lists tied rows by source, whichever was written first", async () => {
+      expect(await run(["zeta", "alpha", "mid"], "tie-1", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+      expect(await run(["mid", "alpha", "zeta"], "tie-2", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+   });
+
+   it("keeps the same tied row when the window cannot hold them all", async () => {
+      // One source, so the per-source window of one has to cut the tie: a
+      // dimension and a measure of the same name embed identically. The
+      // winner is the first by name then kind, whichever was written first.
+      const cutTie = async (kinds: string[], packageName: string) => {
+         const { provider } = mapProvider({
+            "total amount": [1, 0, 0],
+            "find total": [1, 0, 0],
+         });
+         const result = await searchReady({
+            db,
+            provider,
+            pkg: {} as unknown as Package,
+            environmentName: "env",
+            packageName,
+            entities: kinds.map((k) => ({
+               ...entityOfKind(k, "total_amount"),
+               source: "only",
+            })),
+            queries: [
+               {
+                  targetIndex: 0,
+                  text: "find total",
+                  kinds: ["measure", "dimension"],
+               },
+            ],
+            perSourceWindow: 1,
+         });
+         if (!("hits" in result)) throw new Error("expected hits");
+         return result.hits.map((h) => h.kind);
+      };
+      expect(await cutTie(["measure", "dimension"], "tie-3")).toEqual([
+         "dimension",
+      ]);
+      expect(await cutTie(["dimension", "measure"], "tie-4")).toEqual([
+         "dimension",
+      ]);
+   });
+
+   it("gives the same order on repeated queries", async () => {
+      const orders = new Set<string>();
+      for (let i = 0; i < 5; i++) {
+         orders.add(
+            JSON.stringify(await run(["c", "a", "b"], `tie-repeat-${i}`, 10)),
+         );
+      }
+      expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
    });
 });

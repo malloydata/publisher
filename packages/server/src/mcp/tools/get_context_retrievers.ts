@@ -24,12 +24,12 @@ import {
    trySemanticSearch,
    type EmbeddingIndexStatus,
 } from "./embedding_index";
-import { compareRanked } from "./get_context_assembly";
+import { compareRanked, scopeKeysWithJoins } from "./get_context_assembly";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
 import {
-   MAX_LIMIT,
    REASON_BY_UNAVAILABLE,
    bestTargetOf,
+   embeddedEntitiesOf,
    entityCardKey,
    matchesScope,
    projectEntity,
@@ -56,7 +56,7 @@ async function indexStatusFor(
          provider,
          request.environmentName,
          request.packageName,
-         pkgIndex.retrievalEntities,
+         embeddedEntitiesOf(pkgIndex, ctx.settings),
       );
    } catch (error) {
       logger.warn("[MCP Tool getContext] Could not read the index state", {
@@ -71,11 +71,11 @@ export const semanticRetriever: Retriever = {
    async retrieve(ctx: PipelineContext) {
       const { request, environmentStore, pkgIndex } = ctx;
       const { environmentName, packageName, sourceName } = request;
-      const max = request.limit;
       const { byId } = pkgIndex;
-      // A drill-down is confined to one source, so the scan needs no over-fetch
-      // to reach a spread of source cards.
-      const scoped = Boolean(sourceName);
+      // Joined copies are made at assembly, so the scan reads direct fields
+      // only and the scope has to be written in terms of what assembly can
+      // reach (see scopeKeysWithJoins). Otherwise the scan is the index's.
+      const assembling = ctx.settings.joins === "assembly";
       if (!ctx.embeddingConfigured) return { unavailable: "unconfigured" };
       let provider: EmbeddingProvider | null = null;
       try {
@@ -113,7 +113,7 @@ export const semanticRetriever: Retriever = {
                   pkg: pkgIndex.pkg,
                   environmentName,
                   packageName,
-                  entities: pkgIndex.retrievalEntities,
+                  entities: embeddedEntitiesOf(pkgIndex, ctx.settings),
                   // Each target carries the kinds it may claim, and the scan
                   // applies that BEFORE cutting the target's window. Applied
                   // here afterwards, a `measure` target whose nearest rows were
@@ -123,17 +123,13 @@ export const semanticRetriever: Retriever = {
                      text: search.text,
                      kinds: search.kinds,
                   })),
-                  // Over-fetch, because `max` counts SOURCE CARDS while
-                  // this limit counts entity ROWS, and windowBySource admits
-                  // up to MAX_ENTITIES_PER_SOURCE_TARGET rows per source per
-                  // target. Fetching exactly `max` rows lets them all land in
-                  // one source and return a single card where `max` were
-                  // asked for. A drill-down is confined to one source, so
-                  // there the extra rows are waste.
-                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
+                  // Per source and per target, never global: `limit` counts
+                  // SOURCE CARDS and is applied after assembly, so the scan
+                  // must not decide how many sources are returned.
+                  perSourceWindow: ctx.settings.entityWindow.perSourcePerTarget,
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
-                  sourceName: sourceName || undefined,
+                  sourceName: assembling ? undefined : sourceName || undefined,
                   // The rest of the scope, as rows the scan can join on. The
                   // cache has no model_path column and an entity_name scope
                   // exempts source rows, so neither is expressible as a
@@ -145,10 +141,18 @@ export const semanticRetriever: Retriever = {
                   // beside a belowCutoffCount of 0, which the tool
                   // description tells the agent means "nothing cleared the
                   // floor", so it had no reason to retry with another name.
-                  scopeKeys:
-                     request.modelPath || request.entityName
-                        ? scopeKeysFor(byId.values(), request)
-                        : undefined,
+                  scopeKeys: assembling
+                     ? sourceName || request.modelPath || request.entityName
+                        ? scopeKeysWithJoins(
+                             pkgIndex.directEntities,
+                             pkgIndex.topology,
+                             request,
+                             ctx.settings.joinMaxDepth,
+                          )
+                        : undefined
+                     : request.modelPath || request.entityName
+                       ? scopeKeysFor(byId.values(), request)
+                       : undefined,
                });
                if ("hits" in semantic) {
                   // One row per (kind, source, name) is EMBEDDED — the
@@ -181,8 +185,12 @@ export const semanticRetriever: Retriever = {
                         // wherever an embedding provider is configured, and
                         // a caller who pinned one entity got the whole ranked
                         // set back, definitions included, because a pinned
-                        // entity_name also turns include_code on.
-                        .filter((e) => matchesScope(e, request));
+                        // entity_name also turns include_code on. When
+                        // assembly makes the joined copies it applies the
+                        // scope itself, to the copies as well: a row of a
+                        // source outside the scope may still be the field a
+                        // scoped source reaches through a join.
+                        .filter((e) => assembling || matchesScope(e, request));
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
                         score: Math.round(hit.score * 10_000) / 10_000,
