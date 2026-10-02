@@ -15,7 +15,9 @@ export interface DocumentChoice {
  * What a new dashboard or notebook can start from: model -> the (source, view)
  * pairs it declares. One `getModel` per model under its own key, read only
  * while `enabled` (the dialog is open) and cached after, so opening it costs
- * nothing until it is opened.
+ * nothing until it is opened. A model whose lookup errors drops out of
+ * `choices` and is named in `failed` (once nothing is loading), so a caller can
+ * tell "every lookup failed" from "none exist"; `retry` refetches only those.
  */
 export function useDocumentChoices({
    environmentName,
@@ -35,6 +37,10 @@ export function useDocumentChoices({
    choices: Map<string, DocumentChoice[]>;
    isLoading: boolean;
    isSuccess: boolean;
+   /** Model paths whose lookup errored, in `models` order; empty while loading. */
+   failed: string[];
+   /** Refetches only the failed lookups. */
+   retry: () => void;
 } {
    const { apiClients, server } = useServer();
    const results = useQueries({
@@ -82,10 +88,19 @@ export function useDocumentChoices({
       return out;
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [version, models]);
+   const isLoading = results.some((q) => q.isLoading);
+   const failed = isLoading ? [] : models.filter((_, i) => results[i]?.isError);
+   const retry = () => {
+      results.forEach((q) => {
+         if (q.isError) void q.refetch();
+      });
+   };
    return {
       choices,
-      isLoading: results.some((q) => q.isLoading),
+      isLoading,
       // A model that will not load drops out of the choices rather than failing the list.
       isSuccess: results.length > 0 && results.every((q) => !q.isPending),
+      failed,
+      retry,
    };
 }
