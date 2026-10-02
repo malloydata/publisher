@@ -213,7 +213,7 @@ describe("useDashboardEditor: saving", () => {
       });
 
       expect(called).toBe(false);
-      expect(view.result.current.error).toContain("imports");
+      expect(view.result.current.error).toContain("whole-file");
       // Still there, still dirty. The reader can undo or try something else.
       expect(view.result.current.document.imports).toHaveLength(2);
       expect(view.result.current.dirty).toBe(true);

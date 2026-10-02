@@ -284,6 +284,16 @@ export function DashboardBuilder({
       [editor.document],
    );
 
+   // Imported sources a tile or extension reads, which the settings cannot take off.
+   const sourcesInUse = useMemo(
+      () =>
+         new Set([
+            ...editor.document.sources.map((source) => source.base),
+            ...editor.document.tiles.filter(isQueryTile).map((t) => t.source),
+         ]),
+      [editor.document],
+   );
+
    // The givens the MODEL offers: the caller's list, less any the opened file
    // declared itself. A caller gets that list from the server's manifest, which
    // resolves givens across the file and its imports without saying which is
@@ -918,6 +928,8 @@ export function DashboardBuilder({
             <SettingsPopover
                anchor={settingsAnchor}
                settings={settings}
+               catalog={catalog}
+               inUse={sourcesInUse}
                onClose={() => setSettingsAnchor(null)}
                onCommit={(next) =>
                   editor.update((draft) => {
@@ -927,6 +939,7 @@ export function DashboardBuilder({
                      else draft.columns = next.columns;
                      if (next.autorun === undefined) delete draft.autorun;
                      else draft.autorun = next.autorun;
+                     draft.imports = next.imports;
                   })
                }
             />

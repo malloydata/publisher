@@ -219,11 +219,6 @@ const MODELLED_GIVEN_TAG_KEYS: ReadonlySet<string> = new Set([
 const kindOf = (document: DashboardDocument): DocumentKind =>
    document.kind ?? "dashboard";
 
-const isSameDocumentExceptTiles = (
-   a: DashboardDocument,
-   b: DashboardDocument,
-) => canonical(a.imports) === canonical(b.imports);
-
 /**
  * A given's tag line, composed from its control contract. One line, in the
  * order `givens.malloy` writes them, so a file the builder wrote reads like one
@@ -379,12 +374,11 @@ function checkShape(
       }
    }
    // Sources may only be ADDED, and only for a tile being added on them — the
-   // builder never renames or removes an extension, and never edits imports,
-   // so a new extension's base has to be a source the file already imports by
-   // name (or already extends).
+   // builder never renames or removes an extension, so a new extension's base
+   // has to be a source the file imports by name (or already extends).
    const currentSources = new Map(current.sources.map((s) => [s.name, s]));
    const importedByName = new Set(
-      current.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+      next.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
    );
    for (const source of current.sources) importedByName.add(source.base);
    const newSources = next.sources.filter((s) => !currentSources.has(s.name));
@@ -409,16 +403,9 @@ function checkShape(
             ok: false,
             reason:
                `\`${source.base}\` is not imported by name in this file, so a ` +
-               `tile cannot be put on it. The builder does not add imports: ` +
-               `import { ${source.base} } from the model first.`,
+               `tile cannot be put on it. Add it as a source first.`,
          };
       }
-   }
-   if (!isSameDocumentExceptTiles(current, next)) {
-      return {
-         ok: false,
-         reason: "The dashboard's imports cannot be changed here.",
-      };
    }
    return {
       currentKeys,
@@ -992,6 +979,100 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
       );
       if (!hasSwitch)
          edits.push({ start: 0, end: 0, text: "##! experimental.givens\n" });
+   }
+   return undefined;
+}
+
+/** `import { a, b } from "../model.malloy"`, the one-line spelling the builder writes. */
+const importStatement = (names: string[], from: string) =>
+   `import { ${names.join(", ")} } from ${quoted(from)}`;
+
+/**
+ * IMPORTS. Only a `{ names }` import is the builder's to edit: a name is added
+ * to the statement for its file (or a new statement follows the last import),
+ * a name taken off rewrites it, and the last name takes the statement. A bare
+ * `import "…"` brings in a whole file's declarations and is never touched, and
+ * a name a source or tile still reads cannot go.
+ */
+function planImports(ctx: SpliceContext): SpliceFailure | undefined {
+   const { parsed, current, next, edits, wholeLine } = ctx;
+   const bare = (document: DashboardDocument) =>
+      canonical(
+         document.imports
+            .flatMap((i) => (i.kind === "all" ? [i.from] : []))
+            .sort(),
+      );
+   if (bare(current) !== bare(next)) {
+      return {
+         ok: false,
+         reason: "A whole-file `import` cannot be changed here.",
+      };
+   }
+   if (canonical(current.imports) === canonical(next.imports)) return undefined;
+
+   const wanted = next.imports.flatMap((i) =>
+      i.kind === "names" ? [{ ...i, claimed: false }] : [],
+   );
+   const inUse = new Set([
+      ...next.sources.map((s) => s.base),
+      ...next.tiles.filter(isQueryTile).map((t) => t.source),
+   ]);
+   const written = parsed.imports.map((statement, index) => ({
+      statement,
+      entry: current.imports[index],
+   }));
+   for (const { statement, entry } of written) {
+      if (!entry || entry.kind !== "names") continue;
+      const keep = wanted.find((w) => !w.claimed && w.from === entry.from);
+      if (keep) keep.claimed = true;
+      const names = keep?.names ?? [];
+      const dropped = entry.names.filter((n) => !names.includes(n));
+      const stuck = dropped.find((n) => inUse.has(n));
+      if (stuck !== undefined) {
+         return {
+            ok: false,
+            reason: `\`${stuck}\` is still read by a tile, so its import cannot be removed.`,
+         };
+      }
+      if (canonical(names) === canonical(entry.names)) continue;
+      const cut =
+         names.length === 0
+            ? statementCut(parsed, statement.statement)
+            : statement.statement;
+      const lost = parsed.commentIn(cut);
+      if (lost) {
+         return {
+            ok: false,
+            reason:
+               `Changing this import would also remove the comment inside it ` +
+               `(\`${parsed.text.slice(lost.start, lost.end).trim()}\`), so ` +
+               `nothing was written. Delete it in the file first.`,
+         };
+      }
+      edits.push({
+         ...cut,
+         text: names.length === 0 ? "" : importStatement(names, entry.from),
+      });
+   }
+
+   const added = wanted.filter((w) => !w.claimed);
+   if (added.length > 0) {
+      const last = parsed.imports.at(-1);
+      if (!last) {
+         return {
+            ok: false,
+            reason:
+               "This file has no `import` to put a source beside. Import its first source in the file.",
+         };
+      }
+      const at = wholeLine(lineOf(parsed, last.statement.end - 1)).end;
+      edits.push({
+         start: at,
+         end: at,
+         text: added
+            .map((w) => `${importStatement(w.names, w.from)}\n`)
+            .join(""),
+      });
    }
    return undefined;
 }
@@ -2030,6 +2111,7 @@ export async function spliceDashboardDocument(
    for (const plan of [
       planOrder,
       planSettings,
+      planImports,
       planGivens,
       planDrills,
       planRemovedTiles,

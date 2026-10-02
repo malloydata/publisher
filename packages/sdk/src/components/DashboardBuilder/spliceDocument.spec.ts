@@ -1434,7 +1434,7 @@ describe("spliceDashboardDocument: what it refuses", () => {
          d.imports.push({ kind: "all", from: "../more.malloy" });
       });
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("imports");
+      if (spliceFailed(r)) expect(r.reason).toContain("whole-file");
    });
 
    // An inherited tile's tags live on the model's view, and the builder never
