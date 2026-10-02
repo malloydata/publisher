@@ -593,7 +593,7 @@ export function projectEntity(
  * The largest whole-card prefix of `cards` whose JSON fits in
  * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
  * than the first card still answers. A null budget returns the input as is.
- * Nothing calls this with a number yet: settings.maxChars is null.
+ * Only ranked responses are fitted; a listing pages by `offset` instead.
  */
 export function fitBudget(
    cards: SourceCard[],
@@ -658,10 +658,16 @@ function shapeCards(
       pkgIndex.droppedSources,
    );
    const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
+   // Entities cut inside a card the budget then removed are not reported: the
+   // card is not in the answer, and its own cut warning is the budget's.
+   const kept =
+      fitted.dropped > 0
+         ? paged.slice(0, paged.length - fitted.dropped)
+         : paged;
    return {
       sources: fitted.cards,
       totalSources: state.cards.length,
-      entitiesDropped: paged.reduce(
+      entitiesDropped: kept.reduce(
          (sum, card) => sum + card.entitiesDropped,
          0,
       ),
@@ -2210,6 +2216,15 @@ const listingPageWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
       : undefined;
+/**
+ * Whole cards left out because the response would pass the size budget. Its
+ * remedy is not the page size: raising `limit` makes the answer bigger, and
+ * the budget cuts it back.
+ */
+const budgetCutWarning = (dropped: number, maxChars: number | null) =>
+   dropped > 0 && maxChars !== null
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} left out to keep the response under ${maxChars.toLocaleString("en-US")} characters. Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
+      : undefined;
 const entityCutWarning = (dropped: number) =>
    dropped > 0
       ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
@@ -2419,7 +2434,7 @@ const PIPELINE_SETTINGS: PipelineSettings = {
    joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
    joinDamping: 0.9,
    scoring: "cosine",
-   maxChars: null,
+   maxChars: 35_000,
    reserveChars: 1_000,
 };
 
@@ -2535,7 +2550,14 @@ async function runContextQuery(
    // retrievers so the two cannot drift.
    let cards = assembleCards(ranked, ctx);
    cards = await runCardStages(CARD_STAGES, cards, ctx);
-   const { sources, totalSources, entitiesDropped } = shapeCards(cards, ctx);
+   const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
+      cards,
+      ctx,
+   );
+   // Sources the size budget removed were returned by the page, so the page
+   // warning counts them as returned and only the budget warning speaks of them.
+   const pageReturned = sources.length + budgetDropped;
+   const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
    if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
@@ -2557,7 +2579,8 @@ async function runContextQuery(
          ...warningsFor(
             // Counted in CARDS, the same unit `returned` reports, so the
             // two cannot disagree.
-            sourceCutWarning(sources.length, totalSources),
+            sourceCutWarning(pageReturned, totalSources),
+            budgetWarning,
             entityCutWarning(entitiesDropped),
          ),
       });
@@ -2570,7 +2593,8 @@ async function runContextQuery(
       total_available: totalSources,
       returned: sources.length,
       ...warningsFor(
-         sourceCutWarning(sources.length, totalSources),
+         sourceCutWarning(pageReturned, totalSources),
+         budgetWarning,
          entityCutWarning(entitiesDropped),
       ),
    });
