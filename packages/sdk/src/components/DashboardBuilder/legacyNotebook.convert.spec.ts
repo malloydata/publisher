@@ -56,14 +56,14 @@ async function document(text: string) {
 async function compiled(pkg: string, file: string, text: string) {
    const { Runtime } = await import("@malloydata/malloy");
    const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-   const url = pathToFileURL(path.join(pkg, file));
+   const url = new URL(pathToFileURL(path.join(pkg, file)).href);
    const connection = new DuckDBConnection("duckdb", ":memory:", pkg);
    const runtime = new Runtime({
       urlReader: {
          readURL: async (at: URL) =>
             at.href === url.href
                ? text
-               : fs.readFileSync(fileURLToPath(at), "utf8"),
+               : fs.readFileSync(fileURLToPath(at.href), "utf8"),
       },
       connections: { lookupConnection: async () => connection },
    } as never);
