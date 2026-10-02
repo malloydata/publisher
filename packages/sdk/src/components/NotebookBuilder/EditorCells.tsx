@@ -147,6 +147,10 @@ export function MarkdownCell({
       [],
    );
 
+   // A blur commits an invalid draft, so the closed cell keeps saying what the writer will refuse at Save.
+   const closedProblem = markdown.trim()
+      ? markdownProblem(markdown)
+      : undefined;
    if (!editing || draft === undefined)
       return (
          <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
@@ -166,6 +170,11 @@ export function MarkdownCell({
                      sx={{ color: "text.secondary", fontStyle: "italic" }}
                   >
                      Empty text.
+                  </Typography>
+               )}
+               {closedProblem && (
+                  <Typography variant="caption" color="error" role="alert">
+                     {closedProblem}
                   </Typography>
                )}
             </Box>
@@ -201,7 +210,7 @@ export function MarkdownCell({
                })
             }
             onKeyDown={(event) => {
-               if (event.key === "Escape") close();
+               if (event.key === "Escape") finish();
                else if (
                   event.key === "Enter" &&
                   (event.metaKey || event.ctrlKey)

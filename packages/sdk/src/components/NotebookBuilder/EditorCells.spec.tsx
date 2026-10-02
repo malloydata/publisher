@@ -130,6 +130,27 @@ describe("MarkdownCell", () => {
       expect(screen.queryByText(/remove the cell instead/)).toBeNull();
    });
 
+   it("Escape is Done: it commits a valid draft and holds on an invalid one", () => {
+      const onCommitted = mock((_next: string) => {});
+      open("Hello", { onCommitted });
+      type("a\n|## b");
+      fireEvent.keyDown(field(), { key: "Escape" });
+      expect(field()).toBeDefined();
+      expect(onCommitted).not.toHaveBeenCalled();
+      type("Hello, changed");
+      fireEvent.keyDown(field(), { key: "Escape" });
+      expect(onCommitted).toHaveBeenCalledWith("Hello, changed");
+      expect(screen.queryByLabelText("Markdown")).toBeNull();
+   });
+
+   it("keeps saying why a closed cell holding invalid text will be refused", () => {
+      open("Hello");
+      type("a\n|## b");
+      fireEvent.blur(field());
+      expect(screen.queryByLabelText("Markdown")).toBeNull();
+      expect(screen.getByText(/close the text early/)).toBeDefined();
+   });
+
    it("lets an untouched empty cell close without complaint", () => {
       open("");
       expect(screen.queryByText(/remove the cell instead/)).toBeNull();
