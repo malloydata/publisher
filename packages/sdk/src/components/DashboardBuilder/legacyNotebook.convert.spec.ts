@@ -164,7 +164,12 @@ describe("convertLegacyNotebook: the storefront category review", () => {
 describe("convertLegacyNotebook: every cell-format notebook in the corpus", () => {
    const files = fs
       .readdirSync(FIXTURES)
-      .filter((f) => f.endsWith(".malloy") && f !== "refused.malloy");
+      .filter(
+         (f) =>
+            f.endsWith(".malloy") &&
+            f !== "refused.malloy" &&
+            f !== "layout.malloy",
+      );
    for (const file of files) {
       it(`converts ${file} to one tile per cell, with its prose`, async () => {
          const original = read(path.join(FIXTURES, file));

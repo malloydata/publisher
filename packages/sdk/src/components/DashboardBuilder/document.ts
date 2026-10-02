@@ -192,6 +192,7 @@ export interface TextTile {
    chart?: undefined;
    chartLines?: undefined;
    borderless?: undefined;
+   chartCarried?: undefined;
 }
 
 export type DashboardTile = QueryTile | TextTile;
