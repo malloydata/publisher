@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test } from "@playwright/test";
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { fileURLToPath } from "url";
-import { tmpName } from "./helpers/fixtures";
+import { editText, editorOpen, tileByKey } from "./helpers/builder";
+import {
+   registerPackageEnv,
+   serverFixture,
+   type PackageEnv,
+} from "./helpers/packageEnv";
+import { saveChanges } from "./helpers/save";
 
 /**
  * The fixture is copied to a temp directory because saving writes the notebook
@@ -14,104 +16,76 @@ import { tmpName } from "./helpers/fixtures";
  * spec skips; the browser-draft save path is covered by the SDK's tests.
  */
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(
-   __dirname,
-   "../../../server/tests/fixtures/notebooks-malloyyo",
-);
 const PKG = "notebooks-malloyyo";
 const SLUG = "revenue_review";
+const FILE = `notebooks/${SLUG}.malloy`;
 const EDITED = "Revenue prose, edited in the browser";
 
-let env: string;
-let baseURL: string;
-let location: string;
+const REVENUE_REVIEW = `##! experimental.givens
+## artifact { kind=notebook title="Revenue review" tiles=[prose { kind=text }, "revenue_tiles -> by_month_tile"] }
+import "../models/orders.malloy"
+
+##|(markdown) prose
+# Where revenue came from
+Prose in **markdown**, any length.
+|##
+
+source: revenue_tiles is orders extend {
+   # bar_chart
+   # label="Revenue by month"
+   view: by_month_tile is by_month
+}
+`;
+
+let pe: PackageEnv;
 
 test.describe("notebook-builder", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
-      baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
-      env = tmpName("nbbuilder");
-      location = fs.mkdtempSync(
-         path.join(os.tmpdir(), "publisher-nb-builder-"),
+      pe = await registerPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "nbbuilder",
+         serverFixture(PKG),
+         PKG,
+         { [FILE]: REVENUE_REVIEW },
       );
-      fs.cpSync(FIXTURE, location, { recursive: true });
-      const res = await fetch(`${baseURL}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: env,
-            packages: [{ name: PKG, location }],
-            connections: [],
-         }),
-      });
-      test.skip(
-         res.status === 405 || res.status === 403,
-         "publisher is read-only",
-      );
-      expect(res.ok, await res.text()).toBe(true);
    });
-
    test.afterAll(async () => {
-      if (env && baseURL)
-         await fetch(`${baseURL}/api/v0/environments/${env}`, {
-            method: "DELETE",
-         }).catch(() => undefined);
-      if (location) fs.rmSync(location, { recursive: true, force: true });
+      await pe?.dispose();
    });
 
-   test("edits a markdown cell and saves it into the package file", async ({
+   test("edits a text tile where it is shown and saves it into the package file", async ({
       page,
    }) => {
-      // The server serves a copy of the fixture, so the file is read back through the API.
-      const readSource = async () => {
-         const res = await fetch(
-            `${baseURL}/api/v0/environments/${env}/packages/${PKG}/models/${encodeURIComponent(`notebooks/${SLUG}.malloy`)}`,
-         );
-         const body = await res.text();
-         expect(res.ok, body).toBe(true);
-         return (JSON.parse(body) as { sourceText: string }).sourceText;
-      };
-      const before = await readSource();
+      const before = await pe.readSource(FILE);
 
       // The reader's Edit button leads into the editor.
-      await page.goto(`/${env}/${PKG}/notebooks/${SLUG}`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${SLUG}`);
       await page.getByRole("button", { name: "Edit", exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`/notebooks/${SLUG}/edit$`));
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
-         timeout: 60_000,
-      });
+      await editorOpen(page);
       await expect(page.getByText("Where revenue came from")).toBeVisible();
 
-      const cell = page.getByRole("group", { name: "Cell 2, text" });
-      await cell.getByRole("button", { name: "Edit text" }).click();
-      await page.getByLabel("Markdown", { exact: true }).fill(EDITED);
-      await page.getByRole("button", { name: "Done", exact: true }).click();
+      await editText(tileByKey(page, "text.prose"), EDITED);
       await expect(
          page.getByRole("button", { name: "Save changes" }),
       ).toBeEnabled();
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible();
+      await saveChanges(page);
 
-      // On disk: the edited cell, and every byte outside it untouched.
-      const after = await readSource();
+      // On disk: the edited tile, and every byte after it untouched.
+      const after = await pe.readSource(FILE);
       expect(after).toContain(EDITED);
       expect(after).not.toContain("Where revenue came from");
-      expect(after).toContain(
-         "##(markdown) A single line of prose is a cell too.",
-      );
-      expect(after.slice(after.indexOf("given: REGION"))).toBe(
-         before.slice(before.indexOf("given: REGION")),
+      expect(after.slice(after.indexOf("source: revenue_tiles"))).toBe(
+         before.slice(before.indexOf("source: revenue_tiles")),
       );
 
       // A reload re-reads the saved file, and the reader renders it too.
       await page.reload();
       await expect(page.getByText(EDITED)).toBeVisible({ timeout: 60_000 });
-      await page.goto(`/${env}/${PKG}/notebooks/${SLUG}`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${SLUG}`);
       await expect(page.getByText(EDITED)).toBeVisible({ timeout: 60_000 });
-      // A saved file whose query cells no longer run would leave this empty.
+      // A saved file whose queries no longer run would leave this empty.
       await expect(page.locator(".malloy-render").first()).toBeVisible({
          timeout: 60_000,
       });

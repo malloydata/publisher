@@ -3,6 +3,13 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { createHash } from "crypto";
+import {
+   addTextTile,
+   editText,
+   editorOpen,
+   tileByKey,
+   tileOrder,
+} from "./helpers/builder";
 import { dragGrip } from "./helpers/drag";
 import { saveChanges } from "./helpers/save";
 import {
@@ -12,31 +19,36 @@ import {
 } from "./helpers/packageEnv";
 
 /**
- * The notebook editor's cell operations against a real server: reorder by
- * pointer, add and remove text through the review dialog, prose that mentions
- * a gate, a file that changed underneath the editor, and starting givens that
- * live in the artifact tag.
+ * The notebook editor's tile operations against a real server: reorder by
+ * pointer, add and remove a text tile, prose that mentions a gate, a file that
+ * changed underneath the editor, and starting givens that live in the artifact
+ * tag. The tour is a layout notebook; `autorun_off` stays in the cell format,
+ * which the editor converts on open.
  */
 
 const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" }
+## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
 import "../models/orders.malloy"
 
-##(markdown) First note.
+##|(markdown) first
+First note.
+|##
 
 // A comment that belongs to the second note.
-##(markdown) Second note.
+##|(markdown) second
+Second note.
+|##
 
-##(markdown) Third note.
+##|(markdown) third
+Third note.
+|##
 
-run: orders -> kpis
-
-##(markdown) Fourth note.
-
-run: orders -> by_month
+##|(markdown) fourth
+Fourth note.
+|##
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
@@ -53,7 +65,8 @@ run: orders -> by_month + { where: region ~ $REGION }
 
 let pe: PackageEnv;
 
-test.describe("notebook cells", () => {
+test.describe("notebook tiles", () => {
+   // eslint-disable-next-line no-empty-pattern
    test.beforeEach(async ({}, testInfo) => {
       pe = await registerPackageEnv(
          testInfo.project.use.baseURL ?? "http://localhost:4000",
@@ -72,160 +85,117 @@ test.describe("notebook cells", () => {
 
    const open = async (page: Page, slug = "browser_tour") => {
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
-         timeout: 60_000,
-      });
+      await editorOpen(page);
    };
 
-   const cells = (page: Page) =>
-      page.getByRole("group", { name: /^Cell \d+, / });
+   const textKeys = (keys: string[]) =>
+      keys.filter((key) => key.startsWith("text."));
 
-   /** The notes, in the order they sit in the page. */
-   const noteOrder = async (page: Page) => {
-      const texts = await cells(page).allInnerTexts();
-      return texts
-         .map((t) => /(First|Second|Third|Fourth|Added) note/.exec(t)?.[1])
-         .filter((n): n is string => n !== undefined);
-   };
+   /** The notes in the order the page shows them, by the tile's name. */
+   const noteOrder = async (page: Page) =>
+      textKeys(await tileOrder(page)).map((key) => key.slice("text.".length));
 
-   /** Source order of the notes in the file, which is what a reader renders. */
+   /** Order of the text tiles in the file's `tiles=[…]` list, which is what a reader renders. */
    const fileOrder = (text: string) =>
-      [...text.matchAll(/(First|Second|Third|Fourth|Added) note/g)].map(
-         (m) => m[1]!,
-      );
+      [
+         ...text.matchAll(
+            /\b(first|second|third|fourth|text_\d+)\s*\{\s*kind=text/g,
+         ),
+      ].map((m) => m[1]!);
 
    const settled = async (page: Page, charts: number) => {
       await expect(page.locator("[data-malloy-render-as]")).toHaveCount(
          charts,
-         {
-            timeout: 60_000,
-         },
+         { timeout: 60_000 },
       );
    };
 
-   test("a pointer drag reorders the cells, a dragged definition stays put, and the file follows", async ({
+   const grip = (page: Page, name: string) =>
+      tileByKey(page, `text.${name}`).getByLabel(`Move ${name}`);
+
+   test("a pointer drag reorders the tiles, and the file follows", async ({
       page,
    }) => {
       await open(page);
       await settled(page, 2);
       expect(await noteOrder(page)).toEqual([
-         "First",
-         "Second",
-         "Third",
-         "Fourth",
-      ]);
-
-      const first = cells(page).filter({ hasText: "First note" });
-      const grip = (note: string) =>
-         cells(page)
-            .filter({ hasText: note })
-            .getByRole("button", { name: /^Move Cell/ });
-
-      // A definition never moves, so dropping the import elsewhere is a no-op.
-      const kinds = async () =>
-         (await cells(page).allInnerTexts()).map((t) =>
-            t.includes("kpis") ? "kpis" : t.includes("import") ? "import" : "-",
-         );
-      const kindsBefore = await kinds();
-      await dragGrip(
-         page,
-         grip("import"),
-         cells(page).filter({ hasText: "Fourth note" }),
-         "bottom",
-      );
-      expect(await kinds()).toEqual(kindsBefore);
-      expect(await noteOrder(page)).toEqual([
-         "First",
-         "Second",
-         "Third",
-         "Fourth",
+         "first",
+         "second",
+         "third",
+         "fourth",
       ]);
 
       // Third note onto the first.
-      await dragGrip(page, grip("Third note"), first);
+      await dragGrip(page, grip(page, "third"), tileByKey(page, "text.first"));
       await expect
          .poll(() => noteOrder(page))
-         .toEqual(["Third", "First", "Second", "Fourth"]);
+         .toEqual(["third", "first", "second", "fourth"]);
       await settled(page, 2);
 
-      // The page still takes a drag after a refused one.
-      await dragGrip(page, grip("Fourth note"), first);
+      // The page still takes a drag after one.
+      await dragGrip(page, grip(page, "fourth"), tileByKey(page, "text.first"));
       await expect
          .poll(() => noteOrder(page))
-         .toEqual(["Third", "Fourth", "First", "Second"]);
+         .toEqual(["third", "fourth", "first", "second"]);
       await settled(page, 2);
 
       await saveChanges(page);
 
       const after = await pe.readSource(TOUR);
-      expect(fileOrder(after)).toEqual(["Third", "Fourth", "First", "Second"]);
-      // The comment kept its cell when it moved with it.
+      expect(fileOrder(after)).toEqual(["third", "fourth", "first", "second"]);
+      // The comment kept its block when the tile moved.
       expect(after).toContain(
-         "// A comment that belongs to the second note.\n##(markdown) Second note.",
+         "// A comment that belongs to the second note.\n##|(markdown) second",
       );
-      expect(after).toContain("run: orders -> kpis");
+      expect(after).toContain("Third note.");
    });
 
-   test("removing a text cell lists the comment that leaves with it; adding text lands in the file", async ({
+   test("removing a text tile takes its block with it; adding one lands in the file", async ({
       page,
    }) => {
       await open(page);
       await settled(page, 2);
 
-      await cells(page)
-         .filter({ hasText: "Second note" })
-         .getByRole("button", { name: "Remove text" })
+      await tileByKey(page, "text.second")
+         .getByLabel("Settings for second")
          .click();
-      await page.getByRole("button", { name: "Save changes" }).click();
-      const removed = page.getByLabel("Comments removed with their cell");
-      await expect(removed).toContainText(
-         "// A comment that belongs to the second note.",
-      );
-      await page.getByRole("button", { name: "Save this" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({
-         timeout: 30_000,
-      });
+      await page.getByRole("button", { name: "Remove tile" }).click();
+      await saveChanges(page);
+      await expect(page.getByRole("status")).toContainText("Removed 1 tile");
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");
-      expect(file).not.toContain("A comment that belongs");
+      expect(file).not.toContain("second { kind=text }");
 
-      // Add text below the first note.
-      await cells(page)
-         .filter({ hasText: "First note" })
-         .getByRole("button", { name: "Add text below" })
-         .click();
-      await page.getByLabel("Markdown", { exact: true }).fill("Added note.");
-      await page.getByRole("button", { name: "Done", exact: true }).click();
+      // A new text tile goes at the end, and is written where it is shown.
+      await addTextTile(page);
+      await editText(tileByKey(page, "text.text_1"), "Added note.");
       await saveChanges(page);
       file = await pe.readSource(TOUR);
-      expect(fileOrder(file)).toEqual(["First", "Added", "Third", "Fourth"]);
+      expect(file).toContain("Added note.");
+      expect(fileOrder(file)).toEqual(["first", "third", "fourth", "text_1"]);
       await expect
          .poll(() => noteOrder(page))
-         .toEqual(["First", "Added", "Third", "Fourth"]);
+         .toEqual(["first", "third", "fourth", "text_1"]);
    });
 
    test("prose that names #(authorize) saves, one line or several, and the notebook still serves", async ({
       page,
    }) => {
       await open(page);
-      const edit = async (text: string) => {
-         await page.getByRole("button", { name: "Edit text" }).first().click();
-         await page.getByLabel("Markdown", { exact: true }).fill(text);
-         await page.getByRole("button", { name: "Done", exact: true }).click();
-      };
+      const first = tileByKey(page, "text.first");
 
       // Prose is not a gate: the server takes the words in either form.
-      await edit("A one-liner naming #(authorize) in prose.");
+      await editText(first, "A one-liner naming #(authorize) in prose.");
       await saveChanges(page);
       let file = await pe.readSource(TOUR);
       expect(file).toContain("A one-liner naming #(authorize) in prose.");
 
-      await edit("Two lines.\nThe second names #(authorize) in prose.");
+      await editText(
+         first,
+         "Two lines.\nThe second names #(authorize) in prose.",
+      );
       await saveChanges(page);
       file = await pe.readSource(TOUR);
-      expect(file).toContain("##|(markdown)");
       expect(file).toContain("The second names #(authorize) in prose.");
       expect(file).not.toContain("A one-liner");
       // And the notebook still serves, queries and all.
@@ -260,14 +230,11 @@ test.describe("notebook cells", () => {
       );
       expect(res.ok, await res.text()).toBe(true);
 
-      await cells(page)
-         .filter({ hasText: "First note" })
-         .getByRole("button", { name: "Edit text" })
-         .click();
-      await page.getByLabel("Markdown", { exact: true }).fill("Mine.");
-      await page.getByRole("button", { name: "Done", exact: true }).click();
+      await editText(tileByKey(page, "text.first"), "Mine.");
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("alert")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("alert").first()).toBeVisible({
+         timeout: 30_000,
+      });
       const file = await pe.readSource(TOUR);
       expect(file).toContain("Fourth note, changed elsewhere.");
       expect(file).not.toContain("Mine.");
@@ -281,17 +248,10 @@ test.describe("notebook cells", () => {
          timeout: 60_000,
       });
       await page.getByRole("button", { name: "Edit", exact: true }).click();
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
-         timeout: 60_000,
-      });
-      await cells(page)
-         .filter({ hasText: "First note" })
-         .getByRole("button", { name: "Edit text" })
-         .click();
-      await page.getByLabel("Markdown", { exact: true }).fill("Edited first.");
-      await page.getByRole("button", { name: "Done", exact: true }).click();
+      await editorOpen(page);
+      await editText(tileByKey(page, "text.first"), "Edited first.");
       await saveChanges(page);
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await page.getByRole("button", { name: "Close", exact: true }).click();
       await expect(page).toHaveURL(/\/notebooks\/browser_tour$/);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,

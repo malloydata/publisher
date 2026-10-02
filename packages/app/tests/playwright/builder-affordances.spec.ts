@@ -72,7 +72,7 @@ test.describe("builder affordances", () => {
       await expect(tile).toBeVisible();
    });
 
-   test("the Add a query dialog fits a 1280x720 window", async ({
+   test("the Add a tile dialog fits a 1280x720 window", async ({
       page,
    }, testInfo) => {
       pe = await registerPackageEnv(
@@ -82,17 +82,13 @@ test.describe("builder affordances", () => {
          "notebooks-malloyyo",
       );
       await page.setViewportSize({ width: 1280, height: 720 });
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/revenue_review/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout/edit`);
       await expect(page.getByText("Editing", { exact: true })).toBeVisible({
          timeout: 60_000,
       });
-      await page
-         .getByRole("group", { name: /^Cell \d+, query$/ })
-         .first()
-         .getByRole("button", { name: "Add query below" })
-         .click();
+      await page.getByRole("button", { name: "Add tile", exact: true }).click();
 
-      const dialog = page.getByRole("dialog", { name: "Add a query" });
+      const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await expect(
          dialog.getByRole("combobox", { name: "Source" }),
       ).toBeVisible({ timeout: 30_000 });

@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { saveChanges } from "./helpers/save";
 
 /**
  * A dashboard's whole life through the Console, against a server that takes
@@ -108,15 +109,10 @@ test.describe("dashboard-create", () => {
       const title = page.getByLabel("Dashboard title");
       await title.fill("Created and saved");
       await title.press("Enter");
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({
-         timeout: 30_000,
-      });
+      await saveChanges(page);
 
       // The reader's view is served from the package, so it shows the save.
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await page.getByRole("button", { name: "Close", exact: true }).click();
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here$`),
       );

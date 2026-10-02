@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Page } from "@playwright/test";
+import { editorOpen, tileByKey } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import {
    registerPackageEnv,
@@ -10,23 +11,26 @@ import {
 } from "./helpers/packageEnv";
 
 /**
- * Leaving the notebook editor: the unsaved-changes prompt by Back and by Done
- * editing, the ways out that must not prompt, and the text cell's Cancel and
- * keyboard commit.
+ * Leaving the notebook editor: the unsaved-changes prompt by Back and by
+ * Close, the ways out that must not prompt, and a text tile's Cancel and
+ * keyboard commit. An open, uncommitted text field is not an unsaved change
+ * until it commits, so every prompt here follows a committed edit.
  */
 
 const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" }
+## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, "orders -> kpis"] }
 import "../models/orders.malloy"
 
-##(markdown) First note.
+##|(markdown) first
+First note.
+|##
 
-##(markdown) Second note.
-
-run: orders -> kpis
+##|(markdown) second
+Second note.
+|##
 `;
 
 let pe: PackageEnv;
@@ -56,9 +60,7 @@ test.describe("notebook exit guard", () => {
          timeout: 60_000,
       });
       await page.getByRole("button", { name: "Edit", exact: true }).click();
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
-         timeout: 60_000,
-      });
+      await editorOpen(page);
    };
 
    const prompt = (page: Page) =>
@@ -67,9 +69,16 @@ test.describe("notebook exit guard", () => {
    const markdownField = (page: Page) =>
       page.getByLabel("Markdown", { exact: true });
 
+   const close = (page: Page) =>
+      page.getByRole("button", { name: "Close", exact: true });
+
+   /** Opens the first note's field. */
+   const openFirstNote = (page: Page) =>
+      tileByKey(page, "text.first").locator('[role="button"]').first().click();
+
    /** Rewrites the first note and commits it with Done, leaving the notebook dirty. */
    const dirtyFirstNote = async (page: Page, text = "Edited first.") => {
-      await page.getByRole("button", { name: "Edit text" }).first().click();
+      await openFirstNote(page);
       await markdownField(page).fill(text);
       await page.getByRole("button", { name: "Done", exact: true }).click();
       await expect(page.getByText(text)).toBeVisible();
@@ -77,12 +86,11 @@ test.describe("notebook exit guard", () => {
 
    const goBack = (page: Page) => page.evaluate(() => history.back());
 
-   test("Back with a text draft still open asks first, and Keep editing keeps the draft", async ({
+   test("Back after an edit asks first, and Keep editing keeps it", async ({
       page,
    }) => {
       await openEditor(page);
-      await page.getByRole("button", { name: "Edit text" }).first().click();
-      await markdownField(page).fill("Half-typed thought");
+      await dirtyFirstNote(page, "Half-typed thought");
 
       await goBack(page);
       await expect(prompt(page)).toBeVisible();
@@ -94,12 +102,9 @@ test.describe("notebook exit guard", () => {
       await expect(page.getByText("Half-typed thought")).toBeVisible();
    });
 
-   test("Back with a text draft open and Discard changes leaves", async ({
-      page,
-   }) => {
+   test("Back after an edit and Discard changes leaves", async ({ page }) => {
       await openEditor(page);
-      await page.getByRole("button", { name: "Edit text" }).first().click();
-      await markdownField(page).fill("Half-typed thought");
+      await dirtyFirstNote(page, "Half-typed thought");
 
       await goBack(page);
       await prompt(page)
@@ -110,13 +115,13 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Half-typed thought");
    });
 
-   test("Done editing with unsaved edits asks, and Discard changes exits with no second prompt", async ({
+   test("Close with unsaved edits asks, and Discard changes exits with no second prompt", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await close(page).click();
       await expect(prompt(page)).toBeVisible();
       await prompt(page)
          .getByRole("button", { name: "Discard changes" })
@@ -130,18 +135,19 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
    });
 
-   test("Tab to a text cell's Done, then Done editing, still asks and Save and exit keeps the draft", async ({
+   test("Tab to a text tile's Done, commit it, then Close still asks and Save and exit keeps the edit", async ({
       page,
    }) => {
       await openEditor(page);
-      await page.getByRole("button", { name: "Edit text" }).first().click();
+      await openFirstNote(page);
       await markdownField(page).fill("Tabbed draft");
       await markdownField(page).press("Tab");
       await expect(
          page.getByRole("button", { name: "Done", exact: true }),
       ).toBeFocused();
+      await page.keyboard.press("Enter");
 
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await close(page).click();
       await expect(prompt(page)).toBeVisible();
       await prompt(page).getByRole("button", { name: "Save and exit" }).click();
 
@@ -149,13 +155,13 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).toContain("Tabbed draft");
    });
 
-   test("Done editing then Save and exit writes the file and leaves with no prompt after", async ({
+   test("Close then Save and exit writes the file and leaves with no prompt after", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await close(page).click();
       await prompt(page).getByRole("button", { name: "Save and exit" }).click();
 
       await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
@@ -186,9 +192,9 @@ test.describe("notebook exit guard", () => {
       await expect(prompt(page)).toHaveCount(0);
    });
 
-   test("a text cell's Cancel drops the draft", async ({ page }) => {
+   test("a text tile's Cancel drops the draft", async ({ page }) => {
       await openEditor(page);
-      await page.getByRole("button", { name: "Edit text" }).first().click();
+      await openFirstNote(page);
       await markdownField(page).fill("Dropped draft");
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
@@ -202,9 +208,9 @@ test.describe("notebook exit guard", () => {
       await expect(prompt(page)).toHaveCount(0);
    });
 
-   test("Ctrl+Enter in a text cell commits the draft", async ({ page }) => {
+   test("Ctrl+Enter in a text tile commits the draft", async ({ page }) => {
       await openEditor(page);
-      await page.getByRole("button", { name: "Edit text" }).first().click();
+      await openFirstNote(page);
       await markdownField(page).fill("Committed by keyboard");
       await markdownField(page).press("Control+Enter");
 

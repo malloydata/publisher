@@ -4,6 +4,8 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 import fs from "fs";
 import path from "path";
+import { editText } from "./helpers/builder";
+import { saveChanges } from "./helpers/save";
 import {
    exampleFixture,
    registerPackageEnv,
@@ -46,6 +48,9 @@ const hostOf = (page: Page) =>
          })),
       };
    });
+
+const firstTextTile = (page: Page) =>
+   page.locator('[data-tile-key^="text."]').first();
 
 /** Package writes the page makes: a PUT to a model file is the only way a document reaches the package. */
 const watchPackageWrites = (page: Page) => {
@@ -121,17 +126,8 @@ test.describe("embedded host", () => {
       await expect(page.getByText("Kept in the host's record")).toBeVisible();
       await expect(page.getByText("read-only here")).toHaveCount(0);
 
-      await page.getByRole("button", { name: "Edit text" }).first().click();
-      await page
-         .getByLabel("Markdown", { exact: true })
-         .fill("Edited in the host.");
-      await page.getByRole("button", { name: "Done", exact: true }).click();
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({
-         timeout: 30_000,
-      });
+      await editText(firstTextTile(page), "Edited in the host.");
+      await saveChanges(page);
 
       const held = await hostOf(page);
       expect(held.saves).toHaveLength(1);
@@ -180,8 +176,9 @@ test.describe("embedded host", () => {
       const held = await hostOf(page);
       const stored = `${storefront.env}/${storefront.pkg}/notebooks/${slug}.malloy`;
       expect(Object.keys(held.documents)).toContain(stored);
+      expect(held.documents[stored]).toContain("kind=notebook");
       expect(held.documents[stored]).toContain(
-         "run: order_items -> sales_by_month",
+         "view: sales_by_month_tile is sales_by_month",
       );
       expect(writes).toEqual([]);
       // The package has no such file: the record is the only copy.
@@ -265,12 +262,7 @@ test.describe("embedded host", () => {
       const title = page.getByLabel("Dashboard title");
       await title.fill("Record overview, edited");
       await title.press("Enter");
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({
-         timeout: 30_000,
-      });
+      await saveChanges(page);
       const held = await hostOf(page);
       expect(held.saves.at(-1)!.path).toBe(record);
       expect(held.saves.at(-1)!.content).toContain("Record overview, edited");
@@ -290,17 +282,8 @@ test.describe("embedded host", () => {
       await expect(
          page.getByText("Save writes the file into the package."),
       ).toBeVisible();
-      await page.getByRole("button", { name: "Edit text" }).first().click();
-      await page
-         .getByLabel("Markdown", { exact: true })
-         .fill("Scratch host edit.");
-      await page.getByRole("button", { name: "Done", exact: true }).click();
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({
-         timeout: 30_000,
-      });
+      await editText(firstTextTile(page), "Scratch host edit.");
+      await saveChanges(page);
       expect(writes).toHaveLength(1);
       expect((await hostOf(page)).saves).toEqual([]);
    });

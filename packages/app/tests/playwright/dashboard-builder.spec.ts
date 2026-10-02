@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { saveChanges } from "./helpers/save";
 
 /**
  * The dashboard builder, end to end in a browser: open a package dashboard in
@@ -95,10 +96,7 @@ test.describe("dashboard-builder", () => {
          page.getByRole("button", { name: "Save changes" }),
       ).toBeEnabled();
 
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible();
+      await saveChanges(page);
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
