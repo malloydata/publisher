@@ -177,14 +177,17 @@ WORKDIR /publisher
 # directory that comes from an image layer; that limit belongs to the driver,
 # not this image.
 #
-# publisher_data/ is created here, owned by that user, because Docker seeds a
-# new named volume from the image's directory, ownership included: a volume
-# mounted there on first run is writable without a chown. It is the only mount
-# point the image prepares; a new volume at any path the image lacks starts
-# root-owned. A volume an older, root-run image already populated is not
-# writable either. packages/server/README.docker.md covers both.
-RUN mkdir -p /publisher/publisher_data && \
-    chown bun:bun /publisher /publisher/publisher_data
+# publisher_data/ and ducklake_data/ are created here, owned by that user,
+# because Docker seeds a new named volume from the image's directory, ownership
+# included: a volume mounted on either on first run is writable without a
+# chown. ducklake_data/ is the mount point for a DuckLake storage destination
+# whose bucketUrl is a local path; the server writes there only when one is
+# configured. These are the only mount points the image prepares; a new volume
+# at any path the image lacks starts root-owned. A volume an older, root-run
+# image already populated is not writable either. packages/server/README.docker.md
+# covers both.
+RUN mkdir -p /publisher/publisher_data /publisher/ducklake_data && \
+    chown bun:bun /publisher /publisher/publisher_data /publisher/ducklake_data
 
 # OCI image metadata — surfaces in `docker inspect`, registry UIs
 # (Docker Hub / GHCR), and Docker Desktop. The description is kept short
