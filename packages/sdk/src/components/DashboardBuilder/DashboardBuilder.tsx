@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { DragDropProvider } from "@dnd-kit/react";
+import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import {
    useCallback,
    useEffect,
    useMemo,
+   useRef,
    useState,
    type ReactNode,
 } from "react";
@@ -23,6 +25,8 @@ import {
    type BuilderGiven,
    type MappingRow,
 } from "./controls";
+import { SecondaryButton } from "../buttons";
+import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import {
@@ -45,6 +49,7 @@ import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
 import { useBuilderShortcuts } from "./useBuilderShortcuts";
 import { useDashboardEditor } from "./useDashboardEditor";
+import { useExitGuard } from "./useExitGuard";
 
 export type { BuilderGiven } from "./controls";
 
@@ -170,6 +175,8 @@ export interface DashboardBuilderProps {
     * afterwards is the host's, so its buttons sit in the host's slot.
     */
    toolbar?: ReactNode;
+   /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
+   onExit?: () => void;
 }
 
 export function DashboardBuilder({
@@ -183,6 +190,7 @@ export function DashboardBuilder({
    givens,
    catalog,
    toolbar,
+   onExit,
    dashboards,
    onEvent,
    savesTo = "package",
@@ -243,6 +251,10 @@ export function DashboardBuilder({
    useEffect(() => {
       onDirtyChange?.(editor.dirty);
    }, [editor.dirty, onDirtyChange]);
+   // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
+   const onDirtyChangeRef = useRef(onDirtyChange);
+   onDirtyChangeRef.current = onDirtyChange;
+   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
    // One object per document, or the popover's draft would reset on every
    // render of the builder while it is open.
    const settings = useMemo(
@@ -349,7 +361,7 @@ export function DashboardBuilder({
       const started = now();
       const { structural } = editor;
       const tiles = editor.document.tiles.length;
-      void editor
+      return editor
          .save()
          .then((outcome) => {
             if (outcome.ok === true)
@@ -368,20 +380,25 @@ export function DashboardBuilder({
          })
          .finally(() => setSaving(false));
    }, [editor, onEvent, savesTo]);
-   const save = useCallback(() => {
+   const save = useCallback((): Promise<void> | void => {
       if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural) {
-         commitSave();
-         return;
-      }
+      if (!editor.structural) return commitSave();
       // A tile was added or removed: show what that does to the file first.
-      void editor.preview().then((result) => {
+      return editor.preview().then((result) => {
          if (result.ok)
             setPendingSave({ before: editor.source, after: result.source });
          // A refusal surfaces through the same path a save's would.
-         else commitSave();
+         else return commitSave();
       });
    }, [onSave, editor, saving, commitSave]);
+   const exitGuard = useExitGuard({
+      dirty: editor.dirty,
+      saving,
+      reviewing: pendingSave !== undefined,
+      canSave: !!onSave,
+      save,
+      onExit: () => onExit?.(),
+   });
 
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
@@ -519,7 +536,22 @@ export function DashboardBuilder({
             dirty={editor.dirty}
             saving={saving}
             {...(onSave ? { onSave: save } : {})}
-            {...(toolbar ? { actions: toolbar } : {})}
+            {...(toolbar || onExit
+               ? {
+                    actions: (
+                       <>
+                          {toolbar}
+                          {onExit && (
+                             <SecondaryButton
+                                label="Done editing"
+                                icon={<CheckIcon />}
+                                onClick={exitGuard.requestExit}
+                             />
+                          )}
+                       </>
+                    ),
+                 }
+               : {})}
             {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
             onSettings={setSettingsAnchor}
          />
@@ -726,6 +758,7 @@ export function DashboardBuilder({
                onConfirm={commitSave}
                onClose={() => setPendingSave(undefined)}
             />
+            <UnsavedChangesDialog {...exitGuard.dialog} />
          </Stack>
       </Stack>
    );

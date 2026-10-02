@@ -11,6 +11,7 @@ import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
 import VerticalAlignTopIcon from "@mui/icons-material/VerticalAlignTop";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
+import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, IconButton, Stack, Tooltip } from "@mui/material";
 import {
    useCallback,
@@ -24,12 +25,15 @@ import {
 import type { Given } from "../../client";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { GIVEN_SETTLE_MS, useSettled } from "../../hooks/useSettled";
+import { SecondaryButton } from "../buttons";
 import { now } from "../Dashboard/telemetry";
+import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
 import { DiffDialog } from "../DashboardBuilder/DiffDialog";
 import type { CatalogSource } from "../DashboardBuilder/catalog";
 import { builderSensors } from "../DashboardBuilder/sortable";
 import { useBuilderShortcuts } from "../DashboardBuilder/useBuilderShortcuts";
+import { useExitGuard } from "../DashboardBuilder/useExitGuard";
 import type { NavigationClick } from "../click_helper";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
@@ -95,6 +99,8 @@ export interface NotebookBuilderProps extends QueryTarget {
    savesTo?: "package" | "browser" | "host";
    /** The host's own actions for the edit bar, such as Done. */
    toolbar?: ReactNode;
+   /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
+   onExit?: () => void;
    /** SPA navigation for links in prose. */
    onNavigate?: (to: string, event?: NavigationClick) => void;
    maxResultSize?: number;
@@ -184,6 +190,7 @@ export function NotebookBuilder({
    onEvent,
    savesTo = "package",
    toolbar,
+   onExit,
    onNavigate,
    maxResultSize,
 }: NotebookBuilderProps) {
@@ -246,6 +253,10 @@ export function NotebookBuilder({
    useEffect(() => {
       onDirtyChange?.(editor.dirty);
    }, [editor.dirty, onDirtyChange]);
+   // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
+   const onDirtyChangeRef = useRef(onDirtyChange);
+   onDirtyChangeRef.current = onDirtyChange;
+   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
    const controls = useDocumentControls({
       specs: givens ?? [],
@@ -397,7 +408,7 @@ export function NotebookBuilder({
       const started = now();
       const cells = editor.document.cells.length;
       const structural = editor.structural;
-      void editor
+      return editor
          .save()
          .then((outcome) => {
             if (outcome.ok === true)
@@ -417,13 +428,10 @@ export function NotebookBuilder({
          .finally(() => setSaving(false));
    }, [editor, onEvent, savesTo]);
 
-   const save = useCallback(() => {
+   const save = useCallback((): Promise<void> | void => {
       if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural && !editor.clearsHistory) {
-         commitSave();
-         return;
-      }
-      void Promise.all([editor.preview(), editor.removedComments()]).then(
+      if (!editor.structural && !editor.clearsHistory) return commitSave();
+      return Promise.all([editor.preview(), editor.removedComments()]).then(
          ([result, removedComments]) => {
             if (result.ok)
                setPendingSave({
@@ -433,10 +441,18 @@ export function NotebookBuilder({
                   clearsHistory: editor.clearsHistory,
                   structural: editor.structural,
                });
-            else commitSave();
+            else return commitSave();
          },
       );
    }, [onSave, editor, saving, commitSave]);
+   const exitGuard = useExitGuard({
+      dirty: editor.dirty,
+      saving,
+      reviewing: pendingSave !== undefined,
+      canSave: !!onSave,
+      save,
+      onExit: () => onExit?.(),
+   });
 
    useBuilderShortcuts(
       useMemo(
@@ -580,7 +596,22 @@ export function NotebookBuilder({
             dirty={editor.dirty}
             saving={saving}
             {...(onSave ? { onSave: save } : {})}
-            {...(toolbar ? { actions: toolbar } : {})}
+            {...(toolbar || onExit
+               ? {
+                    actions: (
+                       <>
+                          {toolbar}
+                          {onExit && (
+                             <SecondaryButton
+                                label="Done editing"
+                                icon={<CheckIcon />}
+                                onClick={exitGuard.requestExit}
+                             />
+                          )}
+                       </>
+                    ),
+                 }
+               : {})}
          />
          <CleanNotebookContainer>
             <CleanNotebookSection>
@@ -828,6 +859,7 @@ export function NotebookBuilder({
                </>
             }
          />
+         <UnsavedChangesDialog {...exitGuard.dialog} />
       </Stack>
    );
 }

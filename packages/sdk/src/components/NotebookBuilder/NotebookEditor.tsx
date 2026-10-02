@@ -656,7 +656,7 @@ function NotebookSession({
             onDirtyChange={reportDirty}
             onEvent={reportEvent}
             savesTo={savesTo}
-            {...(exit ? { toolbar: exit } : {})}
+            {...(onExit ? { onExit } : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

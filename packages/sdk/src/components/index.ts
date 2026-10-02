@@ -9,6 +9,7 @@ export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";
 // Publisher app included — builds its own screens out of the same four.
 export { AddButton, SecondaryButton } from "./buttons";
 export { AppDialog } from "./AppDialog";
+export { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 export { BackLink } from "./BackLink";
 export { DashboardBar } from "./Dashboard/DashboardBar";
 // The Console's palette, and the two maps drawn from it. Exported so a host

@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +21,6 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
-import { SecondaryButton } from "../buttons";
 import { DashboardBar } from "../Dashboard/DashboardBar";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
@@ -639,15 +637,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                onDirtyChange={reportDirty}
                savesTo={savesTo}
                {...(onEvent ? { onEvent: reportEvent } : {})}
-               toolbar={
-                  onExit && (
-                     <SecondaryButton
-                        label="Done editing"
-                        icon={<CheckIcon />}
-                        onClick={onExit}
-                     />
-                  )
-               }
+               {...(onExit ? { onExit } : {})}
                note={saveCaption({
                   authoritative,
                   mutable,
@@ -684,7 +674,7 @@ function Surface({
    onDirtyChange,
    onEvent,
    savesTo,
-   toolbar,
+   onExit,
    note,
 }: {
    environmentName: string;
@@ -697,7 +687,7 @@ function Surface({
    onDirtyChange: (dirty: boolean) => void;
    onEvent?: DashboardEventHandler;
    savesTo: "package" | "browser" | "host";
-   toolbar: React.ReactNode;
+   onExit?: () => void;
    note: string;
 }) {
    const { apiClients } = useServer();
@@ -908,7 +898,7 @@ function Surface({
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
-            toolbar={toolbar}
+            {...(onExit ? { onExit } : {})}
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }
