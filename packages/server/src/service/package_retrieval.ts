@@ -43,12 +43,14 @@ const RETRIEVAL_KEYS = [
    "keyphrases",
    "refine",
    "rerank",
+   "sourceMatch",
    "prompts",
 ] as const;
-const PROMPT_KEYS = ["keyphrase", "refine", "rerank"] as const;
+const PROMPT_KEYS = ["keyphrase", "refine", "rerank", "sourceMatch"] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 const REFINE_KEYS = ["enabled", "minLevel"] as const;
 const RERANK_KEYS = ["enabled", "topSources"] as const;
+const SOURCE_MATCH_KEYS = ["enabled"] as const;
 
 /** A prompt a package overrides: the text, read at package load. */
 export interface PackagePrompt {
@@ -71,6 +73,10 @@ export interface RerankSettings {
    topSources: number;
 }
 
+export interface SourceMatchSettings {
+   enabled: StageEnabled;
+}
+
 export interface PackageRetrievalSettings {
    /** `single`: one row per entity. `facets`: a name row plus doc chunks. */
    representation: PackageRepresentation;
@@ -84,6 +90,8 @@ export interface PackageRetrievalSettings {
    refine?: RefineSettings;
    /** Absent means the defaults: `{ enabled: "auto", topSources: 8 }`. */
    rerank?: RerankSettings;
+   /** Absent means the default: `{ enabled: "auto" }`. */
+   sourceMatch?: SourceMatchSettings;
    prompts: { [K in PromptKey]?: PackagePrompt };
 }
 
@@ -115,6 +123,13 @@ export function rerankSettingsOf(
          topSources: DEFAULT_RERANK_TOP_SOURCES,
       }
    );
+}
+
+/** The source-match settings in force: the package's, or the defaults. */
+export function sourceMatchSettingsOf(
+   retrieval: PackageRetrievalSettings,
+): SourceMatchSettings {
+   return retrieval.sourceMatch ?? { enabled: "auto" };
 }
 
 function fail(message: string): never {
@@ -246,6 +261,18 @@ function parseRerank(raw: unknown): RerankSettings {
    };
 }
 
+function parseSourceMatch(raw: unknown): SourceMatchSettings {
+   const obj = objectBlock(
+      raw,
+      "retrieval.sourceMatch",
+      SOURCE_MATCH_KEYS,
+      `"sourceMatch": { "enabled": "auto" }`,
+   );
+   return {
+      enabled: parseEnabled(obj.enabled, "retrieval.sourceMatch.enabled"),
+   };
+}
+
 /**
  * Validate the block's shape and return what it says, with the prompt path
  * still unread. Throws a PackageManifestError (424: the package is not served
@@ -256,6 +283,7 @@ export function parsePackageRetrieval(raw: unknown): {
    keyphrases: KeyphraseMode;
    refine?: RefineSettings;
    rerank?: RerankSettings;
+   sourceMatch?: SourceMatchSettings;
    promptPaths: { [K in PromptKey]?: string };
 } {
    if (raw === undefined || raw === null) {
@@ -310,6 +338,10 @@ export function parsePackageRetrieval(raw: unknown): {
       obj.rerank === undefined || obj.rerank === null
          ? undefined
          : parseRerank(obj.rerank);
+   const sourceMatch =
+      obj.sourceMatch === undefined || obj.sourceMatch === null
+         ? undefined
+         : parseSourceMatch(obj.sourceMatch);
 
    const promptPaths: { [K in PromptKey]?: string } = {};
    if (obj.prompts !== undefined && obj.prompts !== null) {
@@ -346,6 +378,7 @@ export function parsePackageRetrieval(raw: unknown): {
       keyphrases: keyphrases as KeyphraseMode,
       ...(refine ? { refine } : {}),
       ...(rerank ? { rerank } : {}),
+      ...(sourceMatch ? { sourceMatch } : {}),
       promptPaths,
    };
 }
@@ -415,6 +448,7 @@ export async function readPackageRetrieval(
       keyphrases: parsed.keyphrases,
       ...(parsed.refine ? { refine: parsed.refine } : {}),
       ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
+      ...(parsed.sourceMatch ? { sourceMatch: parsed.sourceMatch } : {}),
       prompts,
    };
 }
@@ -433,6 +467,7 @@ export function assertRequiredStagesAvailable(
    for (const [key, stage] of [
       ["refine", retrieval.refine],
       ["rerank", retrieval.rerank],
+      ["sourceMatch", retrieval.sourceMatch],
    ] as const) {
       if (stage?.enabled === true) {
          fail(
