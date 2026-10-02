@@ -110,12 +110,12 @@ describe("prompt file", () => {
          readPackageRetrieval(root, {
             prompts: { keyphrase: "../secret.txt" },
          }),
-      ).rejects.toThrow("resolves outside the package directory");
+      ).rejects.toThrow(/resolves outside the package directory\. Fix/);
       await expect(
          readPackageRetrieval(root, {
             prompts: { keyphrase: "prompts/../../secret.txt" },
          }),
-      ).rejects.toThrow("resolves outside the package directory");
+      ).rejects.toThrow(/resolves outside the package directory\. Fix/);
    });
 
    it("rejects a symlink that points outside the package", async () => {
