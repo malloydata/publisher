@@ -14,7 +14,16 @@ import type {
    PipelineContext,
    RankedState,
 } from "./get_context_pipeline";
-import { sourceContextKey, type ResultEntity } from "./get_context_tool";
+import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
+import {
+   matchesScope,
+   sourceContextKey,
+   type Entity,
+   type JoinReach,
+   type JoinTopology,
+   type ResolvedRequest,
+   type ResultEntity,
+} from "./get_context_tool";
 
 /**
  * A card's relevance after reading one more row: a source's own row sets it,
@@ -31,6 +40,220 @@ export function foldRelevance(
    // A source with no hit of its own still ranks by its best entity, so a
    // caller reading source relevance never sees a matched source at null.
    return current === undefined || row.score > current ? row.score : current;
+}
+
+/** Plain code-unit order, so the result does not depend on the host's locale. */
+function compareText(a: string, b: string): number {
+   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * The order of ranked rows: score descending, then source, name, kind and
+ * model path. The score is the rounded one the response publishes, so two rows
+ * that show the same relevance are listed in a fixed order, not in whatever
+ * order the scan happened to return them. Shared by the semantic retriever
+ * and by assembly, which adds joined copies and so has to sort again.
+ */
+export function compareRanked(a: ResultEntity, b: ResultEntity): number {
+   return (
+      (b.score ?? 0) - (a.score ?? 0) ||
+      compareText(a.source ?? "", b.source ?? "") ||
+      compareText(a.name, b.name) ||
+      compareText(a.kind, b.kind) ||
+      compareText(a.modelPath, b.modelPath)
+   );
+}
+
+/** The kinds a joined copy exists for: a view or join is not reachable as `alias.name`. */
+function isJoinable(kind: string): boolean {
+   return kind === "dimension" || kind === "measure";
+}
+
+/** One root source that reaches a target source, and by which join path. */
+interface Reacher {
+   source: string;
+   modelPath: string;
+   reach: JoinReach;
+}
+
+const reachersCache = new WeakMap<JoinTopology, Map<string, Reacher[]>>();
+
+/**
+ * The topology turned around: for each target source name, the roots that
+ * reach it. The topology is keyed by root; assembly starts from a ranked
+ * target field and asks "who can reach this?". Built once per topology.
+ */
+function reachersOf(topology: JoinTopology): Map<string, Reacher[]> {
+   const cached = reachersCache.get(topology);
+   if (cached) return cached;
+   const byTarget = new Map<string, Reacher[]>();
+   for (const [rootKey, reaches] of topology) {
+      const at = rootKey.indexOf(KEY_SEPARATOR);
+      const modelPath = rootKey.slice(0, at);
+      const source = rootKey.slice(at + KEY_SEPARATOR.length);
+      for (const reach of reaches) {
+         const list = byTarget.get(reach.targetSource) ?? [];
+         list.push({ source, modelPath, reach });
+         byTarget.set(reach.targetSource, list);
+      }
+   }
+   reachersCache.set(topology, byTarget);
+   return byTarget;
+}
+
+/** Where a direct field reappears when reached through a join. */
+interface JoinedCopy {
+   source: string;
+   modelPath: string;
+   /** The join names that reach the field, dotted: the copy's `join_path`. */
+   joinPath: string;
+   /** The dotted display name, `joinPath.fieldName`. */
+   name: string;
+   hops: number;
+   fanout: JoinReach["fanout"];
+}
+
+/**
+ * Every place a direct dimension or measure also appears through a join: one
+ * copy per root and join path, up to `maxDepth` joins. Same name, join path
+ * and fan-out as the copies the index makes for the lexical path, so a caller
+ * cannot tell which kind it got.
+ */
+function joinedCopiesOf(
+   base: { kind: string; name: string; source?: string },
+   topology: JoinTopology,
+   maxDepth: number,
+): JoinedCopy[] {
+   if (!isJoinable(base.kind) || base.source === undefined) return [];
+   return (reachersOf(topology).get(base.source) ?? []).flatMap((reacher) => {
+      const hops = reacher.reach.path.length;
+      if (hops > maxDepth) return [];
+      const joinPath = reacher.reach.path.join(".");
+      return [
+         {
+            source: reacher.source,
+            modelPath: reacher.modelPath,
+            joinPath,
+            name: `${joinPath}.${base.name}`,
+            hops,
+            fanout: reacher.reach.fanout,
+         },
+      ];
+   });
+}
+
+/**
+ * The vector-cache rows a scoped request can be answered from, when joined
+ * copies are made at assembly. A field in scope may be a copy reached through
+ * a join, and its score comes from the target field's row, so that row is
+ * searched even though the target source itself is out of scope. Returns each
+ * such row once.
+ */
+export function scopeKeysWithJoins(
+   direct: Iterable<Entity>,
+   topology: JoinTopology,
+   request: ResolvedRequest,
+   maxDepth: number,
+): Array<{ kind: string; source: string; name: string }> {
+   const seen = new Set<string>();
+   const keys: Array<{ kind: string; source: string; name: string }> = [];
+   for (const e of direct) {
+      const inScope =
+         matchesScope(e, request) ||
+         joinedCopiesOf(e, topology, maxDepth).some((copy) =>
+            matchesScope({ ...copy, kind: e.kind }, request),
+         );
+      if (!inScope) continue;
+      const source = e.source ?? "";
+      const key = entityRowKey(e.kind, source, e.name);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      keys.push({ kind: e.kind, source, name: e.name });
+   }
+   return keys;
+}
+
+const round4 = (x: number) => Math.round(x * 10_000) / 10_000;
+
+function dampTargetScores(
+   row: ResultEntity,
+   factor: number,
+): Map<number, number> | undefined {
+   if (!row.targetScores) return undefined;
+   return new Map(
+      [...row.targetScores].map(([target, score]) => [
+         target,
+         round4(score * factor),
+      ]),
+   );
+}
+
+/**
+ * Add the joined copies of the ranked direct fields, damped, and drop what
+ * the request's scope excludes.
+ *
+ * A copy scores as its direct field's score times `damping ** (hops + 1)`, so
+ * one join is 0.81 and two are 0.729; the direct field is not damped. The
+ * same display name reached twice (the target source is resolvable from two
+ * model files) keeps the higher score. A copy's per-target scores are damped
+ * the same way, so `matched_targets` agrees with the entity's own relevance.
+ */
+function expandJoins(
+   rows: ResultEntity[],
+   ctx: PipelineContext,
+): ResultEntity[] {
+   const { request, pkgIndex, settings } = ctx;
+   const damping = settings.joinDamping;
+   const out: ResultEntity[] = [];
+   const copies = new Map<string, ResultEntity>();
+   for (const row of rows) {
+      if (matchesScope(row, request)) out.push(row);
+      for (const place of joinedCopiesOf(
+         row,
+         pkgIndex.topology,
+         settings.joinMaxDepth,
+      )) {
+         if (!matchesScope({ ...place, kind: row.kind }, request)) continue;
+         const factor = damping === null ? 1 : damping ** (place.hops + 1);
+         const score =
+            row.score === undefined ? undefined : round4(row.score * factor);
+         const key = [place.modelPath, place.source, row.kind, place.name].join(
+            KEY_SEPARATOR,
+         );
+         const seen = copies.get(key);
+         if (seen) {
+            if (score !== undefined && score > (seen.score ?? 0)) {
+               seen.score = score;
+               seen.targetScores = dampTargetScores(row, factor);
+               seen.bestTarget = row.bestTarget;
+            }
+            continue;
+         }
+         const copy: ResultEntity = {
+            kind: row.kind,
+            name: place.name,
+            source: place.source,
+            environmentName: row.environmentName,
+            packageName: row.packageName,
+            modelPath: place.modelPath,
+            doc: row.doc,
+            relationship: place.fanout,
+            joinPath: place.joinPath,
+            ...(row.dataType ? { dataType: row.dataType } : {}),
+            ...(score !== undefined ? { score } : {}),
+            ...(row.targetScores
+               ? { targetScores: dampTargetScores(row, factor) }
+               : {}),
+            ...(row.bestTarget !== undefined
+               ? { bestTarget: row.bestTarget }
+               : {}),
+            joinHops: place.hops,
+         };
+         copies.set(key, copy);
+         out.push(copy);
+      }
+   }
+   return out.sort(compareRanked);
 }
 
 /**
@@ -50,7 +273,13 @@ export function assembleCards(
    const perSourcePerTarget = ctx.settings.entityWindow.perSourcePerTarget;
    const cards = new Map<string, CardDraft>();
    const perTarget = new Map<string, Map<number, number>>();
-   for (const r of state.rows) {
+   // Joined copies are made here only for semantic rows, which search direct
+   // fields alone. The lexical path's rows already include the index's copies.
+   const rows =
+      ctx.settings.joins === "assembly" && state.retrieval === "semantic"
+         ? expandJoins(state.rows, ctx)
+         : state.rows;
+   for (const r of rows) {
       const source = r.source ?? "";
       const key = sourceContextKey(r.modelPath, source);
       let card = cards.get(key);

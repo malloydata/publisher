@@ -31,7 +31,11 @@ import type {
  * "unused" are not read by anything yet.
  */
 export interface PipelineSettings {
-   /** "index": joined copies are index rows (today). "assembly": made after refine. Unused. */
+   /**
+    * "index": joined copies are index rows, searched like any field.
+    * "assembly": the semantic path searches direct fields only and assembly
+    * makes the joined copies from the join topology, damped.
+    */
    joins: "index" | "assembly";
    /** Where the per-source cap applies and how many rows it admits. */
    entityWindow: {
@@ -39,9 +43,12 @@ export interface PipelineSettings {
       where: "post-rank" | "retrieve";
       perSourcePerTarget: number;
    };
-   /** Deepest join chain the index follows. Unused here; the index reads its own constant. */
+   /**
+    * Deepest join chain assembly follows. The lexical index has its own,
+    * lower limit (it makes one entity per path); this never reaches it.
+    */
    joinMaxDepth: number;
-   /** Per-hop score multiplier for assembled join copies; null means none. Unused. */
+   /** Base of the score multiplier for assembled join copies, applied as `base ** (hops + 1)`; null means none. */
    joinDamping: number | null;
    /** How scores are published. Unused. */
    scoring: "cosine" | "knots";
