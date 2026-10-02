@@ -11,12 +11,12 @@ import {
 import type { SaveOutcome } from "./useDocumentEditor";
 
 type Doc = { n: number };
-type Review = { after: string };
 
 const makeEditor = (
    over: Partial<SessionEditor<Doc>> = {},
 ): SessionEditor<Doc> => ({
    document: { n: 1 },
+   saved: { n: 0 },
    dirty: true,
    structural: false,
    canUndo: true,
@@ -30,7 +30,7 @@ const makeEditor = (
 });
 
 const mount = (
-   over: Partial<BuilderSessionOptions<Doc, Review>> = {},
+   over: Partial<BuilderSessionOptions<Doc>> = {},
    editor: SessionEditor<Doc> = makeEditor(),
 ) => {
    const saved = mock((_info: unknown) => {});
@@ -41,10 +41,11 @@ const mount = (
    const shortcuts = { escape: () => {} };
    const view = renderHook(
       (props: { editor: SessionEditor<Doc> }) =>
-         useBuilderSession<Doc, Review>({
+         useBuilderSession<Doc>({
             editor: props.editor,
             onSave,
             shortcuts,
+            unit: { name: "tile", count: (document) => document.n },
             report: { size: 3, saved, refused, undone, undoRefused },
             ...over,
          }),
@@ -146,66 +147,6 @@ describe("useBuilderSession save", () => {
       });
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(editor.save).toHaveBeenCalledTimes(1);
-   });
-});
-
-describe("useBuilderSession review", () => {
-   const reviewing = (editor: SessionEditor<Doc>) =>
-      mount(
-         {
-            review: () =>
-               Promise.resolve({ ok: true as const, review: { after: "x" } }),
-         },
-         editor,
-      );
-
-   it("holds a reviewed save until it is confirmed", async () => {
-      const { result, editor } = reviewing(makeEditor({ structural: true }));
-      await act(async () => {
-         await result.current.save();
-      });
-      expect(result.current.pendingSave).toEqual({ after: "x" });
-      expect(editor.save).not.toHaveBeenCalled();
-      await act(async () => {
-         await result.current.confirmSave();
-      });
-      expect(editor.save).toHaveBeenCalledTimes(1);
-      expect(result.current.pendingSave).toBeUndefined();
-   });
-
-   it("drops the review without saving", async () => {
-      const { result, editor } = reviewing(makeEditor());
-      await act(async () => {
-         await result.current.save();
-      });
-      act(() => result.current.dismissReview());
-      expect(result.current.pendingSave).toBeUndefined();
-      expect(editor.save).not.toHaveBeenCalled();
-   });
-
-   it("saves straight away when the review cannot be built, so the refusal surfaces", async () => {
-      const { result, editor } = mount({
-         review: () => Promise.resolve({ ok: false as const }),
-      });
-      await act(async () => {
-         await result.current.save();
-      });
-      expect(editor.save).toHaveBeenCalledTimes(1);
-      expect(result.current.pendingSave).toBeUndefined();
-   });
-
-   it("pauses undo while a review is open", async () => {
-      const { result, editor } = reviewing(makeEditor());
-      press("z");
-      expect(editor.undo).toHaveBeenCalledTimes(1);
-      await act(async () => {
-         await result.current.save();
-      });
-      press("z");
-      expect(editor.undo).toHaveBeenCalledTimes(1);
-      act(() => result.current.dismissReview());
-      press("z");
-      expect(editor.undo).toHaveBeenCalledTimes(2);
    });
 });
 
@@ -333,6 +274,43 @@ describe("useBuilderSession undo save", () => {
          await readOnly.result.current.undoSave();
       });
       expect(readOnly.editor.undoSave).not.toHaveBeenCalled();
+   });
+
+   it("pauses the keyboard while the change is being viewed, and closes the viewer with the offer", () => {
+      const { result, editor, rerender } = mount({}, offering());
+      act(() => result.current.notice.onView(true));
+      expect(result.current.notice.viewing).toBe(true);
+      press("z");
+      expect(editor.undo).not.toHaveBeenCalled();
+      act(() => result.current.notice.onView(false));
+      press("z");
+      expect(editor.undo).toHaveBeenCalledTimes(1);
+      act(() => result.current.notice.onView(true));
+      rerender({ editor: makeEditor() });
+      expect(result.current.notice.viewing).toBe(false);
+   });
+
+   it("counts what the save moved, from the saved document to the one written", async () => {
+      const { result } = mount(
+         {},
+         makeEditor({ document: { n: 3 }, saved: { n: 1 } }),
+      );
+      await act(async () => {
+         await result.current.save();
+      });
+      expect(result.current.notice.moved).toEqual({ before: 1, after: 3 });
+   });
+
+   it("says the save was undone until the next edit", async () => {
+      const document = { n: 1 };
+      const view = mount({}, offering({ document }));
+      await act(async () => {
+         await view.result.current.undoSave();
+      });
+      view.rerender({ editor: makeEditor({ document }) });
+      expect(view.result.current.notice.undone).toBe(true);
+      view.rerender({ editor: makeEditor({ document: { n: 2 } }) });
+      expect(view.result.current.notice.undone).toBe(false);
    });
 
    it("tells the host whether a save can still be undone, and that it cannot once unmounted", () => {

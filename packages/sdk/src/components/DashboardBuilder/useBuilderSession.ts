@@ -10,10 +10,13 @@ import {
 } from "./useBuilderShortcuts";
 import type { LastSave, SaveHandler, SaveOutcome } from "./useDocumentEditor";
 import { useExitGuard } from "./useExitGuard";
+import type { SaveNoticeProps } from "./SaveNotice";
 
 /** What a builder's session reads of its document editor. */
 export interface SessionEditor<D, L extends LastSave = LastSave> {
    document: D;
+   /** The document as of the last save (or open). */
+   saved: D;
    dirty: boolean;
    structural: boolean;
    canUndo: boolean;
@@ -43,12 +46,7 @@ export interface SessionSaveInfo {
    durationMs: number;
 }
 
-/** A review to show before the write, or none when the save needs no review; `ok: false` is a refusal the write itself will report. */
-export type SessionReview<R> =
-   | Promise<{ ok: true; review: R } | { ok: false }>
-   | undefined;
-
-export interface BuilderSessionOptions<D, R, L extends LastSave = LastSave> {
+export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
    onExit?: () => void;
@@ -59,8 +57,8 @@ export interface BuilderSessionOptions<D, R, L extends LastSave = LastSave> {
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
    report: SessionReport;
-   /** Builds the review a save shows first; returns nothing when this save needs none. */
-   review?: () => SessionReview<R>;
+   /** What the notice counts and calls them: "tile" or "cell". */
+   unit: { name: string; count: (document: D) => number };
    /** Runs before every save entry point, handing it the save to run once the document is ready. */
    prepare?: (run: () => Promise<void> | void) => Promise<void> | void;
    /** The builder's own keys, less undo, redo and save, which the session owns. Memoized by the caller. */
@@ -72,7 +70,10 @@ export interface BuilderSessionOptions<D, R, L extends LastSave = LastSave> {
  * saving (with its event and timing), the dirty and change reports, the exit
  * guard, the keyboard, and the props their toolbar takes.
  */
-export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
+export function useBuilderSession<
+   D,
+   L extends LastSave & { removedComments?: string[] } = LastSave,
+>({
    editor,
    onSave,
    onExit,
@@ -81,16 +82,19 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
    onChange,
    extraDirty = false,
    report,
-   review,
+   unit,
    prepare,
    shortcuts,
-}: BuilderSessionOptions<D, R, L>) {
+}: BuilderSessionOptions<D, L>) {
    const [saving, setSaving] = useState(false);
-   const [pendingSave, setPendingSave] = useState<R | undefined>(undefined);
+   const [viewing, setViewing] = useState(false);
+   const [undone, setUndone] = useState(false);
+   const [moved, setMoved] = useState<
+      { before: number; after: number } | undefined
+   >(undefined);
+   const saveButton = useRef<HTMLButtonElement>(null);
    const reportRef = useRef(report);
    reportRef.current = report;
-   const reviewRef = useRef(review);
-   reviewRef.current = review;
    const dirty = editor.dirty || extraDirty;
 
    useEffect(() => {
@@ -113,28 +117,51 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
    onCanUndoSaveChangeRef.current = onCanUndoSaveChange;
    useEffect(() => () => onCanUndoSaveChangeRef.current?.(false), []);
 
+   // The viewer shows the offer's change, so it closes when the offer is withdrawn.
+   useEffect(() => {
+      if (!undoOffered) setViewing(false);
+   }, [undoOffered]);
+   const unitRef = useRef(unit);
+   unitRef.current = unit;
+   // The line saying the undo happened goes with the next edit or save; leaving it up over new work would say something stale.
+   useEffect(() => {
+      setUndone(false);
+   }, [editor.document]);
+
    const commitSave = useCallback(() => {
-      setPendingSave(undefined);
       setSaving(true);
+      setUndone(false);
       const started = now();
       const { structural } = editor;
       const size = reportRef.current.size;
+      const sizes = {
+         before: unitRef.current.count(editor.saved),
+         after: unitRef.current.count(editor.document),
+      };
       return editor
          .save()
          .then((outcome) => {
-            if (outcome.ok === true)
+            if (outcome.ok === true) {
+               setMoved(sizes);
                reportRef.current.saved({
                   size,
                   structural,
                   durationMs: now() - started,
                });
-            else reportRef.current.refused(outcome.reason);
+            } else reportRef.current.refused(outcome.reason);
          })
          .finally(() => setSaving(false));
    }, [editor]);
 
    // A ref as well as `saving`, so a second click before the re-render does not write twice.
    const undoingRef = useRef(false);
+   const focusSave = useRef(false);
+   // The notice that held focus is gone, so the key that follows is the next save; Save is enabled again once the write settles.
+   useEffect(() => {
+      if (!focusSave.current || saving) return;
+      focusSave.current = false;
+      saveButton.current?.focus();
+   }, [undone, saving]);
    const undoSave = useCallback((): Promise<void> | void => {
       if (!onSave || saving || undoingRef.current || !editor.canUndoSave)
          return;
@@ -146,13 +173,15 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
       return editor
          .undoSave()
          .then((outcome) => {
-            if (outcome.ok === true)
+            if (outcome.ok === true) {
+               focusSave.current = true;
+               setUndone(true);
                reportRef.current.undone({
                   size,
                   structural,
                   durationMs: now() - started,
                });
-            else reportRef.current.undoRefused(outcome.reason);
+            } else reportRef.current.undoRefused(outcome.reason);
          })
          .finally(() => {
             undoingRef.current = false;
@@ -160,36 +189,24 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
          });
    }, [onSave, saving, editor]);
 
-   const askingRef = useRef(false);
-   const reviewedSave = useCallback((): Promise<void> | void => {
+   const guardedSave = useCallback((): Promise<void> | void => {
       if (!onSave || !editor.dirty || saving) return;
-      const pending = reviewRef.current?.();
-      if (!pending) return commitSave();
-      return pending.then((result) => {
-         if (result.ok) {
-            // The exit dialog came up while this was built; a review over it would stack two modals.
-            if (!askingRef.current) setPendingSave(result.review);
-         }
-         // A refusal surfaces through the same path a save's would.
-         else return commitSave();
-      });
+      return commitSave();
    }, [onSave, editor, saving, commitSave]);
-   const reviewedRef = useRef(reviewedSave);
-   reviewedRef.current = reviewedSave;
+   const guardedRef = useRef(guardedSave);
+   guardedRef.current = guardedSave;
    const save = useCallback((): Promise<void> | void => {
-      const run = () => reviewedRef.current();
+      const run = () => guardedRef.current();
       return prepare ? prepare(run) : run();
    }, [prepare]);
 
    const exitGuard = useExitGuard({
       dirty,
       saving,
-      reviewing: pendingSave !== undefined,
       canSave: !!onSave,
       save,
       onExit: () => onExit?.(),
    });
-   askingRef.current = exitGuard.dialog.open;
 
    useBuilderShortcuts(
       // One handlers object per change of what they read, so the key listener is not torn down and re-bound on every render.
@@ -199,11 +216,25 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open || pendingSave !== undefined,
+            paused: exitGuard.dialog.open || viewing,
          }),
-         [shortcuts, editor, onSave, save, exitGuard.dialog.open, pendingSave],
+         [shortcuts, editor, onSave, save, exitGuard.dialog.open, viewing],
       ),
    );
+
+   const canUndoSave = !!onSave && !saving && editor.canUndoSave;
+   const lastSave = editor.lastSave;
+
+   const notice: SaveNoticeProps = {
+      ...(lastSave ? { lastSave } : {}),
+      unit: unit.name,
+      moved,
+      canUndoSave,
+      undone: undone && lastSave === undefined,
+      viewing,
+      onView: setViewing,
+      onUndoSave: undoSave,
+   };
 
    const toolbarProps: Pick<
       BuilderToolbarProps,
@@ -215,6 +246,7 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
       | "saving"
       | "onSave"
       | "onExit"
+      | "saveButton"
    > = {
       canUndo: editor.canUndo,
       canRedo: editor.canRedo,
@@ -222,6 +254,7 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
       onRedo: editor.redo,
       dirty,
       saving,
+      saveButton,
       ...(onSave ? { onSave: save } : {}),
       ...(onExit ? { onExit: exitGuard.requestExit } : {}),
    };
@@ -230,16 +263,11 @@ export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
       saving,
       save,
       exitGuard,
-      /** The review awaiting the author's go-ahead. */
-      pendingSave,
-      /** Write the reviewed save. */
-      confirmSave: commitSave,
-      /** Put the review down without saving. */
-      dismissReview: () => setPendingSave(undefined),
       /** Write the file back as it was before the last save, and put the edits back unsaved. */
       undoSave,
-      canUndoSave: !!onSave && !saving && editor.canUndoSave,
-      lastSave: editor.lastSave,
+      canUndoSave,
+      lastSave,
+      notice,
       toolbarProps,
    };
 }

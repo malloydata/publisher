@@ -190,12 +190,6 @@ describe("NotebookEditor, adding a query", () => {
       ]).toEqual(requests);
 
       fireEvent.click(button("Save changes"));
-      const diff = (await screen.findByLabelText("File changes")).closest(
-         '[role="dialog"]',
-      ) as HTMLElement;
-      fireEvent.click(
-         within(diff).getByRole("button", { name: /Save/, hidden: true }),
-      );
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
       const body = updateModelSource.mock.calls[0][3];
       expect(body.source).toBe(`${FILE}\nrun: a -> by_cat\n`);
@@ -268,12 +262,6 @@ describe("NotebookEditor, adding a query on a curated package", () => {
          fireEvent.click(button("Add query"));
 
          fireEvent.click(button("Save changes"));
-         const diff = (await screen.findByLabelText("File changes")).closest(
-            '[role="dialog"]',
-         ) as HTMLElement;
-         fireEvent.click(
-            within(diff).getByRole("button", { name: /Save/, hidden: true }),
-         );
          await waitFor(() =>
             expect(updateModelSource).toHaveBeenCalledTimes(1),
          );

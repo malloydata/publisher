@@ -8,7 +8,6 @@ import {
    render,
    screen,
    waitFor,
-   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { DashboardBuilder } from "./DashboardBuilder";
@@ -163,47 +162,15 @@ describe("DashboardBuilder: leaving with a structural edit", () => {
       expect(onSave).not.toHaveBeenCalled();
    });
 
-   it("Keep editing in the review clears the request", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      removeTile();
-      fireEvent.click(button("Done editing"));
-      fireEvent.click(button("Save and exit"));
-      const review = (await screen.findByLabelText("File changes")).closest(
-         '[role="dialog"]',
-      ) as HTMLElement;
-      // The exit dialog is still fading out under the runner, so scope to the review.
-      fireEvent.click(
-         within(review).getByRole("button", { name: "Keep editing" }),
-      );
-      await settleTick();
-      expect(onExit).not.toHaveBeenCalled();
-      fireEvent.click(button("Done editing"));
-      expect(screen.getByText("Leave with unsaved changes?")).toBeDefined();
-   });
-
-   it("Save this in the review saves once and exits once", async () => {
+   it("Save and exit writes a structural edit at once, saving once and exiting once", async () => {
       const onExit = mock(() => {});
       const onSave = mock(async () => {});
       await mount({ onExit, onSave });
       removeTile();
       fireEvent.click(button("Done editing"));
       fireEvent.click(button("Save and exit"));
-      await screen.findByLabelText("File changes");
-      fireEvent.click(button("Save this"));
       await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
       expect(onSave).toHaveBeenCalledTimes(1);
-   });
-
-   it("does not open the review over the exit dialog when a save was still previewing", async () => {
-      await mount({ onExit: () => {}, onSave: async () => {} });
-      removeTile();
-      fireEvent.click(button("Save changes"));
-      fireEvent.click(button("Done editing"));
-      await settleTick();
-      await settleTick();
-      expect(screen.queryByLabelText("File changes")).toBeNull();
-      expect(dialogs()).toHaveLength(1);
    });
 
    it("waits out a save already in flight, then exits without saving twice", async () => {

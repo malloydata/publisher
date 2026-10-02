@@ -8,7 +8,6 @@ import { useExitGuard } from "./useExitGuard";
 interface Props {
    dirty: boolean;
    saving: boolean;
-   reviewing: boolean;
    canSave: boolean;
 }
 
@@ -18,7 +17,6 @@ const mount = (initial: Partial<Props> = {}) => {
    let current: Props = {
       dirty: false,
       saving: false,
-      reviewing: false,
       canSave: true,
       ...initial,
    };
@@ -113,28 +111,6 @@ describe("useExitGuard", () => {
       expect(onExit).not.toHaveBeenCalled();
       act(() => set({ dirty: false }));
       expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("holds while the review dialog is open and clears when it is dismissed", async () => {
-      const { view, onExit, set, settle } = mount({ dirty: true });
-      await saveAndExit(view);
-      act(() => set({ reviewing: true }));
-      await settle({});
-      expect(onExit).not.toHaveBeenCalled();
-      act(() => set({ reviewing: false }));
-      act(() => set({ dirty: false }));
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("exits after the review is confirmed and the save lands", async () => {
-      const { view, onExit, set, settle } = mount({ dirty: true });
-      await saveAndExit(view);
-      act(() => set({ reviewing: true }));
-      await settle({});
-      act(() => set({ reviewing: false, saving: true }));
-      expect(onExit).not.toHaveBeenCalled();
-      act(() => set({ saving: false, dirty: false }));
-      expect(onExit).toHaveBeenCalledTimes(1);
    });
 
    it("waits out a save already in flight, then saves what is still dirty", async () => {

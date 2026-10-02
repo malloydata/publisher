@@ -28,7 +28,7 @@ import {
    type LocalGiven,
 } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
-import { DiffDialog } from "./DiffDialog";
+import { SaveNotice } from "./SaveNotice";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { SettingsPopover, settingsOf } from "./SettingsPopover";
@@ -358,11 +358,9 @@ export function DashboardBuilder({
       }),
       [editor, menu, filterDialog, selected, columns],
    );
-   const session = useBuilderSession<
-      DashboardDocument,
-      { before: string; after: string }
-   >({
+   const session = useBuilderSession<DashboardDocument>({
       editor,
+      unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onExit,
       onDirtyChange,
@@ -392,23 +390,7 @@ export function DashboardBuilder({
          undoRefused: (reason) =>
             onEvent?.({ type: "dashboard.save_undo_refused", reason }),
       },
-      // A tile was added or removed: show what that does to the file first.
-      review: () =>
-         editor.structural
-            ? editor.preview().then((result) =>
-                 result.ok
-                    ? {
-                         ok: true as const,
-                         review: {
-                            before: editor.source,
-                            after: result.source,
-                         },
-                      }
-                    : { ok: false as const },
-              )
-            : undefined,
    });
-   const { pendingSave } = session;
 
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
@@ -518,6 +500,7 @@ export function DashboardBuilder({
              4px there would put the title 4px further from the bar than the
              reader's is. */}
          <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+            <SaveNotice {...session.notice} />
             <DashboardProse
                title={editor.document.title || "Untitled dashboard"}
                {...(editor.document.description
@@ -714,13 +697,6 @@ export function DashboardBuilder({
                columns={columns}
                onClose={() => setAddingTile(false)}
                onAdd={addTile}
-            />
-            <DiffDialog
-               open={pendingSave !== undefined}
-               before={pendingSave?.before ?? ""}
-               after={pendingSave?.after ?? ""}
-               onConfirm={session.confirmSave}
-               onClose={session.dismissReview}
             />
             <UnsavedChangesDialog {...session.exitGuard.dialog} />
          </Stack>

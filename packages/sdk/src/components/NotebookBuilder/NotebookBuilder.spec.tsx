@@ -168,13 +168,6 @@ const editText = (label: string, next: string) => {
    fireEvent.click(button("Done"));
 };
 
-const saveThroughDiff = async () => {
-   fireEvent.click(button("Save changes"));
-   await waitFor(() =>
-      expect(screen.getByLabelText("File changes")).toBeDefined(),
-   );
-};
-
 beforeEach(() => {
    clearCache();
    executeQueryModel.mockClear();
@@ -199,6 +192,22 @@ describe("NotebookBuilder", () => {
             name: "Remove text",
          }),
       ).toBeNull();
+   });
+
+   it("sets every cell in a card that holds its tools and its content", async () => {
+      await mount();
+      for (const label of cells()) {
+         const card = cell(label as string).querySelector("[data-cell-card]");
+         expect(card).not.toBeNull();
+         expect(
+            within(card as HTMLElement).getByRole("button", {
+               name: "Move up",
+               hidden: true,
+            }),
+         ).toBeDefined();
+      }
+      const intro = cell("Cell 1, text").querySelector("[data-cell-card]");
+      expect(within(intro as HTMLElement).getByText("Intro.")).toBeDefined();
    });
 
    it("runs a query cell's exact text against the notebook", async () => {
@@ -277,7 +286,6 @@ describe("NotebookBuilder: markdown", () => {
       expect(button("Undo")).toHaveProperty("disabled", true);
       fireEvent.click(button("Redo"));
 
-      // A property edit: no diff first.
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toBe(SOURCE.replace("Intro.", "Intro, edited."));
@@ -303,7 +311,7 @@ describe("NotebookBuilder: markdown", () => {
       expect(within(cell("Cell 3, text")).getByText("Middle.")).toBeDefined();
    });
 
-   it("adds text above and below a cell, saving through the diff", async () => {
+   it("adds text above and below a cell, and saves at once", async () => {
       let written: string | undefined;
       await mount({ onSave: (s) => void (written = s) });
       fireEvent.click(inCell("Cell 2, definition", "Add text above"));
@@ -318,10 +326,9 @@ describe("NotebookBuilder: markdown", () => {
       fireEvent.click(button("Done"));
       expect(cells()).toHaveLength(6);
 
-      await saveThroughDiff();
-      expect(written).toBeUndefined();
-      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
+      fireEvent.click(button("Save changes"));
       await waitFor(() => expect(written).toBeDefined());
+      expect(await screen.findByText(/Added 2 cells/)).toBeDefined();
       expect(written).toContain(
          "##(markdown) Intro.\n\n##(markdown) Above.\n\n// Documents the source.\n",
       );
@@ -334,25 +341,15 @@ describe("NotebookBuilder: markdown", () => {
       fireEvent.click(inCell("Cell 3, text", "Remove text"));
       expect(cells()).toHaveLength(3);
 
-      await saveThroughDiff();
-      expect(
-         screen.getByLabelText("Comments removed with their cell").textContent,
-      ).toBe("// About the result.");
-      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
+      fireEvent.click(button("Save changes"));
       await waitFor(() => expect(written).toBeDefined());
+      expect(
+         (await screen.findByLabelText("Comments removed with their cell"))
+            .textContent,
+      ).toBe("// About the result.");
       expect(written).not.toContain("Middle.");
       expect(written).not.toContain("// About the result.");
       expect(written).toContain("// Documents the source.");
-   });
-
-   it("keeps editing when the diff is declined", async () => {
-      let written: string | undefined;
-      await mount({ onSave: (s) => void (written = s) });
-      fireEvent.click(inCell("Cell 3, text", "Remove text"));
-      await saveThroughDiff();
-      fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-      expect(written).toBeUndefined();
-      expect(button("Save changes")).toBeDefined();
    });
 
    it("keeps an emptied cell on screen when the writer refuses it, and says why", async () => {
@@ -432,10 +429,8 @@ describe("NotebookBuilder: reorder", () => {
       });
       expect(within(cell("Cell 2, text")).getByText("Middle.")).toBeDefined();
 
-      // A reorder is not structural: it saves without the diff.
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(written).toBeDefined());
-      expect(screen.queryByLabelText("File changes")).toBeNull();
       expect(written?.indexOf("Middle.")).toBeLessThan(
          written?.indexOf("// Documents the source.") ?? -1,
       );

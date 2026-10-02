@@ -10,8 +10,7 @@ import {
    waitFor,
    within,
 } from "@testing-library/react";
-import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { lastSession } from "../../../test/builderSession";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    clearCache,
    mockServerProvider,
@@ -299,10 +298,10 @@ beforeEach(async () => {
 });
 
 describe("NotebookEditor, undoing a package save", () => {
-   const undoSave = () =>
-      act(async () => {
-         await lastSession.current?.undoSave();
-      });
+   const undoSave = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
+      await waitFor(() => expect(button("Save changes")).toBeDefined());
+   };
 
    it("writes the file back against the hash the save returned, and reports it", async () => {
       const onEvent = mock((_event: NotebookEvent) => {});
@@ -316,9 +315,20 @@ describe("NotebookEditor, undoing a package save", () => {
       editIntro("Intro, edited.");
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
-      expect(lastSession.current?.canUndoSave).toBe(true);
+      expect(
+         await screen.findByRole("button", { name: "Undo save" }),
+      ).toBeDefined();
 
       await undoSave();
+      expect(
+         screen
+            .getAllByRole("status")
+            .some((status) =>
+               status.textContent?.includes(
+                  "Save undone. Your edits are back and unsaved.",
+               ),
+            ),
+      ).toBe(true);
       expect(updateModelSource).toHaveBeenCalledTimes(2);
       const body = updateModelSource.mock.calls[1][3];
       expect(body.source).toBe(PACKAGE_FILE);
@@ -359,13 +369,15 @@ describe("NotebookEditor, undoing a package save", () => {
       serverText = withIntro("Someone else's.");
       serverHash = "theirs";
 
-      await undoSave();
+      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
       await alertWith("changed in the package since you opened it");
       expect(serverText).toBe(withIntro("Someone else's."));
       expect(onEvent.mock.calls.at(-1)?.[0]).toMatchObject({
          type: "notebook.save_undo_refused",
       });
-      expect(lastSession.current?.canUndoSave).toBe(true);
+      expect(
+         await screen.findByRole("button", { name: "Undo save" }),
+      ).toBeDefined();
    });
 });
 
@@ -1141,6 +1153,11 @@ describe("NotebookEditor, the notebook's own control settings", () => {
 });
 
 describe("NotebookEditor, when a save fails", () => {
+   const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+   afterEach(() => {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+   });
    const setClipboard = (value: unknown) =>
       Object.defineProperty(navigator, "clipboard", {
          value,

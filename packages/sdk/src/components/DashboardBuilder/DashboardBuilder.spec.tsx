@@ -502,9 +502,7 @@ describe("DashboardBuilder: tiles added and removed", () => {
    const submitDialog = (name: string) =>
       fireEvent.click(screen.getByRole("button", { name, hidden: false }));
 
-   // A structural save shows the file's diff first: declarations move, and
-   // the file cannot say whose comment sits beside them.
-   it("adds a tile from the catalog, and saves it through the diff", async () => {
+   it("adds a tile from the catalog, and saves it at once", async () => {
       let written: string | undefined;
       await mountWithCatalog((source) => {
          written = source;
@@ -520,13 +518,8 @@ describe("DashboardBuilder: tiles added and removed", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      // Nothing written until the diff is approved.
-      expect(written).toBeUndefined();
-      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
       await waitFor(() => expect(written).toBeDefined());
+      expect(await screen.findByText(/Added a tile/)).toBeDefined();
       expect(written).toContain(
          'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
       );
@@ -535,7 +528,7 @@ describe("DashboardBuilder: tiles added and removed", () => {
       );
    });
 
-   it("removes a tile from its menu, and saves it through the diff", async () => {
+   it("removes a tile from its menu, and saves it at once", async () => {
       let written: string | undefined;
       await mountWithCatalog((source) => {
          written = source;
@@ -547,37 +540,14 @@ describe("DashboardBuilder: tiles added and removed", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
       await waitFor(() => expect(written).toBeDefined());
+      expect(await screen.findByText(/Removed 1 tile/)).toBeDefined();
       expect(written).toContain('tiles=["a -> by_brand"]');
       expect(written).not.toContain("view: by_cat");
       // The comment above the removed tile is still in the file.
       expect(written).toContain(
          "  // Kept, because a splice never rewrites what it did not change.",
       );
-   });
-
-   it("keeps editing when the diff is declined", async () => {
-      let written: string | undefined;
-      await mountWithCatalog((source) => {
-         written = source;
-      });
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
-      fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
-      );
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
-      expect(written).toBeUndefined();
-      expect(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
-      ).toBeDefined();
    });
 });
 

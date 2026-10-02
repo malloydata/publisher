@@ -2,34 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Button } from "@mui/material";
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { foldUnchanged, lineDiff } from "./diff";
 import { AppDialog } from "../AppDialog";
 
-/**
- * What a save will do to the file, before it does it.
- *
- * Shown for a STRUCTURAL save — a tile added or removed — because those move
- * declarations and the comments beside them, and the file is git-native: a
- * diff is the idiom its authors already read. A property edit never needs
- * this; it changes one tag on one line.
- */
+/** What the last save changed in the file, read-only: the file is git-native, and a diff is the idiom its authors already read. */
 export function DiffDialog({
    open,
    before,
    after,
-   onConfirm,
    onClose,
-   description,
 }: {
    open: boolean;
    before: string;
    after: string;
-   onConfirm: () => void;
    onClose: () => void;
-   /** What the change did, in the editor's own terms; defaults to the dashboard's. */
-   description?: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
    const lines = useMemo(
@@ -43,16 +31,11 @@ export function DiffDialog({
          open={open}
          onClose={onClose}
          maxWidth="md"
-         title="Review the change to the file"
+         title="The change to the file"
          description={
             <>
-               {description ?? (
-                  <>
-                     A tile was added or removed, which moves declarations.
-                     Lines the builder does not own — comments, other Malloy —
-                     are left where they were; check they still read right.
-                  </>
-               )}{" "}
+               What the last save wrote. Lines the builder does not own, such as
+               comments and other Malloy, are left where they were.{" "}
                <Box
                   component="span"
                   sx={{ fontVariantNumeric: "tabular-nums" }}
@@ -61,14 +44,7 @@ export function DiffDialog({
                </Box>
             </>
          }
-         actions={
-            <>
-               <Button onClick={onClose}>Keep editing</Button>
-               <Button variant="contained" onClick={onConfirm}>
-                  Save this
-               </Button>
-            </>
-         }
+         actions={<Button onClick={onClose}>Close</Button>}
       >
          <Box
             component="pre"

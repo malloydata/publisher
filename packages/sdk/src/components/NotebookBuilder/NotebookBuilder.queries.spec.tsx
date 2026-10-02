@@ -169,10 +169,6 @@ const choose = (label: string, option: string) => {
       }),
    );
 };
-const diffDialog = () =>
-   screen
-      .getByLabelText("File changes")
-      .closest('[role="dialog"]') as HTMLElement;
 const ran = () =>
    executeQueryModel.mock.calls.map((call) => call[3].query as string);
 const lastQuery = () =>
@@ -398,21 +394,10 @@ describe("adding a query", () => {
       choose("Cell 7, query", "Bar");
 
       fireEvent.click(button("Save changes"));
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      expect(
-         screen.getByText(/A text or query cell was added or removed/),
-      ).toBeDefined();
-      // Nothing that was read is removed, so undo survives this save.
-      expect(screen.queryByText(/clears undo/)).toBeNull();
-      fireEvent.click(
-         within(diffDialog()).getByRole("button", {
-            name: /Save/,
-            hidden: true,
-         }),
-      );
       await waitFor(() => expect(written).toBeDefined());
+      expect(await screen.findByText(/Added a cell/)).toBeDefined();
+      // Nothing that was read is removed, so undo survives this save.
+      expect(screen.queryByText(/Undo history was cleared/)).toBeNull();
       expect(
          written?.endsWith(
             `#" Revenue\n${chartLineText("bar_chart")}\nrun: a -> by_cat\n`,
@@ -446,13 +431,6 @@ describe("undo around saves", () => {
       fireEvent.click(button("View by_cat"));
       fireEvent.click(button("Add query"));
       fireEvent.click(button("Save changes"));
-      fireEvent.click(
-         within(
-            (await screen.findByLabelText("File changes")).closest(
-               '[role="dialog"]',
-            ) as HTMLElement,
-         ).getByRole("button", { name: /Save/, hidden: true }),
-      );
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(button("Saved")).toBeDefined());
 
@@ -464,7 +442,7 @@ describe("undo around saves", () => {
       expect(button("Undo").hasAttribute("disabled")).toBe(false);
    });
 
-   it("shows the diff, and says undo will clear, before saving a chart over a bare chart line", async () => {
+   it("saves a chart over a bare chart line at once, and says undo history was cleared", async () => {
       const onSave = mock(async (_text: string) => {});
       await mount({
          onSave,
@@ -477,16 +455,9 @@ run: a -> by_cat
       });
       choose("Cell 2, query", "Bar");
       fireEvent.click(button("Save changes"));
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      expect(onSave).not.toHaveBeenCalled();
-      expect(screen.getByText(/Saving this clears undo/)).toBeDefined();
-      expect(screen.getByText(/A chart line was changed/)).toBeDefined();
-      expect(
-         screen.getByText(/cells and chart lines this save changes/),
-      ).toBeDefined();
-      expect(screen.queryByText(/added or removed/)).toBeNull();
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/Undo history was cleared/)).toBeDefined();
+      expect(screen.getByText(/Saved your edits/)).toBeDefined();
    });
 });
 
@@ -637,25 +608,14 @@ run: a -> by_cat
 });
 
 describe("removing a query", () => {
-   it("says the save clears undo, and then undo is gone", async () => {
+   it("says undo history was cleared, and then undo is gone", async () => {
       const onSave = mock(async (_text: string) => {});
       await mount({ onSave });
       fireEvent.click(inCell("Cell 3, query", "Remove query"));
       fireEvent.click(button("Save changes"));
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      expect(
-         screen.getByText(/A text or query cell was added or removed/),
-      ).toBeDefined();
-      expect(screen.getByText(/Saving this clears undo/)).toBeDefined();
-      fireEvent.click(
-         within(diffDialog()).getByRole("button", {
-            name: /Save/,
-            hidden: true,
-         }),
-      );
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText(/Removed 1 cell/)).toBeDefined();
+      expect(screen.getByText(/Undo history was cleared/)).toBeDefined();
       await waitFor(() =>
          expect(button("Undo").hasAttribute("disabled")).toBe(true),
       );
@@ -665,9 +625,7 @@ describe("removing a query", () => {
       await mount({ onSave: async () => {} });
       fireEvent.click(inCell("Cell 1, text", "Remove text"));
       fireEvent.click(button("Save changes"));
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      expect(screen.queryByText(/clears undo/)).toBeNull();
+      expect(await screen.findByText(/Removed 1 cell/)).toBeDefined();
+      expect(screen.queryByText(/Undo history was cleared/)).toBeNull();
    });
 });

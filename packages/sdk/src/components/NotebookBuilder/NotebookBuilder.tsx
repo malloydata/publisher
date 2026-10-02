@@ -7,8 +7,6 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import PlaylistAddIcon from "@mui/icons-material/PlaylistAdd";
-import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
-import VerticalAlignTopIcon from "@mui/icons-material/VerticalAlignTop";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import {
@@ -36,7 +34,7 @@ import { GIVEN_SETTLE_MS, useSettled } from "../../hooks/useSettled";
 import type { SavesTo } from "../DashboardBuilder/documentSession";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
-import { DiffDialog } from "../DashboardBuilder/DiffDialog";
+import { SaveNotice } from "../DashboardBuilder/SaveNotice";
 import type { CatalogSource } from "../DashboardBuilder/catalog";
 import { builderSensors } from "../DashboardBuilder/sortable";
 import { useBuilderSession } from "../DashboardBuilder/useBuilderSession";
@@ -44,7 +42,12 @@ import type { NavigationClick } from "../click_helper";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import type { ProseLinkContext } from "../Prose";
-import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import {
+   CleanMetricCard,
+   CleanNotebookContainer,
+   CleanNotebookSection,
+} from "../styles";
+import { CellAddIcon } from "./CellAddIcon";
 import { AddQueryDialog } from "./AddQueryDialog";
 import { mergeSources, notebookImports } from "./imports";
 import { cellQueries, cellSlices, runTargetOf, withChart } from "./cellText";
@@ -461,15 +464,9 @@ export function NotebookBuilder({
    const shortcuts = useMemo(() => ({ escape: () => {} }), []);
    const session = useBuilderSession<
       NotebookDocument,
-      {
-         before: string;
-         after: string;
-         removedComments: string[];
-         clearsHistory: boolean;
-         structural: boolean;
-      },
       NonNullable<NotebookEditor["lastSave"]>
    >({
+      unit: { name: "cell", count: (document) => document.cells.length },
       editor,
       onSave,
       onExit,
@@ -501,26 +498,7 @@ export function NotebookBuilder({
          undoRefused: (reason) =>
             onEvent?.({ type: "notebook.save_undo_refused", reason }),
       },
-      review: () =>
-         editor.structural || editor.clearsHistory
-            ? Promise.all([editor.preview(), editor.removedComments()]).then(
-                 ([result, removedComments]) =>
-                    result.ok
-                       ? {
-                            ok: true as const,
-                            review: {
-                               before: editor.source,
-                               after: result.source,
-                               removedComments,
-                               clearsHistory: editor.clearsHistory,
-                               structural: editor.structural,
-                            },
-                         }
-                       : { ok: false as const },
-              )
-            : undefined,
    });
-   const { pendingSave } = session;
    useEffect(() => {
       if (draftDirty || !afterCommit.current) return;
       const run = afterCommit.current;
@@ -666,6 +644,7 @@ export function NotebookBuilder({
             {...session.toolbarProps}
             {...(toolbar ? { actions: toolbar } : {})}
          />
+         <SaveNotice {...session.notice} />
          <CleanNotebookContainer>
             <CleanNotebookSection>
                <Stack spacing={2} component="section">
@@ -803,93 +782,124 @@ export function NotebookBuilder({
                                     >
                                        <DragIndicatorIcon fontSize="small" />
                                     </Box>
-                                    <Stack
-                                       direction="row"
-                                       className="notebook-cell-tools"
-                                       aria-label={`Tools for ${label}`}
+                                    <CleanMetricCard
+                                       data-cell-card=""
                                        sx={{
-                                          justifyContent: "flex-end",
-                                          // Resting icons stay at 3:1 or better against the page in both themes.
-                                          opacity: 0.8,
-                                          transition: "opacity 120ms",
+                                          border: 1,
+                                          borderColor: "divider",
+                                          borderRadius: 1,
+                                          px: 2,
+                                          pt: 0.5,
+                                          pb: 1.5,
                                        }}
                                     >
-                                       <CellButton
-                                          label="Move up"
-                                          disabled={
-                                             moveBlocked(at, at - 1) !==
-                                             undefined
-                                          }
-                                          reason={moveBlocked(at, at - 1)}
-                                          onBlocked={setNotice}
-                                          onClick={() => moveCell(at, at - 1)}
+                                       <Stack
+                                          direction="row"
+                                          className="notebook-cell-tools"
+                                          aria-label={`Tools for ${label}`}
+                                          sx={{
+                                             justifyContent: "flex-end",
+                                             // Resting icons stay at 3:1 or better against the page in both themes.
+                                             opacity: 0.8,
+                                             transition: "opacity 120ms",
+                                          }}
                                        >
-                                          <ArrowUpwardIcon fontSize="small" />
-                                       </CellButton>
-                                       <CellButton
-                                          label="Move down"
-                                          disabled={
-                                             moveBlocked(at, at + 1) !==
-                                             undefined
-                                          }
-                                          reason={moveBlocked(at, at + 1)}
-                                          onBlocked={setNotice}
-                                          onClick={() => moveCell(at, at + 1)}
-                                       >
-                                          <ArrowDownwardIcon fontSize="small" />
-                                       </CellButton>
-                                       <CellButton
-                                          label="Add text above"
-                                          onClick={() => addText(at)}
-                                       >
-                                          <VerticalAlignTopIcon fontSize="small" />
-                                       </CellButton>
-                                       <CellButton
-                                          label="Add text below"
-                                          onClick={() => addText(at + 1)}
-                                       >
-                                          <VerticalAlignBottomIcon fontSize="small" />
-                                       </CellButton>
-                                       <CellButton
-                                          label="Add query above"
-                                          disabled={
-                                             queryBlocked(at) !== undefined
-                                          }
-                                          reason={queryBlocked(at)}
-                                          onBlocked={setNotice}
-                                          onClick={() => openAddQuery(at)}
-                                       >
-                                          <PlaylistAddIcon fontSize="small" />
-                                       </CellButton>
-                                       <CellButton
-                                          label="Add query below"
-                                          disabled={
-                                             queryBlocked(at + 1) !== undefined
-                                          }
-                                          reason={queryBlocked(at + 1)}
-                                          onBlocked={setNotice}
-                                          onClick={() => openAddQuery(at + 1)}
-                                       >
-                                          <PlaylistAddIcon fontSize="small" />
-                                       </CellButton>
-                                       {cell.kind === "markdown" && (
                                           <CellButton
-                                             label="Remove text"
-                                             onClick={() => removeCell(at)}
+                                             label="Move up"
+                                             disabled={
+                                                moveBlocked(at, at - 1) !==
+                                                undefined
+                                             }
+                                             reason={moveBlocked(at, at - 1)}
+                                             onBlocked={setNotice}
+                                             onClick={() =>
+                                                moveCell(at, at - 1)
+                                             }
                                           >
-                                             <DeleteOutlineIcon fontSize="small" />
+                                             <ArrowUpwardIcon fontSize="small" />
                                           </CellButton>
-                                       )}
-                                       {cell.kind === "query" && (
                                           <CellButton
-                                             label="Remove query"
-                                             onClick={() => removeCell(at)}
+                                             label="Move down"
+                                             disabled={
+                                                moveBlocked(at, at + 1) !==
+                                                undefined
+                                             }
+                                             reason={moveBlocked(at, at + 1)}
+                                             onBlocked={setNotice}
+                                             onClick={() =>
+                                                moveCell(at, at + 1)
+                                             }
                                           >
-                                             <DeleteOutlineIcon fontSize="small" />
+                                             <ArrowDownwardIcon fontSize="small" />
                                           </CellButton>
-                                       )}
-                                    </Stack>
-                                    {renderCell(cell)}
+                                          <CellButton
+                                             label="Add text above"
+                                             onClick={() => addText(at)}
+                                          >
+                                             <CellAddIcon
+                                                kind="text"
+                                                side="above"
+                                             />
+                                          </CellButton>
+                                          <CellButton
+                                             label="Add text below"
+                                             onClick={() => addText(at + 1)}
+                                          >
+                                             <CellAddIcon
+                                                kind="text"
+                                                side="below"
+                                             />
+                                          </CellButton>
+                                          <CellButton
+                                             label="Add query above"
+                                             disabled={
+                                                queryBlocked(at) !== undefined
+                                             }
+                                             reason={queryBlocked(at)}
+                                             onBlocked={setNotice}
+                                             onClick={() => openAddQuery(at)}
+                                          >
+                                             <CellAddIcon
+                                                kind="query"
+                                                side="above"
+                                             />
+                                          </CellButton>
+                                          <CellButton
+                                             label="Add query below"
+                                             disabled={
+                                                queryBlocked(at + 1) !==
+                                                undefined
+                                             }
+                                             reason={queryBlocked(at + 1)}
+                                             onBlocked={setNotice}
+                                             onClick={() =>
+                                                openAddQuery(at + 1)
+                                             }
+                                          >
+                                             <CellAddIcon
+                                                kind="query"
+                                                side="below"
+                                             />
+                                          </CellButton>
+                                          {cell.kind === "markdown" && (
+                                             <CellButton
+                                                label="Remove text"
+                                                onClick={() => removeCell(at)}
+                                             >
+                                                <DeleteOutlineIcon fontSize="small" />
+                                             </CellButton>
+                                          )}
+                                          {cell.kind === "query" && (
+                                             <CellButton
+                                                label="Remove query"
+                                                onClick={() => removeCell(at)}
+                                             >
+                                                <DeleteOutlineIcon fontSize="small" />
+                                             </CellButton>
+                                          )}
+                                       </Stack>
+                                       {renderCell(cell)}
+                                    </CleanMetricCard>
                                  </Box>
                               )}
                            </CellSortable>
@@ -909,52 +919,6 @@ export function NotebookBuilder({
             onAdd={(run) => {
                if (adding !== undefined) addQuery(adding, run);
             }}
-         />
-         <DiffDialog
-            open={pendingSave !== undefined}
-            before={pendingSave?.before ?? ""}
-            after={pendingSave?.after ?? ""}
-            onConfirm={session.confirmSave}
-            onClose={session.dismissReview}
-            description={
-               <>
-                  {pendingSave?.structural
-                     ? "A text or query cell was added or removed."
-                     : "A chart line was changed."}{" "}
-                  Lines outside the cells and chart lines this save changes are
-                  kept as they were; check they still read right.
-                  {pendingSave?.clearsHistory && (
-                     <>
-                        {" "}
-                        Saving this clears undo: a query already in the file, or
-                        a chart line the editor cannot rewrite, cannot be put
-                        back once it is changed, so you cannot step back past
-                        this save.
-                     </>
-                  )}
-                  {pendingSave && pendingSave.removedComments.length > 0 && (
-                     <>
-                        {" "}
-                        Removing a cell also removes the comment directly above
-                        it, which travels with the cell:
-                        {/* A span: the description is a paragraph, which cannot hold a pre. */}
-                        <Box
-                           component="span"
-                           aria-label="Comments removed with their cell"
-                           sx={{
-                              display: "block",
-                              whiteSpace: "pre",
-                              fontFamily: "monospace",
-                              fontSize: 12,
-                              my: 1,
-                           }}
-                        >
-                           {pendingSave.removedComments.join("\n")}
-                        </Box>
-                     </>
-                  )}
-               </>
-            }
          />
          <UnsavedChangesDialog {...session.exitGuard.dialog} />
       </Stack>

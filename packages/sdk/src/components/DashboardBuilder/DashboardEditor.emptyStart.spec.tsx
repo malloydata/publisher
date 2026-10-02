@@ -1,15 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   act,
-   fireEvent,
-   render,
-   screen,
-   waitFor,
-} from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { lastSession } from "../../../test/builderSession";
 import { globalQueryClient } from "../../utils/queryClient";
 import {
    clearCache,
@@ -128,7 +121,6 @@ const saveFirstTile = async () => {
    fireEvent.click(
       screen.getByRole("button", { name: "Save changes", hidden: true }),
    );
-   fireEvent.click(await screen.findByRole("button", { name: "Save this" }));
    await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
 };
 
@@ -153,9 +145,8 @@ describe("DashboardEditor, starting empty", () => {
       expect(manifestQuery()?.isDisabled()).toBe(false);
       const written = updateModelSource.mock.calls[0][3].source;
 
-      await act(async () => {
-         await lastSession.current?.undoSave();
-      });
+      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(2));
       expect(updateModelSource).toHaveBeenCalledTimes(2);
       const [, , , body] = updateModelSource.mock.calls[1];
       expect(body.source).toBe(served);
@@ -190,7 +181,6 @@ describe("DashboardEditor, starting empty", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );
-      fireEvent.click(await screen.findByRole("button", { name: "Save this" }));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(getDashboard).toHaveBeenCalledTimes(1));

@@ -6,10 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export interface ExitGuardOptions {
    dirty: boolean;
    saving: boolean;
-   /** A review dialog stands between the request and the write. */
-   reviewing: boolean;
    canSave: boolean;
-   /** Resolves once the save has run or been handed to the review dialog. */
+   /** Resolves once the save has run. */
    save: () => Promise<void> | void;
    onExit: () => void;
 }
@@ -20,7 +18,6 @@ type Phase = "idle" | "asking" | "waiting" | "saving";
 export function useExitGuard({
    dirty,
    saving,
-   reviewing,
    canSave,
    save,
    onExit,
@@ -56,17 +53,17 @@ export function useExitGuard({
             onExitRef.current();
          }
       } else if (phase === "saving") {
-         if (!issued || saving || reviewing) return;
+         if (!issued || saving) return;
          setPhase("idle");
          if (!dirty) onExitRef.current();
       }
-   }, [phase, issued, saving, reviewing, dirty, issue]);
+   }, [phase, issued, saving, dirty, issue]);
 
    const requestExit = useCallback(() => {
-      if (phase !== "idle" || reviewing) return;
+      if (phase !== "idle") return;
       if (dirty) setPhase("asking");
       else onExitRef.current();
-   }, [phase, dirty, reviewing]);
+   }, [phase, dirty]);
 
    return {
       requestExit,

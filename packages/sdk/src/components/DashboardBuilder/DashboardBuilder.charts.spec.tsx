@@ -180,10 +180,6 @@ describe("DashboardBuilder: charts", () => {
       fireEvent.click(
          screen.getByRole("button", { name: "Save changes", hidden: true }),
       );
-      await waitFor(() =>
-         expect(screen.getByLabelText("File changes")).toBeDefined(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
          `  ${chartLineText("big_value")}\n  view: kpis_tile is kpis`,

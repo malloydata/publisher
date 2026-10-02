@@ -8,7 +8,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import { Button, Chip, Divider, IconButton, Tooltip } from "@mui/material";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { SecondaryButton } from "../buttons";
 import { DashboardBar } from "../Dashboard/DashboardBar";
@@ -36,6 +36,8 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
+   /** The Save button, so focus can return to it after an Undo save. */
+   saveButton?: Ref<HTMLButtonElement>;
    /** The host's own extra actions, beside Done. */
    actions?: ReactNode;
    /** Leave editing: draws "Done editing" at the right edge. Absent, no such button. */
@@ -54,6 +56,7 @@ export function BuilderToolbar({
    dirty,
    saving,
    onSave,
+   saveButton,
    actions,
    onExit,
    onAddTile,
@@ -139,6 +142,7 @@ export function BuilderToolbar({
                <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
                   <span>
                      <Button
+                        ref={saveButton}
                         variant={dirty ? "contained" : "outlined"}
                         disabled={!dirty || saving}
                         onClick={onSave}
