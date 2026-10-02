@@ -49,8 +49,10 @@ import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
-   getEmbeddingConfig,
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   getEmbeddingSettings,
    getExtensionFetchPolicy,
+   getLlmSettings,
    getMaterializationSchedulerConfig,
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
@@ -58,8 +60,9 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
-   getSemanticIndexMaxEntities,
+   getRetrievalConfig,
 } from "./config";
+import { setRetrievalConfig } from "./retrieval_config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -347,16 +350,36 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // matching the sibling getters above, rather than surfacing as a warn on the
 // first getContext call that reaches tier 4 — or never. Logs the posture the
 // server booted with; the host only, never the key.
-const embeddingConfig = getEmbeddingConfig();
+//
+// The `retrieval` block of publisher.config.json is read here, once, so an
+// invalid value stops the server with its fix rather than surfacing on the
+// first question. The provider getters read it back from module state.
+const retrievalConfig = getRetrievalConfig(SERVER_ROOT);
+setRetrievalConfig(retrievalConfig);
+const embeddingConfig = getEmbeddingSettings(retrievalConfig?.embedding);
 if (embeddingConfig) {
    logger.info(
-      `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+      `Semantic get_context enabled: ${embeddingConfig.provider} model ${embeddingConfig.model}` +
+         (embeddingConfig.baseUrl
+            ? ` at ${new URL(embeddingConfig.baseUrl).host}`
+            : ""),
    );
 }
-// The entity cap for the semantic index, from publisher.config.json. Read here,
-// once, so an invalid value stops the server with its fix rather than surfacing
-// on the first question about a large package.
-const semanticIndexMaxEntities = getSemanticIndexMaxEntities(SERVER_ROOT);
+const llmSettings = getLlmSettings(retrievalConfig?.llm);
+if (llmSettings) {
+   logger.info(
+      `Retrieval LLM enabled: ${llmSettings.provider} model ${llmSettings.model}`,
+   );
+} else if (retrievalConfig?.llm) {
+   logger.warn(
+      `retrieval.llm names provider "${retrievalConfig.llm.provider}" but LLM_API_KEY is not set, so every LLM feature is off. ` +
+         `Fix: set LLM_API_KEY in the server's environment.`,
+   );
+}
+// The entity cap for the semantic index.
+const semanticIndexMaxEntities =
+   retrievalConfig?.indexing?.maxEntities ??
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
 setMaxEmbeddedEntities(semanticIndexMaxEntities);
 if (embeddingConfig) {
    logger.info(

@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash } from "crypto";
+import type { EmbeddingModel } from "../../providers/types";
 import lunr from "lunr";
 import { logger } from "../../logger";
 import {
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
-   EmbeddingProvider,
 } from "../../service/embedding_provider";
 // humanizeName and the similarity floor are shared with the package index on
 // purpose: a query is humanized the same way whichever index answers it.
@@ -346,8 +346,8 @@ export function _resetSchemaIndexStateForTests(): void {
    cooldownUntilMs.clear();
 }
 
-function providerKeyFor(provider: EmbeddingProvider): string {
-   return `${provider.model}\x00${provider.dimensions ?? ""}`;
+function providerKeyFor(provider: EmbeddingModel): string {
+   return `${provider.model}\x00${provider.dimensions ?? ""}\x00${provider.documentPrefix ?? ""}`;
 }
 
 /**
@@ -361,7 +361,7 @@ async function tryRankSemantically(args: {
    tables: SchemaTableEntity[];
    query: string;
    limit: number;
-   provider: EmbeddingProvider;
+   provider: EmbeddingModel;
    cacheKey: string;
 }): Promise<RankedResult | null> {
    const { tables, query, limit, provider, cacheKey } = args;
@@ -400,7 +400,9 @@ async function tryRankSemantically(args: {
          entry.fingerprint !== fingerprint ||
          entry.providerKey !== providerKey
       ) {
-         const texts = tables.map(tableIndexText);
+         const texts = tables.map(
+            (t) => (provider.documentPrefix ?? "") + tableIndexText(t),
+         );
          const vectors = await provider.embedBatch(
             texts,
             EMBEDDING_BATCH_TIMEOUT_MS,
@@ -421,7 +423,7 @@ async function tryRankSemantically(args: {
       }
 
       const [queryVector] = await provider.embedBatch(
-         [query],
+         [(provider.queryPrefix ?? "") + query],
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
       if (!queryVector) throw new Error("Empty query embedding");
@@ -441,7 +443,7 @@ async function tryRankSemantically(args: {
       cooldownUntilMs.set(cacheKey, Date.now() + PROVIDER_FAILURE_COOLDOWN_MS);
       pruneCooldowns();
       // The message can carry a provider body excerpt but never the API key,
-      // which EmbeddingProvider keeps to the Authorization header.
+      // which EmbeddingModel keeps to the Authorization header.
       logger.warn(
          "[MCP Tool searchDatabaseSchema] Embedding failed; ranking lexically",
          {
@@ -465,7 +467,7 @@ export async function rankTables(args: {
    tables: SchemaTableEntity[];
    query: string;
    limit: number;
-   provider: EmbeddingProvider | null;
+   provider: EmbeddingModel | null;
    cacheKey: string;
 }): Promise<RankedResult & { ranking: RankingMode }> {
    const { tables, query, limit, provider, cacheKey } = args;
