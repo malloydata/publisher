@@ -20,6 +20,16 @@ import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { indexSettingsOf, type IndexSettings } from "./index_settings";
+import {
+   KeyphraseStageError,
+   countNeedingLlm,
+   deleteEnvironmentKeyphrases,
+   deletePackageKeyphrases,
+   keyphraseInputsDigest,
+   keyphraseKey,
+   resolveKeyphrases,
+   type KeyphraseProgress,
+} from "./keyphrases";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -89,6 +99,8 @@ export interface EmbeddableEntity {
    embedDoc: string;
    /** Malloy type of a dimension or measure; absent on other kinds. */
    dataType?: string;
+   /** Authored expression text; sent to the LLM only under the `full` egress preset. */
+   code?: string;
 }
 
 export interface SemanticHit {
@@ -529,9 +541,7 @@ function desiredFacets(
       entityRows(
          entity,
          plan.representation,
-         plan.keyphrases?.get(
-            entityRowKey(entity.kind, sourceColumn(entity.source), entity.name),
-         ),
+         plan.keyphrases?.get(keyphraseKey(entity)),
       ).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
@@ -632,6 +642,10 @@ interface PackageSyncMeta {
    failureAtMs: number;
    /** Why the provider last failed for this package. Read by the status. */
    lastError?: string;
+   /** The sync stage `lastError` came from, when it was not the embedding call. */
+   lastErrorStage?: "keyphrase";
+   /** Where the keyphrase step is, from the latest sync that ran it. */
+   keyphraseProgress?: KeyphraseProgress;
    /** When the sync now running began, absent while none is running. */
    syncStartedAtMs?: number;
    synced?: SyncedFact;
@@ -687,9 +701,14 @@ function metaFor(
    return meta;
 }
 
-function markProviderFailure(meta: PackageSyncMeta, message: string): void {
+function markProviderFailure(
+   meta: PackageSyncMeta,
+   message: string,
+   stage?: "keyphrase",
+): void {
    meta.failureAtMs = Date.now();
    meta.lastError = message;
+   meta.lastErrorStage = stage;
 }
 
 function inCooldown(meta: PackageSyncMeta): boolean {
@@ -797,7 +816,12 @@ async function computeDesiredSummary(
    }
    return {
       fingerprint: contentHash(
-         settings.key + "\n" + desiredFingerprint(desired),
+         settings.key +
+            "\n" +
+            // The fields only the keyphrase step reads (data type, code).
+            keyphraseInputsDigest(unique, settings.keyphrases) +
+            "\n" +
+            desiredFingerprint(desired),
       ),
       rows: desired.length,
    };
@@ -922,6 +946,7 @@ export async function deletePackageEmbeddings(
           WHERE environment_name = ? AND package_name = ?`,
          [environmentName, packageName],
       );
+      await deletePackageKeyphrases(db, environmentName, packageName);
       meta.generation = ++generationCounter;
       // Removing the entry keeps package churn from growing the map for
       // the process lifetime; it is safe because generations are
@@ -962,6 +987,7 @@ export async function deleteEnvironmentEmbeddings(
    await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
       environmentName,
    ]);
+   await deleteEnvironmentKeyphrases(db, environmentName);
 }
 
 /**
@@ -1065,6 +1091,34 @@ async function syncPackageEmbeddings(
       // mutex) either finished before this sync started or starts after
       // it ends, so the generation moves mid-sync only via the bump at
       // the bottom of this function.
+
+      // Keyphrases first: they decide what text an entity embeds as. Each LLM
+      // batch is saved as it returns, so a failure keeps what was done and
+      // the sync stops here, before any embedding is written: a package whose
+      // keyphrases cannot be produced is an error, never a quiet fallback to
+      // doc-or-name vectors. Progress is on the meta for the status.
+      let keyphrases: Map<string, string> | undefined;
+      if (settings.keyphrases) {
+         meta.keyphraseProgress = {
+            done: 0,
+            total: countNeedingLlm(entities, settings.keyphrases.mode),
+            capped: false,
+         };
+         const outcome = await resolveKeyphrases({
+            db,
+            environmentName,
+            packageName,
+            entities,
+            settings: settings.keyphrases,
+            onProgress: (p) => {
+               meta.keyphraseProgress = p;
+            },
+         });
+         keyphrases = outcome.keyphrases;
+      } else {
+         meta.keyphraseProgress = undefined;
+      }
+
       const existingRows = await db.all<ExistingRow>(
          `SELECT entity_kind, entity_source, entity_name, facet, content_hash,
                  embedding_model, CAST(dims AS INTEGER) AS dims
@@ -1105,7 +1159,10 @@ async function syncPackageEmbeddings(
       // changed documentPrefix re-embeds every row through the ordinary diff.
       const documentPrefix = provider.documentPrefix ?? "";
       const desired = withDocumentPrefix(
-         desiredFacets(entities, { representation: settings.representation }),
+         desiredFacets(entities, {
+            representation: settings.representation,
+            keyphrases,
+         }),
          documentPrefix,
       );
       const desiredKeys = new Set(
@@ -1305,12 +1362,17 @@ async function runTrackedSync(
          meta,
       );
       meta.lastError = undefined;
+      meta.lastErrorStage = undefined;
    } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      markProviderFailure(meta, message);
+      const stage =
+         error instanceof KeyphraseStageError ? "keyphrase" : undefined;
+      markProviderFailure(meta, message, stage);
       logger.warn(
-         "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
-         { environmentName, packageName, error: message },
+         stage
+            ? "[MCP Tool getContext] Keyphrase generation failed; semantic ranking cooling down"
+            : "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
+         { environmentName, packageName, stage, error: message },
       );
    } finally {
       meta.syncStartedAtMs = undefined;
@@ -1981,7 +2043,20 @@ export interface EmbeddingIndexStatus {
     * (over the cap, which no retry fixes).
     */
    reason?: "cooldown" | "too-many-entities";
+   /**
+    * The sync stage that failed, when `status` is `error` because of one:
+    * `keyphrase` means the LLM could not write keyphrases (after retries), so
+    * nothing was embedded. Absent when the embedding call itself failed.
+    */
+   stage?: "keyphrase";
    lastError?: { message: string; retryAt?: string };
+   /**
+    * Entities whose keyphrase comes from the LLM, and how many have one.
+    * Present only when keyphrases are on (the package asks for them and an LLM
+    * is configured). `done` below `total` while `ready` means the per-sync
+    * call limit stopped the step; the next sync continues.
+    */
+   keyphraseProgress?: { done: number; total: number; capped?: boolean };
    /** When the sync now running began. Absent when none is running. */
    startedAt?: string;
    /**
@@ -2113,9 +2188,13 @@ export async function getEmbeddingIndexStatus(
    ).length;
 
    const meta = syncMeta.get(metaKey(environmentName, packageName));
-   const summary = await desiredSummaryFor(allEntities, indexSettingsOf(pkg));
+   const settings = indexSettingsOf(pkg);
+   const summary = await desiredSummaryFor(allEntities, settings);
 
-   let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
+   let state: Pick<
+      EmbeddingIndexStatus,
+      "status" | "reason" | "lastError" | "stage"
+   >;
    if (entityCount > maxEmbeddedEntities) {
       state = {
          status: "error",
@@ -2126,6 +2205,7 @@ export async function getEmbeddingIndexStatus(
       state = {
          status: "error",
          reason: "cooldown",
+         ...(meta.lastErrorStage ? { stage: meta.lastErrorStage } : {}),
          lastError: {
             message: meta.lastError ?? "The embedding provider failed",
             retryAt: new Date(meta.failureAtMs + cooldownMs).toISOString(),
@@ -2144,11 +2224,22 @@ export async function getEmbeddingIndexStatus(
       state = { status: "indexing" };
    }
 
+   const keyphraseProgress = settings.keyphrases
+      ? (meta?.keyphraseProgress ?? {
+           done: 0,
+           total: countNeedingLlm(
+              uniqueByEntityKey(allEntities),
+              settings.keyphrases.mode,
+           ),
+        })
+      : undefined;
+
    return {
       ...state,
       ...(meta?.syncStartedAtMs !== undefined && state.status === "indexing"
          ? { startedAt: new Date(meta.syncStartedAtMs).toISOString() }
          : {}),
+      ...(keyphraseProgress ? { keyphraseProgress } : {}),
       embeddedRows,
       totalRows: summary.rows,
       totalEntities: entityCount,

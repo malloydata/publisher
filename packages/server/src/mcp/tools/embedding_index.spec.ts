@@ -13,7 +13,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
+import {
+   createEntityEmbeddingsTable,
+   createEntityKeyphrasesTable,
+} from "../../storage/duckdb/schema";
 import {
    EmbeddingProvider,
    prepareEmbeddingInput,
@@ -52,6 +55,7 @@ beforeAll(async () => {
    db = new DuckDBConnection(path.join(tempDir, "test.db"));
    await db.initialize();
    await createEntityEmbeddingsTable(db);
+   await createEntityKeyphrasesTable(db);
 });
 
 afterAll(async () => {

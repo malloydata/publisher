@@ -3715,6 +3715,36 @@ components:
             = the package has more entities than the embedding cap, which no
             retry fixes. Absent for other errors, such as an invalid embedding
             configuration, which `lastError.message` describes.
+        stage:
+          type: string
+          enum:
+            - keyphrase
+          description: >-
+            The sync stage that failed, when `status` is `error` because of one.
+            `keyphrase` = the LLM could not write the package's keyphrases
+            (after retries), so nothing was embedded; `lastError.message` has
+            the reason. Absent when the embedding call itself failed.
+        keyphraseProgress:
+          type: object
+          description: >-
+            Present only when keyphrases are on: the package asks for them
+            (`retrieval.keyphrases` is `auto` or `always`, the default being
+            `auto`) and `retrieval.llm` is configured. Counts the entities whose
+            keyphrase comes from the LLM; an entity with a short description
+            uses it as its keyphrase and is not counted.
+          properties:
+            done:
+              type: integer
+              description: Entities that need an LLM keyphrase and have one stored.
+            total:
+              type: integer
+              description: Entities that need an LLM keyphrase.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every entity had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
         lastError:
           type: object
           description: Present when `status` is `error`.
@@ -3740,9 +3770,12 @@ components:
           type: integer
           description: >-
             Cached vectors for this package under the current embedding model.
-            An entity contributes one row for its name plus one per chunk of
-            its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities. Scoped by model only, not by
+            With the default `retrieval.representation` of `single` an entity
+            contributes one row, so this equals `totalEntities` once indexed.
+            With `facets` an entity contributes one row for its name plus one
+            per chunk of its documentation (and one for its keyphrase), so this
+            exceeds `totalEntities` on a documented model and is not a count of
+            entities. Scoped by model only, not by
             vector length, so it counts what is cached rather than what a
             search could read today: after a change to `EMBEDDING_DIMENSIONS`
             that no question has probed yet, rows of the old length are still
