@@ -184,6 +184,39 @@ describe("convertLegacyNotebook: the storefront category review", () => {
    });
 });
 
+describe("convertLegacyNotebook: a named query that ends in a line comment", () => {
+   const PKG = path.dirname(FIXTURES);
+   for (const [name, comment] of [
+      ["//", "// c"],
+      ["--", "-- c"],
+   ] as const)
+      it(`keeps a refinement out of a ${name} comment`, async () => {
+         const converted = await convert(
+            `${HEAD}\nquery: q is orders -> { group_by: region } ${comment}\n\nrun: q + { limit: 1 }\n`,
+         );
+         expect(converted).toMatch(
+            new RegExp(`${comment}\\n\\s*\\+ \\{ limit: 1 \\}`),
+         );
+         const model = await compiled(PKG, "notebooks/c.malloy", converted);
+         try {
+            const [tile] = (await document(converted)).tiles.filter(
+               isQueryTile,
+            );
+            expect(await model.rows(tile.source, tile.name)).toHaveLength(1);
+         } finally {
+            await model.close();
+         }
+      });
+
+   it("keeps a following stage out of the comment", async () => {
+      const converted = await convert(
+         `${HEAD}\nquery: q is orders -> { group_by: region } // c\n\nrun: q -> { select: region }\n`,
+      );
+      expect(converted).toMatch(/\/\/ c\n\s*-> \{ select: region \}/);
+      expect(await syntaxErrors(converted)).toEqual([]);
+   });
+});
+
 describe("convertLegacyNotebook: every cell-format notebook in the corpus", () => {
    const files = fs
       .readdirSync(FIXTURES)

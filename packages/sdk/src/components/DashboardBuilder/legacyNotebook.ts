@@ -882,7 +882,11 @@ export async function convertLegacyNotebook(
                );
          }
          used.push(lead);
-         expression = `${definition.expression}${rest === "" ? "" : ` ${rest}`}`;
+         // A trailing `//` or `--` comment on the definition would swallow a refinement on its line.
+         const joiner = /(\/\/|--)[^\n]*$/.test(definition.expression)
+            ? "\n"
+            : " ";
+         expression = `${definition.expression}${rest === "" ? "" : `${joiner}${rest}`}`;
       }
       const blank = blankNonCode(expression);
       // The hop limit stopped on a query name; `q -> …` would otherwise convert as a source called `q`.
