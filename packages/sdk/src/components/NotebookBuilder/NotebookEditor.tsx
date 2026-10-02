@@ -8,18 +8,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CompiledModel, Given, RawNotebook } from "../../client";
 import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { encodeResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { SecondaryButton } from "../buttons";
 import { now } from "../../utils/clock";
 import { buildCatalog } from "../DashboardBuilder/catalog";
 import {
-   apiErrorMessage,
    chooseWorkspace,
    expectedHashFor,
+   resolveEditorTarget,
    saveCaption,
    saveTarget,
    storageErrorMessage,
+   withWorkspace,
+   writePackageFile,
 } from "../DashboardBuilder/documentSession";
 import {
    isDocumentNotFound,
@@ -98,27 +100,13 @@ interface StorageAnswer {
 
 export function NotebookEditor(props: NotebookEditorProps) {
    const { onExit, onEvent, onDirtyChange } = props;
-   // A render body must not throw, and `parseResourceUri` does on a non-`publisher://` string.
-   const parsed = (() => {
-      if (!("resourceUri" in props)) return undefined;
-      try {
-         return parseResourceUri(props.resourceUri);
-      } catch {
-         return undefined;
-      }
-   })();
-   const environmentName =
-      "resourceUri" in props
-         ? (parsed?.environmentName ?? "")
-         : props.environmentName;
-   const packageName =
-      "resourceUri" in props ? (parsed?.packageName ?? "") : props.packageName;
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      namesBoth: uriNamesBoth,
+   } = resolveEditorTarget(props);
    const slug = "resourceUri" in props ? props.notebook : props.notebookName;
-   const versionId = parsed?.versionId;
-   const uriNamesBoth =
-      "resourceUri" in props
-         ? !!parsed?.environmentName && !!parsed?.packageName
-         : true;
 
    if (!uriNamesBoth && "resourceUri" in props)
       return (
@@ -497,35 +485,41 @@ function NotebookSession({
          );
          if (expectedHash === undefined)
             throw new Error("The package file is still loading; try again.");
-         let result;
-         try {
-            result = await apiClients.models.updateModelSource(
-               environmentName,
-               packageName,
-               modelPath,
-               { source, expectedHash },
-            );
-         } catch (error) {
+         await writePackageFile({
+            apiClients,
+            queryClient,
+            environmentName,
+            packageName,
+            modelPath,
+            source,
+            expectedHash,
             // Refreshes the catalog and givens the editor reads; the document itself keeps the edit.
-            void queryClient.invalidateQueries({ queryKey: modelKey });
-            throw new Error(apiErrorMessage(error));
-         }
-         savedHashRef.current = result.data.contentHash;
-         void queryClient.invalidateQueries({ queryKey: modelKey });
-         void queryClient.invalidateQueries({
-            queryKey: modelResultsKey({
-               environmentName,
-               packageName,
-               versionId,
-               modelPath,
-            }),
-            // The editor's own previews key on their text; the viewer runs its cells when opened, so stale-marking is enough.
-            refetchType: "none",
-         });
-         // The viewer keys its notebook on the resource URI.
-         void queryClient.invalidateQueries({
-            queryKey: [
-               encodeResourceUri({ environmentName, packageName, modelPath }),
+            invalidateOnError: [modelKey],
+            afterWrite: (contentHash) => {
+               savedHashRef.current = contentHash;
+            },
+            invalidate: [
+               { queryKey: modelKey },
+               {
+                  queryKey: modelResultsKey({
+                     environmentName,
+                     packageName,
+                     versionId,
+                     modelPath,
+                  }),
+                  // The editor's own previews key on their text; the viewer runs its cells when opened, so stale-marking is enough.
+                  refetchType: "none",
+               },
+               // The viewer keys its notebook on the resource URI.
+               {
+                  queryKey: [
+                     encodeResourceUri({
+                        environmentName,
+                        packageName,
+                        modelPath,
+                     }),
+                  ],
+               },
             ],
          });
       },
@@ -567,14 +561,7 @@ function NotebookSession({
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
       (event: NotebookEvent) => {
-         // A package save was taken by no workspace, so naming one would misplace the record.
-         onEventRef.current?.(
-            event.type === "notebook.saved" &&
-               event.where !== "package" &&
-               workspaceName !== undefined
-               ? { ...event, workspace: workspaceName }
-               : event,
-         );
+         onEventRef.current?.(withWorkspace(event, workspaceName));
       },
       [workspaceName],
    );

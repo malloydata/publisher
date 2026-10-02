@@ -14,7 +14,6 @@ import type {
 } from "../Dashboard/telemetry";
 import { now } from "../../utils/clock";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
-import { parseResourceUri } from "../../utils/formatting";
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
@@ -36,12 +35,14 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
 import {
-   apiErrorMessage,
    chooseWorkspace,
    expectedHashFor,
+   resolveEditorTarget,
    saveCaption,
    saveTarget,
    storageErrorMessage,
+   withWorkspace,
+   writePackageFile,
    type SavesTo,
 } from "./documentSession";
 import { readDashboardDocument, readFailed } from "./readDocument";
@@ -103,37 +104,15 @@ export type DashboardEditorProps = (
 
 export function DashboardEditor(props: DashboardEditorProps) {
    const { onExit, onEvent, onDirtyChange } = props;
-   // Resolved once, so the rest of the body reads these locals and never the
-   // union directly. Degraded, not thrown, on a bad URI: see `Dashboard`'s
-   // note on the same call — a throw in a render body takes the host's whole
-   // tree down, which is a white screen instead of a message. The deprecated
-   // form cannot be malformed the same way, so it always names both.
-   // `parseResourceUri` THROWS on a string that is not a `publisher://` URI at
-   // all, which a render body must not do; only its missing-name case returns.
-   const parsed = (() => {
-      if (!("resourceUri" in props)) return undefined;
-      try {
-         return parseResourceUri(props.resourceUri);
-      } catch {
-         return undefined;
-      }
-   })();
-   const environmentName =
-      "resourceUri" in props
-         ? (parsed?.environmentName ?? "")
-         : props.environmentName;
-   const packageName =
-      "resourceUri" in props ? (parsed?.packageName ?? "") : props.packageName;
+   // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      namesBoth: uriNamesBoth,
+   } = resolveEditorTarget(props);
    const dashboardName =
       "resourceUri" in props ? props.dashboard : props.dashboardName;
-   const versionId = parsed?.versionId;
-   // Keyed on the prop form, not on `parsed`: a URI that failed to parse at all
-   // also leaves `parsed` undefined, and reading that as "no URI to check" would
-   // skip the error display and run the editor against empty names.
-   const uriNamesBoth =
-      "resourceUri" in props
-         ? !!parsed?.environmentName && !!parsed?.packageName
-         : true;
 
    const { apiClients, mutable, isLoadingStatus } = useServer();
    const queryClient = useQueryClient();
@@ -414,79 +393,61 @@ export function DashboardEditor(props: DashboardEditorProps) {
          );
          if (expectedHash === undefined)
             throw new Error("The package file is still loading; try again.");
-         let result;
-         try {
-            result = await apiClients.models.updateModelSource(
-               environmentName,
-               packageName,
-               modelPath,
-               { source, expectedHash },
-            );
-         } catch (error) {
-            // A refused write usually means the file moved. Fetch it, so the
-            // reader is offered that version rather than left re-saving
-            // against a base the server will go on rejecting.
-            void queryClient.invalidateQueries({
-               queryKey: [
-                  "dashboard-editor-model",
-                  environmentName,
-                  packageName,
-                  modelPath,
-                  versionId,
-               ],
-            });
-            throw new Error(apiErrorMessage(error));
-         }
-         setOpened((previous) => previous && { ...previous, source });
-         setWrote({ text: source, onFetch: fetchedAtRef.current });
-         setSeen(source);
-         savedHashRef.current = result.data.contentHash;
-         setSupersedeFailure(undefined);
-         if (storage && locator) {
-            try {
-               await storage.deleteDocument(locator);
-               setDraft(undefined);
-               setOffered(false);
-            } catch (error) {
-               // Only absence means the copy is gone. Any other rejection
-               // leaves it there, so the state must keep saying so.
-               if (isDocumentNotFound(error)) {
-                  setDraft(undefined);
-                  setOffered(false);
-               } else setSupersedeFailure(storageErrorMessage(error));
-            }
-         }
-         // The package is what is open now, even if the copy beside it
-         // survived the supersede: reading the channel off a stale copy would
-         // put the builder back on the text this save replaced.
-         setResume(false);
-         // The package changed: the file, the manifest the live view reads,
-         // the package's dashboards list, and the dashboard the reader sees.
-         await queryClient.invalidateQueries({
-            queryKey: [
-               "dashboard-editor-model",
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
+         const modelKey = [
+            "dashboard-editor-model",
+            environmentName,
+            packageName,
+            modelPath,
+            versionId,
+         ];
+         await writePackageFile({
+            apiClients,
+            queryClient,
+            environmentName,
+            packageName,
+            modelPath,
+            source,
+            expectedHash,
+            // A refused write usually means the file moved: fetching it offers the reader that version instead of re-saving against a base the server keeps rejecting.
+            invalidateOnError: [modelKey],
+            afterWrite: async (contentHash) => {
+               setOpened((previous) => previous && { ...previous, source });
+               setWrote({ text: source, onFetch: fetchedAtRef.current });
+               setSeen(source);
+               savedHashRef.current = contentHash;
+               setSupersedeFailure(undefined);
+               if (storage && locator) {
+                  try {
+                     await storage.deleteDocument(locator);
+                     setDraft(undefined);
+                     setOffered(false);
+                  } catch (error) {
+                     // Only absence means the copy is gone; any other rejection leaves it there, so the state must keep saying so.
+                     if (isDocumentNotFound(error)) {
+                        setDraft(undefined);
+                        setOffered(false);
+                     } else setSupersedeFailure(storageErrorMessage(error));
+                  }
+               }
+               // The package is what is open now even if the copy survived the supersede; reading the channel off a stale copy would put the builder back on the text this save replaced.
+               setResume(false);
+            },
+            invalidate: [
+               { queryKey: modelKey, wait: true },
+               // A cached result is keyed on the query text, not the file, so a changed chart would otherwise be drawn from the old rows.
+               {
+                  queryKey: modelResultsKey({
+                     environmentName,
+                     packageName,
+                     versionId,
+                     modelPath,
+                  }),
+               },
+               { queryKey: ["dashboard-editor-manifest"] },
+               { queryKey: ["dashboards"] },
+               { queryKey: ["dashboard"] },
             ],
          });
-         // A cached result is keyed on the query text, not the file, so a
-         // changed chart would otherwise be drawn from the old rows.
-         void queryClient.invalidateQueries({
-            queryKey: modelResultsKey({
-               environmentName,
-               packageName,
-               versionId,
-               modelPath,
-            }),
-         });
-         for (const key of [
-            "dashboard-editor-manifest",
-            "dashboards",
-            "dashboard",
-         ])
-            void queryClient.invalidateQueries({ queryKey: [key] });
       },
       [
          apiClients,
@@ -518,16 +479,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
       (event: DashboardEvent) => {
-         // Only where a workspace actually took the write: a save into the
-         // package was not taken by one, and naming it there would say the
-         // record moved somewhere it did not.
-         onEventRef.current?.(
-            event.type === "dashboard.saved" &&
-               event.where !== "package" &&
-               workspaceName !== undefined
-               ? { ...event, workspace: workspaceName }
-               : event,
-         );
+         onEventRef.current?.(withWorkspace(event, workspaceName));
       },
       [workspaceName],
    );

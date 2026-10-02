@@ -1,8 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { parseResourceUri } from "../../utils/formatting";
 import { sha256Hex } from "../../utils/sha256";
 import type { Workspace } from "../DocumentStorage";
+import type { ApiClients } from "../ServerProvider";
 
 // The pure half of an editor host's session with its document: which
 // workspace it opens against, where Save goes, and the hash a package write
@@ -139,4 +142,116 @@ export function apiErrorMessage(error: unknown): string {
       .response?.data;
    if (data?.message) return data.message;
    return error instanceof Error ? error.message : String(error);
+}
+
+/** A query family a package write marks stale. */
+export interface Invalidation {
+   queryKey: QueryKey;
+   /** `"none"` marks the family stale without refetching it. */
+   refetchType?: "none";
+   /** Hold the write's result until the refetch lands. */
+   wait?: boolean;
+}
+
+/**
+ * Writes a package file against `expectedHash` and returns the server's hash
+ * of what it wrote. A refused write invalidates `invalidateOnError`, since it
+ * usually means the file moved, and throws the server's own reason.
+ * `afterWrite` runs once the write has landed and before the invalidations, so
+ * the caller's bookkeeping is in place when a refetch arrives.
+ */
+export async function writePackageFile({
+   apiClients,
+   queryClient,
+   environmentName,
+   packageName,
+   modelPath,
+   source,
+   expectedHash,
+   invalidateOnError,
+   invalidate,
+   afterWrite,
+}: {
+   apiClients: ApiClients;
+   queryClient: QueryClient;
+   environmentName: string;
+   packageName: string;
+   modelPath: string;
+   source: string;
+   expectedHash: string;
+   invalidateOnError: readonly QueryKey[];
+   invalidate: readonly Invalidation[];
+   afterWrite?: (contentHash: string) => Promise<void> | void;
+}): Promise<string> {
+   let result;
+   try {
+      result = await apiClients.models.updateModelSource(
+         environmentName,
+         packageName,
+         modelPath,
+         { source, expectedHash },
+      );
+   } catch (error) {
+      for (const queryKey of invalidateOnError)
+         void queryClient.invalidateQueries({ queryKey });
+      throw new Error(apiErrorMessage(error));
+   }
+   const contentHash = result.data.contentHash;
+   await afterWrite?.(contentHash);
+   for (const { queryKey, refetchType, wait } of invalidate) {
+      const pending = queryClient.invalidateQueries({
+         queryKey,
+         ...(refetchType ? { refetchType } : {}),
+      });
+      if (wait) await pending;
+      else void pending;
+   }
+   return contentHash;
+}
+
+/** The host workspace that took a save, named on the event; a package save was taken by none. */
+export function withWorkspace<E extends { type: string }>(
+   event: E,
+   workspace: string | undefined,
+): E {
+   if (
+      workspace === undefined ||
+      !event.type.endsWith(".saved") ||
+      (event as { where?: SavesTo }).where === "package"
+   )
+      return event;
+   return { ...event, workspace };
+}
+
+/** The environment, package and version an editor was asked for, from either prop form; a render body must not throw, so a URI `parseResourceUri` rejects reads as naming neither. */
+export function resolveEditorTarget(
+   props:
+      | { resourceUri: string }
+      | { environmentName: string; packageName: string },
+): {
+   environmentName: string;
+   packageName: string;
+   versionId: string | undefined;
+   /** False when a resource URI did not name both an environment and a package. */
+   namesBoth: boolean;
+} {
+   if (!("resourceUri" in props))
+      return {
+         environmentName: props.environmentName,
+         packageName: props.packageName,
+         versionId: undefined,
+         namesBoth: true,
+      };
+   let parsed: ReturnType<typeof parseResourceUri> | undefined;
+   try {
+      parsed = parseResourceUri(props.resourceUri);
+   } catch {
+      parsed = undefined;
+   }
+   return {
+      environmentName: parsed?.environmentName ?? "",
+      packageName: parsed?.packageName ?? "",
+      versionId: parsed?.versionId,
+      namesBoth: !!parsed?.environmentName && !!parsed?.packageName,
+   };
 }
