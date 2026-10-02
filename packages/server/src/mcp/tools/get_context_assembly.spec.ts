@@ -86,6 +86,7 @@ function assemble(
       settings?: Partial<PipelineSettings>;
       request?: Partial<ResolvedRequest>;
       retrieval?: RankedState["retrieval"];
+      entitiesCutBySource?: Map<string, number>;
    } = {},
 ): CardState {
    const ctx = {
@@ -94,7 +95,12 @@ function assemble(
       settings: { ...ASSEMBLY, ...opts.settings },
    } as unknown as PipelineContext;
    return assembleCards(
-      { rows, retrieval: opts.retrieval ?? "semantic", belowCutoffCount: 0 },
+      {
+         rows,
+         retrieval: opts.retrieval ?? "semantic",
+         belowCutoffCount: 0,
+         entitiesCutBySource: opts.entitiesCutBySource,
+      },
       ctx,
    );
 }
@@ -106,6 +112,23 @@ function cardScores(state: CardState, source: string): Record<string, number> {
       (card?.rows ?? []).map((r) => [r.name, r.score as number]),
    );
 }
+
+describe("assembleCards: rows the scan's window cut", () => {
+   it("adds the scan's per-source count to that source's card", () => {
+      const state = assemble([ranked("cust", "name", 0.5)], {
+         entitiesCutBySource: new Map([["cust", 3]]),
+      });
+      const drops = Object.fromEntries(
+         state.cards.map((c) => [c.source, c.entitiesDropped]),
+      );
+      expect(drops).toEqual({ cust: 3, inv: 0, ord: 0, reg: 0 });
+   });
+
+   it("adds nothing when the scan cut nothing", () => {
+      const state = assemble([ranked("cust", "name", 0.5)]);
+      expect(state.cards.every((c) => c.entitiesDropped === 0)).toBe(true);
+   });
+});
 
 describe("assembleCards: joined copies", () => {
    it("returns cards for every root that reaches the field, damped per hop", () => {

@@ -101,6 +101,7 @@ export const semanticRetriever: Retriever = {
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
             let unionBelowCutoff: number | undefined;
+            let cutBySource: Map<string, number> | undefined;
             {
                // ONE call for every target: it batches the embeddings into a
                // single provider request and scores them in a single pass
@@ -221,6 +222,7 @@ export const semanticRetriever: Retriever = {
                   // query's hits, so it is the same whichever target asked.
                   unionTotalEntities = semantic.totalEntities;
                   unionBelowCutoff = semantic.belowCutoffCount;
+                  cutBySource = semantic.cutBySource;
                } else {
                   searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
                }
@@ -242,6 +244,7 @@ export const semanticRetriever: Retriever = {
                   rows: ranked,
                   belowCutoffCount: unionBelowCutoff ?? 0,
                   totalEntities: unionTotalEntities,
+                  entitiesCutBySource: cutBySource,
                };
             }
             return {
