@@ -10,6 +10,7 @@ import {
    FrozenConfigError,
    WriteConflictError,
    WriteRolledBackError,
+   WriteVerifyError,
 } from "../errors";
 import {
    recordDashboardWrite,
@@ -290,10 +291,15 @@ export class DashboardController {
          async (reloaded) => {
             const written = reloaded.getModel(modelPath);
             if (!written)
-               throw new Error(
+               throw new WriteVerifyError(
                   `\`${modelPath}\` is not in the reloaded package`,
                );
-            await written.getModel();
+            await written.getModel().catch((cause) => {
+               throw new WriteVerifyError(
+                  `\`${modelPath}\` did not compile once the package reloaded`,
+                  { cause },
+               );
+            });
             // The textual tag check can pass for a file discovery then drops (a tag in a comment, a slug another file holds).
             let served: boolean;
             if (kind === "dashboard") {
@@ -305,7 +311,7 @@ export class DashboardController {
                   : facts !== undefined && factsCarryArtifactTag(facts);
             } else served = reloaded.isServedNotebook(modelPath);
             if (!served)
-               throw new Error(
+               throw new WriteVerifyError(
                   `\`${modelPath}\` is not served as a ${kind} once the package reloads`,
                );
          },

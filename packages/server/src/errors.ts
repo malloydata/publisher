@@ -694,12 +694,22 @@ export class WriteConflictError extends Error {
  * so the previous text was put back. The caller's request was well-formed and
  * the file compiled, so this is the server's failure, not theirs — 500, with
  * the message, which says what state the package was left in. The underlying
- * failure is logged rather than returned; it can carry a path.
+ * failure is attached as `cause` and logged, never put in the message; it can
+ * carry a path. A refused filesystem access in the cause chain still answers
+ * through the composed-errno branch of `internalErrorToHttpError`.
  */
 export class WriteRolledBackError extends Error {
-   constructor(message: string) {
-      super(message);
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
       this.name = "WriteRolledBackError";
+   }
+}
+
+/** A refusal from a write's post-reload check, worded for the caller. */
+export class WriteVerifyError extends Error {
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
+      this.name = "WriteVerifyError";
    }
 }
 

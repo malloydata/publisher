@@ -38,6 +38,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
+   WriteVerifyError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -1865,11 +1866,14 @@ export class Environment {
                modelPath,
                error,
             });
-            const reason = error instanceof Error ? error.message : undefined;
+            // Only a refusal worded for the caller is echoed; anything else can carry a server path.
+            const reason =
+               error instanceof WriteVerifyError ? error.message : undefined;
             throw new WriteRolledBackError(
                `The package did not reload with the new \`${modelPath}\`` +
                   `${reason ? ` (${reason})` : ""}, so the previous text was ` +
                   `put back and nothing changed.`,
+               { cause: error },
             );
          }
       });
