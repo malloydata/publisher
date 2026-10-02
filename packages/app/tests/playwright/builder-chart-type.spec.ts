@@ -164,7 +164,9 @@ test.describe("builder chart type", () => {
 
       await page.getByRole("button", { name: "Save changes" }).click();
       await page.getByRole("button", { name: "Save this" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
 
@@ -201,7 +203,9 @@ test.describe("builder chart type", () => {
       );
       await pickBarOnFirstTile(page);
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
       await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}`);
@@ -223,7 +227,9 @@ test.describe("builder chart type", () => {
          await page.getByRole("option", { name: option, exact: true }).click();
          await page.keyboard.press("Escape");
          await page.getByRole("button", { name: "Save changes" }).click();
-         await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+         await expect(
+            page.getByRole("button", { name: "Saved", exact: true }),
+         ).toBeVisible({
             timeout: 30_000,
          });
          await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}`);

@@ -11,7 +11,7 @@ import { expect, type Page } from "@playwright/test";
 export async function saveChanges(page: Page): Promise<void> {
    await page.getByRole("button", { name: "Save changes" }).click();
    const confirm = page.getByRole("button", { name: "Save this" });
-   const saved = page.getByRole("button", { name: "Saved" });
+   const saved = page.getByRole("button", { name: "Saved", exact: true });
    // Whichever shows first decides: waiting out a fixed delay for a dialog that never opens only slows the save.
    await confirm
       .or(saved)

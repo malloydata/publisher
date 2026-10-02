@@ -95,7 +95,9 @@ test.describe("dashboard-builder", () => {
       ).toBeEnabled();
 
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible();
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.

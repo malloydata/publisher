@@ -91,7 +91,9 @@ test.describe("notebook-builder", () => {
          page.getByRole("button", { name: "Save changes" }),
       ).toBeEnabled();
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible();
 
       // On disk: the edited cell, and every byte outside it untouched.
       const after = await readSource();

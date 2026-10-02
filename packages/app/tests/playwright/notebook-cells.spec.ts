@@ -182,7 +182,9 @@ test.describe("notebook cells", () => {
          "// A comment that belongs to the second note.",
       );
       await page.getByRole("button", { name: "Save this" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
       let file = await pe.readSource(TOUR);

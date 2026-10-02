@@ -127,7 +127,9 @@ test.describe("embedded host", () => {
          .fill("Edited in the host.");
       await page.getByRole("button", { name: "Done", exact: true }).click();
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
 
@@ -263,7 +265,9 @@ test.describe("embedded host", () => {
       await title.fill("Record overview, edited");
       await title.press("Escape");
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
       const held = await hostOf(page);
@@ -291,7 +295,9 @@ test.describe("embedded host", () => {
          .fill("Scratch host edit.");
       await page.getByRole("button", { name: "Done", exact: true }).click();
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
       expect(writes).toHaveLength(1);

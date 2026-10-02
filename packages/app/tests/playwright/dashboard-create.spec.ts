@@ -108,7 +108,9 @@ test.describe("dashboard-create", () => {
       await title.fill("Created and saved");
       await title.press("Escape");
       await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({
          timeout: 30_000,
       });
 
