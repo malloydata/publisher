@@ -12,7 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends temurin-21-jdk
 ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk
 ENV PATH=$JAVA_HOME/bin:$PATH
 
+# Run as the `bun` user (uid 1000) that the oven/bun base provides, not as root. The
+# working directory and the copied checkout are owned by that user so a test run can
+# still write dependencies and build output beside the sources.
+RUN mkdir -p /usr/src/app && chown 1000:1000 /usr/src/app
 WORKDIR /usr/src/app
-COPY . /usr/src/app
+COPY --chown=1000:1000 . /usr/src/app
+
+USER 1000:1000
 
 CMD [ "tail", "-f", "/dev/null" ]
