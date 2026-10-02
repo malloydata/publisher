@@ -30,6 +30,7 @@ const FAKE: LlmSettings = {
    timeoutMs: 30_000,
    concurrency: 4,
    maxCallsPerSync: 300,
+   maxCallsPerRequest: 20,
 };
 
 /** Whether an LLM is configured. Cheap; safe to call on any path. */
