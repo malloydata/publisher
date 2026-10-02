@@ -1125,6 +1125,48 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       ).toBe(true);
    });
 
+   describe('how many `##"` lines a description writes', () => {
+      const NB = `##" Old\n## artifact { kind=notebook title="T" tiles=["a -> x"] }\nimport "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
+
+      it("writes one line for a one-line description, however it ends", async () => {
+         for (const description of [
+            "Walk description",
+            "Walk description\n\n",
+         ]) {
+            const out = await spliced(NB, (d) => {
+               d.description = description;
+            });
+            expect(out.startsWith('##" Walk description\n## artifact {')).toBe(
+               true,
+            );
+         }
+      });
+
+      it("writes N lines for N lines, keeping a blank paragraph between them", async () => {
+         const out = await spliced(NB, (d) => {
+            d.description = "\nOne\n\nTwo\n";
+         });
+         expect(out.startsWith('##" One\n##"\n##" Two\n## artifact {')).toBe(
+            true,
+         );
+      });
+
+      it("round-trips an unchanged description byte for byte", async () => {
+         const source = NB.replace('##" Old', '##" One\n##"\n##" Two');
+         expect(
+            await spliced(source, (d) => {
+               d.title = "Retitled";
+            }),
+         ).toBe(source.replace('title="T"', 'title="Retitled"'));
+         // The same text written back is the same file.
+         expect(
+            await spliced(source, (d) => {
+               d.description = "One\n\nTwo";
+            }),
+         ).toBe(source);
+      });
+   });
+
    // The saved file is what the server lints, so it is linted here rather than re-read.
    const lintCodes = (source: string) =>
       lintNotebookText("dashboards/d.malloy", source).map((f) => f.code);

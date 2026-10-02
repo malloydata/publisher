@@ -878,6 +878,11 @@ export function DashboardBuilder({
                                     <TilePlaceholder
                                        tile={each}
                                        heading={headingOf(each, each.name)}
+                                       {...(editor.pendingOpen
+                                          ? {
+                                               note: "Preview appears after you Save",
+                                            }
+                                          : {})}
                                     />
                                  )}
                               </TileFrame>

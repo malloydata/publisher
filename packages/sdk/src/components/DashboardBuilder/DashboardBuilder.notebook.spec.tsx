@@ -128,6 +128,25 @@ describe("DashboardBuilder: a notebook is one column", () => {
       expect(written).not.toContain("columns");
    });
 
+   it("names the document's own kind in the Add tile dialog", async () => {
+      await mountText(NOTEBOOK, { withCatalog: true });
+      fireEvent.click(button("Add tile"));
+      expect(
+         screen.getByText(
+            "A tile shows one view of one source this notebook imports.",
+         ),
+      ).toBeDefined();
+      cleanup();
+
+      await mountText(DASHBOARD, { withCatalog: true });
+      fireEvent.click(button("Add tile"));
+      expect(
+         screen.getByText(
+            "A tile shows one view of one source this dashboard imports.",
+         ),
+      ).toBeDefined();
+   });
+
    it("inserts a tile between two tiles from the + on the edge between them", async () => {
       let written: string | undefined;
       await mountText(NOTEBOOK, {
@@ -261,6 +280,13 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
          ),
       ).toBeDefined();
       expect(button("Save changes")).toBeDefined();
+      // Each tile says why it has no preview yet, beside the view it will run.
+      expect(
+         screen.getAllByText("Preview appears after you Save"),
+      ).toHaveLength(3);
+      expect(
+         screen.getByText("order_items_tiles → revenue_by_month"),
+      ).toBeDefined();
       // No edit has been made, so a host guarding navigation is told so.
       expect(onDirtyChange).toHaveBeenLastCalledWith(false);
    });

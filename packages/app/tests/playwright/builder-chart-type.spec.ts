@@ -52,8 +52,14 @@ test.describe("builder chart type", () => {
             exact: true,
          }),
       ).toBeVisible();
+      await expect(
+         page.getByText("Preview appears after you Save", { exact: true }),
+      ).toHaveCount(3);
       await expect(page.locator("[data-malloy-render-as]")).toHaveCount(0);
       await saveChanges(page);
+      await expect(
+         page.getByText("Preview appears after you Save"),
+      ).toHaveCount(0);
       await expect(page.locator("[data-malloy-render-as]")).toHaveCount(3, {
          timeout: 60_000,
       });

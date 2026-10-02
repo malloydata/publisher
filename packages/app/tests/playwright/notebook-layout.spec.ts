@@ -77,8 +77,16 @@ test.describe("layout notebooks", () => {
          page.getByText("Layout notebook, edited", { exact: true }),
       ).toBeVisible();
 
+      // So is the description.
+      await page.getByRole("button", { name: "Add a description" }).click();
+      await page.getByLabel("Markdown").fill("A one-line description");
+      await page.getByLabel("Markdown").press("Escape");
+      await expect(page.getByText("A one-line description")).toBeVisible();
+
       await saveChanges(page);
       const saved = await pe.readSource(file);
+      expect(saved).toMatch(/^##" A one-line description\n##\| artifact/m);
+      expect(saved).not.toContain('##"\n');
       expect(saved).toContain("A note added in place.");
       expect(saved).toContain('title="Layout notebook, edited"');
       expect(saved).toContain("kind=notebook");
@@ -92,6 +100,10 @@ test.describe("layout notebooks", () => {
       await expect(reader.locator("[data-malloy-render-as]")).toHaveCount(2, {
          timeout: 60_000,
       });
+      await expect(
+         reader.getByRole("heading", { name: "Layout notebook, edited" }),
+      ).toBeVisible();
+      await expect(reader.getByText("A one-line description")).toBeVisible();
       await expect(reader.locator('[data-chrome="card"]')).toHaveCount(0);
       const bare = reader.locator('[data-chrome="none"]');
       expect(await bare.count()).toBeGreaterThanOrEqual(3);

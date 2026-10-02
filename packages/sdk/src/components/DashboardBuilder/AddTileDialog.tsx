@@ -83,6 +83,7 @@ export function AddTileDialog({
    onAddText,
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
+   const noun = document.kind === "notebook" ? "notebook" : "dashboard";
    const sources = useMemo(
       () => reachableSources(document, catalog),
       [document, catalog],
@@ -130,7 +131,7 @@ export function AddTileDialog({
          open={open}
          onClose={onClose}
          title="Add a tile"
-         description="A tile shows one view of one source this dashboard imports."
+         description={`A tile shows one view of one source this ${noun} imports.`}
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>
@@ -192,7 +193,7 @@ export function AddTileDialog({
             ) : sources.length === 0 ? (
                <Typography variant="body2" sx={{ color: theme.tileTitle }}>
                   {catalog
-                     ? "This dashboard imports no source by name, so there is nothing to put a tile on. Import a source in the file first."
+                     ? `This ${noun} imports no source by name, so there is nothing to put a tile on. Import a source in the file first.`
                      : "The package's sources are still loading."}
                </Typography>
             ) : (

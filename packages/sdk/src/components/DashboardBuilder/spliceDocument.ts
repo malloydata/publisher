@@ -126,6 +126,11 @@ function canonical(value: unknown): string {
    return JSON.stringify(walk(value));
 }
 
+/** A description without blank lines at either end, each of which would write a bare `##"`. */
+function trimDescription(text: string): string {
+   return text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd();
+}
+
 /** A byte-range replacement. Applied last-first so earlier offsets stay valid. */
 interface Edit {
    start: number;
@@ -797,7 +802,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
                "The description is written in a `##|\"` block, which the builder cannot edit in place. Change it in the file's text.",
          };
       }
-      const text = (next.description ?? "")
+      const text = trimDescription(next.description ?? "")
          .split("\n")
          .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
          .join("\n");
@@ -2144,7 +2149,7 @@ export async function spliceDashboardDocument(
    // normalises its shape asks for no change, gets no edits, and would be told
    // its save did not produce what it asked for.
    const comparable = (document: DashboardDocument): DashboardDocument => {
-      const { drills, localGivens, kind, ...rest } = document;
+      const { drills, localGivens, kind, description, ...rest } = document;
       const tiles = document.tiles.map((tile) => {
          if (isTextTile(tile)) return tile;
          if (tile.filters?.length) return withoutDefaultChart(tile);
@@ -2153,6 +2158,9 @@ export async function spliceDashboardDocument(
       });
       return {
          ...rest,
+         ...(description === undefined
+            ? {}
+            : { description: trimDescription(description) }),
          ...(kind === "notebook" ? { kind } : {}),
          tiles,
          ...(drills?.length

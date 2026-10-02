@@ -368,9 +368,12 @@ export function TileFrame({
 export function TilePlaceholder({
    tile,
    heading,
+   note,
 }: {
    tile: QueryTile;
    heading?: TileHeadingSlots;
+   /** Why there is no preview, in place of an empty body. */
+   note?: string;
 }) {
    const { theme } = usePublisherTheme();
    return (
@@ -379,6 +382,11 @@ export function TilePlaceholder({
             title={heading?.title ?? tile.label ?? tile.name}
             subtitle={heading ? heading.subtitle : tile.subtitle}
          />
+         {note && (
+            <Typography variant="body2" sx={{ color: theme.tileTitle, py: 2 }}>
+               {note}
+            </Typography>
+         )}
          <Typography
             variant="caption"
             sx={{ display: "block", color: theme.tileTitle, opacity: 0.7 }}

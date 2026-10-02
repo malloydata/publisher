@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { planRun } from "./runPlan";
 import { RawNotebook } from "../../client";
@@ -14,7 +14,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { DashboardView } from "../Dashboard/DashboardView";
+import { DashboardProse, DashboardView } from "../Dashboard/DashboardView";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToParams, givensToRequest } from "../given/paramCodec";
@@ -127,9 +127,19 @@ export default function Notebook(props: NotebookProps) {
    if (notebook?.dashboard) {
       const { environmentName, packageName, versionId, modelPath } =
          parseResourceUri(props.resourceUri);
+      const { title, description } = notebook.dashboard;
       return (
          <CleanNotebookContainer>
             <CleanNotebookSection>
+               {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
+               {(title || description) && (
+                  <Box sx={{ mb: 2 }}>
+                     <DashboardProse
+                        title={title ?? ""}
+                        {...(description ? { description } : {})}
+                     />
+                  </Box>
+               )}
                <DashboardView
                   manifest={notebook.dashboard}
                   environmentName={environmentName}

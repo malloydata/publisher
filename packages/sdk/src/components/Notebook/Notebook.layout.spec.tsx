@@ -26,7 +26,17 @@ const LAYOUT = {
    },
 } as RawNotebook;
 
-const getNotebook = mock(() => Promise.resolve({ data: LAYOUT }));
+const TITLED = {
+   ...LAYOUT,
+   dashboard: {
+      ...LAYOUT.dashboard,
+      title: "Tour title",
+      description: "Tour **description**",
+   },
+} as RawNotebook;
+
+let served: RawNotebook = LAYOUT;
+const getNotebook = mock(() => Promise.resolve({ data: served }));
 const executeNotebookCell = mock(() => pending());
 const executeQueryModel = mock(
    (_env: string, _pkg: string, _path: string, _request: unknown) => pending(),
@@ -40,6 +50,7 @@ mockServerProvider({
 const { default: Notebook } = await import("./Notebook");
 
 beforeEach(() => {
+   served = LAYOUT;
    clearCache();
    executeNotebookCell.mockClear();
    executeQueryModel.mockClear();
@@ -57,4 +68,27 @@ it("renders a layout notebook as a bare dashboard grid", async () => {
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
    expect(executeQueryModel.mock.calls[0]?.[2]).toBe("notebooks/tour.malloy");
    expect(executeNotebookCell).not.toHaveBeenCalled();
+});
+
+it("shows a layout notebook's title and description above its tiles", async () => {
+   served = TITLED;
+   render(
+      <Notebook resourceUri="publisher://environments/env/packages/pkg/models/notebooks/tour.malloy" />,
+      { wrapper: serverWrapper },
+   );
+
+   expect(
+      (await screen.findByRole("heading", { name: "Tour title" })).tagName,
+   ).toBe("H5");
+   expect((await screen.findByText("description")).tagName).toBe("STRONG");
+});
+
+it("draws no header for a layout notebook with no title or description", async () => {
+   render(
+      <Notebook resourceUri="publisher://environments/env/packages/pkg/models/notebooks/tour.malloy" />,
+      { wrapper: serverWrapper },
+   );
+
+   await screen.findByText("intro");
+   expect(screen.queryByRole("heading", { name: "tour" })).toBeNull();
 });
