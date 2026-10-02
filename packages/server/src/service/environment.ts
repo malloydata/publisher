@@ -441,7 +441,7 @@ export class Environment {
          );
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
-         throw new Error(`Failed to update environment README`);
+         throw new Error(`Failed to update environment README`, { cause: err });
       }
    }
 
@@ -2935,7 +2935,7 @@ export class Environment {
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`);
+         throw new Error(`Failed to update package manifest`, { cause: error });
       }
    }
 
@@ -3131,6 +3131,19 @@ export class Environment {
       this.mountErrors.set(packageName, message);
    }
 
+   /**
+    * Record a runtime add that failed before the package could serve, so
+    * /status reports it the way it reports a configured package whose location
+    * never mounted. Skipped while a package of that name is serving: a failed
+    * re-install rolls back to the previous tree, which is not a failed package.
+    * Cleared like every other load failure, by a later successful add or install
+    * of the name, or by deleting it.
+    */
+   public recordPackageAddFailure(packageName: string, message: string): void {
+      if (this.packageStatuses.has(packageName)) return;
+      this.mountErrors.set(packageName, message);
+   }
+
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
@@ -3138,7 +3151,10 @@ export class Environment {
       this.staleCompileErrors.delete(packageName);
    }
 
-   /** Packages configured for this environment that did not load, and why. */
+   /**
+    * Packages configured for, or added to, this environment that did not load,
+    * and why.
+    */
    public getFailedPackages(): ReadonlyMap<string, string> {
       if (this.mountErrors.size === 0) return this.failedPackages;
       // Mount errors last, so the specific cause overwrites the generic

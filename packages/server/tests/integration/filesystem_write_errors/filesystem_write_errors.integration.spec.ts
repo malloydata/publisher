@@ -4,27 +4,33 @@
 /// <reference types="bun-types" />
 
 /**
- * A package add whose write the server cannot make must say so.
+ * A filesystem access the server cannot make must say so, and a package
+ * location the server only needs to read must not be written to.
  *
  * Since 0.9.0 the image runs as uid 1000 (#1273), so every mount the server
- * writes to has to be writable by that user. When one is not, the server
- * answers `{"code":500,"message":"Internal server error."}` and the EACCES that
- * explains it reaches only the server log. A runtime add that fails this way is
- * not in `/status` either, so the log is the only record of it.
+ * writes to has to be writable by that user. When one is not, the response and
+ * /status name the errno rather than answering a bare "Internal server error."
  *
- * The first block reproduces S3 of the Docker smoke script: a zip `location` in
- * a directory the server can read but not write. A zip location is extracted into
- * a sibling directory beside the zip, so a package mount is a write mount. A
+ * The first block covers a zip `location` in a directory the server can read
+ * but not write. The archive is extracted into the server's own data
+ * directory, so the add succeeds and nothing is written beside the zip. A
  * read-only directory owned by the test user stands in for a root-owned bind,
  * which needs no Docker and no root. The Docker smoke test in build.yml covers
  * the real uid-1000 image against a root-owned volume.
  *
  * The assertions name the errno and refuse the generic body. They do not pin
- * the wording, or whether the path is named, which is the fix's call.
+ * the wording.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import {
+   chmodSync,
+   mkdirSync,
+   readdirSync,
+   readFileSync,
+   rmSync,
+   writeFileSync,
+} from "fs";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
@@ -54,7 +60,7 @@ function writeTinyPackage(dir: string, name: string): void {
 }
 
 describe.skipIf(!canRevokeWrite || !hasZip)(
-   "a filesystem write the server cannot make (E2E)",
+   "a zip location in a directory the server cannot write (E2E)",
    () => {
       let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
       let baseUrl: string;
@@ -89,6 +95,8 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
          if (zipped.exitCode !== 0) {
             throw new Error(`zip failed: ${zipped.stderr.toString()}`);
          }
+         mkdirSync(path.join(readOnlyDir, ZIP_PACKAGE));
+         writeFileSync(path.join(readOnlyDir, ZIP_PACKAGE, "keep.txt"), "mine");
          chmodSync(readOnlyDir, 0o555);
 
          env = await startRestE2E();
@@ -129,7 +137,10 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
          if (workDir) rmSync(workDir, { recursive: true, force: true });
       });
 
-      it("answers a zip add into a read-only directory with the errno, not a bare 500", async () => {
+      it("adds a zip that sits in a read-only directory, writing nothing beside it", async () => {
+         // An operator's directory named like the archive, which the add must
+         // leave as it was.
+         const before = readdirSync(readOnlyDir).sort();
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
             {
@@ -141,29 +152,19 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
                }),
             },
          );
-         const body = (await res.json()) as { code: number; message: string };
+         expect(res.status).toBe(200);
+         expect(readdirSync(readOnlyDir).sort()).toEqual(before);
+         expect(
+            readFileSync(
+               path.join(readOnlyDir, ZIP_PACKAGE, "keep.txt"),
+               "utf-8",
+            ),
+         ).toBe("mine");
 
-         expect(res.ok).toBe(false);
-         expect(body.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
-         expect(body.message).toMatch(/EACCES|permission denied/i);
-      });
-
-      it("records the failed runtime add in /status loadErrors", async () => {
-         const res = await fetch(`${baseUrl}/api/v0/status`);
-         expect(res.ok).toBe(true);
-         const status = (await res.json()) as {
-            loadErrors?: Array<{
-               environment: string;
-               package?: string;
-               message: string;
-            }>;
-         };
-         const entry = status.loadErrors?.find(
-            (e) => e.environment === ENV_NAME && e.package === ZIP_PACKAGE,
+         const served = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${ZIP_PACKAGE}`,
          );
-
-         expect(entry).toBeDefined();
-         expect(entry?.message).toMatch(/EACCES|permission denied/i);
+         expect(served.status).toBe(200);
       });
 
       it("still serves the environment's other package", async () => {
@@ -291,6 +292,31 @@ describe.skipIf(!canRevokeWrite)(
             (e) => e.environment === DATA_ENV && e.package === "second",
          );
          expect(entry?.message).toMatch(/EACCES|permission denied/i);
+
+         // Once the directory is writable again, adding the package succeeds
+         // and the recorded failure goes with it.
+         const retry = await fetch(
+            `${baseUrl}/api/v0/environments/${DATA_ENV}/packages`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  name: "second",
+                  location: path.join(workDir, "second"),
+               }),
+            },
+         );
+         expect(retry.status).toBe(200);
+         const after = (await (
+            await fetch(`${baseUrl}/api/v0/status`)
+         ).json()) as {
+            loadErrors?: Array<{ environment: string; package?: string }>;
+         };
+         expect(
+            after.loadErrors?.find(
+               (e) => e.environment === DATA_ENV && e.package === "second",
+            ),
+         ).toBeUndefined();
       });
 
       it("names the errno when the environment README cannot be written", async () => {

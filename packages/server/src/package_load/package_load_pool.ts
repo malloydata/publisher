@@ -82,7 +82,11 @@ import { Worker } from "node:worker_threads";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-import { ModelCompilationError, PackageManifestError } from "../errors";
+import {
+   errnoWireFields,
+   ModelCompilationError,
+   PackageManifestError,
+} from "../errors";
 import { logger } from "../logger";
 import type {
    PackageMaterializationConfig,
@@ -863,12 +867,14 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
    };
 }
 
-function serializeError(error: unknown): SerializedError {
+export function serializeError(error: unknown): SerializedError {
    if (error instanceof Error) {
+      const errno = errnoWireFields(error);
       return {
          name: error.name,
          message: error.message,
          stack: error.stack,
+         ...(errno ? { errno } : {}),
       };
    }
    return { name: "Error", message: String(error) };
@@ -885,6 +891,7 @@ export function deserializeError(serialized: SerializedError): Error {
    const err = new Error(serialized.message);
    err.name = serialized.name;
    if (serialized.stack) err.stack = serialized.stack;
+   if (serialized.errno) Object.assign(err, serialized.errno);
    if (serialized.malloyProblems) {
       (err as unknown as { problems: unknown }).problems =
          serialized.malloyProblems;

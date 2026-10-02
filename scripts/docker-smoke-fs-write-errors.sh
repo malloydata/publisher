@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 # A filesystem access the uid-1000 image cannot make must say why, not answer
-# a bare 500 or sit silently in a state that reads as "still starting".
+# a bare 500 or sit silently in a state that reads as "still starting"; and a
+# package location the server only reads must not need to be writable.
 #
 # Run by build.yml's `docker_smoke_test` job against the image it just built
 # from the root Dockerfile, and runnable locally the same way:
@@ -14,38 +15,33 @@
 # has to be writable by that user, and every file it reads readable by it. The
 # shapes below are how an orchestrated deployment meets that: an orchestrator
 # running as root writes package zips into a mount it shares with the server
-# and asks the server to load each with POST /environments/{env}/packages; the
-# server extracts a zip into a sibling directory beside it, after an `rm -rf`
-# of any earlier one, so a package mount is a write mount. Credentials arrive
-# as a file bind at GOOGLE_APPLICATION_CREDENTIALS.
+# and asks the server to load each with POST /environments/{env}/packages.
+# Credentials arrive as a file bind at GOOGLE_APPLICATION_CREDENTIALS.
 #
-# Package mount
-#   S3   Publish a new version into a root-owned mount: mkdir beside the zip.
-#   S3b  Re-publish over a directory a root-run 0.8.x left behind: the rm -rf.
-#   S3c  The same mount bound read-only: EROFS.
-#   S4   The same zip declared in the config at boot: /status loadErrors must
-#        carry the errno, not only "Failed to mount local directory".
-#   S4w  A boot-time zip in a WRITABLE mount must load at all. It does not
-#        today, whatever the uid -- the extract lands as a directory where the
-#        boot path then opens a file (EISDIR).
-#   S5   Control: after a chown to 1000 the same runtime publish succeeds, so a
-#        fix cannot pass by refusing everything.
+# Package mount: a zip is extracted into the server's own data directory, so
+# the mount only has to be readable and nothing beside a zip is touched.
+#   S3   Publish a new version from a root-owned mount: it loads.
+#   S3b  Publish a zip next to a directory of the same name (one a root-run
+#        0.8.x left behind, or the operator's own): it loads, and the
+#        directory is left as it was.
+#   S3c  The same mount bound read-only: it loads.
+#   S4   The same zip declared in the config at boot: it loads.
 # Server data
-#   S2   A publisher_data volume left root-owned by a 0.8.x.
+#   S2   A publisher_data volume left root-owned by a 0.8.x: names EACCES.
 #   S6   A read-only root filesystem (Kubernetes readOnlyRootFilesystem): the
 #        server cannot open publisher.db, and /status must say so.
 #   S7   An unreadable publisher.config.json: /status must say so.
 # Credentials
 #   C1   GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read
 #        (a 0600 file owned by someone else): a gs:// package add must name
-#        EACCES. The BigQuery connection test already does -- kept as a control.
+#        EACCES, and so must the BigQuery connection test.
 #   C2   GOOGLE_APPLICATION_CREDENTIALS names a directory, which is what a bind
 #        of a host path that does not exist produces: both must say it is a
 #        directory, not that the file "does not exist".
 #
 # The assertions require the cause and refuse the generic body. They do not pin
-# wording, or whether the path is named. Every check runs before the script
-# fails, so one run reports all of them.
+# wording. Every check runs before the script fails, so one run reports all of
+# them.
 
 set -euo pipefail
 
@@ -54,12 +50,11 @@ GENERIC='Internal server error.'
 BASE_PORT="${BASE_PORT:-4100}"
 PREFIX=fsw-smoke
 PACKAGES_VOLUME=$PREFIX-packages
-WRITABLE_VOLUME=$PREFIX-packages-writable
 DATA_VOLUME=$PREFIX-data
 CREDS_VOLUME=$PREFIX-creds
 CREDS_DIR_VOLUME=$PREFIX-creds-dir
 CONFIG_VOLUME=$PREFIX-config
-VOLUMES=("$PACKAGES_VOLUME" "$WRITABLE_VOLUME" "$DATA_VOLUME" "$CREDS_VOLUME" "$CREDS_DIR_VOLUME" "$CONFIG_VOLUME")
+VOLUMES=("$PACKAGES_VOLUME" "$DATA_VOLUME" "$CREDS_VOLUME" "$CREDS_DIR_VOLUME" "$CONFIG_VOLUME")
 CREDS=/var/secrets/google/credentials.json
 
 ENV_NAME=analytics
@@ -187,7 +182,7 @@ assert_in_load_errors() {
 assert_status_names() {
    local label=$1 pattern=$2 status
    status=$(curl -s "http://localhost:${port}/api/v0/status" || true)
-   echo "  $label /status -> $(echo "$status" | jq -c '{operationalState, initialized, loadErrors, emptyReason}' 2>/dev/null || echo "$status")"
+   echo "  $label /status -> $(echo "$status" | jq -c '{operationalState, initialized, initError, loadErrors, emptyReason}' 2>/dev/null || echo "$status")"
    if echo "$status" | grep -Eqi "$pattern"; then
       pass "$label: /status names the cause"
    else
@@ -237,7 +232,8 @@ done
 (cd "$work/src/$PKG" && zip -q -r "../$PKG.zip" .)
 
 # populate <mount> <owner>: the orchestrator's side. Upload both versions'
-# zips, and leave the directory a root-run 0.8.x extracted the old one into.
+# zips, and leave a directory named like the old one's zip, as a root-run 0.8.x
+# extracting beside it did, with a file of its own in it.
 populate() {
    as_root -v "$1" -v "$work/src:/src:ro" "$IMAGE" sh -c "
       set -e
@@ -245,67 +241,70 @@ populate() {
       for v in $NEW_VERSION $OLD_VERSION; do cp /src/$PKG.zip /tmp/packages/$PKG-\$v.zip; done
       mkdir -p /tmp/packages/$PKG-$OLD_VERSION
       cp -r /src/$PKG/. /tmp/packages/$PKG-$OLD_VERSION/
+      echo mine >/tmp/packages/$PKG-$OLD_VERSION/keep.txt
       chown -R $2 /tmp/packages
       chmod -R u=rwX,go=rX /tmp/packages"
 }
 populate "$PACKAGES_MOUNT" 0:0
-docker volume create "$WRITABLE_VOLUME" >/dev/null
-WRITABLE_MOUNT="$WRITABLE_VOLUME:/tmp/packages"
-populate "$WRITABLE_MOUNT" 1000:1000
 
 write_config boot-zip.json "{\"environments\":[{\"name\":\"$ENV_NAME\",\"packages\":[{\"name\":\"seed\",\"location\":\"/tmp/packages/seed\"},{\"name\":\"$PKG-$NEW_VERSION\",\"location\":\"/tmp/packages/$PKG-$NEW_VERSION.zip\"}],\"connections\":[]}]}"
 write_config seed.json "{\"environments\":[{\"name\":\"$ENV_NAME\",\"packages\":[{\"name\":\"seed\",\"location\":\"/tmp/packages/seed\"}],\"connections\":[]}]}"
 
+# assert_loads <label> <json body>: the add answered with the package.
+assert_loads() {
+   local label=$1 body=$2
+   if echo "$body" | jq -e '.name' >/dev/null 2>&1; then
+      pass "$label loads"
+   else
+      fail "$label did not load: $body"
+   fi
+}
+
+# assert_mount_untouched <label> <mount>: the mount holds exactly what the
+# orchestrator put there, and the directory beside the old version's zip still
+# holds its own file.
+assert_mount_untouched() {
+   local label=$1 mount=$2 listing
+   listing=$(as_root -v "$mount" "$IMAGE" sh -c \
+      "cd /tmp/packages && ls -1 . | tr '\n' ' ' && cat $PKG-$OLD_VERSION/keep.txt")
+   if [ "$listing" = "$PKG-$OLD_VERSION $PKG-$OLD_VERSION.zip $PKG-$NEW_VERSION.zip seed mine" ]; then
+      pass "$label: nothing written beside the zips"
+   else
+      fail "$label: the package mount changed ($listing)"
+   fi
+}
+
 echo "== Package mount"
-echo "S3/S3b: runtime publish into a root-owned shared package mount"
+echo "S3/S3b: runtime publish from a root-owned shared package mount"
 start s3 -v "$PACKAGES_MOUNT"
 wait_serving s3
 if create_env; then
-   assert_names "S3 publish $PKG-$NEW_VERSION" 'EACCES|permission denied' \
+   assert_loads "S3 publish $PKG-$NEW_VERSION" \
       "$(add_package "$PKG-$NEW_VERSION" "/tmp/packages/$PKG-$NEW_VERSION.zip")"
-   assert_in_load_errors S3 "$PKG-$NEW_VERSION" 'EACCES|permission denied'
-   assert_names "S3b publish $PKG-$OLD_VERSION" 'EACCES|permission denied' \
+   assert_loads "S3b publish $PKG-$OLD_VERSION" \
       "$(add_package "$PKG-$OLD_VERSION" "/tmp/packages/$PKG-$OLD_VERSION.zip")"
-   assert_in_load_errors S3b "$PKG-$OLD_VERSION" 'EACCES|permission denied'
+   assert_mount_untouched S3 "$PACKAGES_MOUNT"
 fi
 
 echo "S3c: the same mount bound read-only"
 start s3c -v "$PACKAGES_MOUNT:ro"
 wait_serving s3c
 if create_env; then
-   assert_names "S3c publish $PKG-$OLD_VERSION" 'EROFS|read-only' \
+   assert_loads "S3c publish $PKG-$OLD_VERSION" \
       "$(add_package "$PKG-$OLD_VERSION" "/tmp/packages/$PKG-$OLD_VERSION.zip")"
 fi
 
 echo "S4: a boot-time zip in the root-owned mount"
 start s4 -v "$PACKAGES_MOUNT" -v "$work/boot-zip.json:/publisher/publisher.config.json:ro"
 wait_serving s4
-assert_in_load_errors S4 "$PKG-$NEW_VERSION" 'EACCES|permission denied'
-
-echo "S4w: a boot-time zip in a writable mount must load"
-start s4w -v "$WRITABLE_MOUNT" -v "$work/boot-zip.json:/publisher/publisher.config.json:ro"
-wait_serving s4w
-code=$(curl -s -o "$work/s4w.json" -w '%{http_code}' \
+code=$(curl -s -o "$work/s4.json" -w '%{http_code}' \
    "http://localhost:${port}/api/v0/environments/${ENV_NAME}/packages/$PKG-$NEW_VERSION/models")
 if [ "$code" = 200 ]; then
-   pass "S4w: the boot-time zip serves"
+   pass "S4: the boot-time zip serves"
 else
-   fail "S4w: a boot-time zip in a writable mount does not load ($code: $(cat "$work/s4w.json"); loadErrors $(curl -s "http://localhost:${port}/api/v0/status" | jq -c '.loadErrors // "absent"'))"
+   fail "S4: a boot-time zip does not load ($code: $(cat "$work/s4.json"); loadErrors $(curl -s "http://localhost:${port}/api/v0/status" | jq -c '.loadErrors // "absent"'))"
 fi
-
-echo "S5: control -- the runtime publish succeeds once the mount is uid 1000's"
-start s5 -v "$WRITABLE_MOUNT"
-wait_serving s5
-if create_env; then
-   for version in "$NEW_VERSION" "$OLD_VERSION"; do
-      body=$(add_package "$PKG-$version" "/tmp/packages/$PKG-$version.zip")
-      if echo "$body" | jq -e '.name' >/dev/null 2>&1; then
-         pass "S5 publish $PKG-$version succeeds on a writable mount"
-      else
-         fail "S5 publish $PKG-$version failed on a writable mount: $body"
-      fi
-   done
-fi
+assert_mount_untouched S4 "$PACKAGES_MOUNT"
 
 echo "== Server data"
 echo "S2: a publisher_data volume left root-owned by a 0.8.x"
@@ -347,7 +346,7 @@ if create_env; then
    assert_names "C1 publish from $GCS_LOCATION" 'EACCES|permission denied' \
       "$(add_package "$PKG-gcs" "$GCS_LOCATION")"
 fi
-assert_names "C1 BigQuery connection test (control)" 'EACCES|permission denied' "$(bigquery_test)"
+assert_names "C1 BigQuery connection test" 'EACCES|permission denied' "$(bigquery_test)"
 
 echo "C2: GOOGLE_APPLICATION_CREDENTIALS names a directory"
 docker volume create "$CREDS_DIR_VOLUME" >/dev/null
@@ -363,4 +362,4 @@ if [ "$failures" -gt 0 ]; then
    echo "✗ $failures filesystem assertion(s) failed"
    exit 1
 fi
-echo "✓ every filesystem access the uid-1000 server could not make named its cause"
+echo "✓ every package mount loaded read-only, and every access the server could not make named its cause"

@@ -70,6 +70,7 @@ import {
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
+import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    CloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
@@ -2943,6 +2944,16 @@ export async function testConnectionConfig(
       // or deletes an operator's own database, and two concurrent tests of one
       // name can't clobber each other. The whole directory is removed in the
       // finally.
+      // A BigQuery connection with no inline key authenticates through
+      // GOOGLE_APPLICATION_CREDENTIALS, whose directory case google-auth
+      // reports as a file that does not exist.
+      if (
+         connectionConfig.type === "bigquery" &&
+         !connectionConfig.bigqueryConnection?.serviceAccountKeyJson
+      ) {
+         assertGoogleCredentialsIsNotADirectory();
+      }
+
       testRoot = await fs.mkdtemp(
          path.join(os.tmpdir(), "publisher-conn-test-"),
       );

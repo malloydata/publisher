@@ -2,21 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { internalErrorToHttpError } from "./errors";
-import { deserializeError } from "./package_load/package_load_pool";
+import { internalErrorToHttpError, PackageNotFoundError } from "./errors";
+import {
+   deserializeError,
+   serializeError,
+} from "./package_load/package_load_pool";
 
 // The image runs as uid 1000 (#1273), so a mount the server cannot write is a
 // deployment fault an operator fixes with a chown, not a server bug. Every write
-// site in the server -- an environment's .temp_ download dir, a zip location's
-// sibling extract dir, publisher.db, a package swap -- surfaces the failure as a
-// Node errno error, and today all of them collapse into the generic
-// "Internal server error." body. These pin the contract at the one place every
-// REST and MCP failure passes through, so a write site nobody thought of is
-// covered too.
+// site in the server -- an environment's .temp_ download dir, publisher.db, a
+// package swap, a README or publisher.json -- surfaces the failure as a Node
+// errno error. These pin the contract at the one place every REST and MCP
+// failure passes through, so a write site nobody thought of is covered too.
 //
 // The assertions are deliberately loose about wording: the response must say
-// WHICH errno it was, and must not be the generic body. Whether it also names
-// the path is the fix's call (the mapper withholds filesystem paths elsewhere).
+// WHICH errno it was, and must not be the generic body.
 
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 
@@ -48,10 +48,10 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
          "mkdir",
          "/publisher/publisher_data/local/.temp_0123456789abcdef",
       ],
-      // S3: a zip location in a root-owned shared package mount.
-      ["EACCES", "mkdir", "/tmp/packages/tiny"],
-      // S6: a zip location on a read-only mount.
-      ["EROFS", "rm", "/tmp/packages/tiny"],
+      // A runtime install staging into a root-owned environment directory.
+      ["EACCES", "mkdir", "/publisher/publisher_data/local/.staging-tiny"],
+      // A package mount bound read-only, written to by a package swap.
+      ["EROFS", "rm", "/publisher/publisher_data/local/tiny"],
       // A chown/chmod/rename the kernel refuses outright.
       ["EPERM", "rename", "/publisher/publisher_data/local/tiny"],
    ];
@@ -77,18 +77,30 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
    });
 
    it("recognizes the errno after it crosses the package-load worker boundary", () => {
-      // Package loads run in a worker thread, and the pool rebuilds the error
-      // from {name, message, stack} only: `code`, `syscall` and `path` are gone
-      // and only the message text still says EACCES. A fix keyed on `.code`
-      // alone misses every failure that happens inside a package load.
-      const crossed = deserializeError({
-         name: "Error",
-         message:
-            "EACCES: permission denied, open '/publisher/publisher_data/local/tiny/model.malloy'",
-      });
-      expect((crossed as NodeJS.ErrnoException).code).toBeUndefined();
+      // Package loads run in a worker thread and their errors cross as a
+      // serialized shape, through structured clone, like postMessage does.
+      const original = errnoError(
+         "EACCES",
+         "open",
+         "/publisher/publisher_data/local/tiny/model.malloy",
+      );
+      const crossed = deserializeError(
+         structuredClone(serializeError(original)),
+      );
       const { json } = internalErrorToHttpError(crossed);
       expect(json.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
+      expect(json.message).toContain("EACCES");
+   });
+
+   it("answers a not-found wrap around a refused access with the errno, not 404", () => {
+      // A 404 "does not exist" sends the operator looking for a missing file
+      // when the file is there and only its permissions are wrong.
+      const wrapped = new PackageNotFoundError(
+         "Failed to mount local directory: /tmp/packages/tiny",
+         { cause: errnoError("EACCES", "mkdir", "/tmp/packages/tiny") },
+      );
+      const { status, json } = internalErrorToHttpError(wrapped);
+      expect(status).toBe(500);
       expect(json.message).toContain("EACCES");
    });
 
@@ -106,5 +118,21 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
          internalErrorToHttpError(new Error("boom at /srv/secret")).json
             .message,
       ).toBe(GENERIC_INTERNAL_MESSAGE);
+   });
+
+   it("does not take an errno from message text or from a code alone", () => {
+      // Matching on text would pass through any failure whose message happens
+      // to mention a permission problem, such as a driver error echoing the
+      // caller's SQL. A `code` with no `syscall` is not a Node errno error.
+      expect(
+         internalErrorToHttpError(
+            new Error("EACCES: permission denied, open '/srv/secret'"),
+         ).json.message,
+      ).toBe(GENERIC_INTERNAL_MESSAGE);
+      const driverError = new Error("driver said no") as NodeJS.ErrnoException;
+      driverError.code = "EACCES";
+      expect(internalErrorToHttpError(driverError).json.message).toBe(
+         GENERIC_INTERNAL_MESSAGE,
+      );
    });
 });

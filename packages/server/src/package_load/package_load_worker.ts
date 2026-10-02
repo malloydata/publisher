@@ -87,7 +87,11 @@ import {
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { ModelCompilationError, PackageManifestError } from "../errors";
+import {
+   errnoWireFields,
+   ModelCompilationError,
+   PackageManifestError,
+} from "../errors";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -1220,6 +1224,12 @@ async function loadPackage(
 // ──────────────────────────────────────────────────────────────────────
 
 function serializeError(error: unknown): SerializedError {
+   const serialized = serializeErrorShape(error);
+   const errno = error instanceof Error ? errnoWireFields(error) : undefined;
+   return errno ? { ...serialized, errno } : serialized;
+}
+
+function serializeErrorShape(error: unknown): SerializedError {
    if (error instanceof MalloyError) {
       return {
          name: error.name,
@@ -1265,6 +1275,7 @@ function deserializeError(serialized: SerializedError): Error {
    const err = new Error(serialized.message);
    err.name = serialized.name;
    if (serialized.stack) err.stack = serialized.stack;
+   if (serialized.errno) Object.assign(err, serialized.errno);
    return err;
 }
 

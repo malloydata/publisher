@@ -3627,7 +3627,11 @@ export class Package {
       );
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+      } catch (error) {
+         // Only a missing manifest is "does not exist". Anything else, an
+         // EACCES on the package directory above all, is rethrown so it is
+         // reported as what it is.
+         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
          throw new PackageNotFoundError(
             `Package manifest for ${packagePath} does not exist.`,

@@ -4,8 +4,14 @@
 import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { BadRequestError, FrozenConfigError } from "../errors";
+import {
+   BadRequestError,
+   FrozenConfigError,
+   internalErrorToHttpError,
+   messageWithFilesystemCause,
+} from "../errors";
 import { logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
 
@@ -211,17 +217,36 @@ export class PackageController {
       let result;
       if (body.location) {
          const bodyLocation = body.location;
-         result = await environment.installPackage(
-            packageName,
-            (stagingPath) =>
-               this.downloadInto(
-                  environmentName,
+         try {
+            result = await environment.installPackage(
+               packageName,
+               (stagingPath) =>
+                  this.downloadInto(
+                     environmentName,
+                     packageName,
+                     bodyLocation,
+                     stagingPath,
+                  ),
+               (pkg) => formatPublishRejections(pkg),
+            );
+         } catch (error) {
+            // A failure the caller cannot fix (5xx: a mount the server cannot
+            // write, an unreachable bucket) is also an operator's problem, and
+            // the caller that saw the response may be an orchestrator that
+            // never shows it to one. Record it where /status reports load
+            // failures. A rejection of the package's own content (4xx) is
+            // answered with its reason and is not recorded.
+            if (
+               internalErrorToHttpError(error as Error, { log: false })
+                  .status >= 500
+            ) {
+               environment.recordPackageAddFailure(
                   packageName,
-                  bodyLocation,
-                  stagingPath,
-               ),
-            (pkg) => formatPublishRejections(pkg),
-         );
+                  redactPgSecrets(messageWithFilesystemCause(error)),
+               );
+            }
+            throw error;
+         }
       } else {
          result = await environment.addPackage(packageName);
       }

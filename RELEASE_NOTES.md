@@ -31,6 +31,21 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
+
+0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount, which also answered 404 and so read as a missing package. An unreadable package directory is no longer reported as `Package manifest … does not exist.`
+
+**A local `.zip` package location is extracted into `publisher_data/`, never beside the archive.** It used to be extracted into a directory next to the zip, named after it, after removing any directory already at that path. So a location like `/data/pkgs/sales.zip` deleted an operator's own `/data/pkgs/sales/` if one was there. It also made a package mount a write mount, which is how uid 1000 met it. A package mount, or a directory of zips, now only needs to be readable, including when bound read-only, and nothing beside the zip is created or removed. A `.zip` declared in `publisher.config.json` loads too. Before, it never did, whatever the uid: the boot path copied the archive file onto the package directory (`EISDIR`).
+
+`GET /api/v0/status` reports two failures it did not:
+
+- A package add through `POST /environments/{env}/packages` that fails on the server's side (any 5xx) is listed under `loadErrors`, like a configured package that did not load. It clears when that package is later added successfully, or deleted. A rejection of the package's own content (4xx) is answered with its reason and is not listed.
+- A new `initError` field says why initialization failed, for example a config file the server cannot read, or a read-only root filesystem it cannot create `publisher.db` on. Such a server stays up at `operationalState: "initializing"`, which used to be indistinguishable from one still starting; the reason was only on stderr. The field is absent when initialization succeeded. MCP `get_status` carries it too.
+
+`GOOGLE_APPLICATION_CREDENTIALS` naming a directory, which is what a bind mount of a host path that does not exist produces, is now reported as a directory on a `gs://` package add and on a BigQuery connection test, rather than as a key file that "does not exist".
+
+On Kubernetes, a volume is not seeded from the image the way a new Docker named volume is, so a volume on `/publisher/publisher_data` starts root-owned; set `fsGroup: 1000` in the pod's `securityContext`. See `packages/server/README.docker.md`.
+
 ## [0.9.0] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
 
 `ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. Removing Python also drops `netbase` and `media-types`, which only Python pulled in, so `/etc/services`, `/etc/protocols` and `/etc/mime.types` are no longer in the image and `getent services https` fails; the server reads none of them.
