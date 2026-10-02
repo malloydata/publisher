@@ -31,7 +31,9 @@ const getDashboard = mock(() =>
    Promise.resolve({
       data: {
          path: "dashboards/overview.malloy",
-         givens: [{ name: "CATEGORY", label: "Category", type: "filter<string>" }],
+         givens: [
+            { name: "CATEGORY", label: "Category", type: "filter<string>" },
+         ],
          tiles: [],
       },
    }),
@@ -67,8 +69,8 @@ describe("DashboardEditor filter tags", () => {
       );
       const tags = await screen.findAllByTestId("tile-filter-tag");
       expect(tags.map((tag) => tag.textContent)).toEqual(["Category"]);
-      expect(tags[0].closest("[data-tile-key]")?.getAttribute("aria-label")).toBe(
-         "Tile by_cat",
-      );
+      expect(
+         tags[0].closest("[data-tile-key]")?.getAttribute("aria-label"),
+      ).toBe("Tile by_cat");
    });
 });

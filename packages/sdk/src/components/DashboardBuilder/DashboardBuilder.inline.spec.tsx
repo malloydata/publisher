@@ -238,13 +238,17 @@ describe("the save shortcut inside a markdown field", () => {
             written = source;
          },
       });
-      fireEvent.click(within(tile("intro")).getByRole("button", { name: /Read/ }));
+      fireEvent.click(
+         within(tile("intro")).getByRole("button", { name: /Read/ }),
+      );
       const field = screen.getByLabelText("Markdown");
       field.focus();
       fireEvent.change(field, { target: { value: "Drafted, never closed" } });
       fireEvent.keyDown(field, { key: "s", ctrlKey: true, metaKey: true });
       await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain("##|(markdown) intro\nDrafted, never closed\n|##");
+      expect(written).toContain(
+         "##|(markdown) intro\nDrafted, never closed\n|##",
+      );
    });
 });
 
