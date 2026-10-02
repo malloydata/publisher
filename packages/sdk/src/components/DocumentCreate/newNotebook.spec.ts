@@ -3,10 +3,11 @@
 
 import { describe, expect, it } from "bun:test";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
+import { isQueryTile, isTextTile } from "../DashboardBuilder/document";
 import {
-   notebookSourceRefused,
-   readNotebookSource,
-} from "../DashboardBuilder/legacyNotebook";
+   readDashboardDocument,
+   readFailed,
+} from "../DashboardBuilder/readDocument";
 import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource } from "./newNotebook";
@@ -34,14 +35,29 @@ describe("newNotebookSource", () => {
       expect(lintNotebookText("notebooks/q3.malloy", text)).toEqual([]);
    });
 
-   it("reads back in the notebook reader as the import, a text cell and a query cell", async () => {
-      const result = await readNotebookSource(newNotebookSource(INPUT));
-      if (notebookSourceRefused(result)) throw new Error(result.refused);
-      expect(result.source.cells.map((c) => c.kind)).toEqual([
-         "definition",
-         "markdown",
-         "query",
-      ]);
+   it("reads back as a layout notebook: an intro text tile, then one query tile, and no run cell", async () => {
+      const text = newNotebookSource(INPUT);
+      const result = await readDashboardDocument(text);
+      if (readFailed(result)) throw new Error(result.reason);
+      const { document } = result;
+      expect(document.kind).toBe("notebook");
+      expect(
+         document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
+      ).toEqual(["text", "query"]);
+      const query = document.tiles.find(isQueryTile);
+      expect(query?.name).toBe("cell_1");
+      expect(text).toContain(
+         "source: order_items_tiles is order_items extend {",
+      );
+      expect(text).not.toMatch(/^run:/m);
+   });
+
+   it("reads back for a back-quoted source too", async () => {
+      const result = await readDashboardDocument(
+         newNotebookSource({ ...INPUT, source: "order items" }),
+      );
+      if (readFailed(result)) throw new Error(result.reason);
+      expect(result.document.tiles.filter(isQueryTile)).toHaveLength(1);
    });
 
    it("imports the one source by name", () => {
@@ -73,7 +89,7 @@ describe("newDocumentProblem", () => {
          view: "is",
       });
       expect(text).toContain("import { `source` }");
-      expect(text).toContain("run: `source` -> `is`");
+      expect(text).toContain("view: cell_1 is `is`");
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
       expect(
          newDocumentProblem("dashboard", { ...INPUT, source: "date" }),

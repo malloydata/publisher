@@ -5,13 +5,18 @@ import {
    BackLink,
    DashboardBar,
    encodeResourceUri,
+   type DashboardEvent,
    Loading,
    NarrowEditGate,
 } from "@malloy-publisher/sdk";
 import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { logDashboardEvent } from "../../../utils/consoleTelemetry";
+import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
+import {
+   logDashboardEvent,
+   logNotebookEvent,
+} from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
@@ -29,27 +34,43 @@ const DashboardEditor = React.lazy(() =>
 export interface DashboardEditPageProps {
    environmentName: string;
    packageName: string;
-   /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
+   /** The document's slug: `overview`, not `dashboards/overview.malloy`. */
    dashboardName: string;
+   /** A notebook is the same editor with one column; default `dashboard`. */
+   kind?: "dashboard" | "notebook";
+   /** The file within the package, when the route's folder is not the whole story. */
+   path?: string;
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`.
- * Done returns to the dashboard itself, one segment up.
+ * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`,
+ * and `/<env>/<pkg>/notebooks/<slug>/edit` with `kind="notebook"`.
+ * Close returns to the document itself, one segment up.
  */
 export default function DashboardEditPage({
    environmentName,
    packageName,
    dashboardName,
+   kind = "dashboard",
+   path,
 }: DashboardEditPageProps) {
    const navigate = useNavigate();
    const guard = useLeaveGuard();
    const { pathname } = useLocation();
    const dashboardPath = pathname.replace(/\/edit\/?$/, "");
-   const onEvent = useMemo(
-      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
-      [environmentName, packageName, dashboardName],
-   );
+   const onEvent = useMemo(() => {
+      if (kind === "dashboard")
+         return logDashboardEvent({
+            environmentName,
+            packageName,
+            dashboardName,
+         }) as (event: DashboardEvent | NotebookEvent) => void;
+      return logNotebookEvent({
+         environmentName,
+         packageName,
+         notebookName: dashboardName,
+      }) as (event: DashboardEvent | NotebookEvent) => void;
+   }, [kind, environmentName, packageName, dashboardName]);
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          {/* The same way up the reader's view has, in the same place, so the
@@ -72,12 +93,14 @@ export default function DashboardEditPage({
             >
                <DashboardEditor
                   // Remounts on a route change so another dashboard starts from a fresh read.
-                  key={`${environmentName}/${packageName}/${dashboardName}`}
+                  key={`${environmentName}/${packageName}/${kind}/${dashboardName}`}
                   resourceUri={encodeResourceUri({
                      environmentName,
                      packageName,
                   })}
                   dashboard={dashboardName}
+                  kind={kind}
+                  path={path}
                   onExit={() => {
                      guard.leaving();
                      navigate(dashboardPath);
