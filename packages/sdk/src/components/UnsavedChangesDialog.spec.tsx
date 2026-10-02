@@ -7,17 +7,21 @@ import { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 
 afterEach(cleanup);
 
-const mount = (props: { open?: boolean; canSave?: boolean } = {}) => {
+const mount = (
+   props: { open?: boolean; canSave?: boolean; noSave?: boolean } = {},
+) => {
    const handlers = {
       onKeepEditing: mock(() => {}),
       onDiscard: mock(() => {}),
       onSaveAndExit: mock(() => {}),
    };
+   const { onSaveAndExit, ...rest } = handlers;
    render(
       <UnsavedChangesDialog
          open={props.open ?? true}
          canSave={props.canSave ?? true}
-         {...handlers}
+         {...rest}
+         {...(props.noSave ? {} : { onSaveAndExit })}
       />,
    );
    return handlers;
@@ -54,5 +58,13 @@ describe("UnsavedChangesDialog", () => {
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       expect(h.onKeepEditing).toHaveBeenCalledTimes(1);
       expect(h.onDiscard).not.toHaveBeenCalled();
+   });
+
+   it("does not offer to save in its copy when it shows no Save button", () => {
+      mount({ noSave: true });
+      expect(
+         screen.queryByRole("button", { name: "Save and exit" }),
+      ).toBeNull();
+      expect(screen.queryByText(/Save them/)).toBeNull();
    });
 });

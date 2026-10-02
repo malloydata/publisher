@@ -22,6 +22,8 @@ export interface BuilderShortcutHandlers {
    escape: () => void;
    /** Nudge the selected tile's width by ±1 column. Absent, the arrow keys are left alone. */
    nudge?: (delta: 1 | -1) => void;
+   /** A modal owns the keyboard: no shortcut fires, so none can open a second dialog over it. */
+   paused?: boolean;
 }
 
 export const isMac =
@@ -58,6 +60,7 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
    useEffect(() => {
       const onKey = (event: KeyboardEvent) => {
          const current = latest.current;
+         if (current.paused) return;
          const mod = isMac ? event.metaKey : event.ctrlKey;
          const key = event.key.toLowerCase();
          if (event.key === "Escape") {

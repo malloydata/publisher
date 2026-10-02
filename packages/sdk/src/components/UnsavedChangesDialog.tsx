@@ -25,9 +25,9 @@ export function UnsavedChangesDialog({
          onClose={onKeepEditing}
          title="Leave with unsaved changes?"
          description={
-            canSave
+            canSave && onSaveAndExit
                ? "Your edits have not been saved. Save them, or leave without them."
-               : "Your edits cannot be saved here. Leaving discards them."
+               : "Leaving now discards your unsaved edits."
          }
          actions={
             <>

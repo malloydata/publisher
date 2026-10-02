@@ -170,9 +170,8 @@ export interface DashboardBuilderProps {
     */
    savesTo?: "package" | "browser" | "host";
    /**
-    * The host's own actions for the edit bar — Done — rendered beside
-    * undo, redo and save. The builder owns the edits; where the file goes
-    * afterwards is the host's, so its buttons sit in the host's slot.
+    * The host's own extra actions for the edit bar, rendered beside undo, redo
+    * and save. Leaving is `onExit`, not this: the builder draws Done itself.
     */
    toolbar?: ReactNode;
    /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
@@ -380,13 +379,17 @@ export function DashboardBuilder({
          })
          .finally(() => setSaving(false));
    }, [editor, onEvent, savesTo]);
+   const askingRef = useRef(false);
    const save = useCallback((): Promise<void> | void => {
       if (!onSave || !editor.dirty || saving) return;
       if (!editor.structural) return commitSave();
       // A tile was added or removed: show what that does to the file first.
       return editor.preview().then((result) => {
-         if (result.ok)
-            setPendingSave({ before: editor.source, after: result.source });
+         if (result.ok) {
+            // The exit dialog came up while this previewed; a review over it would stack two modals.
+            if (!askingRef.current)
+               setPendingSave({ before: editor.source, after: result.source });
+         }
          // A refusal surfaces through the same path a save's would.
          else return commitSave();
       });
@@ -399,6 +402,7 @@ export function DashboardBuilder({
       save,
       onExit: () => onExit?.(),
    });
+   askingRef.current = exitGuard.dialog.open;
 
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
@@ -453,6 +457,7 @@ export function DashboardBuilder({
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
+            paused: exitGuard.dialog.open || pendingSave !== undefined,
             // Escape drops the selection — unless the menu or the filter
             // window is open, in which case the key is theirs and they close
             // on it themselves.
@@ -473,7 +478,17 @@ export function DashboardBuilder({
                });
             },
          }),
-         [editor, onSave, save, menu, filterDialog, selected, columns],
+         [
+            editor,
+            onSave,
+            save,
+            menu,
+            filterDialog,
+            selected,
+            columns,
+            exitGuard.dialog.open,
+            pendingSave,
+         ],
       ),
    );
 

@@ -63,7 +63,7 @@ export type NotebookEditorProps = (
         notebookName: string;
      }
 ) & {
-   /** Leave the editor: the host's "Done editing". Absent, no such button. */
+   /** Leave the editor: its "Done editing", which asks first when edits are unsaved. Absent, no such button. */
    onExit?: () => void;
    /** What the editor does — opened, saved, refused — for the host to log. */
    onEvent?: NotebookEventHandler;

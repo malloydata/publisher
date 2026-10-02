@@ -106,7 +106,7 @@ export interface NotebookBuilderProps extends QueryTarget {
    onEvent?: NotebookEventHandler;
    /** Where `onSave` puts the file, for the event it reports. */
    savesTo?: "package" | "browser" | "host";
-   /** The host's own actions for the edit bar, such as Done. */
+   /** The host's own extra actions for the edit bar; leaving is `onExit`, which draws Done. */
    toolbar?: ReactNode;
    /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
    onExit?: () => void;
@@ -494,20 +494,23 @@ export function NotebookBuilder({
          .finally(() => setSaving(false));
    }, [editor, onEvent, savesTo]);
 
+   const askingRef = useRef(false);
    const save = useCallback((): Promise<void> | void => {
       if (!onSave || !editor.dirty || saving) return;
       if (!editor.structural && !editor.clearsHistory) return commitSave();
       return Promise.all([editor.preview(), editor.removedComments()]).then(
          ([result, removedComments]) => {
-            if (result.ok)
-               setPendingSave({
-                  before: editor.source,
-                  after: result.source,
-                  removedComments,
-                  clearsHistory: editor.clearsHistory,
-                  structural: editor.structural,
-               });
-            else return commitSave();
+            if (result.ok) {
+               // The exit dialog came up while this previewed; a review over it would stack two modals.
+               if (!askingRef.current)
+                  setPendingSave({
+                     before: editor.source,
+                     after: result.source,
+                     removedComments,
+                     clearsHistory: editor.clearsHistory,
+                     structural: editor.structural,
+                  });
+            } else return commitSave();
          },
       );
    }, [onSave, editor, saving, commitSave]);
@@ -519,6 +522,7 @@ export function NotebookBuilder({
       save,
       onExit: () => onExit?.(),
    });
+   askingRef.current = exitGuard.dialog.open;
 
    useBuilderShortcuts(
       useMemo(
@@ -526,10 +530,11 @@ export function NotebookBuilder({
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
+            paused: exitGuard.dialog.open || pendingSave !== undefined,
             // The open text field commits on its own Escape; handling it here too would drop the draft.
             escape: () => {},
          }),
-         [editor, onSave, save],
+         [editor, onSave, save, exitGuard.dialog.open, pendingSave],
       ),
    );
 

@@ -3,14 +3,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/**
- * Leaving a builder without losing work: "Done editing" exits at once when
- * nothing is unsaved, and otherwise asks.
- *
- * "Save and exit" exits only after a save this request started has settled
- * with nothing left dirty, so a refused or failed save, or a review dialog
- * dismissed with "Keep editing", leaves the builder open with its edits.
- */
 export interface ExitGuardOptions {
    dirty: boolean;
    saving: boolean;
@@ -24,6 +16,7 @@ export interface ExitGuardOptions {
 
 type Phase = "idle" | "asking" | "waiting" | "saving";
 
+/** "Done editing" exits at once when clean and asks otherwise; "Save and exit" exits only once its own save settles clean. */
 export function useExitGuard({
    dirty,
    saving,
@@ -70,10 +63,10 @@ export function useExitGuard({
    }, [phase, issued, saving, reviewing, dirty, issue]);
 
    const requestExit = useCallback(() => {
-      if (phase !== "idle") return;
+      if (phase !== "idle" || reviewing) return;
       if (dirty) setPhase("asking");
       else onExitRef.current();
-   }, [phase, dirty]);
+   }, [phase, dirty, reviewing]);
 
    return {
       requestExit,
@@ -81,14 +74,17 @@ export function useExitGuard({
          open: phase === "asking",
          canSave,
          onKeepEditing: () => {
+            if (phase !== "asking") return;
             attempt.current++;
             setPhase("idle");
          },
          onDiscard: () => {
+            if (phase !== "asking") return;
             setPhase("idle");
             onExitRef.current();
          },
          onSaveAndExit: () => {
+            if (phase !== "asking") return;
             if (saving) setPhase("waiting");
             else void issue();
          },

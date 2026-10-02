@@ -165,5 +165,19 @@ describe("useExitGuard", () => {
       await saveAndExit(view);
       act(() => set({ dirty: false }));
       expect(onExit).not.toHaveBeenCalled();
+      // The request is over, so a fresh Done asks again rather than being swallowed.
+      set({ dirty: true });
+      act(() => view.result.current.requestExit());
+      expect(view.result.current.dialog.open).toBe(true);
+   });
+
+   it("ignores the dialog's buttons once it is closed", () => {
+      const { view, onExit, save } = mount({ dirty: true });
+      act(() => view.result.current.requestExit());
+      act(() => view.result.current.dialog.onKeepEditing());
+      act(() => view.result.current.dialog.onDiscard());
+      act(() => view.result.current.dialog.onSaveAndExit());
+      expect(onExit).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
    });
 });
