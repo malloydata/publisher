@@ -18,13 +18,24 @@ export type NotebookEvent =
         type: "notebook.saved";
         cells: number;
         where: SavesTo;
-        /** The save added or removed a cell, which is when the diff was shown. */
+        /** The save added or removed a cell. */
         structural: boolean;
         /** The host workspace that took the write; never set for a package save. */
         workspace?: string;
         durationMs: number;
      }
    | { type: "notebook.save_refused"; reason: string }
+   | {
+        /** Undo save wrote the file back as it was before the last save. */
+        type: "notebook.save_undone";
+        cells: number;
+        where: SavesTo;
+        /** Whether the save it took back added or removed a cell. */
+        structural: boolean;
+        workspace?: string;
+        durationMs: number;
+     }
+   | { type: "notebook.save_undo_refused"; reason: string }
    | NotebookCreatedEvent;
 
 export type NotebookEventHandler = (event: NotebookEvent) => void;

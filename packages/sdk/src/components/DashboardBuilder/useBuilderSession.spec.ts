@@ -24,6 +24,8 @@ const makeEditor = (
    undo: mock(() => {}),
    redo: mock(() => {}),
    save: mock(async (): Promise<SaveOutcome> => ({ ok: true })),
+   canUndoSave: false,
+   undoSave: mock(async (): Promise<SaveOutcome> => ({ ok: true })),
    ...over,
 });
 
@@ -33,6 +35,8 @@ const mount = (
 ) => {
    const saved = mock((_info: unknown) => {});
    const refused = mock((_reason: string) => {});
+   const undone = mock((_info: unknown) => {});
+   const undoRefused = mock((_reason: string) => {});
    const onSave = mock(async (_source: string) => {});
    const shortcuts = { escape: () => {} };
    const view = renderHook(
@@ -41,12 +45,12 @@ const mount = (
             editor: props.editor,
             onSave,
             shortcuts,
-            report: { size: 3, saved, refused },
+            report: { size: 3, saved, refused, undone, undoRefused },
             ...over,
          }),
       { initialProps: { editor } },
    );
-   return { ...view, editor, saved, refused, onSave };
+   return { ...view, editor, saved, refused, undone, undoRefused, onSave };
 };
 
 const press = (key: string) =>
@@ -240,5 +244,104 @@ describe("useBuilderSession exit", () => {
       act(() => result.current.toolbarProps.onExit?.());
       expect(onExit).not.toHaveBeenCalled();
       expect(result.current.exitGuard.dialog.open).toBe(true);
+   });
+});
+
+describe("useBuilderSession undo save", () => {
+   const LAST = {
+      before: "a",
+      after: "a,b",
+      structural: true,
+      clearsHistory: false,
+   };
+   const offering = (over: Partial<SessionEditor<Doc>> = {}) =>
+      makeEditor({ dirty: false, canUndoSave: true, lastSave: LAST, ...over });
+
+   it("undoes through the editor and reports it like a save", async () => {
+      const { result, editor, undone, saved } = mount({}, offering());
+      expect(result.current.canUndoSave).toBe(true);
+      expect(result.current.lastSave).toEqual(LAST);
+      await act(async () => {
+         await result.current.undoSave();
+      });
+      expect(editor.undoSave).toHaveBeenCalledTimes(1);
+      expect(saved).not.toHaveBeenCalled();
+      const info = undone.mock.calls[0][0] as {
+         size: number;
+         structural: boolean;
+         durationMs: number;
+      };
+      expect(info.size).toBe(3);
+      expect(info.structural).toBe(true);
+      expect(typeof info.durationMs).toBe("number");
+   });
+
+   it("reports a refused undo with its reason", async () => {
+      const editor = offering({
+         undoSave: mock(
+            async (): Promise<SaveOutcome> => ({
+               ok: false,
+               reason: "changed since",
+            }),
+         ),
+      });
+      const { result, undone, undoRefused } = mount({}, editor);
+      await act(async () => {
+         await result.current.undoSave();
+      });
+      expect(undone).not.toHaveBeenCalled();
+      expect(undoRefused).toHaveBeenCalledWith("changed since");
+   });
+
+   it("is saving while the undo writes, so Save and a second Undo do nothing", async () => {
+      let finish!: (outcome: SaveOutcome) => void;
+      const editor = offering({
+         dirty: true,
+         undoSave: mock(
+            () => new Promise<SaveOutcome>((resolve) => (finish = resolve)),
+         ),
+      });
+      const { result } = mount({}, editor);
+      let undoing!: Promise<void> | void;
+      act(() => {
+         undoing = result.current.undoSave();
+         void result.current.undoSave();
+      });
+      expect(result.current.saving).toBe(true);
+      expect(result.current.canUndoSave).toBe(false);
+      await act(async () => {
+         await result.current.save();
+      });
+      expect(editor.save).not.toHaveBeenCalled();
+      await act(async () => {
+         finish({ ok: true });
+         await undoing;
+      });
+      expect(editor.undoSave).toHaveBeenCalledTimes(1);
+      expect(result.current.saving).toBe(false);
+   });
+
+   it("does nothing without a writer or an offer", async () => {
+      const none = mount({}, makeEditor());
+      await act(async () => {
+         await none.result.current.undoSave();
+      });
+      expect(none.editor.undoSave).not.toHaveBeenCalled();
+      const readOnly = mount({ onSave: undefined }, offering());
+      expect(readOnly.result.current.canUndoSave).toBe(false);
+      await act(async () => {
+         await readOnly.result.current.undoSave();
+      });
+      expect(readOnly.editor.undoSave).not.toHaveBeenCalled();
+   });
+
+   it("tells the host whether a save can still be undone, and that it cannot once unmounted", () => {
+      const onCanUndoSaveChange = mock((_can: boolean) => {});
+      const view = mount({ onCanUndoSaveChange }, makeEditor());
+      expect(onCanUndoSaveChange).toHaveBeenLastCalledWith(false);
+      view.rerender({ editor: offering() });
+      expect(onCanUndoSaveChange).toHaveBeenLastCalledWith(true);
+      view.unmount();
+      expect(onCanUndoSaveChange).toHaveBeenLastCalledWith(false);
    });
 });

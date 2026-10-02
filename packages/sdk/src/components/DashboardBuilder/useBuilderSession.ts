@@ -8,11 +8,11 @@ import {
    useBuilderShortcuts,
    type BuilderShortcutHandlers,
 } from "./useBuilderShortcuts";
-import type { SaveOutcome } from "./useDocumentEditor";
+import type { LastSave, SaveHandler, SaveOutcome } from "./useDocumentEditor";
 import { useExitGuard } from "./useExitGuard";
 
 /** What a builder's session reads of its document editor. */
-export interface SessionEditor<D> {
+export interface SessionEditor<D, L extends LastSave = LastSave> {
    document: D;
    dirty: boolean;
    structural: boolean;
@@ -21,18 +21,26 @@ export interface SessionEditor<D> {
    undo: () => void;
    redo: () => void;
    save: () => Promise<SaveOutcome>;
+   canUndoSave: boolean;
+   lastSave?: L;
+   undoSave: () => Promise<SaveOutcome>;
 }
 
 /** What a builder says about a save, in its own event's words. */
 export interface SessionReport {
    /** How many tiles or cells the document has, as the event counts them. */
    size: number;
-   saved: (info: {
-      size: number;
-      structural: boolean;
-      durationMs: number;
-   }) => void;
+   saved: (info: SessionSaveInfo) => void;
    refused: (reason: string) => void;
+   /** An Undo save that wrote the file back. */
+   undone: (info: SessionSaveInfo) => void;
+   undoRefused: (reason: string) => void;
+}
+
+export interface SessionSaveInfo {
+   size: number;
+   structural: boolean;
+   durationMs: number;
 }
 
 /** A review to show before the write, or none when the save needs no review; `ok: false` is a refusal the write itself will report. */
@@ -40,11 +48,13 @@ export type SessionReview<R> =
    | Promise<{ ok: true; review: R } | { ok: false }>
    | undefined;
 
-export interface BuilderSessionOptions<D, R> {
-   editor: SessionEditor<D>;
-   onSave?: (source: string) => Promise<void> | void;
+export interface BuilderSessionOptions<D, R, L extends LastSave = LastSave> {
+   editor: SessionEditor<D, L>;
+   onSave?: SaveHandler<D>;
    onExit?: () => void;
    onDirtyChange?: (dirty: boolean) => void;
+   /** Whether the last save can still be undone, on every change and on mount. */
+   onCanUndoSaveChange?: (canUndoSave: boolean) => void;
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
@@ -62,18 +72,19 @@ export interface BuilderSessionOptions<D, R> {
  * saving (with its event and timing), the dirty and change reports, the exit
  * guard, the keyboard, and the props their toolbar takes.
  */
-export function useBuilderSession<D, R = never>({
+export function useBuilderSession<D, R = never, L extends LastSave = LastSave>({
    editor,
    onSave,
    onExit,
    onDirtyChange,
+   onCanUndoSaveChange,
    onChange,
    extraDirty = false,
    report,
    review,
    prepare,
    shortcuts,
-}: BuilderSessionOptions<D, R>) {
+}: BuilderSessionOptions<D, R, L>) {
    const [saving, setSaving] = useState(false);
    const [pendingSave, setPendingSave] = useState<R | undefined>(undefined);
    const reportRef = useRef(report);
@@ -93,6 +104,14 @@ export function useBuilderSession<D, R = never>({
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    useEffect(() => () => onDirtyChangeRef.current?.(false), []);
+   // The offer, not `canUndoSave`, which also drops while a write is in flight; a host holding a newer version back must keep holding then.
+   const undoOffered = editor.lastSave !== undefined;
+   useEffect(() => {
+      onCanUndoSaveChange?.(undoOffered);
+   }, [undoOffered, onCanUndoSaveChange]);
+   const onCanUndoSaveChangeRef = useRef(onCanUndoSaveChange);
+   onCanUndoSaveChangeRef.current = onCanUndoSaveChange;
+   useEffect(() => () => onCanUndoSaveChangeRef.current?.(false), []);
 
    const commitSave = useCallback(() => {
       setPendingSave(undefined);
@@ -113,6 +132,33 @@ export function useBuilderSession<D, R = never>({
          })
          .finally(() => setSaving(false));
    }, [editor]);
+
+   // A ref as well as `saving`, so a second click before the re-render does not write twice.
+   const undoingRef = useRef(false);
+   const undoSave = useCallback((): Promise<void> | void => {
+      if (!onSave || saving || undoingRef.current || !editor.canUndoSave)
+         return;
+      undoingRef.current = true;
+      setSaving(true);
+      const started = now();
+      const structural = editor.lastSave?.structural ?? false;
+      const size = reportRef.current.size;
+      return editor
+         .undoSave()
+         .then((outcome) => {
+            if (outcome.ok === true)
+               reportRef.current.undone({
+                  size,
+                  structural,
+                  durationMs: now() - started,
+               });
+            else reportRef.current.undoRefused(outcome.reason);
+         })
+         .finally(() => {
+            undoingRef.current = false;
+            setSaving(false);
+         });
+   }, [onSave, saving, editor]);
 
    const askingRef = useRef(false);
    const reviewedSave = useCallback((): Promise<void> | void => {
@@ -190,6 +236,10 @@ export function useBuilderSession<D, R = never>({
       confirmSave: commitSave,
       /** Put the review down without saving. */
       dismissReview: () => setPendingSave(undefined),
+      /** Write the file back as it was before the last save, and put the edits back unsaved. */
+      undoSave,
+      canUndoSave: !!onSave && !saving && editor.canUndoSave,
+      lastSave: editor.lastSave,
       toolbarProps,
    };
 }

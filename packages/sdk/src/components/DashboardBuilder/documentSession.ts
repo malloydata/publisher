@@ -209,14 +209,14 @@ export async function writePackageFile({
    return contentHash;
 }
 
-/** The host workspace that took a save, named on the event; a package save was taken by none. */
+/** The host workspace that took a save or its undo, named on the event; a package save was taken by none. */
 export function withWorkspace<E extends { type: string }>(
    event: E,
    workspace: string | undefined,
 ): E {
    if (
       workspace === undefined ||
-      !event.type.endsWith(".saved") ||
+      !/\.(saved|save_undone)$/.test(event.type) ||
       (event as { where?: SavesTo }).where === "package"
    )
       return event;

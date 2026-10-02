@@ -49,6 +49,17 @@ export type DashboardEvent =
         durationMs: number;
      }
    | { type: "dashboard.save_refused"; reason: string }
+   | {
+        /** Undo save wrote the file back as it was before the last save. */
+        type: "dashboard.save_undone";
+        tiles: number;
+        /** Whether the save it took back added or removed a tile. */
+        structural: boolean;
+        where: SavesTo;
+        workspace?: string;
+        durationMs: number;
+     }
+   | { type: "dashboard.save_undo_refused"; reason: string }
    | DashboardCreatedEvent
    | {
         type: "dashboard.rows_shown";

@@ -41,6 +41,7 @@ import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
 import { useBuilderSession } from "./useBuilderSession";
 import { useDashboardEditor } from "./useDashboardEditor";
+import type { SaveHandler } from "./useDocumentEditor";
 
 export type { BuilderGiven } from "./controls";
 
@@ -82,8 +83,14 @@ export interface DashboardBuilderProps {
    source: string;
    /** The document that file produced. */
    document: DashboardDocument;
-   /** Persist the patched file. Left out, the builder edits without saving. */
-   onSave?: (source: string) => Promise<void> | void;
+   /**
+    * Persist the patched file. Left out, the builder edits without saving.
+    * Undo save calls it too, with `purpose: "undo"` and the text from before
+    * the save, so it must write through the same channel and checks.
+    */
+   onSave?: SaveHandler<DashboardDocument>;
+   /** Whether the last save can still be undone, for a host that must not replace the document under that offer. */
+   onCanUndoSaveChange?: (canUndoSave: boolean) => void;
    /**
     * The document as it stands, on every edit — including the first render.
     *
@@ -175,6 +182,7 @@ export function DashboardBuilder({
    onSave,
    onChange,
    onDirtyChange,
+   onCanUndoSaveChange,
    renderTile,
    controls,
    givens,
@@ -358,6 +366,7 @@ export function DashboardBuilder({
       onSave,
       onExit,
       onDirtyChange,
+      onCanUndoSaveChange,
       onChange,
       shortcuts,
       report: {
@@ -372,6 +381,16 @@ export function DashboardBuilder({
             }),
          refused: (reason) =>
             onEvent?.({ type: "dashboard.save_refused", reason }),
+         undone: ({ size, structural, durationMs }) =>
+            onEvent?.({
+               type: "dashboard.save_undone",
+               tiles: size,
+               structural,
+               where: savesTo,
+               durationMs,
+            }),
+         undoRefused: (reason) =>
+            onEvent?.({ type: "dashboard.save_undo_refused", reason }),
       },
       // A tile was added or removed: show what that does to the file first.
       review: () =>

@@ -183,6 +183,19 @@ describe("withWorkspace", () => {
       });
    });
 
+   it("names the workspace on an undone save a workspace took, and not on a refused one", () => {
+      const undone: { type: string; where: string; workspace?: string } = {
+         type: "notebook.save_undone",
+         where: "host",
+      };
+      expect(withWorkspace(undone, "records")).toEqual({
+         ...undone,
+         workspace: "records",
+      });
+      const refused = { type: "notebook.save_undo_refused", reason: "x" };
+      expect(withWorkspace(refused, "records")).toBe(refused);
+   });
+
    it("leaves a package save alone", () => {
       const pkg = { type: "notebook.saved", where: "package" };
       expect(withWorkspace(pkg, "records")).toBe(pkg);

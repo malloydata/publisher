@@ -46,6 +46,7 @@ import {
    type SavesTo,
 } from "./documentSession";
 import { readDashboardDocument, readFailed } from "./readDocument";
+import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -258,6 +259,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // Whether the builder holds edits the record does not have, and the version
    // being held back because of them.
    const [dirty, setDirty] = useState(false);
+   // A save that can still be undone is held like an edit: remounting on a newer version would drop the offer silently.
+   const [undoOffered, setUndoOffered] = useState(false);
    const [accepted, setAccepted] = useState<string | undefined>(undefined);
    // The text on this channel the editor has already reckoned with: what it
    // opened, and what it wrote. Compared against the CHANNEL rather than
@@ -271,7 +274,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // save rather than the text the builder was opened with.
    const current = opened?.source;
    const holding =
-      incoming && dirty && current !== undefined && latest !== accepted;
+      incoming &&
+      (dirty || undoOffered) &&
+      current !== undefined &&
+      latest !== accepted;
    const opening = holding ? current : incoming ? latest : (current ?? latest);
    const held = holding ? latest : undefined;
 
@@ -604,6 +610,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                opened={opened}
                onSave={save}
                onDirtyChange={reportDirty}
+               onCanUndoSaveChange={setUndoOffered}
                savesTo={savesTo}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                {...(onExit ? { onExit } : {})}
@@ -647,6 +654,7 @@ function Surface({
    opened,
    onSave,
    onDirtyChange,
+   onCanUndoSaveChange,
    onEvent,
    savesTo,
    onExit,
@@ -660,6 +668,7 @@ function Surface({
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
+   onCanUndoSaveChange: (canUndoSave: boolean) => void;
    onEvent?: DashboardEventHandler;
    savesTo: SavesTo;
    onExit?: () => void;
@@ -770,15 +779,17 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
-   const docRef = useRef(doc);
-   docRef.current = doc;
    // Only a package write can make the package serve it; a copy in the host's store does not.
-   const saveThenServe = useMemo(
+   const saveThenServe = useMemo<SaveHandler<DashboardDocument> | undefined>(
       () =>
          onSave && savesTo === "package"
-            ? async (source: string) => {
+            ? async (
+                 source: string,
+                 context: SaveContext<DashboardDocument>,
+              ) => {
                  await onSave(source);
-                 if (docRef.current.tiles.length > 0) setServed(true);
+                 // An undone first save writes back a file with no tile, which the server stops serving.
+                 setServed(context.document.tiles.length > 0);
               }
             : onSave,
       [onSave, savesTo],
@@ -870,6 +881,7 @@ function Surface({
                }))}
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
+            onCanUndoSaveChange={onCanUndoSaveChange}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}

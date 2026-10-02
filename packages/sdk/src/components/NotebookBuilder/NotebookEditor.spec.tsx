@@ -11,6 +11,7 @@ import {
    within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { lastSession } from "../../../test/builderSession";
 import {
    clearCache,
    mockServerProvider,
@@ -295,6 +296,77 @@ beforeEach(async () => {
    getNotebook.mockClear();
    executeQueryModel.mockClear();
    updateModelSource.mockClear();
+});
+
+describe("NotebookEditor, undoing a package save", () => {
+   const undoSave = () =>
+      act(async () => {
+         await lastSession.current?.undoSave();
+      });
+
+   it("writes the file back against the hash the save returned, and reports it", async () => {
+      const onEvent = mock((_event: NotebookEvent) => {});
+      mount(new BrowserDocumentStorage(), { onEvent });
+      await within(
+         await screen.findByRole("group", {
+            name: "Cell 1, text",
+            hidden: true,
+         }),
+      ).findByText("Intro.");
+      editIntro("Intro, edited.");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      expect(lastSession.current?.canUndoSave).toBe(true);
+
+      await undoSave();
+      expect(updateModelSource).toHaveBeenCalledTimes(2);
+      const body = updateModelSource.mock.calls[1][3];
+      expect(body.source).toBe(PACKAGE_FILE);
+      expect(body.expectedHash).toBe("server-hash-1");
+      expect(serverText).toBe(PACKAGE_FILE);
+      await waitFor(() => expect(button("Save changes")).toBeDefined());
+      const undone = onEvent.mock.calls.at(-1)?.[0];
+      expect(undone).toMatchObject({
+         type: "notebook.save_undone",
+         cells: 3,
+         where: "package",
+         structural: false,
+      });
+      expect(undone).not.toHaveProperty("workspace");
+
+      // The edit is back and saves again against the hash the undo returned.
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(3));
+      expect(updateModelSource.mock.calls[2][3].expectedHash).toBe(
+         "server-hash-2",
+      );
+      expect(serverText).toBe(withIntro("Intro, edited."));
+   });
+
+   it("refuses the undo when the file changed since the save, and keeps the offer", async () => {
+      const onEvent = mock((_event: NotebookEvent) => {});
+      mount(new BrowserDocumentStorage(), { onEvent });
+      await within(
+         await screen.findByRole("group", {
+            name: "Cell 1, text",
+            hidden: true,
+         }),
+      ).findByText("Intro.");
+      editIntro("Intro, edited.");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      // Another writer lands on top of the save.
+      serverText = withIntro("Someone else's.");
+      serverHash = "theirs";
+
+      await undoSave();
+      await alertWith("changed in the package since you opened it");
+      expect(serverText).toBe(withIntro("Someone else's."));
+      expect(onEvent.mock.calls.at(-1)?.[0]).toMatchObject({
+         type: "notebook.save_undo_refused",
+      });
+      expect(lastSession.current?.canUndoSave).toBe(true);
+   });
 });
 
 describe("NotebookEditor, on a server that takes writes", () => {

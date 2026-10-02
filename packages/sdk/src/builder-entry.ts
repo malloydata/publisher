@@ -31,6 +31,10 @@ export {
    type DashboardEditorProps,
 } from "./components/DashboardBuilder/DashboardEditor";
 export type {
+   SaveContext,
+   SaveHandler,
+} from "./components/DashboardBuilder/useDocumentEditor";
+export type {
    DashboardDocument,
    DashboardTile,
    LocalGiven,

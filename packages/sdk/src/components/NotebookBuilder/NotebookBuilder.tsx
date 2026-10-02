@@ -67,7 +67,8 @@ import {
 } from "./spliceNotebook";
 import type { NotebookEventHandler } from "./telemetry";
 import { useCellReorder } from "./useCellReorder";
-import { useNotebookEditor } from "./useNotebookEditor";
+import { type NotebookEditor, useNotebookEditor } from "./useNotebookEditor";
+import type { SaveHandler } from "../DashboardBuilder/useDocumentEditor";
 
 /** Query cells preview their own text, less its prose notes, through the model query route. */
 export interface NotebookBuilderProps extends QueryTarget {
@@ -93,8 +94,8 @@ export interface NotebookBuilderProps extends QueryTarget {
    startingGivens?: Record<string, string>;
    /** False holds control changes behind Apply, from the notebook's `autorun=false`. */
    autorun?: boolean;
-   /** Persist the patched file. Left out, the builder edits without saving. */
-   onSave?: (source: string) => Promise<void> | void;
+   /** Persist the patched file. Left out, the builder edits without saving. Undo save calls it too, with `purpose: "undo"`. */
+   onSave?: SaveHandler<NotebookDocument>;
    /** The document as it stands, on every edit and on mount. */
    onChange?: (document: NotebookDocument) => void;
    /** Whether the document differs from what was last saved, on every change and on mount. */
@@ -466,7 +467,8 @@ export function NotebookBuilder({
          removedComments: string[];
          clearsHistory: boolean;
          structural: boolean;
-      }
+      },
+      NonNullable<NotebookEditor["lastSave"]>
    >({
       editor,
       onSave,
@@ -488,6 +490,16 @@ export function NotebookBuilder({
             }),
          refused: (reason) =>
             onEvent?.({ type: "notebook.save_refused", reason }),
+         undone: ({ size, structural, durationMs }) =>
+            onEvent?.({
+               type: "notebook.save_undone",
+               cells: size,
+               where: savesTo,
+               structural,
+               durationMs,
+            }),
+         undoRefused: (reason) =>
+            onEvent?.({ type: "notebook.save_undo_refused", reason }),
       },
       review: () =>
          editor.structural || editor.clearsHistory
