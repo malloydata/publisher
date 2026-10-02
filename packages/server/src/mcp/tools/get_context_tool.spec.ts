@@ -1614,10 +1614,23 @@ describe("get_context semantic retrieval", () => {
       return stubProviderFor(VECTORS, options);
    }
 
-   /** A store over the given package, backed by the temp DB. */
+   /**
+    * A store over the given package, backed by the temp DB. The package is
+    * served with the `facets` representation: the stub vectors above name the
+    * name row and the doc row of each entity separately, and these tests are
+    * about that faceted index. (The default is now `single`; its rows are
+    * covered in embedding_representation.spec.ts and the payload pin.)
+    */
    function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
+      const facetsPkg = Object.assign(pkg as object, {
+         getRetrievalSettings: () => ({
+            representation: "facets",
+            keyphrases: "never",
+            prompts: {},
+         }),
+      });
       return {
-         getEnvironment: async () => envWith(async () => pkg),
+         getEnvironment: async () => envWith(async () => facetsPkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,

@@ -2903,6 +2903,7 @@ export async function getPackageEmbeddingStatus(
       environmentName,
       packageName,
       embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
+      pkgIndex.pkg,
    );
 }
 

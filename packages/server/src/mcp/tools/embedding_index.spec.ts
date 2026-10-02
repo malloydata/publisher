@@ -134,12 +134,24 @@ function entityOfKind(kind: string, name: string): EmbeddableEntity {
 }
 
 /**
+ * The `facets` representation, pinned. The default moved to `single`; the
+ * tests in this file are about faceted rows (a name row plus doc chunks), so
+ * they ask for them by name instead of relying on the default. The `single`
+ * representation has its own tests in embedding_representation.spec.ts.
+ */
+const FACETS = {
+   representation: "facets",
+   keyphrases: "never",
+   prompts: {},
+} as const;
+
+/**
  * A stand-in Package instance. Identity is all the index uses it for, so a
  * fresh one models exactly what a reload does: replace the instance while the
  * cached rows, and the package's name, stay put.
  */
 function instance(): Package {
-   return {} as unknown as Package;
+   return { getRetrievalSettings: () => FACETS } as unknown as Package;
 }
 
 /** Poll through the cold-start "indexing" response until the sync lands. */
@@ -317,7 +329,7 @@ describe("chunkDoc / entityFacets", () => {
 describe("trySemanticSearch", () => {
    it("cold start reports indexing, then ranks by cosine with a floor", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const args = {
          db,
          provider,
@@ -363,7 +375,7 @@ describe("trySemanticSearch", () => {
       const ready = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "kind-window",
          entities: [
@@ -401,7 +413,7 @@ describe("trySemanticSearch", () => {
          perSourceWindow: 10,
       };
 
-      await searchReady({ ...base, pkg: {} as unknown as Package });
+      await searchReady({ ...base, pkg: instance() });
       expect(counts.get("alpha")).toBe(1);
 
       // A "reload": same package name, new instance. The recorded sync
@@ -558,7 +570,7 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "twopath",
          entities,
@@ -585,6 +597,7 @@ describe("trySemanticSearch", () => {
          "env",
          "twopath",
          entities,
+         instance(),
       );
       expect(status.status).toBe("ready");
       expect(status.totalEntities).toBe(1);
@@ -610,13 +623,13 @@ describe("trySemanticSearch", () => {
 
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src"), entity("beta", "src")],
       });
 
       const changed = await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [
             entity("alpha", "src", "now documented"),
             entity("beta", "src"),
@@ -660,7 +673,7 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "status",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
@@ -674,6 +687,7 @@ describe("trySemanticSearch", () => {
          "env",
          "status",
          entities,
+         instance(),
       );
       expect(cold.status).toBe("indexing");
       expect(cold.embeddedRows).toBe(0);
@@ -688,6 +702,7 @@ describe("trySemanticSearch", () => {
          "env",
          "status",
          entities,
+         instance(),
       );
       expect(warm.status).toBe("ready");
       // alpha contributes a name row and a doc row, beta only a name row, so
@@ -739,6 +754,7 @@ describe("trySemanticSearch", () => {
          "env",
          "dims-ignored",
          entities,
+         instance(),
       );
       expect(status.status).toBe("ready");
       expect(status.embeddedRows).toBe(3);
@@ -777,6 +793,7 @@ describe("trySemanticSearch", () => {
          "env",
          "restart",
          entities,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       // The rows really are all there. Coverage cannot tell this case from a
@@ -816,6 +833,7 @@ describe("trySemanticSearch", () => {
                "env",
                "doc-edit",
                before,
+               instance(),
             )
          ).status,
       ).toBe("ready");
@@ -830,6 +848,7 @@ describe("trySemanticSearch", () => {
          "env",
          "doc-edit",
          after,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       // Both entities are still "covered", which is exactly the confusion.
@@ -850,7 +869,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "model-switch",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
@@ -865,6 +884,7 @@ describe("trySemanticSearch", () => {
                "env",
                "model-switch",
                entities,
+               instance(),
             )
          ).status,
       ).toBe("ready");
@@ -898,7 +918,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "swapped",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
@@ -906,8 +926,16 @@ describe("trySemanticSearch", () => {
          entities: before,
       });
       expect(
-         (await getEmbeddingIndexStatus(db, provider, "env", "swapped", before))
-            .status,
+         (
+            await getEmbeddingIndexStatus(
+               db,
+               provider,
+               "env",
+               "swapped",
+               before,
+               instance(),
+            )
+         ).status,
       ).toBe("ready");
 
       const after = [entity("alpha", "src"), entity("gamma", "src")];
@@ -917,6 +945,7 @@ describe("trySemanticSearch", () => {
          "env",
          "swapped",
          after,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       expect(status.totalEntities).toBe(2);
@@ -951,7 +980,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "cutoff",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
@@ -978,7 +1007,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "true-negative",
          queries: [
@@ -1013,10 +1042,10 @@ describe("trySemanticSearch", () => {
             entity("gamma", "b"),
          ],
       };
-      await searchReady({ ...base, pkg: {} as unknown as Package });
+      await searchReady({ ...base, pkg: instance() });
       const scoped = await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          sourceName: "a",
       });
       if (!("hits" in scoped)) throw new Error("expected hits");
@@ -1058,7 +1087,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider: mapProvider(vectors).provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "symptom-b",
          queries: [
@@ -1089,7 +1118,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "dilution",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
@@ -1122,12 +1151,12 @@ describe("trySemanticSearch", () => {
       // a reload swaps the instance in production.
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "documented")],
       });
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
 
@@ -1151,7 +1180,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: first.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       const second = mapProvider(
@@ -1161,7 +1190,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          ...base,
          provider: second.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in result)) throw new Error("expected hits");
       expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
@@ -1178,7 +1207,7 @@ describe("trySemanticSearch", () => {
    });
 
    it("re-syncs an already-synced instance when the model changes", async () => {
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const first = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const base = {
          db,
@@ -1214,12 +1243,12 @@ describe("trySemanticSearch", () => {
       };
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src"), entity("gamma", "src")],
       });
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       const rows = await db.all<{ entity_name: string }>(
@@ -1233,7 +1262,7 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "orders"), entity("beta", "customers")],
@@ -1258,13 +1287,13 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          packageName: "pkg-a",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       const other = await searchReady({
          ...base,
          packageName: "pkg-b",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("beta", "src")],
       });
       if (!("hits" in other)) throw new Error("expected hits");
@@ -1285,7 +1314,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: first.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       // The same model name now returns 4-dim vectors (a different
@@ -1298,7 +1327,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const result = await searchReady({
          ...base,
          provider: wide.provider,
@@ -1323,7 +1352,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
 
       // Instance B (a reload) triggers the dims heal with a 4-dim
@@ -1335,7 +1364,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkgB = {} as unknown as Package;
+      const pkgB = instance();
       for (let i = 0; i < 200; i++) {
          await trySemanticSearch({
             ...base,
@@ -1382,7 +1411,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
 
@@ -1396,7 +1425,7 @@ describe("trySemanticSearch", () => {
          beta: [0.8, 0.6, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const args = {
          ...base,
          provider: wide.provider,
@@ -1428,7 +1457,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({
          ...base,
          pkg: pkgA,
@@ -1446,7 +1475,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: changed.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "reworded")],
       });
 
@@ -1471,7 +1500,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider, pkg: pkgA });
 
       // Call C on pkgA holds at its query embed (gated), memo done and
@@ -1497,7 +1526,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkgB = {} as unknown as Package;
+      const pkgB = instance();
       for (let i = 0; i < 200; i++) {
          await trySemanticSearch({
             ...base,
@@ -1529,7 +1558,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({
          ...base,
          pkg: pkgA,
@@ -1569,7 +1598,7 @@ describe("trySemanticSearch", () => {
          ...base,
          db: failingDb,
          provider: changed.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [
             entity("alpha", "src", "reworded"),
             entity("beta", "src", "new"),
@@ -1631,7 +1660,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, pkg: pkgA });
 
       // Delete removes the rows AND the syncMeta entry (the churn-leak
@@ -1677,7 +1706,7 @@ describe("trySemanticSearch", () => {
       const s1 = trySemanticSearch({
          ...base,
          provider: gated.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       // Delete queues behind sync 1.
       const del = deletePackageEmbeddings(db, "env", "pkg");
@@ -1686,7 +1715,7 @@ describe("trySemanticSearch", () => {
       const s2kick = trySemanticSearch({
          ...base,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       release();
@@ -1720,7 +1749,7 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
       const initialRows = await db.all<{ content_hash: string }>(
          "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
@@ -1784,7 +1813,7 @@ describe("trySemanticSearch", () => {
       const holdKick = trySemanticSearch({
          ...base,
          provider: holder.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "changed")],
       });
       await holdKick;
@@ -1829,14 +1858,14 @@ describe("trySemanticSearch", () => {
          ...base,
          environmentName: "env",
          packageName: "pkg-a",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       await searchReady({
          ...base,
          environmentName: "env",
          packageName: "pkg-b",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("beta", "src")],
       });
 
@@ -1872,7 +1901,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       // First dims flip: heals via one purge + re-sync at 4 dims.
@@ -1883,7 +1912,7 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
 
@@ -1891,7 +1920,7 @@ describe("trySemanticSearch", () => {
       // inconsistent; the heal must NOT purge again but cool down, and
       // the 4-dim rows must survive. One instance throughout, so the
       // poll passes its cold start and reaches the heal check.
-      const pkgC = {} as unknown as Package;
+      const pkgC = instance();
       let result = await trySemanticSearch({
          ...base,
          provider: narrow.provider,
@@ -1938,7 +1967,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
@@ -1947,7 +1976,7 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
       const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
@@ -1955,7 +1984,7 @@ describe("trySemanticSearch", () => {
 
       // Query back at 3 dims (rows are 4-dim, so stale) across several
       // cooldown-expiry cycles, all inside the 400ms suppression window.
-      const pkgQ = {} as unknown as Package;
+      const pkgQ = instance();
       for (let cycle = 0; cycle < 4; cycle++) {
          let r = await trySemanticSearch({
             ...base,
@@ -2004,7 +2033,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
@@ -2013,7 +2042,7 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
       const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
@@ -2024,7 +2053,7 @@ describe("trySemanticSearch", () => {
       const recovered = await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in recovered))
          throw new Error("expected hits after re-heal");
@@ -2047,7 +2076,7 @@ describe("trySemanticSearch", () => {
       const argsA = {
          db,
          provider: failing.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg-a",
          entities: [entity("alpha", "src")],
@@ -2069,7 +2098,7 @@ describe("trySemanticSearch", () => {
       const b = await searchReady({
          db,
          provider: healthy.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg-b",
          entities: [entity("alpha", "src")],
@@ -2088,7 +2117,7 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
@@ -2122,7 +2151,7 @@ describe("trySemanticSearch", () => {
       const result = await trySemanticSearch({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "huge",
          entities,
@@ -2146,7 +2175,7 @@ describe("sync saves each batch and retries transient failures", () => {
    const baseArgs = (provider: EmbeddingProvider) => ({
       db,
       provider,
-      pkg: {} as unknown as Package,
+      pkg: instance(),
       environmentName: "env",
       packageName: "pkg",
       entities: four,
@@ -2251,7 +2280,7 @@ describe("the entity cap is the configured value", () => {
    const args = (provider: EmbeddingProvider, count: number) => ({
       db,
       provider,
-      pkg: {} as unknown as Package,
+      pkg: instance(),
       environmentName: "env",
       packageName: "capped",
       entities: Array.from({ length: count }, (_, i) =>
@@ -2422,7 +2451,7 @@ describe("the candidate window is per source", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName,
          entities: [...wide, tiny],
@@ -2463,7 +2492,7 @@ describe("the candidate window is per source", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "window-3",
          entities: [...wide, tiny],
@@ -2492,7 +2521,7 @@ describe("equal scores are ordered and cut the same way every time", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName,
          entities: sources.map((s) => entity("total_amount", s)),
@@ -2528,7 +2557,7 @@ describe("equal scores are ordered and cut the same way every time", () => {
          const result = await searchReady({
             db,
             provider,
-            pkg: {} as unknown as Package,
+            pkg: instance(),
             environmentName: "env",
             packageName,
             entities: kinds.map((k) => ({
