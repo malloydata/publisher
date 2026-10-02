@@ -12,12 +12,13 @@
  * and value attach as RankStages; rerank and prune as CardStages, which run on
  * assembled source cards before paging.
  *
- * Every list is empty or fixed today, so a loop here is a no-op until a stage
- * is registered.
+ * The loops here are also the one place that times a stage and records what it
+ * did (see StageTrace), so a stage never has to.
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { EmbeddingIndexStatus } from "./embedding_index";
+import type { LlmMeter } from "./get_context_llm";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -71,6 +72,27 @@ export interface PipelineContext {
    /** Whether an embedding provider is configured; read once per request. */
    embeddingConfigured: boolean;
    settings: PipelineSettings;
+   /**
+    * What the stages ran and how long each took, in order. Always collected;
+    * it reaches the caller only when the request carries the trace header.
+    * Optional so a test that builds a bare context needs neither.
+    */
+   trace?: StageTrace[];
+   /** Counts the chat calls and tokens of this request; see LlmMeter. */
+   meter?: LlmMeter;
+}
+
+/** One row of the stage trace. `in` and `out` count what the stage's phase works on. */
+export interface StageTrace {
+   name: string;
+   /** `skipped`: the stage was off or not applicable. `failed`: it threw. */
+   status: "ran" | "skipped" | "failed";
+   ms: number;
+   /** Search texts (query stage), ranked rows (rank stage) or cards (card stage). */
+   in: number;
+   out: number;
+   llmCalls: number;
+   tokens: { input: number; output: number };
 }
 
 /** Runs before retrieval and may rewrite the request (e.g. its search texts). */
@@ -149,15 +171,70 @@ export interface CardState extends Omit<RankedState, "rows"> {
 /** Runs after assembly and before paging. Rerank and prune live here. */
 export interface CardStage {
    name: string;
-   enabled(ctx: PipelineContext): boolean;
+   /** `state` is passed so a stage can tell, for example, which retriever ranked. */
+   enabled(ctx: PipelineContext, state: CardState): boolean;
    run(state: CardState, ctx: PipelineContext): Promise<CardState>;
 }
 
 /** Runs after retrieval and before the rows are assembled into cards. */
 export interface RankStage {
    name: string;
-   enabled(ctx: PipelineContext): boolean;
+   /** `state` is passed so a stage can tell, for example, which retriever ranked. */
+   enabled(ctx: PipelineContext, state: RankedState): boolean;
    run(state: RankedState, ctx: PipelineContext): Promise<RankedState>;
+}
+
+/**
+ * Run one stage if it is enabled, and record a trace row either way. A stage
+ * that throws is recorded as failed and the error continues to the caller,
+ * which decides what the response says.
+ */
+async function runStage<S>(
+   stage: { name: string },
+   isEnabled: boolean,
+   ctx: PipelineContext,
+   state: S,
+   count: (state: S) => number,
+   run: () => Promise<S>,
+): Promise<S> {
+   const before = count(state);
+   if (!isEnabled) {
+      ctx.trace?.push({
+         name: stage.name,
+         status: "skipped",
+         ms: 0,
+         in: before,
+         out: before,
+         llmCalls: 0,
+         tokens: { input: 0, output: 0 },
+      });
+      return state;
+   }
+   const started = performance.now();
+   const used = ctx.meter?.snapshot();
+   const row = (status: StageTrace["status"], out: number): StageTrace => {
+      const now = ctx.meter?.snapshot();
+      return {
+         name: stage.name,
+         status,
+         ms: Math.round(performance.now() - started),
+         in: before,
+         out,
+         llmCalls: now && used ? now.calls - used.calls : 0,
+         tokens: {
+            input: now && used ? now.inputTokens - used.inputTokens : 0,
+            output: now && used ? now.outputTokens - used.outputTokens : 0,
+         },
+      };
+   };
+   try {
+      const next = await run();
+      ctx.trace?.push(row("ran", count(next)));
+      return next;
+   } catch (error) {
+      ctx.trace?.push(row("failed", before));
+      throw error;
+   }
 }
 
 export async function runQueryStages(
@@ -167,7 +244,14 @@ export async function runQueryStages(
 ): Promise<ResolvedRequest> {
    let current = request;
    for (const stage of stages) {
-      if (stage.enabled(ctx)) current = await stage.run(current, ctx);
+      current = await runStage(
+         stage,
+         stage.enabled(ctx),
+         ctx,
+         current,
+         (r) => r.searches.length,
+         () => stage.run(current, ctx),
+      );
    }
    return current;
 }
@@ -179,7 +263,14 @@ export async function runRankStages(
 ): Promise<RankedState> {
    let current = state;
    for (const stage of stages) {
-      if (stage.enabled(ctx)) current = await stage.run(current, ctx);
+      current = await runStage(
+         stage,
+         stage.enabled(ctx, current),
+         ctx,
+         current,
+         (s) => s.rows.length,
+         () => stage.run(current, ctx),
+      );
    }
    return current;
 }
@@ -191,7 +282,14 @@ export async function runCardStages(
 ): Promise<CardState> {
    let current = state;
    for (const stage of stages) {
-      if (stage.enabled(ctx)) current = await stage.run(current, ctx);
+      current = await runStage(
+         stage,
+         stage.enabled(ctx, current),
+         ctx,
+         current,
+         (s) => s.cards.length,
+         () => stage.run(current, ctx),
+      );
    }
    return current;
 }
