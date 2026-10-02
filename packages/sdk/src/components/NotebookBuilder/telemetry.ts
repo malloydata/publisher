@@ -19,7 +19,7 @@ export type NotebookEvent =
         cells: number;
         where: SavesTo;
         /** The save added or removed a cell, which is when the diff was shown. */
-        structural?: boolean;
+        structural: boolean;
         /** The host workspace that took the write; never set for a package save. */
         workspace?: string;
         durationMs: number;

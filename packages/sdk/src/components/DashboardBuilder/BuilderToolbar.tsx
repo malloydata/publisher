@@ -3,12 +3,14 @@
 
 import AddIcon from "@mui/icons-material/Add";
 import TuneIcon from "@mui/icons-material/Tune";
+import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import { Button, Chip, Divider, IconButton, Tooltip } from "@mui/material";
 import type { ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { SecondaryButton } from "../buttons";
 import { DashboardBar } from "../Dashboard/DashboardBar";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -34,8 +36,10 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
-   /** The host's way out of editing: Done, at the right edge. */
+   /** The host's own extra actions, beside Done. */
    actions?: ReactNode;
+   /** Leave editing: draws "Done editing" at the right edge. Absent, no such button. */
+   onExit?: () => void;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
    /** Open the page's settings, anchored to the button that asked. Absent, no Settings button. */
@@ -51,6 +55,7 @@ export function BuilderToolbar({
    saving,
    onSave,
    actions,
+   onExit,
    onAddTile,
    onSettings,
 }: BuilderToolbarProps) {
@@ -152,10 +157,17 @@ export function BuilderToolbar({
          )}
 
          {/* Leaving, where the reader's view has Edit. */}
-         {actions && (
+         {(actions || onExit) && (
             <>
                <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
                {actions}
+               {onExit && (
+                  <SecondaryButton
+                     label="Done editing"
+                     icon={<CheckIcon />}
+                     onClick={onExit}
+                  />
+               )}
             </>
          )}
       </DashboardBar>

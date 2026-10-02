@@ -2,19 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { DragDropProvider } from "@dnd-kit/react";
-import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
-import {
-   useCallback,
-   useEffect,
-   useMemo,
-   useRef,
-   useState,
-   type ReactNode,
-} from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
-import { now } from "../../utils/clock";
 import type { SavesTo } from "./documentSession";
 import type { DashboardEventHandler } from "../Dashboard/telemetry";
 import {
@@ -27,7 +18,6 @@ import {
    type BuilderGiven,
    type MappingRow,
 } from "./controls";
-import { SecondaryButton } from "../buttons";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { filterableFields, type PackageCatalog } from "./catalog";
@@ -49,9 +39,8 @@ import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
-import { useBuilderShortcuts } from "./useBuilderShortcuts";
+import { useBuilderSession } from "./useBuilderSession";
 import { useDashboardEditor } from "./useDashboardEditor";
-import { useExitGuard } from "./useExitGuard";
 
 export type { BuilderGiven } from "./controls";
 
@@ -202,7 +191,6 @@ export function DashboardBuilder({
       ...(onSave ? { onSave } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
-   const [saving, setSaving] = useState(false);
    const columns = editor.document.columns ?? DEFAULT_COLUMNS;
    const { resize, gridBox, startResize, onResize, endResize } = useTileResize({
       tiles: editor.document.tiles,
@@ -240,22 +228,6 @@ export function DashboardBuilder({
    const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(
       null,
    );
-   const [pendingSave, setPendingSave] = useState<
-      { before: string; after: string } | undefined
-   >(undefined);
-
-   useEffect(() => {
-      onChange?.(editor.document);
-   }, [editor.document, onChange]);
-   // Also on mount, so a host that remounted the builder on new text is told
-   // the slate is clean rather than carrying the previous mount's answer.
-   useEffect(() => {
-      onDirtyChange?.(editor.dirty);
-   }, [editor.dirty, onDirtyChange]);
-   // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
-   const onDirtyChangeRef = useRef(onDirtyChange);
-   onDirtyChangeRef.current = onDirtyChange;
-   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
    // One object per document, or the popover's draft would reset on every
    // render of the builder while it is open.
    const settings = useMemo(
@@ -356,55 +328,68 @@ export function DashboardBuilder({
       [controlList],
    );
 
-   const commitSave = useCallback(() => {
-      setPendingSave(undefined);
-      setSaving(true);
-      const started = now();
-      const { structural } = editor;
-      const tiles = editor.document.tiles.length;
-      return editor
-         .save()
-         .then((outcome) => {
-            if (outcome.ok === true)
-               onEvent?.({
-                  type: "dashboard.saved",
-                  tiles,
-                  structural,
-                  where: savesTo,
-                  durationMs: now() - started,
-               });
-            else
-               onEvent?.({
-                  type: "dashboard.save_refused",
-                  reason: outcome.reason,
-               });
-         })
-         .finally(() => setSaving(false));
-   }, [editor, onEvent, savesTo]);
-   const askingRef = useRef(false);
-   const save = useCallback((): Promise<void> | void => {
-      if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural) return commitSave();
+   const shortcuts = useMemo(
+      () => ({
+         // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
+         escape: () => {
+            if (!menu && !filterDialog) setSelected(undefined);
+         },
+         nudge: (delta: 1 | -1) => {
+            if (selected === undefined) return;
+            const tile = editor.document.tiles[selected];
+            if (!tile || tile.declaration.kind === "inherited") return;
+            const span = Math.min(
+               Math.max((tile.colspan ?? 1) + delta, 1),
+               columns,
+            );
+            if (span === (tile.colspan ?? 1)) return;
+            editor.update((draft) => {
+               draft.tiles[selected].colspan = span;
+            });
+         },
+      }),
+      [editor, menu, filterDialog, selected, columns],
+   );
+   const session = useBuilderSession<
+      DashboardDocument,
+      { before: string; after: string }
+   >({
+      editor,
+      onSave,
+      onExit,
+      onDirtyChange,
+      onChange,
+      shortcuts,
+      report: {
+         size: editor.document.tiles.length,
+         saved: ({ size, structural, durationMs }) =>
+            onEvent?.({
+               type: "dashboard.saved",
+               tiles: size,
+               structural,
+               where: savesTo,
+               durationMs,
+            }),
+         refused: (reason) =>
+            onEvent?.({ type: "dashboard.save_refused", reason }),
+      },
       // A tile was added or removed: show what that does to the file first.
-      return editor.preview().then((result) => {
-         if (result.ok) {
-            // The exit dialog came up while this previewed; a review over it would stack two modals.
-            if (!askingRef.current)
-               setPendingSave({ before: editor.source, after: result.source });
-         }
-         // A refusal surfaces through the same path a save's would.
-         else return commitSave();
-      });
-   }, [onSave, editor, saving, commitSave]);
-   const exitGuard = useExitGuard({
-      dirty: editor.dirty,
-      saving,
-      reviewing: pendingSave !== undefined,
-      canSave: !!onSave,
-      save,
-      onExit: () => onExit?.(),
+      review: () =>
+         editor.structural
+            ? editor.preview().then((result) =>
+                 result.ok
+                    ? {
+                         ok: true as const,
+                         review: {
+                            before: editor.source,
+                            after: result.source,
+                         },
+                      }
+                    : { ok: false as const },
+              )
+            : undefined,
    });
-   askingRef.current = exitGuard.dialog.open;
+   const { pendingSave } = session;
 
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
@@ -450,49 +435,6 @@ export function DashboardBuilder({
          draft.tiles.splice(index, 1);
       });
    };
-
-   useBuilderShortcuts(
-      // One handlers object per change of what they read, so the key listener
-      // is not torn down and re-bound on every render.
-      useMemo(
-         () => ({
-            undo: editor.undo,
-            redo: editor.redo,
-            ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open || pendingSave !== undefined,
-            // Escape drops the selection — unless the menu or the filter
-            // window is open, in which case the key is theirs and they close
-            // on it themselves.
-            escape: () => {
-               if (!menu && !filterDialog) setSelected(undefined);
-            },
-            nudge: (delta: 1 | -1) => {
-               if (selected === undefined) return;
-               const tile = editor.document.tiles[selected];
-               if (!tile || tile.declaration.kind === "inherited") return;
-               const span = Math.min(
-                  Math.max((tile.colspan ?? 1) + delta, 1),
-                  columns,
-               );
-               if (span === (tile.colspan ?? 1)) return;
-               editor.update((draft) => {
-                  draft.tiles[selected].colspan = span;
-               });
-            },
-         }),
-         [
-            editor,
-            onSave,
-            save,
-            menu,
-            filterDialog,
-            selected,
-            columns,
-            exitGuard.dialog.open,
-            pendingSave,
-         ],
-      ),
-   );
 
    /** The filter window's result: bind, and declare when it is new or retagged. */
    const applyFilter = (
@@ -546,29 +488,8 @@ export function DashboardBuilder({
          {/* Outside the ring's inset, so the bar lines up to the pixel with the
              reader's — the whole point of it being the same bar. */}
          <BuilderToolbar
-            canUndo={editor.canUndo}
-            canRedo={editor.canRedo}
-            onUndo={editor.undo}
-            onRedo={editor.redo}
-            dirty={editor.dirty}
-            saving={saving}
-            {...(onSave ? { onSave: save } : {})}
-            {...(toolbar || onExit
-               ? {
-                    actions: (
-                       <>
-                          {toolbar}
-                          {onExit && (
-                             <SecondaryButton
-                                label="Done editing"
-                                icon={<CheckIcon />}
-                                onClick={exitGuard.requestExit}
-                             />
-                          )}
-                       </>
-                    ),
-                 }
-               : {})}
+            {...session.toolbarProps}
+            {...(toolbar ? { actions: toolbar } : {})}
             {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
             onSettings={setSettingsAnchor}
          />
@@ -779,10 +700,10 @@ export function DashboardBuilder({
                open={pendingSave !== undefined}
                before={pendingSave?.before ?? ""}
                after={pendingSave?.after ?? ""}
-               onConfirm={commitSave}
-               onClose={() => setPendingSave(undefined)}
+               onConfirm={session.confirmSave}
+               onClose={session.dismissReview}
             />
-            <UnsavedChangesDialog {...exitGuard.dialog} />
+            <UnsavedChangesDialog {...session.exitGuard.dialog} />
          </Stack>
       </Stack>
    );

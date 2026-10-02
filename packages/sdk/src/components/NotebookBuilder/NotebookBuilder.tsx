@@ -11,7 +11,6 @@ import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
 import VerticalAlignTopIcon from "@mui/icons-material/VerticalAlignTop";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
-import CheckIcon from "@mui/icons-material/Check";
 import {
    Alert,
    Box,
@@ -34,16 +33,13 @@ import {
 import type { Given } from "../../client";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { GIVEN_SETTLE_MS, useSettled } from "../../hooks/useSettled";
-import { SecondaryButton } from "../buttons";
-import { now } from "../../utils/clock";
 import type { SavesTo } from "../DashboardBuilder/documentSession";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
 import { DiffDialog } from "../DashboardBuilder/DiffDialog";
 import type { CatalogSource } from "../DashboardBuilder/catalog";
 import { builderSensors } from "../DashboardBuilder/sortable";
-import { useBuilderShortcuts } from "../DashboardBuilder/useBuilderShortcuts";
-import { useExitGuard } from "../DashboardBuilder/useExitGuard";
+import { useBuilderSession } from "../DashboardBuilder/useBuilderSession";
 import type { NavigationClick } from "../click_helper";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
@@ -267,36 +263,14 @@ export function NotebookBuilder({
    const queries = useMemo(() => cellQueries(notebook), [notebook]);
    const [editing, setEditing] = useState<string | undefined>(undefined);
    const [notice, setNotice] = useState<string | undefined>(undefined);
-   const [saving, setSaving] = useState(false);
    const [adding, setAdding] = useState<number | undefined>(undefined);
-   const [pendingSave, setPendingSave] = useState<
-      | {
-           before: string;
-           after: string;
-           removedComments: string[];
-           clearsHistory: boolean;
-           structural: boolean;
-        }
-      | undefined
-   >(undefined);
    const nextId = useRef(0);
    const blockedId = useId();
    // The would-be file, shown to select by hand when the clipboard is not there to take it.
    const [selectable, setSelectable] = useState<string | undefined>(undefined);
 
-   useEffect(() => {
-      onChange?.(doc);
-   }, [doc, onChange]);
    // An open text draft is an unsaved edit too, and leaving would drop it.
    const [draftDirty, setDraftDirty] = useState(false);
-   const unsaved = editor.dirty || draftDirty;
-   useEffect(() => {
-      onDirtyChange?.(unsaved);
-   }, [unsaved, onDirtyChange]);
-   // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
-   const onDirtyChangeRef = useRef(onDirtyChange);
-   onDirtyChangeRef.current = onDirtyChange;
-   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
    const controls = useDocumentControls({
       specs: givens ?? [],
@@ -469,93 +443,78 @@ export function NotebookBuilder({
       });
    };
 
-   const commitSave = useCallback(() => {
-      setPendingSave(undefined);
-      setSaving(true);
-      const started = now();
-      const cells = editor.document.cells.length;
-      const structural = editor.structural;
-      return editor
-         .save()
-         .then((outcome) => {
-            if (outcome.ok === true)
-               onEvent?.({
-                  type: "notebook.saved",
-                  cells,
-                  where: savesTo,
-                  structural,
-                  durationMs: now() - started,
-               });
-            else
-               onEvent?.({
-                  type: "notebook.save_refused",
-                  reason: outcome.reason,
-               });
-         })
-         .finally(() => setSaving(false));
-   }, [editor, onEvent, savesTo]);
-
-   const askingRef = useRef(false);
-   const save = useCallback((): Promise<void> | void => {
-      if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural && !editor.clearsHistory) return commitSave();
-      return Promise.all([editor.preview(), editor.removedComments()]).then(
-         ([result, removedComments]) => {
-            if (result.ok) {
-               // The exit dialog came up while this previewed; a review over it would stack two modals.
-               if (!askingRef.current)
-                  setPendingSave({
-                     before: editor.source,
-                     after: result.source,
-                     removedComments,
-                     clearsHistory: editor.clearsHistory,
-                     structural: editor.structural,
-                  });
-            } else return commitSave();
-         },
-      );
-   }, [onSave, editor, saving, commitSave]);
    const commitDraft = useRef<(() => boolean) | undefined>(undefined);
    const afterCommit = useRef<(() => void) | undefined>(undefined);
-   const saveRef = useRef(save);
-   saveRef.current = save;
-   // `save` reads the committed document, so an open draft is committed first and the save runs once that has rendered.
-   const saveWithDraft = useCallback((): Promise<void> | void => {
-      if (!commitDraft.current) return save();
-      if (!commitDraft.current()) return;
-      return new Promise<void>((resolve) => {
-         afterCommit.current = () => resolve(saveRef.current());
-      });
-   }, [save]);
+   // A save reads the committed document, so an open draft is committed first and the save runs once that has rendered.
+   const prepare = useCallback(
+      (run: () => Promise<void> | void): Promise<void> | void => {
+         if (!commitDraft.current) return run();
+         if (!commitDraft.current()) return;
+         return new Promise<void>((resolve) => {
+            afterCommit.current = () => resolve(run());
+         });
+      },
+      [],
+   );
+   // Only the handlers the notebook adds: the text field commits on its own Escape, so handling it here too would drop the draft.
+   const shortcuts = useMemo(() => ({ escape: () => {} }), []);
+   const session = useBuilderSession<
+      NotebookDocument,
+      {
+         before: string;
+         after: string;
+         removedComments: string[];
+         clearsHistory: boolean;
+         structural: boolean;
+      }
+   >({
+      editor,
+      onSave,
+      onExit,
+      onDirtyChange,
+      onChange,
+      extraDirty: draftDirty,
+      prepare,
+      shortcuts,
+      report: {
+         size: doc.cells.length,
+         saved: ({ size, structural, durationMs }) =>
+            onEvent?.({
+               type: "notebook.saved",
+               cells: size,
+               where: savesTo,
+               structural,
+               durationMs,
+            }),
+         refused: (reason) =>
+            onEvent?.({ type: "notebook.save_refused", reason }),
+      },
+      review: () =>
+         editor.structural || editor.clearsHistory
+            ? Promise.all([editor.preview(), editor.removedComments()]).then(
+                 ([result, removedComments]) =>
+                    result.ok
+                       ? {
+                            ok: true as const,
+                            review: {
+                               before: editor.source,
+                               after: result.source,
+                               removedComments,
+                               clearsHistory: editor.clearsHistory,
+                               structural: editor.structural,
+                            },
+                         }
+                       : { ok: false as const },
+              )
+            : undefined,
+   });
+   const { pendingSave } = session;
    useEffect(() => {
       if (draftDirty || !afterCommit.current) return;
       const run = afterCommit.current;
       afterCommit.current = undefined;
       run();
    }, [draftDirty, editor.dirty]);
-   const exitGuard = useExitGuard({
-      dirty: unsaved,
-      saving,
-      reviewing: pendingSave !== undefined,
-      canSave: !!onSave,
-      save: saveWithDraft,
-      onExit: () => onExit?.(),
-   });
-   askingRef.current = exitGuard.dialog.open;
-
-   useBuilderShortcuts(
-      useMemo(
-         () => ({
-            undo: editor.undo,
-            redo: editor.redo,
-            ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open || pendingSave !== undefined,
-            // The open text field commits on its own Escape; handling it here too would drop the draft.
-            escape: () => {},
-         }),
-         [editor, onSave, save, exitGuard.dialog.open, pendingSave],
-      ),
-   );
 
    const byId = new Map(doc.cells.map((cell) => [cell.id, cell]));
    const shown = preview
@@ -692,29 +651,8 @@ export function NotebookBuilder({
    return (
       <Stack sx={{ gap: 0 }}>
          <BuilderToolbar
-            canUndo={editor.canUndo}
-            canRedo={editor.canRedo}
-            onUndo={editor.undo}
-            onRedo={editor.redo}
-            dirty={unsaved}
-            saving={saving}
-            {...(onSave ? { onSave: saveWithDraft } : {})}
-            {...(toolbar || onExit
-               ? {
-                    actions: (
-                       <>
-                          {toolbar}
-                          {onExit && (
-                             <SecondaryButton
-                                label="Done editing"
-                                icon={<CheckIcon />}
-                                onClick={exitGuard.requestExit}
-                             />
-                          )}
-                       </>
-                    ),
-                 }
-               : {})}
+            {...session.toolbarProps}
+            {...(toolbar ? { actions: toolbar } : {})}
          />
          <CleanNotebookContainer>
             <CleanNotebookSection>
@@ -964,8 +902,8 @@ export function NotebookBuilder({
             open={pendingSave !== undefined}
             before={pendingSave?.before ?? ""}
             after={pendingSave?.after ?? ""}
-            onConfirm={commitSave}
-            onClose={() => setPendingSave(undefined)}
+            onConfirm={session.confirmSave}
+            onClose={session.dismissReview}
             description={
                <>
                   {pendingSave?.structural
@@ -1006,7 +944,7 @@ export function NotebookBuilder({
                </>
             }
          />
-         <UnsavedChangesDialog {...exitGuard.dialog} />
+         <UnsavedChangesDialog {...session.exitGuard.dialog} />
       </Stack>
    );
 }
