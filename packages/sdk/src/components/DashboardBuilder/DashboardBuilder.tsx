@@ -90,9 +90,7 @@ export type { BuilderGiven } from "./controls";
  * the model offers. Nothing about filters is on the tiles themselves: a second
  * place to edit the same binding is a second place for it to be wrong.
  *
- * Tiles are added from the package's catalog and removed from their menu; a
- * save that adds or removes one shows the file's diff first, because those
- * moves relocate declarations and the comments beside them.
+ * Tiles are added from the package's catalog and removed from their menu.
  */
 export interface DashboardBuilderProps {
    /** The file being edited. */
