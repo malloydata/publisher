@@ -52,8 +52,8 @@ For every rule, the linked instruction-skill section is the canonical source for
 ## Y-04: Lay a file out one way, and keep an edit to the lines it changes
 
 - **Severity:** nit (non-blocking) · **Category:** style · LLM-judgment
-- **Detection:** in a file, tab indentation or indentation that is not two spaces, trailing whitespace, or top-level declarations not separated by one blank line. In a diff, lines reindented or rewrapped that the change did not need: they bury the real change.
-- **Fix:** match the two-space layout in new code; revert reflowed lines an edit did not need. Don't flag a line width unless the project states one.
+- **Detection:** in a new file, tab indentation or indentation that is not two spaces, trailing whitespace, or top-level declarations not separated by one blank line (consecutive `import` lines are one group, not a fault). In a diff, lines reindented or rewrapped that the change did not need: they bury the real change.
+- **Fix:** in a new file, the two-space layout; in an edited file, keep the file's own layout (a tab-indented file stays tab-indented) and revert reflowed lines the edit did not need. Don't flag a line width unless the project states one.
 - **See:** `skill:malloy-model` § Key Rules
 
 ---

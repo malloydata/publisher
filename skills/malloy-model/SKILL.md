@@ -199,7 +199,7 @@ gets unwieldy.
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
-- **Lay out a new file the same way throughout**: two-space indentation, no tabs, one blank line between top-level declarations, no trailing whitespace, and a long line broken after a comma or before an operator, at whatever width the project keeps to.
+- **Lay out a new file the same way throughout**: two-space indentation, no tabs, one blank line between top-level declarations (consecutive `import` lines stay together), no trailing whitespace, and a long line broken after a comma or before an operator, at whatever width the project keeps to.
 - **An edit keeps the file's own layout**: change only the lines the request needs, and never reindent or rewrap a line you weren't asked to change, so the diff shows the change and nothing else.
 - **Never write a threshold, tier boundary, or bucket cutoff you chose yourself.** Every boundary in a `pick` expression or filtered measure is user-supplied, distribution-derived (query `min`/`p25`/`p50`/`p75`/`p95` first and show the evidence; see `skill:malloy-define` § Data-driven proposals), or explicitly flagged as an assumption in its `#(doc)`. A hardcoded cutoff nobody confirmed is a business decision shipped as fact.
 
@@ -363,9 +363,9 @@ Load the relevant reference file when you encounter these scenarios:
 
 Step complete. Output: base source files (`.malloy`, one per table) and joined source files (`.malloy`, one per analytical domain).
 
-**Suggest next steps to the user:**
+**Suggest next steps to the user**, unless your client shows follow-up suggestions of its own:
 
-- Open the model in the browser to see it live: `http://localhost:4000/<environmentName>/<packageName>` for the package, or `http://localhost:4000/<environmentName>/<packageName>/<modelPath>` for a single model file. First confirm the running server actually serves this package (it is in the loaded `publisher.config.json`, or mounted live with `--server_root . --watch-env <env>`); a package the server has not loaded returns a 404, so do not hand over a link to a package that was just authored but never loaded.
+- Open the model to see it live. On a local Publisher server that is `http://localhost:4000/<environmentName>/<packageName>` for the package, or `http://localhost:4000/<environmentName>/<packageName>/<modelPath>` for a single model file. First confirm the running server actually serves this package (it is in the loaded `publisher.config.json`, or mounted live with `--server_root . --watch-env <env>`); a package the server has not loaded returns a 404, so do not hand over a link to a package that was just authored but never loaded.
 - Build a notebook with interactive filters over the model (see `skill:malloy-notebooks`).
 - Run analysis questions against the model (see `skill:malloy-analysis`).
 - When you're ready to serve the model, publishing is out of scope for open-source Publisher v1: self-hosters commit the package to git and use their host's publish path.
