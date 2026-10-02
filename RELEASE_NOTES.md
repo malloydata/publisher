@@ -64,8 +64,8 @@ closer, a comment straddling two cells, a lone carriage return). The write route
 (`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`; an
 untagged write to `notebooks/` is refused with 400. Two refusals are new: a dashboard whose name
 another file already holds answers 409 and nothing is written, and a file whose compiled model carries
-no `## artifact` tag (an untagged `dashboards/` file, or a tag inside a comment or a string) is
-rolled back and answers 500 where it used to land unserved. A tagged dashboard with no tiles still
+no `## artifact` tag (a tag inside a comment or a string) is rolled back and answers 500 where it
+used to land unserved; an untagged `dashboards/` file is refused with 400 before it compiles. A tagged dashboard with no tiles still
 saves.
 
 **What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
