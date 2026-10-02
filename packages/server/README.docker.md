@@ -112,15 +112,15 @@ What you mount has to be writable by uid 1000 too:
 
 - **A bind mount** keeps the host directory's ownership. On Linux, `chown -R 1000:1000` the host directory. Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
 - **A Kubernetes PersistentVolume** is not seeded from the image, so even a new one on `/publisher/publisher_data` starts owned by root (an `emptyDir` is world-writable and needs nothing). Set `fsGroup: 1000` in the pod's `securityContext`, which makes the volume group-writable by gid 1000, and `fsGroupChangePolicy: OnRootMismatch` so the kubelet does not re-chown a large volume on every start. `fsGroup` is also what makes a mounted Secret key file, or a projected service-account token, readable by uid 1000 where the platform mounts them `0600`.
-- **A read-only mount** only needs to be readable by uid 1000. That covers the config file, a package `location`, a directory of package zips (a `.zip` location is extracted into `publisher_data/`, never beside the archive), and the key file `GOOGLE_APPLICATION_CREDENTIALS` names. A key file bound from a host path that does not exist arrives as a directory, and the server says so. The usual trap is the key file itself: a `gcloud` application-default credentials file is `0600` and owned by you, so uid 1000 cannot read it through a bind on Linux. Bind a copy it can read, or grant the group:
+- **A read-only mount** only needs to be readable by uid 1000. That covers the config file, a package `location`, a directory of package zips (a `.zip` location is extracted into `publisher_data/`, never beside the archive), and the key file `GOOGLE_APPLICATION_CREDENTIALS` names. A key file bound from a host path that does not exist arrives as a directory, and the server says so. The usual trap is the key file itself: a `gcloud` application-default credentials file is `0600` and owned by you, so uid 1000 cannot read it through a bind on Linux, unless your own uid is 1000 (the first user on most Ubuntu installs), in which case nothing is needed. Otherwise bind a copy it can read, or grant the group. Both need root, because only root can hand a file to another uid or to a group you are not in:
 
   ```bash
-  install -o 1000 -g 1000 -m 0400 ~/.config/gcloud/application_default_credentials.json ./secrets/key.json
+  sudo install -o 1000 -g 1000 -m 0400 ~/.config/gcloud/application_default_credentials.json ./secrets/key.json
   # or, keeping the original in place:
-  chgrp 1000 key.json && chmod 0640 key.json
+  sudo chgrp 1000 key.json && chmod 0640 key.json
   ```
 
-  For a directory, `chmod -R o+rX <dir>` or the `chgrp 1000` / `g+rX` equivalent.
+  For a directory you own, `chmod -R o+rX <dir>` needs no root; the `chgrp 1000` / `g+rX` equivalent does.
 - **Ownership is right and the server still reports `EACCES`:** on SELinux hosts (Fedora, RHEL) a bind mount needs the `:z` (shared) or `:Z` (private) option, or every access is refused whatever the owner. Under rootless Docker, Podman, or `userns-remap`, uid 1000 in the container is a subordinate uid on the host, so a host `chown 1000` names the wrong owner; use `podman unshare chown -R 1000:1000 <dir>`, or the remapped uid.
 
 To check a mount before starting the server, run the probe as the image's user:
