@@ -231,6 +231,8 @@ export function useDocumentEditor<T>(
    );
 
    const save = useCallback(async (): Promise<SaveOutcome> => {
+      if (busyRef.current)
+         return { ok: false, reason: "A save is still being written." };
       const before = {
          source,
          saved,

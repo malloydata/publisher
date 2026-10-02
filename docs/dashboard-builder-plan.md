@@ -14,6 +14,12 @@ next releases; the grammar and runtime of dashboards themselves are in
 [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) and
 [dashboards.md](dashboards.md)._
 
+_Status, 2026-10-02: the cell editor this plan describes (§7, "The builder that
+follows" and its steps 4 and 5) is superseded. A notebook now opens in the same
+builder as a one-column layout of text and query tiles, and a cell-format file
+converts to that layout on open. The sections are kept as the record of what was
+decided then._
+
 Status as of 2026-09-15: the builder is wired into the Console (PR #1158,
 branch `sdk/dashboard-document`) at `…/dashboards/<slug>/edit`, edits real
 package dashboards, saves into the browser's document storage, and exports the
@@ -143,7 +149,7 @@ layout that rewrites every tile at once, which was built and dropped by decision
 | Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values, `autorun`, grid width; all editable in the builder                      | Runtime                   |
 | Editing model            | Explicit edit mode, explicit save, typically no undo                                         | Explicit save, undo/redo, View change and Undo save after a save                                             | Ahead                     |
 | What editing does        | Rewrites a database record; a code form, where one exists, is converted                      | Splices the authored file; comments survive                                                                  | Ahead                     |
-| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(access_filter)` apply to every tile with no wiring                               | Ahead                     |
+| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(access_filter)` apply to every tile with no wiring                           | Ahead                     |
 | Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; browser storage today; the package-file provider needs a write API                  | Platform                  |
 | Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | The file itself, saved into the package                                                                      | Platform                  |
 
@@ -406,11 +412,12 @@ render text tiles yet, so the lint says an entry is left out of the page:
 |##
 ```
 
-- **Identity.** The directory decides: `notebooks/*.malloy` is a notebook and
-  `dashboards/*.malloy` a dashboard, with `## artifact` present. A dashboard
-  file with only a query-level `# artifact` is also a dashboard, of that one
-  query. An untagged file is a shared include. `kind=notebook` is checked by lint: a notebook tag
-  under `dashboards/` is a finding, and so are `tiles=` under `notebooks/`.
+- **Identity.** The `## artifact` tag's `kind=` decides, not the folder:
+  `kind=notebook` is a notebook and `kind=dashboard` a dashboard. A file in the
+  other kind's folder still works, and lint notes the mismatch
+  (`notebook-other-folder`); under `notebooks/` a missing or non-notebook `kind`
+  is a finding. A dashboard file with only a query-level `# artifact` is also a
+  dashboard, of that one query. An untagged file is a shared include.
 - **Cells**, in file order, from the file's own notes only, never imported
   ones. Each floating `(markdown)` note after the artifact tag is a markdown
   cell, except that contiguous `##(markdown)` lines (no blank line or other line
@@ -452,7 +459,8 @@ render text tiles yet, so the lint says an entry is left out of the page:
   finding.
 - **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
   under `dashboards/`, and a tile entry may carry `kind=query`. `kind=notebook`
-  under `dashboards/` is a finding.
+  under `dashboards/` is a notebook served from there, with a
+  `notebook-other-folder` note.
 - **Grid width.** `dashboard { columns=N }` beside the artifact tag is canonical.
   `dashboard_columns=N` inside the tag is a deprecated alias, read when the
   canonical tag is absent and reported as a warn. When both are present and
@@ -528,6 +536,8 @@ graph (the file is the dependency: a later cell reads an earlier definition
 because it compiles after it), or scheduling and publishing, which are the same
 Platform class as for dashboards.
 
+_Superseded 2026-10-02: there is no separate cell editor; see the status line at the top._
+
 **The builder that follows.** With the format decided, the notebook builder
 is the dashboard builder's core with a linear surface: `useDashboardEditor`
 generalised to a `useDocumentEditor<T>` (history, dirty, save with a refusal
@@ -559,6 +569,8 @@ the reader and every other consumer of it look. Earlier spellings are still read
 so a file written to the first draft keeps its prose.
 [choosing-a-surface.md](choosing-a-surface.md) is
 revised when the reader ships, so that "notebook" there means this one.
+
+_Superseded 2026-10-02 for steps 4 and 5 (the cell editor)._
 
 **Steps.** (1) Done 2026-09-29: the format is decided, text tile included; G1,
 tabs, G3 and G6 remain for the grammar package proposal (§8). (2) Generalize the editor

@@ -158,6 +158,37 @@ describe("useDocumentEditor", () => {
    });
 });
 
+describe("useDocumentEditor: a second save while one is in flight", () => {
+   it("writes once and refuses the second", async () => {
+      const writes: string[] = [];
+      let finish!: () => void;
+      const view = open({
+         onSave: (source: string) => {
+            writes.push(source);
+            return new Promise<void>((resolve) => (finish = resolve));
+         },
+      });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      const save = view.result.current.save;
+      let first!: Promise<unknown>;
+      let second!: Promise<unknown>;
+      act(() => {
+         first = save();
+         second = save();
+      });
+      expect(await second).toEqual({
+         ok: false,
+         reason: "A save is still being written.",
+      });
+      await act(async () => {
+         while (writes.length === 0) await Promise.resolve();
+         finish();
+         await first;
+      });
+      expect(writes).toEqual(["a,b"]);
+   });
+});
+
 describe("useDocumentEditor: undoing a save", () => {
    type Write = { source: string } & SaveContext<Doc>;
    const writer = () => {

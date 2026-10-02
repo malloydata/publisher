@@ -98,8 +98,8 @@ function notePayload(text: string): string {
  * A rejecter that accepts MORE than the parser is a 400 on odd caller input,
  * which is safe. One that accepts LESS is a forged-gate bypass. The two cannot
  * share a definition, because {@link assertNoCallerAuthorizeAnnotation} reads raw
- * PRE-COMPILE text where no route exists yet — a regex is all there is there,
- * while the parser gets to ask {@link noteRoute}.
+ * PRE-COMPILE text where no route exists yet — a regex finds the candidates
+ * and Malloy's lexer decides which sit in prose, while the parser gets to ask {@link noteRoute}.
  *
  * It covers every route-`authorize` spelling by construction: sigil `##?`, an
  * optional block `|`, then `authorize` in any of Malloy's four bracket pairs.
@@ -453,48 +453,6 @@ function lexProseRanges(text: string): [number, number][] | undefined {
 }
 
 /**
- * Reject caller-submitted Malloy text that declares an `authorize` annotation.
- *
- * A source's own `#(authorize)` replaces the base's when it derives one
- * (`#(authorize) true` above `source: mine is locked_base extend {}` is gated
- * by `true`). That override is the locked-base + curated-extension idiom,
- * and it is only safe while the declaration is the model AUTHOR's — so a caller
- * may not mint one. Restricted mode does not stop it: its construct rejections
- * cover `##!` compiler-flag annotations, not object annotations.
- *
- * This covers only the forged-gate half. A caller annotation that is NOT an
- * authorize gate still moves the base's annotations off the struct (any
- * annotation does), which is closed in the gate walk itself — see
- * `Model.ancestorGateExprs`.
- *
- * Text-matching is the right tool for a rejection and the wrong one for
- * resolution: a false positive is a clear 400, a false negative is a bypass.
- * Nothing here decides *whose* gate applies — that stays with the compiled IR.
- * It is deliberately a SUPERSET of the parser's spellings, not a mirror of them
- * — see {@link AUTHORIZE_TAG_LIKE} for why that asymmetry is the safe direction
- * and why one shared definition cannot serve both. In particular it must cover
- * the block form and every bracket pair Malloy routes to `authorize`: the
- * classification is the compiler's, so a caller could otherwise mint a gate in a
- * spelling this rejecter had never heard of.
- *
- * Apply to EVERY caller-supplied fragment that reaches the compiler, not just
- * the obvious query body: `sourceName`/`queryName` are interpolated verbatim
- * into the `run:` statement the query path builds, so either one carries an
- * annotation into the compiled text just as effectively.
- *
- * Because it is a byte match over untrusted text, it also fires on an annotation
- * the compiler would never read as a gate — inside a string literal, or in a
- * model an author is compile-checking through `/compile`. That is the intended
- * direction, so the message has to tell an author what to do instead.
- *
- * The one exception is prose, located by Malloy's own lexer: the body of a
- * `#|(markdown)` / `#|(text)` block note and the payload of a `#(markdown)` /
- * `#(text)` line note (either sigil), which the compiler reads as one prose
- * note, never a gate; a notebook's prose names these tags. Every hit outside
- * prose still refuses, and text with a lexer or parser error, a gap in a
- * block's tokens, or an unclosed block falls back to the whole-text match.
- */
-/**
  * Whether {@link assertNoCallerAuthorizeAnnotation} would reject this text.
  *
  * Exported so a caller that wants to defer to that rejection can ask with the
@@ -537,6 +495,48 @@ export function hasCallerAuthorizeAnnotation(
    return false;
 }
 
+/**
+ * Reject caller-submitted Malloy text that declares an `authorize` annotation.
+ *
+ * A source's own `#(authorize)` replaces the base's when it derives one
+ * (`#(authorize) true` above `source: mine is locked_base extend {}` is gated
+ * by `true`). That override is the locked-base + curated-extension idiom,
+ * and it is only safe while the declaration is the model AUTHOR's — so a caller
+ * may not mint one. Restricted mode does not stop it: its construct rejections
+ * cover `##!` compiler-flag annotations, not object annotations.
+ *
+ * This covers only the forged-gate half. A caller annotation that is NOT an
+ * authorize gate still moves the base's annotations off the struct (any
+ * annotation does), which is closed in the gate walk itself — see
+ * `Model.ancestorGateExprs`.
+ *
+ * Text-matching is the right tool for a rejection and the wrong one for
+ * resolution: a false positive is a clear 400, a false negative is a bypass.
+ * Nothing here decides *whose* gate applies — that stays with the compiled IR.
+ * It is deliberately a SUPERSET of the parser's spellings, not a mirror of them
+ * — see {@link AUTHORIZE_TAG_LIKE} for why that asymmetry is the safe direction
+ * and why one shared definition cannot serve both. In particular it must cover
+ * the block form and every bracket pair Malloy routes to `authorize`: the
+ * classification is the compiler's, so a caller could otherwise mint a gate in a
+ * spelling this rejecter had never heard of.
+ *
+ * Apply to EVERY caller-supplied fragment that reaches the compiler, not just
+ * the obvious query body: `sourceName`/`queryName` are interpolated verbatim
+ * into the `run:` statement the query path builds, so either one carries an
+ * annotation into the compiled text just as effectively.
+ *
+ * Because it is a byte match over untrusted text, it also fires on an annotation
+ * the compiler would never read as a gate — inside a string literal, or in a
+ * model an author is compile-checking through `/compile`. That is the intended
+ * direction, so the message has to tell an author what to do instead.
+ *
+ * The one exception is prose, located by Malloy's own lexer: the body of a
+ * `#|(markdown)` / `#|(text)` block note and the payload of a `#(markdown)` /
+ * `#(text)` line note (either sigil), which the compiler reads as one prose
+ * note, never a gate; a notebook's prose names these tags. Every hit outside
+ * prose still refuses, and text with a lexer or parser error, a gap in a
+ * block's tokens, or an unclosed block falls back to the whole-text match.
+ */
 export function assertNoCallerAuthorizeAnnotation(
    callerText: string,
    precedingText = "",

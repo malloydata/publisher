@@ -26,7 +26,7 @@ Environment            e.g. "examples"
     ├── Model          a .malloy file: sources, views, measures, dimensions
     │   ├── Source     a queryable entity (a table or a join graph)
     │   └── View       a saved, reusable query on a source
-    ├── Notebook       a notebooks/*.malloy file (a legacy .malloynb is read, not authored): markdown + live query cells
+    ├── Notebook       a notebooks/*.malloy file (a legacy .malloynb is read, not authored): a one-column layout of text and query tiles
     ├── Dashboard      a dashboards/*.malloy file: filter controls + a tiled grid
     └── Data Apps      an in-package HTML data app (the package's public/ dir)
 ```

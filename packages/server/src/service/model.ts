@@ -8455,8 +8455,8 @@ export class Model {
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
     * dashboard's text is always returned, because its editor saves through
-    * it; a served notebook has no editor, and its cells' text comes from the
-    * notebook GET.
+    * it; the notebook editor fetches a notebook's text with
+    * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;

@@ -5,8 +5,8 @@
  * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400), plus
  * the load-time gate counters below.
  *
- * `assertNoCallerAuthorizeAnnotation` refuses an authorize annotation in any
- * caller-supplied Malloy text, because a source's own gate replaces the gate it
+ * `assertNoCallerAuthorizeAnnotation` refuses an authorize annotation outside
+ * prose in any caller-supplied Malloy text, because a source's own gate replaces the gate it
  * would otherwise inherit and that override is the model author's to make. A
  * rejection is therefore either an author using the wrong door or somebody
  * probing for a forged-gate bypass, and both are worth seeing.
