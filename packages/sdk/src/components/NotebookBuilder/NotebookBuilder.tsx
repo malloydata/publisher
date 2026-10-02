@@ -11,11 +11,20 @@ import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
 import VerticalAlignTopIcon from "@mui/icons-material/VerticalAlignTop";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
-import { Alert, Box, Button, IconButton, Stack, Tooltip } from "@mui/material";
+import {
+   Alert,
+   Box,
+   Button,
+   IconButton,
+   Stack,
+   TextField,
+   Tooltip,
+} from "@mui/material";
 import {
    useCallback,
    useEffect,
    useMemo,
+   useId,
    useRef,
    useState,
    type KeyboardEvent,
@@ -131,33 +140,57 @@ function CellSortable({
    return <>{children({ ref, handleRef, isDragSource })}</>;
 }
 
+const VISUALLY_HIDDEN = {
+   position: "absolute",
+   width: 1,
+   height: 1,
+   overflow: "hidden",
+   clip: "rect(0 0 0 0)",
+   whiteSpace: "nowrap",
+} as const;
+
+/** Off, not `disabled`: it stays focusable, a screen reader gets the reason, and a click says it too. */
+const offProps = (reasonId: string) => ({
+   "aria-disabled": true,
+   "aria-describedby": reasonId,
+   disableRipple: true,
+   sx: { opacity: 0.5, cursor: "not-allowed" },
+});
+
 function CellButton({
    label,
    disabled,
    reason,
    onClick,
+   onBlocked,
    children,
 }: {
    label: string;
    disabled?: boolean;
-   /** Why the button is off, shown with its name. */
+   /** Why the button is off, read with its name and shown when it is clicked. */
    reason?: string;
    onClick: () => void;
+   /** Told the reason when an off button is clicked. */
+   onBlocked?: (reason: string) => void;
    children: ReactNode;
 }) {
+   const reasonId = useId();
+   const off = disabled === true && reason !== undefined;
    return (
-      <Tooltip title={disabled && reason ? `${label}: ${reason}` : label}>
-         {/* A span, so the tooltip still shows on a disabled button. */}
-         <span>
-            <IconButton
-               size="small"
-               aria-label={label}
-               disabled={disabled}
-               onClick={onClick}
-            >
-               {children}
-            </IconButton>
-         </span>
+      <Tooltip title={off ? `${label}: ${reason}` : label}>
+         <IconButton
+            size="small"
+            aria-label={label}
+            {...(off ? offProps(reasonId) : {})}
+            onClick={() => (off ? onBlocked?.(reason) : onClick())}
+         >
+            {children}
+            {off && (
+               <Box component="span" id={reasonId} sx={VISUALLY_HIDDEN}>
+                  {reason}
+               </Box>
+            )}
+         </IconButton>
       </Tooltip>
    );
 }
@@ -239,6 +272,9 @@ export function NotebookBuilder({
       | undefined
    >(undefined);
    const nextId = useRef(0);
+   const blockedId = useId();
+   // The would-be file, shown to select by hand when the clipboard is not there to take it.
+   const [selectable, setSelectable] = useState<string | undefined>(undefined);
 
    useEffect(() => {
       onChange?.(doc);
@@ -291,15 +327,24 @@ export function NotebookBuilder({
       [editor],
    );
 
+   /** Why `from` cannot go to `to`, or undefined when it can. */
+   const moveBlocked = useCallback(
+      (from: number, to: number) => {
+         if (to < 0) return "This is already the first cell.";
+         if (to >= doc.cells.length) return "This is already the last cell.";
+         if (editor.canMove(from, to)) return undefined;
+         return doc.cells[from].kind === "definition"
+            ? "Setup lines stay where they are."
+            : "Queries stay below the setup lines they may read.";
+      },
+      [doc.cells, editor],
+   );
+
    const moveCell = useCallback(
       (from: number, to: number) => {
-         if (to < 0 || to >= doc.cells.length) return;
-         if (!editor.canMove(from, to)) {
-            setNotice(
-               doc.cells[from].kind === "definition"
-                  ? "Definitions keep their place in this editor."
-                  : "A query cannot move above a definition it may read.",
-            );
+         const blocked = moveBlocked(from, to);
+         if (blocked) {
+            setNotice(blocked);
             return;
          }
          update((draft) => {
@@ -307,7 +352,7 @@ export function NotebookBuilder({
             draft.cells.splice(to, 0, cell);
          });
       },
-      [doc.cells, editor, update],
+      [moveBlocked, update],
    );
 
    const altArrowMove = (event: KeyboardEvent<HTMLElement>, at: number) => {
@@ -380,7 +425,7 @@ export function NotebookBuilder({
       if (offered?.length === 0 && importsFailed?.length)
          return `Could not read ${importsFailed.join(", ")}, which this notebook imports.`;
       if (!canInsertQuery(doc, at))
-         return "A query cannot go above a definition: Malloy reads nothing below it.";
+         return "Queries go below the setup lines (imports, givens, saved queries). Add it further down.";
       return undefined;
    };
 
@@ -390,6 +435,24 @@ export function NotebookBuilder({
          canMove: editor.canMove,
          commit: moveCell,
       });
+
+   const copyChanges = () => {
+      void editor.preview().then(async (result) => {
+         if (!result.ok) {
+            setNotice(
+               "There is no file to copy until the problem above is fixed.",
+            );
+            return;
+         }
+         try {
+            await navigator.clipboard.writeText(result.source);
+            setSelectable(undefined);
+            setNotice("Copied the notebook as it would have been saved.");
+         } catch {
+            setSelectable(result.source);
+         }
+      });
+   };
 
    const commitSave = useCallback(() => {
       setPendingSave(undefined);
@@ -518,9 +581,19 @@ export function NotebookBuilder({
                      if (target) target.markdown = next;
                   })
                }
-               onClose={() =>
-                  setEditing((was) => (was === cell.id ? undefined : was))
-               }
+               onClose={() => {
+                  setEditing((was) => (was === cell.id ? undefined : was));
+                  // A cell added this session that ends empty was never wanted; it would only be refused at Save.
+                  if (!editor.isInFile(cell.id))
+                     update((draft) => {
+                        const at = draft.cells.findIndex(
+                           (c) => c.id === cell.id,
+                        );
+                        const target = draft.cells[at];
+                        if (target?.added && !(target.markdown ?? "").trim())
+                           draft.cells.splice(at, 1);
+                     });
+               }}
             />
          );
       const markdown = readById.get(cell.id)?.markdown;
@@ -588,7 +661,34 @@ export function NotebookBuilder({
                   <GivensPanel {...controls.panel} />
                   {editor.error && (
                      // The edit is still here; this says what kept it from the file.
-                     <Alert severity="warning">{editor.error}</Alert>
+                     <Alert
+                        severity="warning"
+                        action={
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={copyChanges}
+                           >
+                              Copy my changes
+                           </Button>
+                        }
+                     >
+                        {editor.error}
+                     </Alert>
+                  )}
+                  {editor.error && selectable !== undefined && (
+                     <TextField
+                        multiline
+                        minRows={4}
+                        maxRows={12}
+                        fullWidth
+                        value={selectable}
+                        inputProps={{
+                           readOnly: true,
+                           "aria-label": "Your changes",
+                        }}
+                        onFocus={(event) => event.target.select()}
+                     />
                   )}
                   {notice && (
                      <Alert severity="info" role="status">
@@ -603,17 +703,27 @@ export function NotebookBuilder({
                         >
                            Add text
                         </Button>
-                        <Tooltip title={queryBlocked(0) ?? ""}>
-                           <span>
-                              <Button
-                                 startIcon={<PlaylistAddIcon />}
-                                 disabled={queryBlocked(0) !== undefined}
-                                 onClick={() => openAddQuery(0)}
+                        <Button
+                           startIcon={<PlaylistAddIcon />}
+                           aria-label="Add query"
+                           {...(queryBlocked(0) ? offProps(blockedId) : {})}
+                           onClick={() => {
+                              const blocked = queryBlocked(0);
+                              if (blocked) setNotice(blocked);
+                              else openAddQuery(0);
+                           }}
+                        >
+                           Add query
+                           {queryBlocked(0) && (
+                              <Box
+                                 component="span"
+                                 id={blockedId}
+                                 sx={VISUALLY_HIDDEN}
                               >
-                                 Add query
-                              </Button>
-                           </span>
-                        </Tooltip>
+                                 {queryBlocked(0)}
+                              </Box>
+                           )}
+                        </Button>
                      </Stack>
                   )}
                   <DragDropProvider
@@ -688,16 +798,19 @@ export function NotebookBuilder({
                                        aria-label={`Tools for ${label}`}
                                        sx={{
                                           justifyContent: "flex-end",
-                                          opacity: 0.35,
+                                          // Resting icons stay at 3:1 or better against the page in both themes.
+                                          opacity: 0.8,
                                           transition: "opacity 120ms",
                                        }}
                                     >
                                        <CellButton
                                           label="Move up"
                                           disabled={
-                                             at === 0 ||
-                                             !editor.canMove(at, at - 1)
+                                             moveBlocked(at, at - 1) !==
+                                             undefined
                                           }
+                                          reason={moveBlocked(at, at - 1)}
+                                          onBlocked={setNotice}
                                           onClick={() => moveCell(at, at - 1)}
                                        >
                                           <ArrowUpwardIcon fontSize="small" />
@@ -705,9 +818,11 @@ export function NotebookBuilder({
                                        <CellButton
                                           label="Move down"
                                           disabled={
-                                             at === doc.cells.length - 1 ||
-                                             !editor.canMove(at, at + 1)
+                                             moveBlocked(at, at + 1) !==
+                                             undefined
                                           }
+                                          reason={moveBlocked(at, at + 1)}
+                                          onBlocked={setNotice}
                                           onClick={() => moveCell(at, at + 1)}
                                        >
                                           <ArrowDownwardIcon fontSize="small" />
@@ -730,6 +845,7 @@ export function NotebookBuilder({
                                              queryBlocked(at) !== undefined
                                           }
                                           reason={queryBlocked(at)}
+                                          onBlocked={setNotice}
                                           onClick={() => openAddQuery(at)}
                                        >
                                           <PlaylistAddIcon fontSize="small" />
@@ -740,6 +856,7 @@ export function NotebookBuilder({
                                              queryBlocked(at + 1) !== undefined
                                           }
                                           reason={queryBlocked(at + 1)}
+                                          onBlocked={setNotice}
                                           onClick={() => openAddQuery(at + 1)}
                                        >
                                           <PlaylistAddIcon fontSize="small" />

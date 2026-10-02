@@ -59,7 +59,7 @@ export function AddQueryDialog({
          open={open}
          onClose={onClose}
          title="Add a query"
-         description="A query cell runs one view of one source this notebook can read. Pick a chart for it once it is added."
+         description="A query cell runs one view of one source this notebook can read. It is not connected to the filter controls unless its source reads a given as $NAME. Pick a chart for it once it is added."
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>
@@ -131,10 +131,6 @@ export function AddQueryDialog({
                      onChange={(event) => setCaption(event.target.value)}
                      inputProps={{ "aria-label": "Query caption" }}
                   />
-                  <Typography variant="caption" sx={{ color: theme.tileTitle }}>
-                     This query is not connected to the filter controls. It
-                     follows them only if its source reads a given as $NAME.
-                  </Typography>
                </>
             )}
          </Stack>

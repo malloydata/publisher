@@ -138,6 +138,16 @@ export function undoUnsafeAfter(
 
 const normalizeNewlines = (text: string) => text.replace(/\r\n?/g, "\n");
 
+/** Why a text cell's markdown cannot be written, or undefined when it can: the writer's refusals, for the editor to show live. */
+export function markdownProblem(markdown: string): string | undefined {
+   const text = normalizeNewlines(markdown);
+   if (text.trim() === "")
+      return "This text is empty; remove the cell instead.";
+   if (/^\|##/m.test(text))
+      return "A line starting with `|##` would close the text early. Indent that line or reword it.";
+   return undefined;
+}
+
 /** A line with nothing on it, anywhere in a gap that starts at a line start. */
 const BLANK_LINE = /(^|\n)[ \t\r]*\n/;
 
@@ -347,14 +357,11 @@ export async function spliceNotebookDocument(
       const markdown = normalizeNewlines(cell.markdown ?? "");
       const fresh = cell.added === true || markdown !== was?.markdown;
       // An untouched empty cell is copied as it was, which the read-back already accepts.
-      if (fresh && markdown.trim() === "")
-         return refuse(
-            `${where} is an empty markdown cell; remove the cell instead. ${KEPT}`,
-         );
-      if (/^\|##/m.test(markdown))
-         return refuse(
-            `${where} has a line starting with \`|##\`, which would close its prose block early. Indent that line or reword it. ${KEPT}`,
-         );
+      const problem =
+         fresh || markdown.trim() !== ""
+            ? markdownProblem(markdown)
+            : undefined;
+      if (problem) return refuse(`${where}: ${problem} ${KEPT}`);
       emitted.push({ cell, original: was, index, fresh, markdown });
    }
 

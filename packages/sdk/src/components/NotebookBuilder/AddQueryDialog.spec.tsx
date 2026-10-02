@@ -89,6 +89,23 @@ describe("AddQueryDialog", () => {
       expect(screen.getByText(/reads a given as \$NAME/)).toBeDefined();
    });
 
+   it("says the filter-controls note in the dialog's description, not as a stray line", () => {
+      open();
+      const note = screen.getByText(/not connected to the filter controls/);
+      expect(note.closest(".MuiDialogContent-root")?.firstElementChild).toBe(
+         note,
+      );
+   });
+
+   it("caps the view list by the viewport so the dialog's buttons stay on screen", () => {
+      open();
+      const cap = getComputedStyle(screen.getByLabelText("Views")).maxHeight;
+      expect(cap).toMatch(/^min\(280px, [\d.]+px\)$/);
+      expect(Number.parseFloat(cap.split(", ")[1])).toBeCloseTo(
+         window.innerHeight * 0.3,
+      );
+   });
+
    it("flags a caption the writer would refuse, before Add", () => {
       open();
       fireEvent.click(button("View detail"));

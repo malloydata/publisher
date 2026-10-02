@@ -499,6 +499,8 @@ function NotebookSession({
                { source, expectedHash },
             );
          } catch (error) {
+            // A refused write usually means the file moved; fetch it so the editor offers that version.
+            void queryClient.invalidateQueries({ queryKey: modelKey });
             throw new Error(apiErrorMessage(error));
          }
          savedHashRef.current = result.data.contentHash;

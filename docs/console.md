@@ -87,15 +87,16 @@ is a Console convenience.
   It is not offered when neither route exists, on a record that cannot store, or on a pinned version
   of a package.
 - **Edit a notebook** — a notebook page (a tagged `notebooks/*.malloy`, not a legacy `.malloynb`)
-  has the same **Edit** button. Click a text cell to rewrite it, add text above or below any cell,
-  remove a text cell, or drag cells into a new order (definitions stay put, and a query stays below
-  what it reads); query cells run as you edit. Save writes the file back into the package and leaves
+  has the same **Edit** button. Click a text cell to rewrite it (Done or Cmd/Ctrl+Enter keeps the change, Cancel drops it, and a
+  text the file could not hold is flagged as you type), add text above or below any cell,
+  remove a text cell, or drag cells into a new order (setup lines stay put, and a query stays below
+  what it reads; a button that cannot act says why instead of going dead); query cells run as you edit. Save writes the file back into the package and leaves
   the rest of the file as it was: an edited cell is written in the `(markdown)` spelling, and removing
   a cell removes the comment lines directly above it. **Add query** inserts a query cell from a
   source the notebook reaches, one of its views, a chart and a caption; each query cell has a chart
   picker (Default, No chart, Line, Bar, Big value, Scatter). Big value is offered only for a view
   whose outputs are all aggregates, and a map only when the view already carries a map tag. A query
-  can be added only below every definition, and one added here is not mapped to the notebook's
+  can be added only below the setup lines (imports, givens, saved queries), and one added here is not mapped to the notebook's
   controls: it follows them only if its source reads a given as `$NAME`. Undo is cleared at Save when
   it removes a query cell that was already in the file, changes the chart of a cell whose chart line
   the editor cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling), or is the

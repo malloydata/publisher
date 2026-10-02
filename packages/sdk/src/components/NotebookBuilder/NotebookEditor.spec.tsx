@@ -1068,6 +1068,80 @@ describe("NotebookEditor, the notebook's own control settings", () => {
    });
 });
 
+describe("NotebookEditor, when a save fails", () => {
+   const setClipboard = (value: unknown) =>
+      Object.defineProperty(navigator, "clipboard", {
+         value,
+         configurable: true,
+      });
+
+   it("says the reason without the Error: prefix", async () => {
+      const storage = new FakeStorage(RECORD);
+      storage.documents.set(PATH, PACKAGE_FILE);
+      storage.saveFailure = new Error("the branch is locked");
+      mount(storage);
+      await waitFor(() =>
+         expect(within(introCell()).getByText("Intro.")).toBeDefined(),
+      );
+      editIntro("Intro, edited.");
+      fireEvent.click(button("Save changes"));
+      await alertWith("Could not save: the branch is locked");
+      expect(
+         screen
+            .getAllByRole("alert")
+            .some((a) => a.textContent?.includes("Error:")),
+      ).toBe(false);
+   });
+
+   it("refetches the file after a refused package write, as the dashboard does", async () => {
+      mount(undefined);
+      await screen.findByRole("group", { name: "Cell 1, text", hidden: true });
+      await waitFor(() => expect(getModel).toHaveBeenCalled());
+      editIntro("Intro, edited.");
+      serverHash = "moved-on";
+      const before = getModel.mock.calls.length;
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+         expect(getModel.mock.calls.length).toBeGreaterThan(before),
+      );
+   });
+
+   it("offers the would-be file to copy, and copies it", async () => {
+      const writeText = mock(async (_text: string) => {});
+      setClipboard({ writeText });
+      mount(undefined);
+      await screen.findByRole("group", { name: "Cell 1, text", hidden: true });
+      editIntro("Intro, edited.");
+      serverHash = "moved-on";
+      fireEvent.click(button("Save changes"));
+      await alertWith("changed in the package");
+      fireEvent.click(button("Copy my changes"));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText.mock.calls[0][0]).toBe(
+         PACKAGE_FILE.replace("Intro.", "Intro, edited."),
+      );
+   });
+
+   it("falls back to a selectable block of the file when the clipboard is unavailable", async () => {
+      setClipboard(undefined);
+      mount(undefined);
+      await screen.findByRole("group", { name: "Cell 1, text", hidden: true });
+      editIntro("Intro, edited.");
+      serverHash = "moved-on";
+      fireEvent.click(button("Save changes"));
+      await alertWith("changed in the package");
+      fireEvent.click(button("Copy my changes"));
+      const block = (await screen.findByLabelText(
+         "Your changes",
+      )) as HTMLTextAreaElement;
+      expect(block.value).toBe(
+         PACKAGE_FILE.replace("Intro.", "Intro, edited."),
+      );
+      expect(block.readOnly).toBe(true);
+   });
+});
+
 describe("NotebookEditor, after a package save", () => {
    it("drops the cached results of the saved model and leaves other models' alone", async () => {
       const key = (modelPath: string) => [
