@@ -28,6 +28,7 @@ import {
 import { mentionsChartTag, parseChartLine } from "./chartLine";
 import { annotationTextProblem } from "./annotationText";
 import { artifactTag, isBareName } from "./malloyText";
+import { parseTagLines } from "./tagParse";
 
 export type { Span };
 
@@ -985,7 +986,9 @@ export async function convertLegacyNotebook(
       ].filter((l) => l.trim() !== "");
       const tagLines = above.filter((l) => /^\s*#(?!["(|])/.test(l));
       const tag =
-         tagLines.length > 0 ? parseAnnotation(tagLines).tag : undefined;
+         tagLines.length > 0
+            ? parseTagLines(parseAnnotation, tagLines).tag
+            : undefined;
       // A view is named for what the tile says about itself, else by its place.
       const view = unique(
          viewNameFor(tag?.text("label") ?? statement.caption) ??

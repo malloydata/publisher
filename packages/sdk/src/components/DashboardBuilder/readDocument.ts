@@ -15,6 +15,7 @@ import type {
    LocalGiven,
 } from "./document";
 import { isTextTile } from "./document";
+import { parseTagLines } from "./tagParse";
 import {
    parseMalloy,
    parseRefused,
@@ -298,7 +299,9 @@ export async function readDashboardDocument(
       };
    }
 
-   const tag = parseAnnotation([tagAnnotation(artifactAt.text)]).tag;
+   const { tag, errors: tagErrors } = parseTagLines(parseAnnotation, [
+      tagAnnotation(artifactAt.text),
+   ]);
    const artifactTag = tag?.tag("artifact");
    const kind =
       artifactTag?.text("kind") === "notebook"
@@ -306,6 +309,11 @@ export async function readDashboardDocument(
          : undefined;
    const list = readTileList(artifactAt.text);
    if (list === undefined) {
+      if (tagErrors.length > 0)
+         return {
+            ok: false,
+            reason: `The \`## artifact\` tag does not parse: ${tagErrors[0]}`,
+         };
       // A notebook is told from a layout one by whether it lists tiles at all.
       if (kind === "notebook")
          return {
