@@ -1303,7 +1303,13 @@ export async function trySemanticSearch(args: {
     * with no claimable kind is dropped before the scan.
     */
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
-   limit: number;
+   /**
+    * The most rows kept per source, per target: each target's candidates are
+    * cut to this many in every source separately, never to one number across
+    * the package. A source that matches everything cannot crowd the others
+    * out of the answer, and nothing bounds how many sources are returned.
+    */
+   perSourceWindow: number;
    sourceName?: string;
    /**
     * The (kind, source, name) triples the caller's scope admits, when it
@@ -1331,7 +1337,7 @@ export async function trySemanticSearch(args: {
       environmentName,
       packageName,
       queries,
-      limit,
+      perSourceWindow,
       sourceName,
       scopeKeys,
    } = args;
@@ -1528,14 +1534,18 @@ export async function trySemanticSearch(args: {
                    CAST(COUNT(*) FILTER (WHERE best < ?) AS INTEGER) AS below
             FROM per_entity
          ),
-         -- The window is PER TARGET, not global. One shared LIMIT over the
-         -- union lets the highest-scoring target fill it and crowd the others
-         -- out entirely: measured against malloy-samples, a dimension target
-         -- at 0.63 took every slot while the measure target's own best hit at
-         -- 0.42 and the view target's at 0.53 vanished from the response --
-         -- absent, not merely ranked lower. That is the exact failure typed
-         -- targets exist to prevent, so each target gets its own share and the
-         -- caller gets an answer for every concept it described.
+         -- The window is PER TARGET AND PER SOURCE, never global. One shared
+         -- LIMIT over the union lets the highest-scoring target fill it and
+         -- crowd the others out entirely: measured against malloy-samples, a
+         -- dimension target at 0.63 took every slot while the measure target's
+         -- own best hit at 0.42 and the view target's at 0.53 vanished from
+         -- the response -- absent, not merely ranked lower. That is the exact
+         -- failure typed targets exist to prevent, so each target gets its own
+         -- share. The same crowding happens between sources: one wide source
+         -- that matches a target on every field would take the whole target
+         -- window and leave the other sources with no card, so each source
+         -- keeps its own best rows and the caller sees every source that
+         -- cleared the floor.
          ranked_per_target AS (
             SELECT entity_kind, entity_source, entity_name, target_idx, score,
                    -- Score, then source, name and kind: the full identity, so
@@ -1545,7 +1555,7 @@ export async function trySemanticSearch(args: {
                    -- This decides which tied rows fit the window, not just
                    -- how they are listed.
                    ROW_NUMBER() OVER (
-                      PARTITION BY target_idx
+                      PARTITION BY target_idx, entity_source
                       ORDER BY score DESC, entity_source, entity_name,
                                entity_kind
                    ) AS rn
@@ -1586,7 +1596,7 @@ export async function trySemanticSearch(args: {
             ...(sourceName !== undefined ? [sourceName] : []),
             provider.minSimilarity,
             provider.minSimilarity,
-            limit,
+            perSourceWindow,
          ],
       );
 

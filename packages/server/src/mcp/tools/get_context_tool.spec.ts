@@ -2563,16 +2563,17 @@ describe("get_context semantic retrieval", () => {
       expect(first.retrieval).toBe("indexing");
       expect(first).not.toHaveProperty("below_cutoff_count");
 
-      // order_items, its join, and the field reached through that join are
-      // all orthogonal to this query, so they are dropped by the floor and
-      // counted rather than silently missing.
+      // order_items and its join are orthogonal to this query, so they are
+      // dropped by the floor and counted rather than silently missing. The
+      // field reached through the join is not weighed: joined copies are made
+      // after the search, from the field they copy.
       const payload = await callUntilSemantic(handler, params);
       expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
-      expect(payload.below_cutoff_count).toBe(3);
+      expect(payload.below_cutoff_count).toBe(2);
       // The denominator ships with it. Without it the count is a bare number
-      // an agent cannot scale: 3 rejected is a tight match out of 4 and a
+      // an agent cannot scale: 2 rejected is a tight match out of 3 and a
       // catastrophe out of 200, and nothing else in the response says which.
-      expect(payload.total_entities).toBe(4);
+      expect(payload.total_entities).toBe(3);
    });
 
    it("fills a measure target's window with measures, not with nearer dimensions", async () => {

@@ -30,7 +30,7 @@ import {
 
 const ASSEMBLY: PipelineSettings = {
    joins: "assembly",
-   entityWindow: { where: "post-rank", perSourcePerTarget: 10 },
+   entityWindow: { perSourcePerTarget: 10 },
    joinMaxDepth: 10,
    joinDamping: 0.9,
    scoring: "cosine",
