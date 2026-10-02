@@ -64,7 +64,7 @@ export {
 export type {
    NotebookEvent,
    NotebookEventHandler,
-} from "./components/NotebookBuilder/telemetry";
+} from "./components/DashboardBuilder/telemetry";
 export {
    createDocument,
    createRoute,

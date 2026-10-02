@@ -18,7 +18,11 @@ export interface SessionEditor<D, L extends LastSave = LastSave> {
    /** The document as of the last save (or open). */
    saved: D;
    dirty: boolean;
+   /** Unsaved edits made by a person, when that differs from `dirty` (an open that is unsaved before any edit); absent means `dirty`. */
+   edited?: boolean;
    structural: boolean;
+   /** Whether the document opened unsaved (a conversion); the save that clears it reports so. */
+   pendingOpen?: boolean;
    canUndo: boolean;
    canRedo: boolean;
    undo: () => void;
@@ -43,6 +47,8 @@ export interface SessionReport {
 export interface SessionSaveInfo {
    size: number;
    structural: boolean;
+   /** The save wrote a document that opened unsaved. */
+   fromOpen: boolean;
    durationMs: number;
 }
 
@@ -96,14 +102,16 @@ export function useBuilderSession<
    const reportRef = useRef(report);
    reportRef.current = report;
    const dirty = editor.dirty || extraDirty;
+   // Work to lose: a conversion nobody has touched is rebuilt by opening the file again.
+   const hasEdits = (editor.edited ?? editor.dirty) || extraDirty;
 
    useEffect(() => {
       onChange?.(editor.document);
    }, [editor.document, onChange]);
    // Also on mount, so a host that remounted the builder on new text is told the slate is clean rather than carrying the previous mount's answer.
    useEffect(() => {
-      onDirtyChange?.(dirty);
-   }, [dirty, onDirtyChange]);
+      onDirtyChange?.(hasEdits);
+   }, [hasEdits, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
@@ -133,6 +141,7 @@ export function useBuilderSession<
       setUndone(false);
       const started = now();
       const { structural } = editor;
+      const fromOpen = editor.pendingOpen ?? false;
       const size = reportRef.current.size;
       const sizes = {
          before: unitRef.current.count(editor.saved),
@@ -146,6 +155,7 @@ export function useBuilderSession<
                reportRef.current.saved({
                   size,
                   structural,
+                  fromOpen,
                   durationMs: now() - started,
                });
             } else reportRef.current.refused(outcome.reason);
@@ -179,6 +189,7 @@ export function useBuilderSession<
                reportRef.current.undone({
                   size,
                   structural,
+                  fromOpen: false,
                   durationMs: now() - started,
                });
             } else reportRef.current.undoRefused(outcome.reason);
@@ -201,7 +212,7 @@ export function useBuilderSession<
    }, [prepare]);
 
    const exitGuard = useExitGuard({
-      dirty,
+      dirty: hasEdits,
       saving,
       canSave: !!onSave,
       save,

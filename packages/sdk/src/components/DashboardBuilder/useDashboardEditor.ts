@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { useCallback } from "react";
 import { type DashboardDocument } from "./document";
 import { spliceDashboardDocument, tileFileKey } from "./spliceDocument";
 import {
@@ -37,10 +38,30 @@ export function useDashboardEditor(options: {
    document: DashboardDocument;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
    onSave?: SaveHandler<DashboardDocument>;
+   /**
+    * A cell-format notebook the document is the conversion of: while `source`
+    * is `from` the edits are spliced into `to`, the layout text it converts to,
+    * and the open is unsaved ({@link DocumentEditorOptions.opensDirty}).
+    */
+   conversion?: { from: string; to: string };
 }): DashboardEditor {
+   const { conversion, ...rest } = options;
+   const from = conversion?.from;
+   const to = conversion?.to;
+   const splice = useCallback(
+      (text: string, document: DashboardDocument) =>
+         // The kind is only ever changed by the settings toggle, so the writer is always allowed to follow it.
+         spliceDashboardDocument(
+            from !== undefined && text === from ? (to as string) : text,
+            document,
+            { changeKind: true },
+         ),
+      [from, to],
+   );
    return useDocumentEditor({
-      ...options,
-      splice: spliceDashboardDocument,
+      ...rest,
+      splice,
       structural: tilesChanged,
+      opensDirty: conversion !== undefined,
    });
 }
