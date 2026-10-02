@@ -54,7 +54,6 @@ import { builderSensors } from "./sortable";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
 import { useTileReorder } from "./useTileReorder";
-import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
 import { useBuilderSession } from "./useBuilderSession";
 import { useDashboardEditor } from "./useDashboardEditor";
@@ -78,11 +77,10 @@ export type { BuilderGiven } from "./controls";
  * draws its own card AND its own heading. Nesting one inside a card of ours
  * would show a card in a card under two titles — which is precisely not what a
  * reader sees. So every affordance is drawn AROUND whatever the caller renders:
- * an outline for selection, a grip and a menu in the corners, a handle at the
- * edge.
+ * an outline for selection, a grip and a menu in the corners.
  *
- * **Everything here is on the thing it changes.** Drag a tile's right edge to
- * set its width, and the tile itself to reorder — into the empty end of a row
+ * **Everything here is on the thing it changes.** Set a tile's width from its menu, and drag
+ * the tile itself to reorder — into the empty end of a row
  * to change which row it is in. Click a title, subtitle, description or text
  * tile to edit it where it stands. FILTERS are configured in exactly one place, the strip under the
  * header: each chip opens the tiles-to-update window for that control,
@@ -242,15 +240,7 @@ export function DashboardBuilder({
    // A notebook is one column whatever the file says, and the builder never writes its width.
    const notebook = editor.document.kind === "notebook";
    const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
-   const { resize, gridBox, startResize, onResize, endResize } = useTileResize({
-      tiles: editor.document.tiles,
-      columns,
-      onStart: setSelected,
-      commit: (index, span) =>
-         editor.update((draft) => {
-            draft.tiles[index].colspan = span;
-         }),
-   });
+   const gridBox = useRef<HTMLDivElement>(null);
    const { dragging, preview, onDragStart, onDragOver, onDragEnd } =
       useTileReorder({
          tiles: editor.document.tiles,
@@ -403,7 +393,8 @@ export function DashboardBuilder({
             if (!menu && !filterDialog) setSelected(undefined);
          },
          nudge: (delta: 1 | -1) => {
-            if (selected === undefined || notebook) return;
+            // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
+            if (dragging || selected === undefined || notebook) return;
             const tile = editor.document.tiles[selected];
             if (
                !tile ||
@@ -420,7 +411,7 @@ export function DashboardBuilder({
             });
          },
       }),
-      [editor, menu, filterDialog, selected, columns, notebook],
+      [editor, menu, filterDialog, selected, columns, notebook, dragging],
    );
    useEffect(() => {
       const before = lastDocument.current;
@@ -676,17 +667,9 @@ export function DashboardBuilder({
    };
 
    // What the grid lays out: the document, except mid-gesture, where it is
-   // the preview — the tile being resized at its previewed width, or the tiles
-   // in their previewed order. So the row reflows under the pointer exactly as
-   // it will once the edit lands.
-   const shown = (() => {
-      const tiles = editor.document.tiles;
-      if (resize !== undefined)
-         return tiles.map((each, index) =>
-            index === resize.index ? { ...each, colspan: resize.span } : each,
-         );
-      return preview ?? tiles;
-   })();
+   // the preview — the tiles in their previewed order. So the row reflows under
+   // the pointer exactly as it will once the edit lands.
+   const shown = preview ?? editor.document.tiles;
    // And, while a drag is live, the empty end of every row as a drop target.
    // Not otherwise: a gap is only a place to land while something is in hand.
    const empty = editor.document.tiles.length === 0;
@@ -811,9 +794,7 @@ export function DashboardBuilder({
                   onDragEnd={onDragEnd}
                >
                   <Box ref={gridBox} sx={{ position: "relative" }}>
-                     {!notebook && (resize !== undefined || dragging) && (
-                        <GridGuides columns={columns} />
-                     )}
+                     {!notebook && dragging && <GridGuides columns={columns} />}
 
                      <DashboardGrid
                         tiles={entries}
@@ -834,13 +815,6 @@ export function DashboardBuilder({
                                  selected={index === selected}
                                  flash={tileKey(each) === flash}
                                  menuOpen={menu?.index === index}
-                                 resizeSpan={
-                                    resize?.index === index
-                                       ? resize.span
-                                       : undefined
-                                 }
-                                 columns={columns}
-                                 resizable={!notebook}
                                  {...(notebook && catalog
                                     ? {
                                          onInsertAfter: () =>
@@ -852,11 +826,6 @@ export function DashboardBuilder({
                                     setSelected(index);
                                     setMenu({ anchor, index });
                                  }}
-                                 onResizeStart={(event) =>
-                                    startResize(event, index)
-                                 }
-                                 onResizeMove={onResize}
-                                 onResizeEnd={endResize}
                               >
                                  {isTextTile(each) ? (
                                     <TextTileBody

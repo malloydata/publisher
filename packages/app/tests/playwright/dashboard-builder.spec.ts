@@ -169,6 +169,10 @@ test.describe("dashboard-builder", () => {
       page,
    }) => {
       await openEditor(page);
+      // Width is never a drag: no edge handle is offered on any tile.
+      await expect(
+         page.getByRole("separator", { name: /^Resize / }),
+      ).toHaveCount(0);
       await page.getByLabel("Settings for Orders").click();
       await page.getByRole("button", { name: "Width Full" }).click();
       await page.keyboard.press("Escape");

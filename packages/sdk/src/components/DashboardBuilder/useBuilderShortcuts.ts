@@ -8,8 +8,7 @@ import { useEffect, useRef, useState } from "react";
  *
  * Undo and redo on the platform's usual keys, save on ⌘S / Ctrl+S (which the
  * browser would otherwise take), Escape to drop the selection, and the arrow
- * keys to nudge the selected tile's width a column at a time — the one layout
- * edit that is otherwise drag-only.
+ * keys to nudge the selected tile's width a column at a time.
  *
  * Nothing but Escape and save fires while a text field has focus, so typing
  * into a title never undoes a layout. Save leaves the field first, so its

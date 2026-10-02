@@ -95,9 +95,9 @@ one by inventing structure it does not report.
 | Open an existing dashboard | Any composite `## artifact { tiles=[…] }` file the reader can fully represent. Refused with a reason and a line otherwise.                                                                                                                                                                                                                                            |
 | Save                       | Splices the file; the round-trip gate refuses a write it cannot read back. Comments and unmodelled Malloy survive. Save writes at once, then offers View change (the diff, read-only) and Undo save. Into the package when the server takes writes (compile-first, atomic, reloaded in place, refused if the file changed since opening); into the browser otherwise. |
 | Create                     | "New" on the package page (Dashboard or Notebook): a model, a source, the first view and a title; the file the builder would write, written into the package and opened in the builder.                                                                                                                                                                               |
-| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drag the right edge for width, drop into the empty end of a row to move up.                                                                                                                                                                                                                        |
+| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drop into the empty end of a row to move up.                                                                                                                                                                                                                        |
 | Row structure              | `# break` is treated as positional: a move keeps the rows' shape; a drop into a gap is the one move that changes it.                                                                                                                                                                                                                                                  |
-| Sizing aids                | Column guides and a width badge while dragging; width presets (full, ½, ⅓, ¼) on the tile's menu, and the arrow keys to nudge the selected tile's width.                                                                                                                                                                                                              |
+| Sizing aids                | Column guides while dragging; width presets (full, ½, ⅓, ¼) on the tile's menu, and the arrow keys to nudge the selected tile's width.                                                                                                                                                                                                              |
 | Tile presentation          | Title and subtitle from the tile's own menu. Inherited tiles (declared on the model) are movable but not restyled.                                                                                                                                                                                                                                                    |
 | Add or remove a tile       | Added from the package catalog (source → view, correct by construction); removed from the tile's menu. Both are written at once; View change shows the diff after, and Undo save reverses it.                                                                                                                                                                         |
 | Filters                    | Declared in the dashboard and bound per tile from one place, the strip under the header, with a tiles-to-update mapping, per-tile comparison and a field picker.                                                                                                                                                                                                      |
@@ -124,8 +124,7 @@ offer today.
 Rows reaching parity leave the table: a gap list that carries what is no longer
 missing stops being a list of what to do next. Verified and removed 2026-09-15,
 each against the code and the test that holds it: **sizing aids** (width presets
-on the tile's menu, the arrow-key nudge, column guides while dragging or
-resizing), **add / remove a tile** (from the package catalog, both through the
+on the tile's menu, the arrow-key nudge, column guides while dragging), **add / remove a tile** (from the package catalog, both through the
 diff), **filter declaration** (a control declared on the dashboard, written to
 the file), **filter-to-tile binding** (per-tile field and comparison, including
 untick), and **observability** (the `DashboardEvent` union and the Console's
@@ -303,8 +302,8 @@ change lands in the right place.
   removed tiles, added tiles, tile presentation), then the round-trip gate.
 - `controls.ts` — pure edits to the document for filters; `useFilterForm.ts`
   holds the filter window's state and every derivation, MUI-free.
-- `layout.ts` — what a reorder does to the rows; `useTileResize.ts` and
-  `useTileReorder.ts` — one gesture each, previewing and committing once;
+- `layout.ts` — what a reorder does to the rows; `useTileReorder.ts` — the
+  drag, previewing and committing once;
   `TileFrame.tsx` — what is drawn around a tile; `FilterStrip.tsx`.
 - `useDashboardEditor.ts` — whole-document history and save; `useDraft.ts` —
   edit a copy, commit on close.

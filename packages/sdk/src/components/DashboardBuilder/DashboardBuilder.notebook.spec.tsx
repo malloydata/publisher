@@ -15,7 +15,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { BuilderEvent } from "./telemetry";
-import { editInline } from "./testing/inline";
+import { closeMenu, editInline } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
@@ -87,9 +87,8 @@ const mountText = async (
    );
 
 describe("DashboardBuilder: a notebook is one column", () => {
-   it("offers no width: no resize edge, no grid width, no width presets", async () => {
+   it("offers no width: no grid width, no width presets", async () => {
       await mountText(NOTEBOOK);
-      expect(screen.queryByLabelText(/^Resize /)).toBeNull();
       fireEvent.click(button("Settings"));
       expect(screen.getByLabelText("Show as")).toBeDefined();
       expect(screen.queryByLabelText("Grid width")).toBeNull();
@@ -221,10 +220,14 @@ describe("DashboardBuilder: Show as", () => {
             written = source;
          },
       });
-      expect(screen.getByLabelText(/^Resize /)).toBeDefined();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      expect(screen.getByRole("button", { name: "Width ½" })).toBeDefined();
+      closeMenu();
       showAs("Notebook");
-      // The grid follows the toggle at once.
-      expect(screen.queryByLabelText(/^Resize /)).toBeNull();
+      // The menu follows the toggle at once.
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
+      closeMenu();
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("kind=notebook");

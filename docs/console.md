@@ -75,8 +75,8 @@ is a Console convenience.
   slug beside it; a notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
-  a grid you rearrange directly: drag a tile to move it, drag its right edge to resize it, set its
-  view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
+  a grid you rearrange directly: drag a tile to move it, set its
+  width, view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
   and text tiles are edited where they are shown: click one and type, with no edit icon to find
   first. A **text tile** holds markdown (a heading, a paragraph, a list) and is added from the same
   dialog as a query tile. The classic dashboard-building feel, over a file you can still read and

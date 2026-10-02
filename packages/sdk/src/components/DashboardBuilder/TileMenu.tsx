@@ -46,7 +46,7 @@ const customChart = (lines: string[] | undefined) =>
 const INHERITED_CHART =
    "This tile's view is declared on its source, so its chart is set in the model.";
 
-/** Width presets, as fractions of this grid. A tile's width is otherwise a drag, and a drag cannot say "a third". */
+/** Width presets, as fractions of this grid. A tile's width is otherwise a column count, which cannot say "a third". */
 function WidthPresets({
    columns,
    colspan,

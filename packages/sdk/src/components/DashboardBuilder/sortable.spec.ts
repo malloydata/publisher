@@ -5,20 +5,31 @@ import { PointerSensor } from "@dnd-kit/dom";
 import { describe, expect, it } from "bun:test";
 import { builderSensors } from "./sortable";
 
-const options = builderSensors[0] as unknown as {
-   options: {
-      preventActivation: (event: PointerEvent, source: unknown) => boolean;
-   };
-};
+const preventActivation = PointerSensor.defaults.preventActivation as (
+   event: PointerEvent,
+   source: unknown,
+) => boolean;
 
 /** A press on `target` inside a draggable tile `card`. */
 const press = (target: Element, card: Element) =>
-   options.options.preventActivation({ target } as unknown as PointerEvent, {
+   preventActivation({ target } as unknown as PointerEvent, {
       element: card,
       handle: undefined,
    });
 
 describe("builderSensors", () => {
+   it("starts a drag from anywhere on the tile", () => {
+      const card = document.createElement("div");
+      const configured = builderSensors[0] as unknown as {
+         options: {
+            activatorElements: (source: { element: Element }) => Element[];
+         };
+      };
+      expect(configured.options.activatorElements({ element: card })).toEqual([
+         card,
+      ]);
+   });
+
    const card = document.createElement("div");
    document.body.append(card);
 

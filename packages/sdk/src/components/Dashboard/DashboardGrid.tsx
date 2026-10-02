@@ -104,7 +104,7 @@ export function DashboardGrid<T extends GridTile>({
    renderTile: (tile: T, index: number) => ReactNode;
    /**
     * Floor on the width of a tile that sets no `colspan`. Off by default: the
-    * builder's drag arithmetic assumes an unset colspan is one column.
+    * builder assumes an unset colspan is one column.
     */
    minTilePx?: number;
 }) {

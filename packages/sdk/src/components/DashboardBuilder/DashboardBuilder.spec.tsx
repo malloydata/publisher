@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   act,
    fireEvent,
    render,
    screen,
@@ -145,19 +146,6 @@ describe("DashboardBuilder", () => {
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("view: by_cat is by_category\n");
       expect(written).not.toContain("$CATEGORY");
-   });
-
-   it("offers no resize for a tile the model owns", async () => {
-      const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
-      const document = await openDocument(source);
-      render(<DashboardBuilder source={source} document={document} />);
-      selectTile("by_brand");
-      // Its tags live on the model's source, which the builder does not write,
-      // so it gets no resize handle — offering one would offer a drag the
-      // writer then refuses. It keeps its grip: order is this file's own
-      // `tiles=[…]` array, which it owns for every tile.
-      expect(within(tile("by_brand")).queryByLabelText(/^Resize /)).toBeNull();
-      expect(within(tile("by_brand")).getByLabelText(/^Move /)).toBeDefined();
    });
 
    // `renderTile` hands over the WHOLE tile, card and heading included, because
@@ -776,6 +764,30 @@ describe("DashboardBuilder: keyboard", () => {
       fireEvent.keyDown(window, { key: "ArrowRight" });
       fireEvent.keyDown(window, { key: "ArrowRight" });
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 7");
+   });
+
+   it("leaves a tile's width alone while the arrow keys move it", async () => {
+      await mount();
+      selectTile("by_cat");
+      // happy-dom has no Web Animations; the sensor asks for them on pickup.
+      Object.assign(document, { getAnimations: () => [] });
+      Object.assign(Element.prototype, { getAnimations: () => [] });
+      const grip = within(tile("by_cat")).getByLabelText(/^Move /);
+      grip.focus();
+      fireEvent.keyDown(grip, { key: " ", code: "Space" });
+      // The drag clone is the proof the pickup landed.
+      await waitFor(() =>
+         expect(screen.getAllByLabelText("Tile by_cat")).toHaveLength(2),
+      );
+      // The drag-start state commits a frame after the clone appears.
+      await act(async () => {});
+      fireEvent.keyDown(grip, { key: "ArrowRight", code: "ArrowRight" });
+      // A cancel, not a drop: a drop re-commits the drag-start width and would hide a nudge.
+      fireEvent.keyDown(grip, { key: "Escape", code: "Escape" });
+      await waitFor(() =>
+         expect(screen.getAllByLabelText("Tile by_cat")).toHaveLength(1),
+      );
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
    });
 });
 

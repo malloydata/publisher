@@ -44,6 +44,8 @@ the `dashboard { columns=N }` line, since a notebook is one column; switching a 
 `notebooks/` to Dashboard writes `kind=dashboard` explicitly, so the server serves it as one.
 Imports are edited there as a source picker.
 
+**A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved.
+
 **Save writes at once.** There is no review step before a save any more, for notebooks or for
 dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
 shows **View change**, the file's diff read-only, and **Undo save**, which writes the file back as
