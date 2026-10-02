@@ -229,8 +229,11 @@ properties up by name and would otherwise serve the page as though the line were
 
 Two spellings that bite:
 
-- **A model-level `##` tag has to be on one line.** Wrapping a long `## artifact { … }` across lines
-  is a compile error, and it fails the whole package rather than the one file.
+- **A `## artifact { … }` line has to be on one line.** Wrapping it across lines is a compile error,
+  and it fails the whole package rather than the one file. To spread a long tile list over lines,
+  write the tag as a block instead: `##| artifact { …` on the opener line, the rest below it, and
+  `|##` on a line of its own. It reads, lints and edits exactly as the one-line tag does, and the
+  builder keeps whichever form the file has.
 - **`# artifact` is read off a `query:`, not off a `view:`.** A source-level view carrying the tag is
   not discovered, and nothing says so: the file is treated as a shared include and quietly produces
   no dashboard. Name the view in `tiles=[…]` instead, which is what that list is for.
@@ -461,6 +464,22 @@ write its body as a `##|(markdown) name` block in the same file:
 Revenue first, then the seasonal split.
 |##
 ```
+
+The block form of the tag, with a tile on each line, is the same tag:
+
+```malloy
+##| artifact { title="Seasonality"
+  tiles=[
+    intro { kind=text colspan=6 break },
+    "seasonal -> revenue_trend"
+  ]
+} dashboard { columns=12 }
+|##
+```
+
+Every `source -> view` entry is a quoted string, and a text entry is a bare name followed by
+`{ kind=text }`. A bare name without it (`tiles=[intro, …]`) is the query-tile form for a `query:`
+called `intro`, so the `##|(markdown) intro` block is not shown and the lint says to add `{ kind=text }`.
 
 The entry reads `colspan` and `break` and nothing else, the same two layout tags a query tile takes
 from its view. The body is markdown (headings, emphasis, lists, links, inline code), so a heading

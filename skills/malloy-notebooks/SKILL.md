@@ -25,30 +25,47 @@ The file is ordinary Malloy: it compiles as one model, it is validated by the sa
 
 ## Author a notebook as a layout of tiles
 
-A notebook is a dashboard with one column. Its artifact tag lists the tiles in reading order, each either a query (`"source -> view"`) or a prose block (`name { kind=text }`), and the file defines the views and the prose:
+A notebook is a dashboard with one column. Its artifact tag lists the tiles in reading order, each either a query (`"source -> view"`, always a quoted string) or a prose block (`name { kind=text }`, a bare name), and the file defines the views and the prose:
 
 ```malloy
 ##! experimental.givens
 ##" One category at a time: how it sells across the year and which brands carry it.
-## artifact { kind=notebook title="Category review" tiles=[intro { kind=text }, "category_review -> sales_by_month", "category_review -> top_brands"] }
+##| artifact { kind=notebook title="Category review"
+  tiles=[
+    intro { kind=text },
+    "category_tiles -> revenue_trend",
+    "category_tiles -> brand_ranking"
+  ]
+}
+|##
 import { order_items, products } from "../storefront.malloy"
 
 #(description="Narrow to one product category")
 # label="Category" control=select suggest { source=products dimension=category }
 given: CATEGORY :: filter<string> is f''
 
-source: category_review is order_items extend { where: category ~ $CATEGORY }
-
 ##|(markdown) intro
 ## Category review
 
 Pick a **Category** in the controls above and every chart below re-runs for it.
 |##
+
+source: category_tiles is order_items extend {
+  # line_chart
+  # label="Revenue by month"
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
+
+  # bar_chart
+  # label="Top brands"
+  view: brand_ranking is top_brands + { where: category ~ $CATEGORY }
+}
 ```
 
-- **The tag is one line**, and `tiles=[…]` is the notebook: tiles render top to bottom in list order, one column wide. `dashboard { columns }` other than 1, `colspan` and `break` have no effect on a notebook.
-- **A query tile is a `view:` on a source** (here `sales_by_month` and `top_brands` are views `order_items` already has; `category_review` applies the control to them), named as `"source -> view"`. A `run:` in a layout notebook is never shown, and the lint reports it (`notebook-layout-run`): define a view, list it in `tiles`, and delete the `run:`.
-- **A prose tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. Every text entry needs its block, and every named block needs an entry.
+- **The tag is one line (`## artifact { … }`) or a `##|` … `|##` block** with the same text inside, the form to use once the list is long: one tile per line, `}` on its own line, `|##` closing at the opener's column. Both read, lint and edit the same, and the builder keeps whichever form the file has. `tiles=[…]` is the notebook: tiles render top to bottom in list order, one column wide. `dashboard { columns }` other than 1 has no effect on a notebook, and a `colspan` or `break` on a tile entry is ignored with a warning (`notebook-tile-layout-ignored`).
+- **Quote every query entry.** `"orders_tiles -> headline"` is a string; `orders_tiles -> headline` unquoted does not parse, and the lint says so (`notebook-artifact-unparsed`) rather than reading the file as a cell notebook.
+- **A query tile is a `view:` on a source**, named as `"source -> view"`. Put the views on a `<source>_tiles` extension as thin wrappers (`view: revenue_trend is sales_by_month + { where: … }`): the modelled view keeps its chart tag, the wrapper says which controls the tile answers to and carries the tile's `# label`. A `run:` in a layout notebook is never shown, and the lint reports it (`notebook-layout-run`): define a view, list it in `tiles`, and delete the `run:`.
+- **A prose tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. Every text entry needs its block, and every named block needs an entry written with `{ kind=text }`: a bare `intro` without it is the query-tile form (it names a `query:` in the file), so a block of that name is not shown.
+- **Place the file in one order: header, imports and givens, then the prose blocks in tile order, then the `<source>_tiles` extension.** Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the extension is the convention the builder writes, and it inserts a new block after the last one.
 - **Chart tags go on the view** (`# line_chart`, `# label="…"`), as on a dashboard; `skill:malloy-dashboards` has the tag set and the lint.
 - **Givens work as in any notebook**: declare `given:` above the view that reads it as `$NAME`, with the controls tags shown.
 - **Tiles run through the model query endpoint**, and the notebook also carries cells made from its tiles, so cell runs, `get_context` and notebook chat work on it as on any notebook.
@@ -217,15 +234,27 @@ run: source -> my_view + { where: status = 'active', limit: 10 }
 ```malloy
 ##! experimental.givens
 ##" [One-line description of the notebook.]
-## artifact { kind=notebook title="[Title]" tiles=[intro { kind=text }, "main_source -> [broad view]", "main_source -> [drill view]"] }
+##| artifact { kind=notebook title="[Title]"
+  tiles=[
+    intro { kind=text },
+    "main_source_tiles -> broad_tile",
+    "main_source_tiles -> drill_tile"
+  ]
+}
+|##
 import "model.malloy"
 
 ##|(markdown) intro
 [Framing question: what are we trying to understand?]
 |##
+
+source: main_source_tiles is main_source extend {
+  view: broad_tile is [broad view]
+  view: drill_tile is [drill view]
+}
 ```
 
-Define each listed view on the source (or import a model that does), and compile with `"scope": "file"`.
+Define each listed view on the `_tiles` extension (thin wrappers over the modelled views), and compile with `"scope": "file"`.
 
 ## Editing in the Console
 
@@ -275,6 +304,9 @@ A `.malloynb` notebook (cells delimited by `>>>markdown` and `>>>malloy`) is a d
 | `given:` used before it is declared | A cell reads only the givens declared above it. Move the `given:` up. |
 | `##|(markdown) name` block in a cell notebook | A name means something only where a `tiles=[name { kind=text }]` entry lists the block (a dashboard or a layout notebook). In a cell notebook, drop it: `##|(markdown)`. |
 | `run:` in a notebook that lists `tiles=[…]` | Never shown. Define a `view:`, list `source -> view` in `tiles`, delete the `run:`. |
+| `tiles=[intro { kind=text }, orders_tiles -> headline]` (entry not quoted) | Every `source -> view` entry is a quoted string: `"orders_tiles -> headline"`. A text entry is a bare name followed by `{ kind=text }`. Unquoted, the tag does not parse and no tile is read. |
+| A bare `intro` in `tiles` for a `##|(markdown) intro` block | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`. |
+| `colspan` or `break` on a tile entry of a notebook | Ignored (a notebook is one column) and reported as `notebook-tile-layout-ignored`. Remove them. |
 | `#(filter) {"type": "Star"}` (JSON-blob form, on a dimension) | Unsupported legacy syntax, and `#(filter)` in any form is deprecated. Declare a `given:` on the model's source instead. |
 | Data-specific insights in markdown | Don't write "Revenue grew 23%." Frame questions instead. Data refreshes will make findings stale. |
 | `import` inside a `run:` cell | Imports are file-wide, put them at the top. An in-query import is rejected: `file imports are not permitted in a restricted query`. |

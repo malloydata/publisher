@@ -141,15 +141,15 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
    "notebooks/layout.malloy": {
       cells: [
          def(3, 3, IMPORT),
-         def(
-            5,
-            7,
-            "source: orders_tiles is orders extend {\n   view: headline is { aggregate: order_count }\n}",
-         ),
          md(
+            5,
             9,
-            13,
             "## How to read this page\n\nTotals first, then the monthly trend.",
+         ),
+         def(
+            11,
+            13,
+            "source: orders_tiles is orders extend {\n   view: headline is { aggregate: order_count }\n}",
          ),
       ],
       annotations: [

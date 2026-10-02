@@ -33,6 +33,8 @@ Markdown cells own narrative; query cells own a single Malloy query whose chart 
 
 The file starts with `## artifact { kind=notebook title="..." }`, then the `import` for the model file. Definitions (`import`, `source:`, `query:`, `given:`) come before the first markdown or `run:`. Prose is `##|(markdown)` ... `|##` for a block (body on the lines between) or `##(markdown) text` for one line. Each `run:` is a query cell, and its tags sit directly above it with nothing between. A `#"` directly above the `run:` is its caption. Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.
 
+This is the cell format, the quick form for an ad-hoc report; for a notebook that will be kept and edited, write the layout form in `skill:malloy-notebooks` (`## artifact { kind=notebook tiles=[…] }`) instead.
+
 Each `run:` must be a standalone query (for example `run: source -> { ... }`). The `import` is file-wide: query cells never repeat it. Compile the file with `/compile` (`"scope": "file"`, at the path `notebooks/<slug>.malloy`) before saving; a `.malloy` notebook compiles as a model, so its errors come back there. A complete report:
 
 ```malloy
