@@ -8,9 +8,9 @@
  * themselves live in their own files, and runContextQuery in
  * get_context_tool.ts decides the order.
  *
- * Expected to plug in later: query rephrase as a QueryStage; refine/prune
- * and value attach as RankStages; rerank and prune as CardStages, which run on
- * assembled source cards before paging.
+ * Registered today: refine as a RankStage and rerank as a CardStage. Expected
+ * to plug in later: query rephrase as a QueryStage and value attach as a
+ * RankStage. Card stages run on assembled source cards before paging.
  *
  * The loops here are also the one place that times a stage and records what it
  * did (see StageTrace), so a stage never has to.
@@ -19,6 +19,7 @@
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { EmbeddingIndexStatus } from "./embedding_index";
 import type { LlmMeter } from "./get_context_llm";
+import type { LlmStageSettings } from "./get_context_stage_settings";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -84,6 +85,8 @@ export interface PipelineContext {
    trace?: StageTrace[];
    /** Counts the chat calls and tokens of this request; see LlmMeter. */
    meter?: LlmMeter;
+   /** Refine and rerank settings, resolved once per request. Absent: no LLM is configured. */
+   llmStages?: LlmStageSettings;
 }
 
 /** One row of the stage trace. `in` and `out` count what the stage's phase works on. */

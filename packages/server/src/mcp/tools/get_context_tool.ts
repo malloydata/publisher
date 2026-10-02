@@ -44,7 +44,9 @@ import {
    type Unavailable,
 } from "./get_context_pipeline";
 import { activeLlmSettings } from "../../providers/active";
-import { LlmMeter } from "./get_context_llm";
+import { LlmMeter, StageError } from "./get_context_llm";
+import { refineStage } from "./get_context_refine";
+import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
 /**
@@ -2555,12 +2557,14 @@ function runListing(
    });
 }
 
-// The stages and retrievers runContextQuery runs. PR 1 registers no stage of
-// either kind; a new stage is one file and one line here.
+// The stages and retrievers runContextQuery runs; a new stage is one file and
+// one line here. The stage lists are functions, read when a request runs,
+// because the stage files import this one and a list built at load would read
+// their exports before they exist whenever one of them is loaded first.
 const QUERY_STAGES: QueryStage[] = [];
 const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
-const RANK_STAGES: RankStage[] = [];
-const CARD_STAGES: CardStage[] = [];
+const rankStages = (): RankStage[] => [refineStage];
+const cardStages = (): CardStage[] => [];
 
 /**
  * The values the server runs with; changing one changes responses. Joins are
@@ -2713,12 +2717,26 @@ async function runContextQuery(
       break;
    }
    if (!ranked) throw new Error("No retriever produced a result");
-   ranked = await runRankStages(RANK_STAGES, ranked, ctx);
-
-   // Grouping into cards, paging and serialization are shared by both
-   // retrievers so the two cannot drift.
-   let cards = assembleCards(ranked, ctx);
-   cards = await runCardStages(CARD_STAGES, cards, ctx);
+   // The LLM stages run only on a ranked search (a listing returned above).
+   // A failure in one is the answer: an error result naming the stage, never
+   // an unrefined ranking.
+   let cards: CardState;
+   try {
+      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
+      ranked = await runRankStages(rankStages(), ranked, ctx);
+      // Grouping into cards, paging and serialization are shared by both
+      // retrievers so the two cannot drift.
+      cards = await runCardStages(
+         cardStages(),
+         assembleCards(ranked, ctx),
+         ctx,
+      );
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
    const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
       cards,
       ctx,
@@ -2806,6 +2824,38 @@ function indexingResponse(
             `A request with no search_text (a listing) works now.`,
       ),
    });
+}
+
+/**
+ * The answer when an LLM stage (refine or rerank) failed after the provider
+ * layer's retries. An error result that names the stage and the reason, with
+ * `sources: []` like every get_context error. It is never replaced by an
+ * unrefined or lexical answer: a ranking that quietly differs from the one the
+ * working stages give is harder to trust than an error.
+ */
+function stageFailureError(
+   uri: string,
+   error: StageError,
+   extra: Record<string, unknown> = {},
+) {
+   return jsonToolError(
+      uri,
+      {
+         message: `get_context failed in the ${error.stage} step: ${error.reason}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. To search without the LLM steps, set the package's retrieval.refine and retrieval.rerank to enabled: false.",
+            "A request with no search_text (a listing) runs no LLM step and still works.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: error.stage,
+         ...extra,
+      },
+   );
 }
 
 /**

@@ -42,6 +42,56 @@ export class StageError extends Error {
    }
 }
 
+/**
+ * The array a model replied with. A root array is what the prompts ask for,
+ * but a vendor's JSON mode only returns objects, so an object with exactly one
+ * array-valued key (`{"ratings": [...]}`) is accepted as that array.
+ */
+export function replyArray(value: unknown): unknown[] {
+   if (Array.isArray(value)) return value;
+   if (typeof value === "object" && value !== null) {
+      const arrays = Object.values(value).filter(Array.isArray);
+      if (arrays.length === 1) return arrays[0] as unknown[];
+   }
+   throw new Error(
+      'expected a JSON array, for example [{"index": 1, "score": ...}]',
+   );
+}
+
+/**
+ * Run `fn` over `items` with at most `concurrency` calls in flight, results in
+ * item order. The first failure stops new calls from starting, waits for the
+ * ones already running, and is thrown.
+ */
+export async function runPooled<T, R>(
+   items: readonly T[],
+   concurrency: number,
+   fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+   const out = new Array<R>(items.length);
+   let next = 0;
+   let failure: { error: unknown } | undefined;
+   const worker = async () => {
+      while (failure === undefined) {
+         const index = next++;
+         if (index >= items.length) return;
+         try {
+            out[index] = await fn(items[index], index);
+         } catch (error) {
+            failure ??= { error };
+         }
+      }
+   };
+   await Promise.all(
+      Array.from(
+         { length: Math.min(Math.max(1, concurrency), items.length) },
+         worker,
+      ),
+   );
+   if (failure) throw failure.error;
+   return out;
+}
+
 export interface LlmUsage {
    /** HTTP requests sent to the vendor, retries and JSON repairs included. */
    calls: number;

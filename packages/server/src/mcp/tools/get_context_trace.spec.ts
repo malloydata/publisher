@@ -211,7 +211,18 @@ describe("X-Publisher-Retrieval-Trace header", () => {
             headers: { "x-publisher-retrieval-trace": "summary" },
          },
       });
-      expect(payload.retrieval_trace).toEqual({ stages: [] });
+      // No LLM is configured here, so the one registered stage is skipped.
+      expect(payload.retrieval_trace.stages).toEqual([
+         {
+            name: "refine",
+            status: "skipped",
+            ms: 0,
+            in: 1,
+            out: 1,
+            llm_calls: 0,
+            tokens: { input: 0, output: 0 },
+         },
+      ]);
    });
 
    it("leaves the payload byte-identical without the header", async () => {
@@ -259,7 +270,18 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
          (c: unknown[]) => c[0] === "[MCP Tool getContext] Retrieval trace",
       );
 
+   /** The trace the request header puts in a response, for comparison. */
+   const headerTrace = async () =>
+      (
+         await run({
+            requestInfo: {
+               headers: { "x-publisher-retrieval-trace": "summary" },
+            },
+         })
+      ).retrieval_trace;
+
    it("logs the stage trace for each ranked call", async () => {
+      const expected = await headerTrace();
       process.env.PUBLISHER_MCP_TRACE = "retrieval";
       const info = spyOn(logger, "info");
       try {
@@ -269,7 +291,7 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
          expect(lines[0][1]).toEqual({
             environmentName: "trace",
             packageName: "pkg",
-            retrieval_trace: { stages: [] },
+            retrieval_trace: expected,
          });
       } finally {
          info.mockRestore();
@@ -298,6 +320,7 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
    });
 
    it("with the header too: the log line and the response block", async () => {
+      const expected = await headerTrace();
       process.env.PUBLISHER_MCP_TRACE = "retrieval";
       const info = spyOn(logger, "info");
       try {
@@ -306,7 +329,7 @@ describe("PUBLISHER_MCP_TRACE=retrieval", () => {
                headers: { "x-publisher-retrieval-trace": "summary" },
             },
          });
-         expect(payload.retrieval_trace).toEqual({ stages: [] });
+         expect(payload.retrieval_trace).toEqual(expected);
          expect(traceLines(info)).toHaveLength(1);
       } finally {
          info.mockRestore();
