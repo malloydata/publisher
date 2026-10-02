@@ -115,6 +115,24 @@ describe("DashboardBuilder: an open inline draft", () => {
       expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
    });
 
+   // Outside act and with only microtasks drained, so work React defers to a later task does not count; a host's leave guard reads this flag in the very next task.
+   it("has told the host the draft is gone by the end of the Cancel click", async () => {
+      const onDirtyChange = mock((_dirty: boolean) => {});
+      await mount({ onDirtyChange, onSave: async () => {} });
+      type(openDescription(), "Dropped");
+      expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(true);
+
+      const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+      env.IS_REACT_ACT_ENVIRONMENT = false;
+      try {
+         button("Cancel").click();
+         await new Promise<void>((resolve) => queueMicrotask(resolve));
+         expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
+      } finally {
+         env.IS_REACT_ACT_ENVIRONMENT = true;
+      }
+   });
+
    it("Save and exit commits the open markdown draft into the saved file", async () => {
       const onExit = mock(() => {});
       const onSave = mock(async (_source: string) => {});

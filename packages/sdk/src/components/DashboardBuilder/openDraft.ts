@@ -5,6 +5,7 @@ import {
    createContext,
    useContext,
    useEffect,
+   useLayoutEffect,
    useRef,
    type MutableRefObject,
 } from "react";
@@ -36,12 +37,13 @@ export function useReportOpenDraft(dirty: boolean, commit: () => boolean) {
    }, [sink, dirty]);
    // A field that never held a dirty draft stays silent, or mounting would clear another field's.
    const reported = useRef(false);
-   useEffect(() => {
+   // Layout effects, so the flag settles inside the click: a passive effect's update renders a task later, after a host's leave guard may have read it.
+   useLayoutEffect(() => {
       if (!dirty && !reported.current) return;
       reported.current = dirty;
       sink?.setDirty(dirty);
    }, [sink, dirty]);
-   useEffect(
+   useLayoutEffect(
       () => () => {
          if (reported.current) sink?.setDirty(false);
       },

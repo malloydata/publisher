@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+   useCallback,
+   useEffect,
+   useLayoutEffect,
+   useMemo,
+   useRef,
+   useState,
+} from "react";
 import { now } from "../../utils/clock";
 import type { BuilderToolbarProps } from "./BuilderToolbar";
 import {
@@ -109,7 +116,8 @@ export function useBuilderSession<
       onChange?.(editor.document);
    }, [editor.document, onChange]);
    // Also on mount, so a host that remounted the builder on new text is told the slate is clean rather than carrying the previous mount's answer.
-   useEffect(() => {
+   // A layout effect, so a host's leave guard sees the flag in the same task as the edit.
+   useLayoutEffect(() => {
       onDirtyChange?.(hasEdits);
    }, [hasEdits, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
