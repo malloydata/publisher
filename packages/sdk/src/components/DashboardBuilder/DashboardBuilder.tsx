@@ -89,8 +89,8 @@ export interface DashboardBuilderProps {
     * the save, so it must write through the same channel and checks.
     */
    onSave?: SaveHandler<DashboardDocument>;
-   /** Whether the last save can still be undone, for a host that must not replace the document under that offer. */
-   onCanUndoSaveChange?: (canUndoSave: boolean) => void;
+   /** Whether the save notice (View change, Undo save) is showing, for a host that must not replace the document under it. */
+   onSaveNoticeChange?: (showing: boolean) => void;
    /**
     * The document as it stands, on every edit — including the first render.
     *
@@ -182,7 +182,7 @@ export function DashboardBuilder({
    onSave,
    onChange,
    onDirtyChange,
-   onCanUndoSaveChange,
+   onSaveNoticeChange,
    renderTile,
    controls,
    givens,
@@ -226,7 +226,7 @@ export function DashboardBuilder({
    const [menu, setMenu] = useState<
       { anchor: HTMLElement; index: number } | undefined
    >(undefined);
-   // The add-tile picker, and the diff a structural save shows first.
+   // The add-tile picker.
    const [addingTile, setAddingTile] = useState(false);
    // The clickable-cells window, for one tile's source.
    const [drillSource, setDrillSource] = useState<string | undefined>(
@@ -364,7 +364,7 @@ export function DashboardBuilder({
       onSave,
       onExit,
       onDirtyChange,
-      onCanUndoSaveChange,
+      onSaveNoticeChange,
       onChange,
       shortcuts,
       report: {

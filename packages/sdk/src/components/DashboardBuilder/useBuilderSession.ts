@@ -51,8 +51,8 @@ export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    onSave?: SaveHandler<D>;
    onExit?: () => void;
    onDirtyChange?: (dirty: boolean) => void;
-   /** Whether the last save can still be undone, on every change and on mount. */
-   onCanUndoSaveChange?: (canUndoSave: boolean) => void;
+   /** Whether the save notice is showing, on every change and on mount. */
+   onSaveNoticeChange?: (showing: boolean) => void;
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
@@ -78,7 +78,7 @@ export function useBuilderSession<
    onSave,
    onExit,
    onDirtyChange,
-   onCanUndoSaveChange,
+   onSaveNoticeChange,
    onChange,
    extraDirty = false,
    report,
@@ -108,14 +108,14 @@ export function useBuilderSession<
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    useEffect(() => () => onDirtyChangeRef.current?.(false), []);
-   // The offer, not `canUndoSave`, which also drops while a write is in flight; a host holding a newer version back must keep holding then.
-   const undoOffered = editor.lastSave !== undefined;
+   // The offer, not `canUndoSave`, which also drops while a write is in flight; a host holding a newer version back must keep holding then. Without a writer nothing can be undone, so the offer is withdrawn.
+   const undoOffered = editor.lastSave !== undefined && !!onSave;
    useEffect(() => {
-      onCanUndoSaveChange?.(undoOffered);
-   }, [undoOffered, onCanUndoSaveChange]);
-   const onCanUndoSaveChangeRef = useRef(onCanUndoSaveChange);
-   onCanUndoSaveChangeRef.current = onCanUndoSaveChange;
-   useEffect(() => () => onCanUndoSaveChangeRef.current?.(false), []);
+      onSaveNoticeChange?.(undoOffered);
+   }, [undoOffered, onSaveNoticeChange]);
+   const onSaveNoticeChangeRef = useRef(onSaveNoticeChange);
+   onSaveNoticeChangeRef.current = onSaveNoticeChange;
+   useEffect(() => () => onSaveNoticeChangeRef.current?.(false), []);
 
    // The viewer shows the offer's change, so it closes when the offer is withdrawn.
    useEffect(() => {

@@ -255,8 +255,7 @@ describe("useDashboardEditor: saving", () => {
 });
 
 /**
- * `structural` decides whether the builder shows the author a diff before it
- * saves, so it has to mean what the WRITER means by a changed tile — not what
+ * `structural` is what a save reports as structural, so it has to mean what the WRITER means by a changed tile — not what
  * the grid means.
  */
 describe("useDashboardEditor: structural", () => {

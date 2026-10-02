@@ -586,6 +586,21 @@ describe("DashboardEditor, after a save", () => {
       expect(button("Undo").hasAttribute("disabled")).toBe(false);
    });
 
+   it("says loading a held version drops Undo save, not the edits, when nothing is unsaved", async () => {
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(screen.getByText(/drops Undo save/)).toBeDefined();
+      expect(screen.queryByText(/Your edits are still here/)).toBeNull();
+   });
+
    it("offers a version another writer landed while the save was in flight", async () => {
       // The case compare-and-swap exists for: this editor's write never comes
       // back, because someone else's landed after it. Reading "the fetch does

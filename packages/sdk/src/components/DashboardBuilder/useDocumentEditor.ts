@@ -40,7 +40,7 @@ export interface DocumentEditor<T> {
    /** Splice the change into the file, or say why it was refused. */
    save: () => Promise<SaveOutcome>;
    /**
-    * The file a save would write, without writing it: what a diff preview
+    * The file a save would write, without writing it: what View change
     * shows. The failure arm is the writer's refusal, worded for the author.
     */
    preview: () => Promise<
@@ -48,8 +48,7 @@ export interface DocumentEditor<T> {
    >;
    /**
     * Whether the unsaved change is structural, as the caller defines it (false
-    * when it defines nothing): the kind of change worth showing as a diff
-    * before it is saved.
+    * when it defines nothing): the kind of change a save reports as structural.
     */
    structural: boolean;
    /** Whether saving the unsaved change empties the undo stack, as the caller defines it (false when it defines nothing). */

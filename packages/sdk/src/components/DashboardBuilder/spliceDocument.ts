@@ -84,8 +84,8 @@ export async function syntaxErrors(text: string): Promise<string[]> {
  * ADDED or REMOVED: a new `view:` inside the extension of the source it reads
  * (or a new extension, when the file imports that source by name), a removed
  * one deleted with its `#` tags. Those moves are the one place the file cannot
- * say who owns the comment beside a declaration, so the builder shows the diff
- * before a structural save and the `//` comments are left where they were.
+ * say who owns the comment beside a declaration, so the `//` comments are left
+ * where they were and the author can read the change back with View change.
  *
  * A given is different from a tile in exactly the way that matters there: the
  * `#` tags above its declaration are its control contract and have no other
@@ -335,8 +335,7 @@ function checkShape(
    // Tiles ADDED and REMOVED, by identity. A removed tile's declaration goes,
    // with its `#` tags; a `//` comment above it stays, because the file cannot
    // say whether it belonged to the tile, the row or the page, and a comment
-   // left behind is a smaller wrong than one destroyed — and the builder shows
-   // this diff before it saves. An added tile is a `view:` in the extension of
+   // left behind is a smaller wrong than one destroyed. An added tile is a `view:` in the extension of
    // the source it reads, or a new extension when the file has none yet.
    //
    // REORDERING is neither: a tile's position is the `tiles=[…]` array on the
@@ -1424,8 +1423,7 @@ const bindingText = (f: { field: string; given: string; op?: string }) =>
  * is nobody's to strand either. Both refuse, and say which comment.
  *
  * Removing a TILE is the other case, and the one exception: the declaration
- * itself is what was asked for, so its own comments go with it, and the builder
- * shows that diff before a structural save.
+ * itself is what was asked for, so its own comments go with it.
  */
 function commentRefusal(
    tileName: string,

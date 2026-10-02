@@ -259,7 +259,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // Whether the builder holds edits the record does not have, and the version
    // being held back because of them.
    const [dirty, setDirty] = useState(false);
-   // A save that can still be undone is held like an edit: remounting on a newer version would drop the offer silently.
+   // A save that can still be undone is held like an edit, until the next edit: remounting on a newer version would drop the offer silently.
    const [undoOffered, setUndoOffered] = useState(false);
    const [accepted, setAccepted] = useState<string | undefined>(undefined);
    // The text on this channel the editor has already reckoned with: what it
@@ -585,11 +585,13 @@ export function DashboardEditor(props: DashboardEditorProps) {
                   </Button>
                }
             >
-               {savesTo === "package"
-                  ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
-                  : savesTo === "host"
-                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
-                    : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
+               {!dirty
+                  ? "This dashboard changed since you opened it. Loading the new version drops Undo save."
+                  : savesTo === "package"
+                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
+                    : savesTo === "host"
+                      ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
+                      : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
             </Alert>
          )}
          {supersedeFailure !== undefined && (
@@ -610,7 +612,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                opened={opened}
                onSave={save}
                onDirtyChange={reportDirty}
-               onCanUndoSaveChange={setUndoOffered}
+               onSaveNoticeChange={setUndoOffered}
                savesTo={savesTo}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                {...(onExit ? { onExit } : {})}
@@ -654,7 +656,7 @@ function Surface({
    opened,
    onSave,
    onDirtyChange,
-   onCanUndoSaveChange,
+   onSaveNoticeChange,
    onEvent,
    savesTo,
    onExit,
@@ -668,7 +670,7 @@ function Surface({
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
-   onCanUndoSaveChange: (canUndoSave: boolean) => void;
+   onSaveNoticeChange: (showing: boolean) => void;
    onEvent?: DashboardEventHandler;
    savesTo: SavesTo;
    onExit?: () => void;
@@ -881,7 +883,7 @@ function Surface({
                }))}
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
-            onCanUndoSaveChange={onCanUndoSaveChange}
+            onSaveNoticeChange={onSaveNoticeChange}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
