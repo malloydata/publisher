@@ -1706,11 +1706,6 @@ export class EnvironmentStore {
          );
          absoluteEnvironmentPath = loaded.path;
          mountErrors = loaded.mountErrors;
-         if (absoluteEnvironmentPath.endsWith(".zip")) {
-            absoluteEnvironmentPath = await this.unzipEnvironment(
-               absoluteEnvironmentPath,
-            );
-         }
       } else {
          absoluteEnvironmentPath = await this.scaffoldEnvironment(environment);
       }
@@ -2280,6 +2275,13 @@ export class EnvironmentStore {
                      ) {
                         logger.warn(
                            `Watch mode: package "${packageDir}" has remote location "${_package.location}" — falling back to copy. Source-edit live reload won't work for this package; clone the source locally and use a local-dir location to enable it.`,
+                        );
+                     } else if (
+                        this.inPlaceEnvs.has(environmentName) &&
+                        isLocalArchive
+                     ) {
+                        logger.warn(
+                           `Watch mode: package "${packageDir}" is an archive "${_package.location}" — extracted and copied. Source-edit live reload won't work for this package; use an unpacked local-dir location to enable it.`,
                         );
                      }
                      // Copy the specific directory. Clear any stale mount target

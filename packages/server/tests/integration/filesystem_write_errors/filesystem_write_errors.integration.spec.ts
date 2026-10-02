@@ -7,8 +7,8 @@
  * A filesystem access the server cannot make must say so, and a package
  * location the server only needs to read must not be written to.
  *
- * Since 0.9.0 the image runs as uid 1000 (#1273), so every mount the server
- * writes to has to be writable by that user. When one is not, the response and
+ * The image runs as uid 1000 (#1273), so every mount the server writes to has
+ * to be writable by that user. When one is not, the response and
  * /status name the errno rather than answering a bare "Internal server error."
  *
  * The first block covers a zip `location` in a directory the server can read
@@ -73,7 +73,7 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
             `publisher-fs-write-errors-${process.pid}-${Date.now()}`,
          );
          // The seed package lives somewhere writable, so the environment
-         // itself loads cleanly and only the add under test fails.
+         // itself loads cleanly whatever the add under test does.
          writeTinyPackage(path.join(workDir, SEED_PACKAGE), SEED_PACKAGE);
 
          // A real zip of the tiny package, in a directory the server can read
@@ -168,8 +168,8 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
       });
 
       it("still serves the environment's other package", async () => {
-         // The failure is the add's alone: the seed package keeps serving, so
-         // the fix must not take the environment down to report it.
+         // The add touched nothing but its own package: the seed package
+         // keeps serving.
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${SEED_PACKAGE}`,
          );
@@ -182,10 +182,10 @@ describe.skipIf(!canRevokeWrite || !hasZip)(
  * Writes into the server's own data directory, which a publisher_data volume
  * left root-owned by a root-run 0.8.x denies. Each case revokes access on a
  * directory the server created, runs one request, and restores it, so the
- * cases are independent. Three of them also pin that the errno survives a
- * write site that re-wraps it: the README and publisher.json writes throw a
- * fresh Error with no `cause`, and a manifest that cannot be stat'ed is
- * reported as one that does not exist.
+ * cases are independent. Three of them pin that the errno survives a write
+ * site that re-wraps the error: the README and publisher.json writes wrap it
+ * in a fresh Error, and a manifest that cannot be stat'ed must not be reported
+ * as one that does not exist.
  */
 describe.skipIf(!canRevokeWrite)(
    "a write into the server's own data directory it cannot make (E2E)",
@@ -359,6 +359,40 @@ describe.skipIf(!canRevokeWrite)(
          expect(res.ok).toBe(false);
          expect(body.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
          expect(body.message).toMatch(/EACCES|permission denied/i);
+      });
+
+      it("names the errno when a package's own file is unreadable inside the load worker", async () => {
+         // The directory is traversable, so the main thread's stat passes and
+         // the refusal happens inside the package-load worker, which answers
+         // through the worker boundary. A bare 503 "worker pool unavailable"
+         // here reads as "retry", which an orchestrator would do forever.
+         const inPlace = path.join(environmentPath, "inplace");
+         writeTinyPackage(inPlace, "inplace");
+         const manifest = path.join(inPlace, "publisher.json");
+         const res = await withMode(manifest, 0o000, async () =>
+            fetch(`${baseUrl}/api/v0/environments/${DATA_ENV}/packages`, {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ name: "inplace" }),
+            }),
+         );
+         const body = await json(res);
+         expect(res.status).toBe(500);
+         expect(body.message).toMatch(/EACCES|permission denied/i);
+         const status = (await (
+            await fetch(`${baseUrl}/api/v0/status`)
+         ).json()) as {
+            loadErrors?: Array<{
+               environment: string;
+               package?: string;
+               message: string;
+            }>;
+         };
+         expect(
+            status.loadErrors?.find(
+               (e) => e.environment === DATA_ENV && e.package === "inplace",
+            )?.message,
+         ).toMatch(/EACCES|permission denied/i);
       });
 
       it("does not report an unreadable package as one that does not exist", async () => {

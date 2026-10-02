@@ -2937,13 +2937,6 @@ export async function testConnectionConfig(
          assertSafePackageName(connectionConfig.name);
       }
 
-      // Root the throwaway config in a fresh temp directory. DuckDB/DuckLake
-      // connections need a non-empty workingDirectory (empty fails validation
-      // before the test runs) and open a `<name>.duckdb` there; keeping that in
-      // its own directory, rather than cwd, means the test never reads, writes,
-      // or deletes an operator's own database, and two concurrent tests of one
-      // name can't clobber each other. The whole directory is removed in the
-      // finally.
       // A BigQuery connection with no inline key authenticates through
       // GOOGLE_APPLICATION_CREDENTIALS, whose directory case google-auth
       // reports as a file that does not exist.
@@ -2954,6 +2947,13 @@ export async function testConnectionConfig(
          assertGoogleCredentialsIsNotADirectory();
       }
 
+      // Root the throwaway config in a fresh temp directory. DuckDB/DuckLake
+      // connections need a non-empty workingDirectory (empty fails validation
+      // before the test runs) and open a `<name>.duckdb` there; keeping that in
+      // its own directory, rather than cwd, means the test never reads, writes,
+      // or deletes an operator's own database, and two concurrent tests of one
+      // name can't clobber each other. The whole directory is removed in the
+      // finally.
       testRoot = await fs.mkdtemp(
          path.join(os.tmpdir(), "publisher-conn-test-"),
       );

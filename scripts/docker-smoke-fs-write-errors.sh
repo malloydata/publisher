@@ -11,8 +11,8 @@
 #
 #   scripts/docker-smoke-fs-write-errors.sh malloy-publisher:smoke-test
 #
-# Since 0.9.0 the server runs as uid 1000 (#1273), so every mount it writes to
-# has to be writable by that user, and every file it reads readable by it. The
+# The server runs as uid 1000 (#1273), so every mount it writes to has to be
+# writable by that user, and every file it reads readable by it. The
 # shapes below are how an orchestrated deployment meets that: an orchestrator
 # running as root writes package zips into a mount it shares with the server
 # and asks the server to load each with POST /environments/{env}/packages.
@@ -40,8 +40,8 @@
 #        directory, not that the file "does not exist".
 #
 # The assertions require the cause and refuse the generic body. They do not pin
-# wording. Every check runs before the script fails, so one run reports all of
-# them.
+# wording. Every assertion runs before the script fails, so one run reports all
+# of them; only a server that never reaches serving aborts the run.
 
 set -euo pipefail
 
@@ -231,7 +231,7 @@ for name in seed "$PKG"; do
 done
 (cd "$work/src/$PKG" && zip -q -r "../$PKG.zip" .)
 
-# populate <mount> <owner>: the orchestrator's side. Upload both versions'
+# populate <mount>: the orchestrator's side, as root. Upload both versions'
 # zips, and leave a directory named like the old one's zip, as a root-run 0.8.x
 # extracting beside it did, with a file of its own in it.
 populate() {
@@ -242,10 +242,10 @@ populate() {
       mkdir -p /tmp/packages/$PKG-$OLD_VERSION
       cp -r /src/$PKG/. /tmp/packages/$PKG-$OLD_VERSION/
       echo mine >/tmp/packages/$PKG-$OLD_VERSION/keep.txt
-      chown -R $2 /tmp/packages
+      chown -R 0:0 /tmp/packages
       chmod -R u=rwX,go=rX /tmp/packages"
 }
-populate "$PACKAGES_MOUNT" 0:0
+populate "$PACKAGES_MOUNT"
 
 write_config boot-zip.json "{\"environments\":[{\"name\":\"$ENV_NAME\",\"packages\":[{\"name\":\"seed\",\"location\":\"/tmp/packages/seed\"},{\"name\":\"$PKG-$NEW_VERSION\",\"location\":\"/tmp/packages/$PKG-$NEW_VERSION.zip\"}],\"connections\":[]}]}"
 write_config seed.json "{\"environments\":[{\"name\":\"$ENV_NAME\",\"packages\":[{\"name\":\"seed\",\"location\":\"/tmp/packages/seed\"}],\"connections\":[]}]}"
@@ -266,7 +266,7 @@ assert_loads() {
 assert_mount_untouched() {
    local label=$1 mount=$2 listing
    listing=$(as_root -v "$mount" "$IMAGE" sh -c \
-      "cd /tmp/packages && ls -1 . | tr '\n' ' ' && cat $PKG-$OLD_VERSION/keep.txt")
+      "cd /tmp/packages && ls -1A . | tr '\n' ' ' && cat $PKG-$OLD_VERSION/keep.txt")
    if [ "$listing" = "$PKG-$OLD_VERSION $PKG-$OLD_VERSION.zip $PKG-$NEW_VERSION.zip seed mine" ]; then
       pass "$label: nothing written beside the zips"
    else
@@ -362,4 +362,4 @@ if [ "$failures" -gt 0 ]; then
    echo "✗ $failures filesystem assertion(s) failed"
    exit 1
 fi
-echo "✓ every package mount loaded read-only, and every access the server could not make named its cause"
+echo "✓ every package mount loaded without being written to, and every access the server could not make named its cause"

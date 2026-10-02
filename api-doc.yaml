@@ -2884,16 +2884,19 @@ components:
             server stays up but never becomes ready, so operationalState stays
             initializing; without this field that reads as a server still
             starting. Typical causes are a config file the server cannot read
-            or parse, and a data directory it cannot write, such as a
-            read-only root filesystem. Fix the cause and restart.
+            or parse, and a server root it cannot write (where it creates
+            publisher.db), such as a read-only root filesystem. A package or
+            environment that fails to load is reported under loadErrors
+            instead. Fix the cause and restart.
         loadErrors:
           type: array
           readOnly: true
           description:
             Configured packages and environments that did not load, and why,
             including a package add through the API that failed on the
-            server's side (an entry cleared by a later successful add of that
-            package, or by deleting it). A
+            server's side, carrying the same message the add was answered
+            with (an entry cleared by a later successful add of that package,
+            or by deleting it). A
             load failure is not fatal to the server, so operationalState stays
             serving and the affected packages are absent from environments,
             unless the entry carries stale = true, in which case the package is

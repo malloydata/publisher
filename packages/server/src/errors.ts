@@ -712,8 +712,8 @@ export class InvalidStateTransitionError extends Error {
  * HTTP 503 so an upstream proxy / client can retry with back-off.
  */
 export class ServiceUnavailableError extends Error {
-   constructor(message: string) {
-      super(message);
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
    }
 }
 

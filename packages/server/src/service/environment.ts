@@ -285,6 +285,9 @@ async function denyHiddenAsNotQueryable(
    }
 }
 
+/** Cap on runtime add failures kept per environment for /status. */
+const MAX_RECORDED_ADD_FAILURES = 100;
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
@@ -315,6 +318,8 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /** Runtime add failures recorded in {@link mountErrors}, oldest first. */
+   private recordedAddFailures: string[] = [];
    /**
     * Why a SERVING package's most recent reload failed to compile, keyed by
     * package name.
@@ -3134,13 +3139,24 @@ export class Environment {
    /**
     * Record a runtime add that failed before the package could serve, so
     * /status reports it the way it reports a configured package whose location
-    * never mounted. Skipped while a package of that name is serving: a failed
-    * re-install rolls back to the previous tree, which is not a failed package.
-    * Cleared like every other load failure, by a later successful add or install
-    * of the name, or by deleting it.
+    * never mounted. Skipped while the name has any status: a failed re-install
+    * rolls back to the previous tree, which is not a failed package. Cleared
+    * like every other load failure, by a later successful add or install of
+    * the name, or by deleting it.
+    *
+    * Names are the caller's, so the record is bounded: past
+    * MAX_RECORDED_ADD_FAILURES the oldest recorded add failure is dropped.
+    * Boot-time mount errors are not subject to the cap.
     */
    public recordPackageAddFailure(packageName: string, message: string): void {
       if (this.packageStatuses.has(packageName)) return;
+      if (!this.mountErrors.has(packageName)) {
+         this.recordedAddFailures.push(packageName);
+         while (this.recordedAddFailures.length > MAX_RECORDED_ADD_FAILURES) {
+            const evicted = this.recordedAddFailures.shift();
+            if (evicted !== undefined) this.mountErrors.delete(evicted);
+         }
+      }
       this.mountErrors.set(packageName, message);
    }
 
@@ -3148,6 +3164,8 @@ export class Environment {
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      const recorded = this.recordedAddFailures.indexOf(packageName);
+      if (recorded !== -1) this.recordedAddFailures.splice(recorded, 1);
       this.staleCompileErrors.delete(packageName);
    }
 

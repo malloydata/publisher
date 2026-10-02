@@ -558,14 +558,15 @@ jobs:
             if command -v python3 >/dev/null 2>&1; then echo "python3 is installed: $(command -v python3)"; exit 1; fi' \
             || { echo "FAIL: the image is expected to run on Bun with no Node or Python runtime"; exit 1; }
           echo "OK: PID 1 is Bun, node resolves to Bun, and python3 is absent"
-      - name: Assert a write the uid-1000 server cannot make names its errno
+      - name: Assert package mounts need no writes, and a refused access names its errno
         # The step above proves the server CAN write where the image prepared
-        # it to. This one proves that when a mount is NOT writable by uid 1000
-        # -- a root-owned package mount, or a publisher_data volume left
-        # root-owned by a 0.8.x -- the caller is told EACCES rather than a bare
-        # 500. Its own containers and volumes, on their own ports, so the
-        # container above is untouched. Extracted to a script so it runs
-        # identically on a laptop.
+        # it to. This one proves a root-owned or read-only package mount still
+        # loads (nothing is written beside a zip), and that a write the uid-1000
+        # server cannot make -- a publisher_data volume left root-owned by a
+        # 0.8.x, an unreadable config or credentials file -- is reported with
+        # its errno rather than a bare 500. Its own containers and volumes, on
+        # their own ports, so the container above is untouched. Extracted to a
+        # script so it runs identically on a laptop.
         run: scripts/docker-smoke-fs-write-errors.sh malloy-publisher:smoke-test
       - name: Container logs (always)
         if: always()

@@ -55,7 +55,6 @@ import {
    type FetchSchemaOptions,
    type LookupConnection,
    MalloyConfig,
-   MalloyError,
    type ModelDef,
    type ModelMaterializer,
    modelDefToModelInfo,
@@ -87,11 +86,8 @@ import {
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import {
-   errnoWireFields,
-   ModelCompilationError,
-   PackageManifestError,
-} from "../errors";
+import { PackageManifestError } from "../errors";
+import { deserializeError, serializeError } from "./error_wire";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -151,7 +147,6 @@ import type {
    SchemaForSqlResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
-   SerializedError,
    SerializedModel,
    SerializedNotebookCell,
 } from "./protocol";
@@ -1223,61 +1218,7 @@ async function loadPackage(
 // Error serialization
 // ──────────────────────────────────────────────────────────────────────
 
-function serializeError(error: unknown): SerializedError {
-   const serialized = serializeErrorShape(error);
-   const errno = error instanceof Error ? errnoWireFields(error) : undefined;
-   return errno ? { ...serialized, errno } : serialized;
-}
-
-function serializeErrorShape(error: unknown): SerializedError {
-   if (error instanceof MalloyError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         malloyProblems: error.problems as unknown[],
-         isCompilationError: true,
-      };
-   }
-   // ModelCompilationError (e.g. an invalid #(authorize) annotation caught by
-   // validateAuthorizeProbes) carries no Malloy `problems`, but it must keep its
-   // compilation-error classification across the worker boundary so the main
-   // thread re-wraps it as a 424, not a generic 500.
-   if (error instanceof ModelCompilationError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         isCompilationError: true,
-      };
-   }
-   // An unusable publisher.json keeps its class across the boundary the same
-   // way, so the main thread answers 424 rather than a worker outage.
-   if (error instanceof PackageManifestError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         isManifestError: true,
-      };
-   }
-   if (error instanceof Error) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-      };
-   }
-   return { name: "Error", message: String(error) };
-}
-
-function deserializeError(serialized: SerializedError): Error {
-   const err = new Error(serialized.message);
-   err.name = serialized.name;
-   if (serialized.stack) err.stack = serialized.stack;
-   if (serialized.errno) Object.assign(err, serialized.errno);
-   return err;
-}
+// serializeError/deserializeError: ./error_wire
 
 // ──────────────────────────────────────────────────────────────────────
 // Message dispatcher

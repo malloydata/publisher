@@ -17,7 +17,7 @@ A JSON object with:
 - version: this server's release version.
 - environments: each environment's name with its loaded package names.
 - emptyReason (only present when the server found no config at startup, or the --config path was missing): why environments is empty, and the path it checked. The server still reports serving in that state.
-- initError (only present when startup failed): why. The server stays at "initializing" and never serves; the cause is usually a config file or data directory it cannot read or write.
+- initError (only present when startup failed): why. The server stays at "initializing" and never serves; the cause is usually a config file it cannot read or parse, or a server root it cannot write (publisher.db). A package or environment that failed to load is under loadErrors instead.
 - loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments; that includes a package add that failed on the server's side. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.
 
 No loadErrors key means everything configured loaded and nothing is stale.`;

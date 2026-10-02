@@ -8,10 +8,8 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
-   messageWithFilesystemCause,
 } from "../errors";
 import { logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
 
@@ -215,9 +213,9 @@ export class PackageController {
       //     so we validate after the fact and `unloadPackage` (evict from
       //     memory, keep the files) rather than delete it.
       let result;
-      if (body.location) {
-         const bodyLocation = body.location;
-         try {
+      try {
+         if (body.location) {
+            const bodyLocation = body.location;
             result = await environment.installPackage(
                packageName,
                (stagingPath) =>
@@ -229,26 +227,27 @@ export class PackageController {
                   ),
                (pkg) => formatPublishRejections(pkg),
             );
-         } catch (error) {
-            // A failure the caller cannot fix (5xx: a mount the server cannot
-            // write, an unreachable bucket) is also an operator's problem, and
-            // the caller that saw the response may be an orchestrator that
-            // never shows it to one. Record it where /status reports load
-            // failures. A rejection of the package's own content (4xx) is
-            // answered with its reason and is not recorded.
-            if (
-               internalErrorToHttpError(error as Error, { log: false })
-                  .status >= 500
-            ) {
-               environment.recordPackageAddFailure(
-                  packageName,
-                  redactPgSecrets(messageWithFilesystemCause(error)),
-               );
-            }
-            throw error;
+         } else {
+            result = await environment.addPackage(packageName);
          }
-      } else {
-         result = await environment.addPackage(packageName);
+      } catch (error) {
+         // A failure on the server's side (5xx: a mount the server cannot
+         // write, an unreachable bucket) is also an operator's problem, and
+         // the caller that saw the response may be an orchestrator that never
+         // shows it to one. Record it where /status reports load failures,
+         // with the same message the response carries, so /status never says
+         // more than the caller was told. A rejection of the package's own
+         // content (4xx) is answered with its reason and is not recorded.
+         const answered = internalErrorToHttpError(error as Error, {
+            log: false,
+         });
+         if (answered.status >= 500) {
+            environment.recordPackageAddFailure(
+               packageName,
+               answered.json.message,
+            );
+         }
+         throw error;
       }
 
       // `addPackage`/`installPackage` are typed `Package | undefined`; a missing

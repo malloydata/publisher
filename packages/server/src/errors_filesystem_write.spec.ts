@@ -3,10 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { internalErrorToHttpError, PackageNotFoundError } from "./errors";
-import {
-   deserializeError,
-   serializeError,
-} from "./package_load/package_load_pool";
+import { deserializeError, serializeError } from "./package_load/error_wire";
 
 // The image runs as uid 1000 (#1273), so a mount the server cannot write is a
 // deployment fault an operator fixes with a chown, not a server bug. Every write
@@ -49,8 +46,12 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
          "/publisher/publisher_data/local/.temp_0123456789abcdef",
       ],
       // A runtime install staging into a root-owned environment directory.
-      ["EACCES", "mkdir", "/publisher/publisher_data/local/.staging-tiny"],
-      // A package mount bound read-only, written to by a package swap.
+      [
+         "EACCES",
+         "mkdir",
+         "/publisher/publisher_data/local/.staging/tiny-5f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+      ],
+      // A read-only publisher_data, hit by a package swap.
       ["EROFS", "rm", "/publisher/publisher_data/local/tiny"],
       // A chown/chmod/rename the kernel refuses outright.
       ["EPERM", "rename", "/publisher/publisher_data/local/tiny"],
@@ -77,8 +78,9 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
    });
 
    it("recognizes the errno after it crosses the package-load worker boundary", () => {
-      // Package loads run in a worker thread and their errors cross as a
-      // serialized shape, through structured clone, like postMessage does.
+      // Package loads run in a worker thread and their errors cross as the
+      // serialized shape both sides of the boundary share, through structured
+      // clone, like postMessage does.
       const original = errnoError(
          "EACCES",
          "open",
