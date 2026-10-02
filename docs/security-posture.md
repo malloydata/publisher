@@ -51,7 +51,9 @@ Concretely:
   gated by `frozenConfig` like package registration; they have no authentication of their own, so
   on a reachable server they sit behind the same gateway or are closed by the same setting. An
   attacker who can reach them can already register a package, so they open no door that was shut.
-  Notebooks share the route safely for three reasons: the same compile-first rule applies, the
+  What a document is comes from the `kind` in its `## artifact` tag, and where it may live from the
+  two folders: either route takes either kind, so a notebook can sit in `dashboards/` and the
+  confinement to the top of those two directories is unchanged. Notebooks share the route safely for three reasons: the same compile-first rule applies, the
   path is confined to the top of `notebooks/`, and the text must carry an `## artifact` tag (an
   untagged file there is a shared include that other models import, and is refused with 400). The
   compile-first gate is per file, and the reload verify checks only the written model, so a model

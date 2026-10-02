@@ -187,6 +187,27 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
    });
 
+   it("takes the kind from the tag, so a notebook can be written into dashboards/ and a dashboard into notebooks/", async () => {
+      const { controller, environment } = harness();
+      await controller.putDashboardSource("env", "pkg", PATH, {
+         source: NOTEBOOK,
+      });
+      await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         source: "## artifact { kind=dashboard }\n",
+      });
+      expect(environment.writeModelFileTransactional.calledTwice).toBe(true);
+   });
+
+   it("still refuses an untagged notebooks/ file whatever the kind would have been", async () => {
+      const { controller, environment } = harness();
+      await expect(
+         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: "source: a is duckdb.sql('select 1')\n",
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
+
    it("refuses an untagged notebooks/ file, which is a shared include, before compiling", async () => {
       const { controller, environment } = harness();
       const error = await controller

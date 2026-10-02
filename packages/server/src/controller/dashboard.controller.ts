@@ -17,7 +17,11 @@ import {
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
-import { claimsToBeANotebook } from "../service/notebook";
+import {
+   artifactKindInText,
+   claimsToBeANotebook,
+   documentKind,
+} from "../service/notebook";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
@@ -28,8 +32,8 @@ type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
 type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
 
-/** Served notebook as discovery judges it (a tag in a comment is no model note), and by its on-disk text too, which may postdate the load. */
-function currentIsANotebook(
+/** Tagged document as discovery judges it (a tag in a comment is no model note), and by its on-disk text too, which may postdate the load. */
+function currentIsATaggedDocument(
    current: string,
    loaded: Package | undefined,
    modelPath: string,
@@ -144,10 +148,10 @@ export class DashboardController {
       // which are most of what is worth knowing here. Classified from the error
       // rather than at each throw site, so a branch added later cannot forget.
       const startedAt = Date.now();
-      // Tolerates a non-string path: the 400 for it comes from writeDashboardSource.
+      // Tolerates a non-string path or source: the 400 for either comes from writeDashboardSource.
       const kind: DashboardWriteKind =
-         typeof modelPath === "string" && modelPath.startsWith("notebooks/")
-            ? "notebook"
+         typeof modelPath === "string" && typeof body?.source === "string"
+            ? documentKind(modelPath, artifactKindInText(body.source))
             : "dashboard";
       try {
          const result = await this.writeDashboardSource(
@@ -199,7 +203,8 @@ export class DashboardController {
          );
       }
       // An untagged file under notebooks/ is a shared include that other models import.
-      if (kind === "notebook" && !claimsToBeANotebook(body.source)) {
+      const inNotebooksFolder = modelPath.startsWith("notebooks/");
+      if (inNotebooksFolder && !claimsToBeANotebook(body.source)) {
          throw new BadRequestError(
             `\`${modelPath}\` has no \`## artifact\` tag, so it is not a notebook. ` +
                `Only a dashboard (\`dashboards/<slug>.malloy\`) or a tagged notebook ` +
@@ -242,13 +247,13 @@ export class DashboardController {
             // The incoming text's tag is not enough: a tagged write must not turn an
             // existing shared include into a notebook.
             if (
-               kind === "notebook" &&
+               inNotebooksFolder &&
                current !== undefined &&
-               !currentIsANotebook(current, loaded, modelPath)
+               !currentIsATaggedDocument(current, loaded, modelPath)
             )
                throw new BadRequestError(
                   `\`${modelPath}\` exists in the package without an \`## artifact\` tag: ` +
-                     `it is a shared include that other models import, not a notebook, ` +
+                     `it is a shared include that other models import, not a document, ` +
                      `so it was not overwritten.`,
                );
             if (body.expectedHash === undefined) {
@@ -281,9 +286,12 @@ export class DashboardController {
                );
             await written.getModel();
             // The incoming text's tag check is textual; one inside a comment would land an unserved file.
-            if (kind === "notebook" && !written.carriesNotebookArtifactNote())
+            if (
+               (inNotebooksFolder || kind === "notebook") &&
+               !written.carriesNotebookArtifactNote()
+            )
                throw new Error(
-                  `\`${modelPath}\` has no \`## artifact\` note once compiled, so it would not be served as a notebook`,
+                  `\`${modelPath}\` has no \`## artifact\` note once compiled, so it would not be served as a ${kind}`,
                );
          },
       );
