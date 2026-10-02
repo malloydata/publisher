@@ -499,7 +499,7 @@ function NotebookSession({
                { source, expectedHash },
             );
          } catch (error) {
-            // A refused write usually means the file moved; fetch it so the editor offers that version.
+            // Refreshes the catalog and givens the editor reads; the document itself keeps the edit.
             void queryClient.invalidateQueries({ queryKey: modelKey });
             throw new Error(apiErrorMessage(error));
          }

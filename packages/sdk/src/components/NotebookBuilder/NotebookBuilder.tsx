@@ -514,12 +514,30 @@ export function NotebookBuilder({
          },
       );
    }, [onSave, editor, saving, commitSave]);
+   const commitDraft = useRef<(() => boolean) | undefined>(undefined);
+   const afterCommit = useRef<(() => void) | undefined>(undefined);
+   const saveRef = useRef(save);
+   saveRef.current = save;
+   // `save` reads the committed document, so an open draft is committed first and the save runs once that has rendered.
+   const saveWithDraft = useCallback((): Promise<void> | void => {
+      if (!commitDraft.current) return save();
+      if (!commitDraft.current()) return;
+      return new Promise<void>((resolve) => {
+         afterCommit.current = () => resolve(saveRef.current());
+      });
+   }, [save]);
+   useEffect(() => {
+      if (draftDirty || !afterCommit.current) return;
+      const run = afterCommit.current;
+      afterCommit.current = undefined;
+      run();
+   }, [draftDirty, editor.dirty]);
    const exitGuard = useExitGuard({
-      dirty: editor.dirty,
+      dirty: unsaved,
       saving,
       reviewing: pendingSave !== undefined,
       canSave: !!onSave,
-      save,
+      save: saveWithDraft,
       onExit: () => onExit?.(),
    });
    askingRef.current = exitGuard.dialog.open;
@@ -601,6 +619,7 @@ export function NotebookBuilder({
                links={links}
                onEdit={() => setEditing(cell.id)}
                onDraftDirtyChange={setDraftDirty}
+               commitRef={commitDraft}
                onCommit={(next) =>
                   update((draft) => {
                      const target = draft.cells.find((c) => c.id === cell.id);
@@ -676,9 +695,9 @@ export function NotebookBuilder({
             canRedo={editor.canRedo}
             onUndo={editor.undo}
             onRedo={editor.redo}
-            dirty={editor.dirty}
+            dirty={unsaved}
             saving={saving}
-            {...(onSave ? { onSave: save } : {})}
+            {...(onSave ? { onSave: saveWithDraft } : {})}
             {...(toolbar || onExit
                ? {
                     actions: (

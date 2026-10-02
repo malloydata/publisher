@@ -40,7 +40,11 @@ export function useLeaveGuard() {
 
    useEffect(() => {
       if (!dirty) return;
-      const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+      const warn = (event: BeforeUnloadEvent) => {
+         event.preventDefault();
+         // Some browsers only prompt when returnValue is set.
+         event.returnValue = "";
+      };
       window.addEventListener("beforeunload", warn);
       return () => window.removeEventListener("beforeunload", warn);
    }, [dirty]);

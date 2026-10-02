@@ -40,6 +40,11 @@ const inTextEntry = (target: EventTarget | null) => {
    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 };
 
+const inOverlay = (target: EventTarget | null) =>
+   target instanceof Element &&
+   target.closest('[role="dialog"], .MuiPopover-root, .MuiDialog-root') !==
+      null;
+
 export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
    // The handlers are read at keypress time, not bound at subscription time:
    // the caller passes a fresh object every render, and a listener re-bound on
@@ -70,7 +75,8 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
          if (inTextEntry(event.target)) {
             if (mod && key === "s") {
                event.preventDefault();
-               if (!current.save) return;
+               // A dialog's draft commits on close, so a save here would report Saved without it.
+               if (!current.save || inOverlay(event.target)) return;
                (event.target as HTMLElement).blur();
                setSaveRequested(true);
             }
@@ -89,7 +95,7 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
          }
          if (mod && key === "s") {
             event.preventDefault();
-            current.save?.();
+            if (!inOverlay(event.target)) current.save?.();
             return;
          }
          if (

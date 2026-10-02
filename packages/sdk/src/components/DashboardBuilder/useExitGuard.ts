@@ -75,7 +75,6 @@ export function useExitGuard({
          canSave,
          onKeepEditing: () => {
             if (phase !== "asking") return;
-            attempt.current++;
             setPhase("idle");
          },
          onDiscard: () => {

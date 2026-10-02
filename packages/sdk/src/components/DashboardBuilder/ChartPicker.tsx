@@ -122,6 +122,10 @@ export function ChartPicker({
          FormHelperTextProps={{ id: reasonId }}
          SelectProps={{
             ...(onOpen ? { onOpen } : {}),
+            // The menu items carry a reason line; the closed field shows the label alone.
+            renderValue: (value) =>
+               choices.find((choice) => choice.value === value)?.label ??
+               String(value),
             // A disabled choice stays focusable so a keyboard user reaches its reason.
             MenuProps: { MenuListProps: { disabledItemsFocusable: true } },
             SelectDisplayProps: {

@@ -66,7 +66,7 @@ export function useFilterForm({
    const [field, setField] = useState("");
    const [rows, setRows] = useState<MappingRow[]>([]);
    const [perTile, setPerTile] = useState(false);
-   // Problems stay quiet until the author edits a field, so a fresh form is not a wall of red.
+   // Problems stay quiet on a new form until the author edits a field, so it is not a wall of red.
    const [touched, setTouched] = useState(false);
 
    /** The model source a tile's extension is built on, which its fields live on. */
@@ -77,7 +77,8 @@ export function useFilterForm({
    // Reset on open, on what is true now.
    useEffect(() => {
       if (!open) return;
-      setTouched(false);
+      // An existing control was not just created, so a binding that no longer resolves shows at once.
+      setTouched(control !== undefined);
       if (control) {
          setSource({ kind: "existing", name: control.name });
          setLabel(control.label ?? "");

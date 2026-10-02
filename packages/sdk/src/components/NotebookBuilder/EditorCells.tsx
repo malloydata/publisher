@@ -74,6 +74,7 @@ export function MarkdownCell({
    onCommit,
    onClose,
    onDraftDirtyChange,
+   commitRef,
 }: {
    markdown: string;
    editing: boolean;
@@ -83,6 +84,8 @@ export function MarkdownCell({
    onClose: () => void;
    /** Whether the open draft differs from the cell's text; false once it closes. */
    onDraftDirtyChange?: (dirty: boolean) => void;
+   /** Holds a function that commits the open draft while it is dirty; true when it did. */
+   commitRef?: { current: (() => boolean) | undefined };
 }) {
    // One object per value, or the draft would reset on every render while open.
    const value = useMemo(
@@ -107,14 +110,42 @@ export function MarkdownCell({
    }, []);
 
    const draftDirty = editing && draft !== undefined && draft.text !== markdown;
+   const problemNow =
+      draft !== undefined && draft.text !== markdown
+         ? markdownProblem(draft.text)
+         : undefined;
+   const commitNow = () => {
+      if (problemNow !== undefined) return false;
+      close();
+      return true;
+   };
+   const latestCommit = useRef(commitNow);
+   latestCommit.current = commitNow;
+   useEffect(() => {
+      if (!commitRef || !draftDirty) return;
+      const mine = () => latestCommit.current();
+      commitRef.current = mine;
+      return () => {
+         if (commitRef.current === mine) commitRef.current = undefined;
+      };
+   }, [commitRef, draftDirty]);
    const reportDirty = useRef(onDraftDirtyChange);
    useEffect(() => {
       reportDirty.current = onDraftDirtyChange;
    });
+   // A cell that never held a dirty draft stays silent, or mounting would clear another cell's.
+   const reported = useRef(false);
    useEffect(() => {
+      if (!draftDirty && !reported.current) return;
+      reported.current = draftDirty;
       reportDirty.current?.(draftDirty);
    }, [draftDirty]);
-   useEffect(() => () => reportDirty.current?.(false), []);
+   useEffect(
+      () => () => {
+         if (reported.current) reportDirty.current?.(false);
+      },
+      [],
+   );
 
    if (!editing || draft === undefined)
       return (
