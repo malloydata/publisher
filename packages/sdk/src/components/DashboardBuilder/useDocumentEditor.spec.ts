@@ -96,6 +96,33 @@ describe("useDocumentEditor", () => {
       expect(saves).toEqual([]);
    });
 
+   it("reports a splice that throws as a refusal, not an unhandled rejection", async () => {
+      const saves: string[] = [];
+      const { result } = renderHook(() =>
+         useDocumentEditor<Doc>({
+            source: "a",
+            document: { items: ["a"] },
+            splice: async () => {
+               throw new Error("parser fell over");
+            },
+            onSave: (s) => void saves.push(s),
+         }),
+      );
+      act(() => result.current.update((d) => void d.items.push("c")));
+      let saved: unknown;
+      let shown: unknown;
+      await act(async () => {
+         saved = await result.current.save();
+         shown = await result.current.preview();
+      });
+      const reason = "Could not build the file: parser fell over";
+      expect(saved).toEqual({ ok: false, reason });
+      expect(shown).toEqual({ ok: false, reason });
+      expect(result.current.error).toBe(reason);
+      expect(result.current.dirty).toBe(true);
+      expect(saves).toEqual([]);
+   });
+
    it("previews through the supplied splice, writing nothing", async () => {
       const saves: string[] = [];
       const { result } = open({ onSave: (s) => void saves.push(s) });

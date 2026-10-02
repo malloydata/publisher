@@ -155,8 +155,23 @@ export function useDocumentEditor<T>(
       );
    }, []);
 
+   // A splice that rejects is the writer failing, not the reader's mistake; it must surface as a refusal rather than an unhandled rejection.
+   const safeSplice = useCallback(
+      async (from: string, doc: T): Promise<SpliceResult> => {
+         try {
+            return await splice(from, doc);
+         } catch (failure) {
+            return {
+               ok: false,
+               reason: `Could not build the file: ${failure instanceof Error ? failure.message : String(failure)}`,
+            };
+         }
+      },
+      [splice],
+   );
+
    const save = useCallback(async (): Promise<SaveOutcome> => {
-      const result = await splice(source, document);
+      const result = await safeSplice(source, document);
       if (spliceFailed(result)) {
          setError(result.reason);
          return { ok: false, reason: result.reason };
@@ -179,7 +194,7 @@ export function useDocumentEditor<T>(
          setHistory((p) => ({ stack: [p.stack[p.index]], index: 0 }));
       setError(undefined);
       return { ok: true };
-   }, [document, splice, onSave, source, saved, isClearing]);
+   }, [document, safeSplice, onSave, source, saved, isClearing]);
 
    const dirty = useMemo(
       () => JSON.stringify(document) !== JSON.stringify(saved),
@@ -194,11 +209,11 @@ export function useDocumentEditor<T>(
       [document, saved, isClearing],
    );
    const preview = useCallback(async () => {
-      const result = await splice(source, document);
+      const result = await safeSplice(source, document);
       return spliceFailed(result)
          ? { ok: false as const, reason: result.reason }
          : { ok: true as const, source: result.source };
-   }, [document, splice, source]);
+   }, [document, safeSplice, source]);
 
    return {
       document,
