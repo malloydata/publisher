@@ -13,8 +13,7 @@ import {
 /**
  * Leaving the notebook editor: the unsaved-changes prompt by Back and by
  * Close, the ways out that must not prompt, and a text tile's Cancel and
- * keyboard commit. An open, uncommitted text field is not an unsaved change
- * until it commits, so every prompt here follows a committed edit.
+ * keyboard commit.
  */
 
 const PKG = "notebooks-malloyyo";
@@ -86,11 +85,12 @@ test.describe("notebook exit guard", () => {
 
    const goBack = (page: Page) => page.evaluate(() => history.back());
 
-   test("Back after an edit asks first, and Keep editing keeps it", async ({
+   test("Back with a text draft still open asks first, and Keep editing keeps the draft", async ({
       page,
    }) => {
       await openEditor(page);
-      await dirtyFirstNote(page, "Half-typed thought");
+      await openFirstNote(page);
+      await markdownField(page).fill("Half-typed thought");
 
       await goBack(page);
       await expect(prompt(page)).toBeVisible();
@@ -102,9 +102,12 @@ test.describe("notebook exit guard", () => {
       await expect(page.getByText("Half-typed thought")).toBeVisible();
    });
 
-   test("Back after an edit and Discard changes leaves", async ({ page }) => {
+   test("Back with a text draft open and Discard changes leaves", async ({
+      page,
+   }) => {
       await openEditor(page);
-      await dirtyFirstNote(page, "Half-typed thought");
+      await openFirstNote(page);
+      await markdownField(page).fill("Half-typed thought");
 
       await goBack(page);
       await prompt(page)
@@ -135,7 +138,7 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
    });
 
-   test("Tab to a text tile's Done, commit it, then Close still asks and Save and exit keeps the edit", async ({
+   test("Tab to a text tile's Done, then Close, still asks and Save and exit keeps the draft", async ({
       page,
    }) => {
       await openEditor(page);
@@ -145,7 +148,6 @@ test.describe("notebook exit guard", () => {
       await expect(
          page.getByRole("button", { name: "Done", exact: true }),
       ).toBeFocused();
-      await page.keyboard.press("Enter");
 
       await close(page).click();
       await expect(prompt(page)).toBeVisible();

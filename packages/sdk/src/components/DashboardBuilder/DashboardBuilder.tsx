@@ -32,6 +32,7 @@ import { BuilderToolbar } from "./BuilderToolbar";
 import { changedTileKey } from "./changedTile";
 import { InlineMarkdown } from "./InlineMarkdown";
 import { InlineText } from "./InlineText";
+import { OpenDraftContext, type OpenDraftSink } from "./openDraft";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import {
    isQueryTile,
@@ -447,8 +448,34 @@ export function DashboardBuilder({
       }),
       [editor],
    );
+   const [draftDirty, setDraftDirty] = useState(false);
+   const draftCommit = useRef<(() => boolean) | undefined>(undefined);
+   const afterCommit = useRef<(() => void) | undefined>(undefined);
+   const openDraft = useMemo<OpenDraftSink>(
+      () => ({ setDirty: setDraftDirty, commitRef: draftCommit }),
+      [],
+   );
+   // A save reads the committed document, so an open draft is committed first and the save runs once that has rendered.
+   const prepare = useCallback(
+      (run: () => Promise<void> | void): Promise<void> | void => {
+         if (!draftCommit.current) return run();
+         if (!draftCommit.current()) return;
+         return new Promise<void>((resolve) => {
+            afterCommit.current = () => resolve(run());
+         });
+      },
+      [],
+   );
+   useEffect(() => {
+      if (draftDirty || !afterCommit.current) return;
+      const run = afterCommit.current;
+      afterCommit.current = undefined;
+      run();
+   }, [draftDirty, editor.dirty]);
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
+      extraDirty: draftDirty,
+      prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onExit,
@@ -668,290 +695,297 @@ export function DashboardBuilder({
       // plus its 2px width.
       // The bar carries its own gap to what it sits over, so the surface adds
       // none between the two.
-      <Stack sx={{ gap: 0 }}>
-         {/* Outside the ring's inset, so the bar lines up to the pixel with the
+      <OpenDraftContext.Provider value={openDraft}>
+         <Stack sx={{ gap: 0 }}>
+            {/* Outside the ring's inset, so the bar lines up to the pixel with the
              reader's — the whole point of it being the same bar. */}
-         <BuilderToolbar
-            {...session.toolbarProps}
-            {...(toolbar ? { actions: toolbar } : {})}
-            {...(catalog ? { onAddTile: () => openAdd() } : {})}
-            onSettings={setSettingsAnchor}
-            savesTo={savesTo}
-         />
+            <BuilderToolbar
+               {...session.toolbarProps}
+               {...(toolbar ? { actions: toolbar } : {})}
+               {...(catalog ? { onAddTile: () => openAdd() } : {})}
+               onSettings={setSettingsAnchor}
+               savesTo={savesTo}
+            />
 
-         {/* The ring's inset, minus the top: nothing at the top of this stack
+            {/* The ring's inset, minus the top: nothing at the top of this stack
              can be selected (the prose and the control row are not tiles), and
              4px there would put the title 4px further from the bar than the
              reader's is. */}
-         <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
-            {editor.pendingOpen && (
-               <Alert severity="info">
-                  This notebook is in the cell format. Saving rewrites it as a
-                  layout notebook; Undo save puts it back.
-               </Alert>
-            )}
-            <SaveNotice {...session.notice} />
-            <Box>
-               <Typography variant="h5" sx={{ fontWeight: 600 }}>
-                  <InlineText
-                     value={editor.document.title}
-                     placeholder={
-                        notebook ? "Untitled notebook" : "Untitled dashboard"
-                     }
-                     ariaLabel={notebook ? "Notebook title" : "Dashboard title"}
+            <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+               {editor.pendingOpen && (
+                  <Alert severity="info">
+                     This notebook is in the cell format. Saving rewrites it as
+                     a layout notebook; Undo save puts it back.
+                  </Alert>
+               )}
+               <SaveNotice {...session.notice} />
+               <Box>
+                  <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                     <InlineText
+                        value={editor.document.title}
+                        placeholder={
+                           notebook ? "Untitled notebook" : "Untitled dashboard"
+                        }
+                        ariaLabel={
+                           notebook ? "Notebook title" : "Dashboard title"
+                        }
+                        onCommit={(next) =>
+                           editor.update((draft) => {
+                              draft.title = next;
+                           })
+                        }
+                     />
+                  </Typography>
+                  <InlineMarkdown
+                     variant="caption"
+                     markdown={editor.document.description ?? ""}
+                     placeholder="Add a description"
                      onCommit={(next) =>
                         editor.update((draft) => {
-                           draft.title = next;
+                           if (next.trim() === "") delete draft.description;
+                           else draft.description = next;
                         })
                      }
                   />
-               </Typography>
-               <InlineMarkdown
-                  variant="caption"
-                  markdown={editor.document.description ?? ""}
-                  placeholder="Add a description"
-                  onCommit={(next) =>
+               </Box>
+
+               {empty ? (
+                  <Stack
+                     sx={{
+                        alignItems: "flex-start",
+                        gap: 1,
+                        py: 3,
+                        px: 2,
+                        border: 1,
+                        borderStyle: "dashed",
+                        borderColor: "divider",
+                        borderRadius: 1,
+                     }}
+                  >
+                     <Typography variant="body2">
+                        This {notebook ? "notebook" : "dashboard"} is not served
+                        until it has a tile.
+                     </Typography>
+                     {catalog && (
+                        <Button
+                           size="small"
+                           variant="contained"
+                           onClick={() => openAdd()}
+                        >
+                           Add tile
+                        </Button>
+                     )}
+                  </Stack>
+               ) : (
+                  <FilterStrip
+                     controls={controlList}
+                     tileCount={editor.document.tiles.length}
+                     unknownFieldsOf={unknownFieldsOf}
+                     onEdit={(control) => setFilterDialog({ control })}
+                     onAdd={() => setFilterDialog({})}
+                     onRemove={dropControl}
+                  >
+                     {controls}
+                  </FilterStrip>
+               )}
+
+               {editor.error && (
+                  // The edit is still here; the message says what stopped it reaching
+                  // the file, which is a different thing from losing the work.
+                  <Alert severity="warning">{editor.error}</Alert>
+               )}
+
+               <DragDropProvider
+                  sensors={builderSensors}
+                  onDragStart={onDragStart}
+                  onDragOver={onDragOver}
+                  onDragEnd={onDragEnd}
+               >
+                  <Box ref={gridBox} sx={{ position: "relative" }}>
+                     {!notebook && (resize !== undefined || dragging) && (
+                        <GridGuides columns={columns} />
+                     )}
+
+                     <DashboardGrid
+                        tiles={entries}
+                        columns={columns}
+                        keyOf={(entry) =>
+                           entry.kind === "gap"
+                              ? gapId(entry.after)
+                              : tileKey(entry.tile)
+                        }
+                        renderTile={(entry) => {
+                           if (entry.kind === "gap")
+                              return <GapTarget after={entry.after} />;
+                           const { tile: each, index } = entry;
+                           return (
+                              <TileFrame
+                                 tile={each}
+                                 index={index}
+                                 selected={index === selected}
+                                 flash={tileKey(each) === flash}
+                                 menuOpen={menu?.index === index}
+                                 resizeSpan={
+                                    resize?.index === index
+                                       ? resize.span
+                                       : undefined
+                                 }
+                                 columns={columns}
+                                 resizable={!notebook}
+                                 {...(notebook && catalog
+                                    ? {
+                                         onInsertAfter: () =>
+                                            openAdd(index + 1),
+                                      }
+                                    : {})}
+                                 onSelect={() => setSelected(index)}
+                                 onOpenMenu={(anchor) => {
+                                    setSelected(index);
+                                    setMenu({ anchor, index });
+                                 }}
+                                 onResizeStart={(event) =>
+                                    startResize(event, index)
+                                 }
+                                 onResizeMove={onResize}
+                                 onResizeEnd={endResize}
+                              >
+                                 {isTextTile(each) ? (
+                                    <TextTileBody
+                                       tile={each}
+                                       onChange={(markdown) =>
+                                          editTile(tileKey(each), (tile) => {
+                                             if (isTextTile(tile))
+                                                tile.markdown = markdown;
+                                          })
+                                       }
+                                    />
+                                 ) : renderTile && !editor.pendingOpen ? (
+                                    // Until the conversion is saved the package has none of its views to run.
+                                    renderTile(
+                                       each,
+                                       headingOf(
+                                          each,
+                                          tileTitle(
+                                             `${each.source} -> ${each.name}`,
+                                          ),
+                                       ),
+                                    )
+                                 ) : (
+                                    <TilePlaceholder
+                                       tile={each}
+                                       heading={headingOf(each, each.name)}
+                                    />
+                                 )}
+                              </TileFrame>
+                           );
+                        }}
+                     />
+                  </Box>
+               </DragDropProvider>
+               {notebook && catalog && !empty && (
+                  <Button
+                     size="small"
+                     startIcon={<AddIcon />}
+                     aria-label="Add tile at the end"
+                     onClick={() => openAdd()}
+                     sx={{ alignSelf: "center" }}
+                  >
+                     Add tile
+                  </Button>
+               )}
+               <FilterDialog
+                  open={filterDialog !== undefined}
+                  document={editor.document}
+                  {...(filterDialog?.control
+                     ? { control: filterDialog.control }
+                     : {})}
+                  available={available}
+                  {...(catalog ? { fieldsFor } : {})}
+                  onClose={() => setFilterDialog(undefined)}
+                  onApply={applyFilter}
+                  onRemove={dropControl}
+               />
+               <TileMenu
+                  anchor={menu?.anchor ?? null}
+                  tile={
+                     menu === undefined
+                        ? undefined
+                        : editor.document.tiles[menu.index]
+                  }
+                  onClose={() => setMenu(undefined)}
+                  onCommit={(next) => {
+                     const at = menu?.index;
+                     if (at === undefined) return;
                      editor.update((draft) => {
-                        if (next.trim() === "") delete draft.description;
-                        else draft.description = next;
+                        draft.tiles[at] = next;
+                     });
+                  }}
+                  onRemove={() => {
+                     if (menu !== undefined) removeTile(menu.index);
+                  }}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved dashboard needs at least one tile.",
+                       }
+                     : {})}
+                  columns={columns}
+                  view={menuView}
+                  onDrills={() => {
+                     setDrillSource(menuTile?.source);
+                  }}
+               />
+               <DrillDialog
+                  open={drillSource !== undefined}
+                  document={editor.document}
+                  source={editor.document.sources.find(
+                     (s) => s.name === drillSource,
+                  )}
+                  givenNames={controlList.map((c) => c.name)}
+                  dashboards={dashboards ?? []}
+                  onClose={() => setDrillSource(undefined)}
+                  onApply={(drills) =>
+                     editor.update((draft) => {
+                        const kept = (draft.drills ?? []).filter(
+                           (d) => d.source !== drillSource,
+                        );
+                        const next = [...kept, ...drills];
+                        if (next.length === 0) delete draft.drills;
+                        else draft.drills = next;
                      })
                   }
                />
-            </Box>
-
-            {empty ? (
-               <Stack
-                  sx={{
-                     alignItems: "flex-start",
-                     gap: 1,
-                     py: 3,
-                     px: 2,
-                     border: 1,
-                     borderStyle: "dashed",
-                     borderColor: "divider",
-                     borderRadius: 1,
-                  }}
-               >
-                  <Typography variant="body2">
-                     This {notebook ? "notebook" : "dashboard"} is not served
-                     until it has a tile.
-                  </Typography>
-                  {catalog && (
-                     <Button
-                        size="small"
-                        variant="contained"
-                        onClick={() => openAdd()}
-                     >
-                        Add tile
-                     </Button>
-                  )}
-               </Stack>
-            ) : (
-               <FilterStrip
-                  controls={controlList}
-                  tileCount={editor.document.tiles.length}
-                  unknownFieldsOf={unknownFieldsOf}
-                  onEdit={(control) => setFilterDialog({ control })}
-                  onAdd={() => setFilterDialog({})}
-                  onRemove={dropControl}
-               >
-                  {controls}
-               </FilterStrip>
-            )}
-
-            {editor.error && (
-               // The edit is still here; the message says what stopped it reaching
-               // the file, which is a different thing from losing the work.
-               <Alert severity="warning">{editor.error}</Alert>
-            )}
-
-            <DragDropProvider
-               sensors={builderSensors}
-               onDragStart={onDragStart}
-               onDragOver={onDragOver}
-               onDragEnd={onDragEnd}
-            >
-               <Box ref={gridBox} sx={{ position: "relative" }}>
-                  {!notebook && (resize !== undefined || dragging) && (
-                     <GridGuides columns={columns} />
-                  )}
-
-                  <DashboardGrid
-                     tiles={entries}
-                     columns={columns}
-                     keyOf={(entry) =>
-                        entry.kind === "gap"
-                           ? gapId(entry.after)
-                           : tileKey(entry.tile)
-                     }
-                     renderTile={(entry) => {
-                        if (entry.kind === "gap")
-                           return <GapTarget after={entry.after} />;
-                        const { tile: each, index } = entry;
-                        return (
-                           <TileFrame
-                              tile={each}
-                              index={index}
-                              selected={index === selected}
-                              flash={tileKey(each) === flash}
-                              menuOpen={menu?.index === index}
-                              resizeSpan={
-                                 resize?.index === index
-                                    ? resize.span
-                                    : undefined
-                              }
-                              columns={columns}
-                              resizable={!notebook}
-                              {...(notebook && catalog
-                                 ? { onInsertAfter: () => openAdd(index + 1) }
-                                 : {})}
-                              onSelect={() => setSelected(index)}
-                              onOpenMenu={(anchor) => {
-                                 setSelected(index);
-                                 setMenu({ anchor, index });
-                              }}
-                              onResizeStart={(event) =>
-                                 startResize(event, index)
-                              }
-                              onResizeMove={onResize}
-                              onResizeEnd={endResize}
-                           >
-                              {isTextTile(each) ? (
-                                 <TextTileBody
-                                    tile={each}
-                                    onChange={(markdown) =>
-                                       editTile(tileKey(each), (tile) => {
-                                          if (isTextTile(tile))
-                                             tile.markdown = markdown;
-                                       })
-                                    }
-                                 />
-                              ) : renderTile && !editor.pendingOpen ? (
-                                 // Until the conversion is saved the package has none of its views to run.
-                                 renderTile(
-                                    each,
-                                    headingOf(
-                                       each,
-                                       tileTitle(
-                                          `${each.source} -> ${each.name}`,
-                                       ),
-                                    ),
-                                 )
-                              ) : (
-                                 <TilePlaceholder
-                                    tile={each}
-                                    heading={headingOf(each, each.name)}
-                                 />
-                              )}
-                           </TileFrame>
-                        );
-                     }}
-                  />
-               </Box>
-            </DragDropProvider>
-            {notebook && catalog && !empty && (
-               <Button
-                  size="small"
-                  startIcon={<AddIcon />}
-                  aria-label="Add tile at the end"
-                  onClick={() => openAdd()}
-                  sx={{ alignSelf: "center" }}
-               >
-                  Add tile
-               </Button>
-            )}
-            <FilterDialog
-               open={filterDialog !== undefined}
-               document={editor.document}
-               {...(filterDialog?.control
-                  ? { control: filterDialog.control }
-                  : {})}
-               available={available}
-               {...(catalog ? { fieldsFor } : {})}
-               onClose={() => setFilterDialog(undefined)}
-               onApply={applyFilter}
-               onRemove={dropControl}
-            />
-            <TileMenu
-               anchor={menu?.anchor ?? null}
-               tile={
-                  menu === undefined
-                     ? undefined
-                     : editor.document.tiles[menu.index]
-               }
-               onClose={() => setMenu(undefined)}
-               onCommit={(next) => {
-                  const at = menu?.index;
-                  if (at === undefined) return;
-                  editor.update((draft) => {
-                     draft.tiles[at] = next;
-                  });
-               }}
-               onRemove={() => {
-                  if (menu !== undefined) removeTile(menu.index);
-               }}
-               {...(editor.document.tiles.length === 1 &&
-               editor.saved.tiles.length > 0
-                  ? {
-                       removeBlocked:
-                          "A saved dashboard needs at least one tile.",
-                    }
-                  : {})}
-               columns={columns}
-               view={menuView}
-               onDrills={() => {
-                  setDrillSource(menuTile?.source);
-               }}
-            />
-            <DrillDialog
-               open={drillSource !== undefined}
-               document={editor.document}
-               source={editor.document.sources.find(
-                  (s) => s.name === drillSource,
-               )}
-               givenNames={controlList.map((c) => c.name)}
-               dashboards={dashboards ?? []}
-               onClose={() => setDrillSource(undefined)}
-               onApply={(drills) =>
-                  editor.update((draft) => {
-                     const kept = (draft.drills ?? []).filter(
-                        (d) => d.source !== drillSource,
-                     );
-                     const next = [...kept, ...drills];
-                     if (next.length === 0) delete draft.drills;
-                     else draft.drills = next;
-                  })
-               }
-            />
-            <SettingsPopover
-               anchor={settingsAnchor}
-               settings={settings}
-               catalog={catalog}
-               inUse={sourcesInUse}
-               onClose={() => setSettingsAnchor(null)}
-               onCommit={(next) =>
-                  editor.update((draft) => {
-                     if (next.kind === undefined) delete draft.kind;
-                     else draft.kind = next.kind;
-                     if (next.columns === undefined) delete draft.columns;
-                     else draft.columns = next.columns;
-                     if (next.autorun === undefined) delete draft.autorun;
-                     else draft.autorun = next.autorun;
-                     draft.imports = next.imports;
-                  })
-               }
-            />
-            <AddTileDialog
-               open={addingTile}
-               document={editor.document}
-               catalog={catalog}
-               columns={columns}
-               onClose={() => setAddingTile(false)}
-               onAdd={addTile}
-               onAddText={addText}
-            />
-            <UnsavedChangesDialog {...session.exitGuard.dialog} />
+               <SettingsPopover
+                  anchor={settingsAnchor}
+                  settings={settings}
+                  catalog={catalog}
+                  inUse={sourcesInUse}
+                  onClose={() => setSettingsAnchor(null)}
+                  onCommit={(next) =>
+                     editor.update((draft) => {
+                        if (next.kind === undefined) delete draft.kind;
+                        else draft.kind = next.kind;
+                        if (next.columns === undefined) delete draft.columns;
+                        else draft.columns = next.columns;
+                        if (next.autorun === undefined) delete draft.autorun;
+                        else draft.autorun = next.autorun;
+                        draft.imports = next.imports;
+                     })
+                  }
+               />
+               <AddTileDialog
+                  open={addingTile}
+                  document={editor.document}
+                  catalog={catalog}
+                  columns={columns}
+                  onClose={() => setAddingTile(false)}
+                  onAdd={addTile}
+                  onAddText={addText}
+               />
+               <UnsavedChangesDialog {...session.exitGuard.dialog} />
+            </Stack>
          </Stack>
-      </Stack>
+      </OpenDraftContext.Provider>
    );
 }

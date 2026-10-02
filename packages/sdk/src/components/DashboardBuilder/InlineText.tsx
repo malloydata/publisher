@@ -3,6 +3,7 @@
 
 import { Box, InputBase } from "@mui/material";
 import { useRef, useState, type KeyboardEvent } from "react";
+import { useReportOpenDraft } from "./openDraft";
 
 /**
  * A single line of text that is edited where it is read: a click opens a field,
@@ -38,6 +39,10 @@ export function InlineText({
       setDraft(undefined);
       if (draft !== value) onCommit(draft);
    };
+   useReportOpenDraft(draft !== undefined && draft !== value, () => {
+      commit();
+      return true;
+   });
    const open = () => {
       cancelled.current = false;
       setDraft(value);

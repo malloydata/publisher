@@ -5,6 +5,7 @@ import { Box, Button, Stack, TextField, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { Prose, type ProseVariant } from "../Prose";
+import { useReportOpenDraft } from "./openDraft";
 import { markdownProblem } from "./spliceDocument";
 import { useDraft } from "./useDraft";
 
@@ -43,6 +44,16 @@ export function InlineMarkdown({
       (next) => onCommit(next.text),
       () => setEditing(false),
    );
+   const draftDirty = editing && draft !== undefined && draft.text !== markdown;
+   const refused =
+      draft !== undefined && draft.text !== markdown
+         ? markdownProblem(draft.text)
+         : undefined;
+   useReportOpenDraft(draftDirty, () => {
+      if (refused !== undefined) return false;
+      close();
+      return true;
+   });
    const actions = useRef<HTMLDivElement>(null);
    const caretPlaced = useRef(false);
    useEffect(() => {
