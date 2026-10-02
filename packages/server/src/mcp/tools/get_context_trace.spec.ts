@@ -205,7 +205,18 @@ describe("X-Publisher-Retrieval-Trace header", () => {
             headers: { "x-publisher-retrieval-trace": "summary" },
          },
       });
-      expect(payload.retrieval_trace).toEqual({ stages: [] });
+      // No LLM is configured here, so the one registered stage is skipped.
+      expect(payload.retrieval_trace.stages).toEqual([
+         {
+            name: "refine",
+            status: "skipped",
+            ms: 0,
+            in: 1,
+            out: 1,
+            llm_calls: 0,
+            tokens: { input: 0, output: 0 },
+         },
+      ]);
    });
 
    it("leaves the payload byte-identical without the header", async () => {

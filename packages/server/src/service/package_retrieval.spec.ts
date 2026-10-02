@@ -8,8 +8,11 @@ import * as path from "path";
 import { PackageManifestError } from "../errors";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
+   assertRequiredStagesAvailable,
    parsePackageRetrieval,
    readPackageRetrieval,
+   refineSettingsOf,
+   rerankSettingsOf,
    resolvePromptPath,
 } from "./package_retrieval";
 
@@ -52,21 +55,125 @@ describe("publisher.json retrieval block", () => {
    it("an unknown key is an error that names the valid keys, so a typo or a later release's key is not silently ignored", () => {
       let error: unknown;
       try {
-         parsePackageRetrieval({ refine: { enabled: true } });
+         parsePackageRetrieval({ rephrase: { enabled: true } });
       } catch (e) {
          error = e;
       }
       expect(error).toBeInstanceOf(PackageManifestError);
       expect((error as Error).message).toBe(
-         "Invalid publisher.json retrieval: unknown key 'refine'. Valid keys: representation, keyphrases, prompts.",
+         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, prompts.",
       );
       expect(() =>
-         parsePackageRetrieval({ prompts: { rerank: "p.md" } }),
+         parsePackageRetrieval({ prompts: { rephrase: "p.md" } }),
       ).toThrow(
-         "retrieval.prompts: unknown key 'rerank'. Valid keys: keyphrase.",
+         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank.",
       );
    });
 });
+
+describe("publisher.json retrieval.refine and retrieval.rerank", () => {
+   it("are absent by default, so the defaults object is unchanged", () => {
+      const parsed = parsePackageRetrieval({ keyphrases: "never" });
+      expect("refine" in parsed).toBe(false);
+      expect("rerank" in parsed).toBe(false);
+      expect(refineSettingsOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
+         enabled: "auto",
+         minLevel: "MEDIUM",
+      });
+      expect(rerankSettingsOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
+         enabled: "auto",
+         topSources: 8,
+      });
+   });
+
+   it("accept each valid value", () => {
+      expect(
+         parsePackageRetrieval({
+            refine: { enabled: true, minLevel: "HIGH" },
+            rerank: { enabled: false, topSources: 3 },
+         }),
+      ).toMatchObject({
+         refine: { enabled: true, minLevel: "HIGH" },
+         rerank: { enabled: false, topSources: 3 },
+      });
+      expect(
+         parsePackageRetrieval({ refine: {}, rerank: { enabled: "auto" } }),
+      ).toMatchObject({
+         refine: { enabled: "auto", minLevel: "MEDIUM" },
+         rerank: { enabled: "auto", topSources: 8 },
+      });
+   });
+
+   it("reject bad values with the valid list and a fix", () => {
+      expect(() =>
+         parsePackageRetrieval({ refine: { enabled: "yes" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.refine.enabled: expected "auto", true or false, got "yes". Fix:',
+      );
+      expect(() =>
+         parsePackageRetrieval({ refine: { minLevel: "NONE" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.refine.minLevel: expected one of LOW, MEDIUM, HIGH, got "NONE". Fix:',
+      );
+      expect(() =>
+         parsePackageRetrieval({ rerank: { topSources: 0 } }),
+      ).toThrow(
+         "Invalid publisher.json retrieval.rerank.topSources: expected a positive integer, got 0. Fix:",
+      );
+      expect(() =>
+         parsePackageRetrieval({ rerank: { topSources: 2.5 } }),
+      ).toThrow("expected a positive integer, got 2.5");
+      expect(() => parsePackageRetrieval({ refine: { top: 1 } })).toThrow(
+         "retrieval.refine: unknown key 'top'. Valid keys: enabled, minLevel.",
+      );
+      expect(() => parsePackageRetrieval({ rerank: "on" })).toThrow(
+         "Invalid publisher.json retrieval.rerank: expected an object",
+      );
+   });
+
+   it("enabled: true without an LLM stops the load and names both fixes", () => {
+      const settings = readSync({ refine: { enabled: true } });
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         PackageManifestError,
+      );
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         /retrieval\.refine\.enabled: true needs an LLM.*retrieval\.llm.*LLM_API_KEY.*"auto"/s,
+      );
+      const rerank = readSync({ rerank: { enabled: true } });
+      expect(() => assertRequiredStagesAvailable(rerank, false)).toThrow(
+         "retrieval.rerank.enabled: true needs an LLM",
+      );
+   });
+
+   it("auto and false never fail, and true is fine when an LLM is configured", () => {
+      for (const raw of [
+         undefined,
+         { refine: { enabled: "auto" }, rerank: { enabled: false } },
+      ]) {
+         expect(() =>
+            assertRequiredStagesAvailable(readSync(raw), false),
+         ).not.toThrow();
+      }
+      expect(() =>
+         assertRequiredStagesAvailable(
+            readSync({ refine: { enabled: true } }),
+            true,
+         ),
+      ).not.toThrow();
+   });
+});
+
+/** Settings as readPackageRetrieval would return them, with no prompt files. */
+function readSync(raw: unknown) {
+   const parsed = parsePackageRetrieval(raw);
+   return {
+      representation: parsed.representation,
+      keyphrases: parsed.keyphrases,
+      ...(parsed.refine ? { refine: parsed.refine } : {}),
+      ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
+      prompts: {},
+   };
+}
 
 describe("prompt file", () => {
    let root: string;

@@ -23,8 +23,32 @@ export type PackageRepresentation = (typeof PACKAGE_REPRESENTATIONS)[number];
 export const KEYPHRASE_MODES = ["auto", "never", "always"] as const;
 export type KeyphraseMode = (typeof KEYPHRASE_MODES)[number];
 
-const RETRIEVAL_KEYS = ["representation", "keyphrases", "prompts"] as const;
-const PROMPT_KEYS = ["keyphrase"] as const;
+/** The levels refine rates a candidate at, lowest first. */
+export const REFINE_LEVEL_NAMES = ["LOW", "MEDIUM", "HIGH"] as const;
+export type RefineLevelName = (typeof REFINE_LEVEL_NAMES)[number];
+
+/** Sources rerank keeps when a package does not say. */
+export const DEFAULT_RERANK_TOP_SOURCES = 8;
+export const DEFAULT_REFINE_MIN_LEVEL: RefineLevelName = "MEDIUM";
+
+/**
+ * `auto`: on when the operator has an LLM configured, off otherwise.
+ * `true`: always on; a package that says so on a server with no LLM does not
+ * load. `false`: off.
+ */
+export type StageEnabled = "auto" | boolean;
+
+const RETRIEVAL_KEYS = [
+   "representation",
+   "keyphrases",
+   "refine",
+   "rerank",
+   "prompts",
+] as const;
+const PROMPT_KEYS = ["keyphrase", "refine", "rerank"] as const;
+export type PromptKey = (typeof PROMPT_KEYS)[number];
+const REFINE_KEYS = ["enabled", "minLevel"] as const;
+const RERANK_KEYS = ["enabled", "topSources"] as const;
 
 /** A prompt a package overrides: the text, read at package load. */
 export interface PackagePrompt {
@@ -33,6 +57,18 @@ export interface PackagePrompt {
    text: string;
    /** sha256 of the text; part of the key that invalidates stored output. */
    hash: string;
+}
+
+export interface RefineSettings {
+   enabled: StageEnabled;
+   /** Candidates rated below this are dropped. */
+   minLevel: RefineLevelName;
+}
+
+export interface RerankSettings {
+   enabled: StageEnabled;
+   /** Cards kept after sorting by relevance; the rest are discarded. */
+   topSources: number;
 }
 
 export interface PackageRetrievalSettings {
@@ -44,7 +80,11 @@ export interface PackageRetrievalSettings {
     * `always`: an LLM keyphrase for every entity. `never`: none.
     */
    keyphrases: KeyphraseMode;
-   prompts: { keyphrase?: PackagePrompt };
+   /** Absent means the defaults: `{ enabled: "auto", minLevel: "MEDIUM" }`. */
+   refine?: RefineSettings;
+   /** Absent means the defaults: `{ enabled: "auto", topSources: 8 }`. */
+   rerank?: RerankSettings;
+   prompts: { [K in PromptKey]?: PackagePrompt };
 }
 
 export const DEFAULT_PACKAGE_RETRIEVAL: PackageRetrievalSettings = {
@@ -52,6 +92,30 @@ export const DEFAULT_PACKAGE_RETRIEVAL: PackageRetrievalSettings = {
    keyphrases: "auto",
    prompts: {},
 };
+
+/** The refine settings in force: the package's, or the defaults. */
+export function refineSettingsOf(
+   retrieval: PackageRetrievalSettings,
+): RefineSettings {
+   return (
+      retrieval.refine ?? {
+         enabled: "auto",
+         minLevel: DEFAULT_REFINE_MIN_LEVEL,
+      }
+   );
+}
+
+/** The rerank settings in force: the package's, or the defaults. */
+export function rerankSettingsOf(
+   retrieval: PackageRetrievalSettings,
+): RerankSettings {
+   return (
+      retrieval.rerank ?? {
+         enabled: "auto",
+         topSources: DEFAULT_RERANK_TOP_SOURCES,
+      }
+   );
+}
 
 function fail(message: string): never {
    throw new PackageManifestError(message);
@@ -67,9 +131,13 @@ function describe(value: unknown): string {
  * directory, including through a symlink: the check runs on the real paths
  * once the file exists.
  */
-export function resolvePromptPath(packageRoot: string, rel: string): string {
-   const key = "retrieval.prompts.keyphrase";
-   const fix = `Fix: use a path inside the package, e.g. "prompts/keyphrase.md".`;
+export function resolvePromptPath(
+   packageRoot: string,
+   rel: string,
+   promptKey: PromptKey = "keyphrase",
+): string {
+   const key = `retrieval.prompts.${promptKey}`;
+   const fix = `Fix: use a path inside the package, e.g. "prompts/${promptKey}.md".`;
    if (
       rel.includes("\0") ||
       path.isAbsolute(rel) ||
@@ -91,6 +159,80 @@ export function resolvePromptPath(packageRoot: string, rel: string): string {
    return resolved;
 }
 
+function objectBlock(
+   raw: unknown,
+   key: string,
+   valid: readonly string[],
+   fix: string,
+): Record<string, unknown> {
+   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      fail(
+         `Invalid publisher.json ${key}: expected an object, got ${describe(raw)}. Fix: ${fix}`,
+      );
+   }
+   const obj = raw as Record<string, unknown>;
+   const unknown = Object.keys(obj).filter((k) => !valid.includes(k));
+   if (unknown.length > 0) {
+      fail(
+         `Invalid publisher.json ${key}: unknown key ${unknown.map((k) => `'${k}'`).join(", ")}. ` +
+            `Valid keys: ${valid.join(", ")}.`,
+      );
+   }
+   return obj;
+}
+
+function parseEnabled(value: unknown, key: string): StageEnabled {
+   if (value === undefined || value === null) return "auto";
+   if (value === "auto" || value === true || value === false) return value;
+   return fail(
+      `Invalid publisher.json ${key}: expected "auto", true or false, got ${describe(value)}. ` +
+         `Fix: "enabled": "auto" (on when the server has an LLM), true (require one) or false.`,
+   );
+}
+
+function parseRefine(raw: unknown): RefineSettings {
+   const obj = objectBlock(
+      raw,
+      "retrieval.refine",
+      REFINE_KEYS,
+      `"refine": { "enabled": "auto", "minLevel": "MEDIUM" }`,
+   );
+   const minLevel = obj.minLevel ?? DEFAULT_REFINE_MIN_LEVEL;
+   if (
+      typeof minLevel !== "string" ||
+      !(REFINE_LEVEL_NAMES as readonly string[]).includes(minLevel)
+   ) {
+      fail(
+         `Invalid publisher.json retrieval.refine.minLevel: expected one of ${REFINE_LEVEL_NAMES.join(", ")}, got ${describe(obj.minLevel)}. ` +
+            `Fix: "minLevel": "MEDIUM" (drop candidates the model rates below it).`,
+      );
+   }
+   return {
+      enabled: parseEnabled(obj.enabled, "retrieval.refine.enabled"),
+      minLevel: minLevel as RefineLevelName,
+   };
+}
+
+function parseRerank(raw: unknown): RerankSettings {
+   const obj = objectBlock(
+      raw,
+      "retrieval.rerank",
+      RERANK_KEYS,
+      `"rerank": { "enabled": "auto", "topSources": ${DEFAULT_RERANK_TOP_SOURCES} }`,
+   );
+   const top = obj.topSources ?? DEFAULT_RERANK_TOP_SOURCES;
+   if (typeof top !== "number" || !Number.isSafeInteger(top) || top <= 0) {
+      fail(
+         `Invalid publisher.json retrieval.rerank.topSources: expected a positive integer, got ${describe(obj.topSources)}. ` +
+            `Fix: "topSources": ${DEFAULT_RERANK_TOP_SOURCES}`,
+      );
+   }
+   return {
+      enabled: parseEnabled(obj.enabled, "retrieval.rerank.enabled"),
+      topSources: top,
+   };
+}
+
 /**
  * Validate the block's shape and return what it says, with the prompt path
  * still unread. Throws a PackageManifestError (424: the package is not served
@@ -99,7 +241,9 @@ export function resolvePromptPath(packageRoot: string, rel: string): string {
 export function parsePackageRetrieval(raw: unknown): {
    representation: PackageRepresentation;
    keyphrases: KeyphraseMode;
-   promptPaths: { keyphrase?: string };
+   refine?: RefineSettings;
+   rerank?: RerankSettings;
+   promptPaths: { [K in PromptKey]?: string };
 } {
    if (raw === undefined || raw === null) {
       return {
@@ -145,8 +289,16 @@ export function parsePackageRetrieval(raw: unknown): {
             `Fix: "keyphrases": "auto".`,
       );
    }
+   const refine =
+      obj.refine === undefined || obj.refine === null
+         ? undefined
+         : parseRefine(obj.refine);
+   const rerank =
+      obj.rerank === undefined || obj.rerank === null
+         ? undefined
+         : parseRerank(obj.rerank);
 
-   const promptPaths: { keyphrase?: string } = {};
+   const promptPaths: { [K in PromptKey]?: string } = {};
    if (obj.prompts !== undefined && obj.prompts !== null) {
       if (typeof obj.prompts !== "object" || Array.isArray(obj.prompts)) {
          fail(
@@ -164,23 +316,67 @@ export function parsePackageRetrieval(raw: unknown): {
                `Valid keys: ${PROMPT_KEYS.join(", ")}.`,
          );
       }
-      if (prompts.keyphrase !== undefined && prompts.keyphrase !== null) {
-         if (
-            typeof prompts.keyphrase !== "string" ||
-            prompts.keyphrase.trim() === ""
-         ) {
+      for (const key of PROMPT_KEYS) {
+         const value = prompts[key];
+         if (value === undefined || value === null) continue;
+         if (typeof value !== "string" || value.trim() === "") {
             fail(
-               `Invalid publisher.json retrieval.prompts.keyphrase: expected a file path inside the package, got ${describe(prompts.keyphrase)}. ` +
-                  `Fix: "keyphrase": "prompts/keyphrase.md"`,
+               `Invalid publisher.json retrieval.prompts.${key}: expected a file path inside the package, got ${describe(value)}. ` +
+                  `Fix: "${key}": "prompts/${key}.md"`,
             );
          }
-         promptPaths.keyphrase = prompts.keyphrase;
+         promptPaths[key] = value;
       }
    }
    return {
       representation: representation as PackageRepresentation,
       keyphrases: keyphrases as KeyphraseMode,
+      ...(refine ? { refine } : {}),
+      ...(rerank ? { rerank } : {}),
       promptPaths,
+   };
+}
+
+async function readPromptFile(
+   packageRoot: string,
+   key: PromptKey,
+   rel: string,
+): Promise<PackagePrompt> {
+   const file = resolvePromptPath(packageRoot, rel, key);
+   const at = `retrieval.prompts.${key}`;
+   let text: string;
+   try {
+      // The real path must also be inside the real package directory: a
+      // symlink in the package can point anywhere.
+      const [realRoot, realFile] = await Promise.all([
+         fs.promises.realpath(packageRoot),
+         fs.promises.realpath(file),
+      ]);
+      const within = path.relative(realRoot, realFile);
+      if (within.startsWith("..") || path.isAbsolute(within)) {
+         fail(
+            `Invalid publisher.json ${at}: ${describe(rel)} resolves outside the package directory through a link. ` +
+               `Fix: copy the file into the package.`,
+         );
+      }
+      text = await fs.promises.readFile(realFile, "utf8");
+   } catch (error) {
+      if (error instanceof PackageManifestError) throw error;
+      return fail(
+         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${(error as Error).message}). ` +
+            `Fix: create the file inside the package or remove the key.`,
+      );
+   }
+   if (text.trim() === "") {
+      fail(
+         `Invalid publisher.json ${at}: ${describe(rel)} is empty. ` +
+            `Fix: write the prompt, or remove the key to use the built-in one.`,
+      );
+   }
+   return {
+      path: rel,
+      text,
+      hash: createHash("sha256").update(text).digest("hex"),
    };
 }
 
@@ -195,47 +391,42 @@ export async function readPackageRetrieval(
 ): Promise<PackageRetrievalSettings> {
    const parsed = parsePackageRetrieval(raw);
    const prompts: PackageRetrievalSettings["prompts"] = {};
-   if (parsed.promptPaths.keyphrase !== undefined) {
-      const rel = parsed.promptPaths.keyphrase;
-      const file = resolvePromptPath(packageRoot, rel);
-      let text: string;
-      try {
-         // The real path must also be inside the real package directory: a
-         // symlink in the package can point anywhere.
-         const [realRoot, realFile] = await Promise.all([
-            fs.promises.realpath(packageRoot),
-            fs.promises.realpath(file),
-         ]);
-         const within = path.relative(realRoot, realFile);
-         if (within.startsWith("..") || path.isAbsolute(within)) {
-            fail(
-               `Invalid publisher.json retrieval.prompts.keyphrase: ${describe(rel)} resolves outside the package directory through a link. ` +
-                  `Fix: copy the file into the package.`,
-            );
-         }
-         text = await fs.promises.readFile(realFile, "utf8");
-      } catch (error) {
-         if (error instanceof PackageManifestError) throw error;
-         return fail(
-            `Invalid publisher.json retrieval.prompts.keyphrase: cannot read ${describe(rel)} (${(error as Error).message}). ` +
-               `Fix: create the file inside the package or remove the key.`,
-         );
+   for (const key of PROMPT_KEYS) {
+      const rel = parsed.promptPaths[key];
+      if (rel !== undefined) {
+         prompts[key] = await readPromptFile(packageRoot, key, rel);
       }
-      if (text.trim() === "") {
-         fail(
-            `Invalid publisher.json retrieval.prompts.keyphrase: ${describe(rel)} is empty. ` +
-               `Fix: write the prompt, or remove the key to use the built-in one.`,
-         );
-      }
-      prompts.keyphrase = {
-         path: rel,
-         text,
-         hash: createHash("sha256").update(text).digest("hex"),
-      };
    }
    return {
       representation: parsed.representation,
       keyphrases: parsed.keyphrases,
+      ...(parsed.refine ? { refine: parsed.refine } : {}),
+      ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
       prompts,
    };
+}
+
+/**
+ * A package that sets a stage to `true` needs the operator's LLM. With none
+ * configured the package does not load, with a message that names both fixes,
+ * rather than serving answers that quietly skip the stage it asked for.
+ * `auto` and `false` never fail here.
+ */
+export function assertRequiredStagesAvailable(
+   retrieval: PackageRetrievalSettings,
+   llmConfigured: boolean,
+): void {
+   if (llmConfigured) return;
+   for (const [key, stage] of [
+      ["refine", retrieval.refine],
+      ["rerank", retrieval.rerank],
+   ] as const) {
+      if (stage?.enabled === true) {
+         fail(
+            `Invalid publisher.json retrieval.${key}.enabled: true needs an LLM, and this server has none configured. ` +
+               `Fix: set retrieval.llm in publisher.config.json and LLM_API_KEY in the server's environment, ` +
+               `or set "enabled": "auto" (on only when an LLM is configured) or false.`,
+         );
+      }
+   }
 }
