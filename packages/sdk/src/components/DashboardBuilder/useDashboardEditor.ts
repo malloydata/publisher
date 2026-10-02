@@ -44,8 +44,10 @@ export function useDashboardEditor(options: {
     * and the open is unsaved ({@link DocumentEditorOptions.opensDirty}).
     */
    conversion?: { from: string; to: string };
+   /** The file's path within the package. */
+   modelPath?: string;
 }): DashboardEditor {
-   const { conversion, ...rest } = options;
+   const { conversion, modelPath, ...rest } = options;
    const from = conversion?.from;
    const to = conversion?.to;
    const splice = useCallback(
@@ -54,9 +56,12 @@ export function useDashboardEditor(options: {
          spliceDashboardDocument(
             from !== undefined && text === from ? (to as string) : text,
             document,
-            { changeKind: true },
+            {
+               changeKind: true,
+               ...(modelPath !== undefined ? { modelPath } : {}),
+            },
          ),
-      [from, to],
+      [from, to, modelPath],
    );
    return useDocumentEditor({
       ...rest,

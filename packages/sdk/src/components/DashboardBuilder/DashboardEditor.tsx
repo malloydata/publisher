@@ -1036,6 +1036,7 @@ function Surface({
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}
+            modelPath={modelPath}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

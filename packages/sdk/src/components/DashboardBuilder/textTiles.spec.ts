@@ -59,7 +59,7 @@ const text = (document: DashboardDocument, name: string): TextTile => {
 async function writes(
    source: string,
    edit: (document: DashboardDocument) => void,
-   options?: { changeKind?: boolean },
+   options?: { changeKind?: boolean; modelPath?: string },
 ): Promise<{ out: string; document: DashboardDocument }> {
    const next = structuredClone(await openDocument(source));
    edit(next);
@@ -632,6 +632,38 @@ describe("spliceDashboardDocument: switching kind", () => {
       expect(out).toContain("dashboard { columns=12 }");
       expect(document.kind).toBeUndefined();
       expect(document.columns).toBe(12);
+   });
+
+   it("tags a dashboard kind=dashboard under notebooks/, where an untagged file reads as a notebook, and drops the tag again for a notebook", async () => {
+      const flip = (source: string, kind: "dashboard" | "notebook") =>
+         writes(
+            source,
+            (d) => {
+               d.kind = kind;
+               if (kind === "notebook") delete d.columns;
+            },
+            { changeKind: true, modelPath: "notebooks/n.malloy" },
+         );
+      const asDashboard = await flip(NOTEBOOK, "dashboard");
+      expect(asDashboard.out).toContain("kind=dashboard");
+      expect(asDashboard.out).not.toContain("kind=notebook");
+      expect(asDashboard.document.kind).toBeUndefined();
+      const back = await flip(asDashboard.out, "notebook");
+      expect(back.out).toContain("kind=notebook");
+      expect(back.out).not.toContain("kind=dashboard");
+      expect(back.document.kind).toBe("notebook");
+   });
+
+   it("leaves a dashboard under dashboards/ untagged", async () => {
+      const { out } = await writes(
+         NOTEBOOK,
+         (d) => {
+            d.kind = "dashboard";
+         },
+         { changeKind: true, modelPath: "dashboards/n.malloy" },
+      );
+      expect(out).not.toContain("kind=dashboard");
+      expect(out).not.toContain("kind=notebook");
    });
 
    it("does not take a text tile's kind=text for the document's", async () => {

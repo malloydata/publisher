@@ -329,6 +329,8 @@ interface SpliceContext extends TileMembership {
    current: DashboardDocument;
    next: DashboardDocument;
    edits: Edit[];
+   /** The file's package path, when known. */
+   modelPath?: string;
 }
 
 /**
@@ -741,6 +743,12 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       };
       if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
          inner = append("kind=notebook");
+      // The server reads an untagged file under notebooks/ as a notebook, so a dashboard there must say so.
+      else if (
+         kindOf(current) !== kindOf(next) &&
+         ctx.modelPath?.startsWith("notebooks/")
+      )
+         inner = append("kind=dashboard");
       if (current.title !== next.title)
          setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
@@ -2055,6 +2063,8 @@ function planReferenceFilters(
 export interface SpliceOptions {
    /** Lets `requested.kind` differ from the file's: the one edit that switches a dashboard to a notebook or back. */
    changeKind?: boolean;
+   /** The file's path within the package; a dashboard under `notebooks/` is tagged `kind=dashboard` rather than left untagged. */
+   modelPath?: string;
 }
 
 export async function spliceDashboardDocument(
@@ -2103,6 +2113,9 @@ export async function spliceDashboardDocument(
       current,
       next,
       edits,
+      ...(options.modelPath !== undefined
+         ? { modelPath: options.modelPath }
+         : {}),
    };
 
    // Each concern plans its own edits against the file as it stands; the

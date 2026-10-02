@@ -193,6 +193,8 @@ export interface DashboardBuilderProps {
     * same event.
     */
    savesTo?: SavesTo;
+   /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
+   modelPath?: string;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save. Leaving is `onExit`, not this: the builder draws Done itself.
@@ -219,12 +221,14 @@ export function DashboardBuilder({
    onEvent,
    conversion,
    savesTo = "package",
+   modelPath,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),
       ...(conversion ? { conversion } : {}),
+      ...(modelPath !== undefined ? { modelPath } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
    // Undo and redo point at the tile they changed: lit briefly, and scrolled to.

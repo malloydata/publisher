@@ -167,9 +167,7 @@ test.describe("Show as, and a kind that disagrees with its folder", () => {
       expect(back).toContain("# colspan=6");
       for (const view of ["kpis", "revenue_trend", "best_sellers"])
          expect(back).toContain(`overview -> ${view}`);
-      // Known loss: the notebook flip deleted `columns`, and flipping back does
-      // not restore it, so the grid falls to its default width. If the builder
-      // ever remembers the width, this is the line to turn into toContain.
+      // The width is not kept across the flip: a notebook carrying `dashboard { columns }` lints as notebook-columns-ignored.
       expect(back).not.toMatch(/^## artifact .*dashboard \{/m);
       expect(back).not.toBe(original);
 
@@ -270,14 +268,16 @@ test.describe("Show as, and a kind that disagrees with its folder", () => {
       expect(await pe.readSource("dashboards/clash.malloy")).toBe(before);
    });
 
-   // Known bug: Show as > Dashboard drops `kind=notebook`, and the server reads an untagged file under notebooks/ as a notebook, so nothing changes. Remove test.fail() when the builder writes `kind=dashboard` there.
    test("a notebook in notebooks/ shown as a dashboard is served as a dashboard", async ({
       page,
    }) => {
-      test.fail();
       await openEditor(page, "notebooks", "flip");
       await showAs(page, "Dashboard");
       await saveChanges(page);
+      // Untagged would read as a notebook again, so the tag is written explicitly.
+      expect(await pe.readSource("notebooks/flip.malloy")).toContain(
+         "kind=dashboard",
+      );
       const res = await fetch(
          `${pe.baseURL}/api/v0/environments/${pe.env}/packages/${pe.pkg}/dashboards`,
       );
