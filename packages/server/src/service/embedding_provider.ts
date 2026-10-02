@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { EmbeddingConfig, getEmbeddingConfig } from "../config";
-import { logger } from "../logger";
+import {
+   DEFAULT_RETRY,
+   HttpRequestError,
+   isRetryableStatus,
+   parseRetryAfterMs,
+   RetryPolicy,
+   withRetry,
+} from "./http_retry";
 
 /** Timeout for bulk (index-build) embedding calls. */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
@@ -21,114 +28,21 @@ export const MAX_EMBED_BATCH_SIZE = 512;
 type FetchFn = typeof fetch;
 
 /**
- * A failed embedding request, carrying what a retry decision needs. The
- * message is unchanged from the plain `Error` it replaces, so callers that
- * log or compare it see the same text.
+ * The retry machinery lives in ./http_retry so the chat adapters share it.
+ * The embedding names stay as aliases: callers and tests import them from
+ * here.
  */
-export class EmbeddingRequestError extends Error {
-   constructor(
-      message: string,
-      /** HTTP status, absent for a network failure or timeout. */
-      readonly status: number | undefined,
-      /**
-       * Whether trying the same request again can succeed: 429, 408, 5xx and
-       * network failures or timeouts. Auth (401/403), other 4xx and a
-       * malformed response will fail the same way every time.
-       */
-      readonly retryable: boolean,
-      /** The server's `Retry-After`, in ms, when it sent a usable one. */
-      readonly retryAfterMs?: number,
-   ) {
-      super(message);
-      this.name = "EmbeddingRequestError";
-   }
-}
+export const EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRetryPolicy = RetryPolicy;
+export const DEFAULT_EMBEDDING_RETRY: RetryPolicy = DEFAULT_RETRY;
 
-/**
- * How a bulk embedding call retries. Query-time embedding passes none: that
- * call sits on the latency path of a search and must fail fast instead.
- *
- * The delay before retry n is `baseDelayMs * 2^(n-1)`, capped at
- * `maxDelayMs`, then spread over its upper half with jitter so that several
- * clients sharing one rate limit do not retry in step. A `Retry-After` longer
- * than that is honoured exactly. Both a single wait (`maxDelayMs`) and the sum
- * of all waits (`maxTotalDelayMs`) are bounded: when the next wait would
- * exceed either, the last error is thrown rather than waited out.
- */
-export interface EmbeddingRetryPolicy {
-   /** Total attempts including the first. */
-   maxAttempts: number;
-   baseDelayMs: number;
-   maxDelayMs: number;
-   maxTotalDelayMs: number;
-   /** Injected so tests never wait in real time. */
-   sleep: (ms: number) => Promise<void>;
-   /** Uniform [0, 1); injected so jitter is deterministic in tests. */
-   random: () => number;
-}
-
-export const DEFAULT_EMBEDDING_RETRY: EmbeddingRetryPolicy = {
-   maxAttempts: 5,
-   baseDelayMs: 1_000,
-   maxDelayMs: 30_000,
-   maxTotalDelayMs: 90_000,
-   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-   random: Math.random,
-};
-
-/** `Retry-After` is either whole seconds or an HTTP date. */
-function parseRetryAfterMs(value: string | null): number | undefined {
-   if (value === null) return undefined;
-   const trimmed = value.trim();
-   if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1_000;
-   const at = Date.parse(trimmed);
-   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
-}
-
-/**
- * Run `attempt`, retrying a retryable {@link EmbeddingRequestError} under
- * `policy`. Anything else, and the last error once the attempts or the wait
- * budget are used up, is thrown as it came.
- */
-export async function withEmbeddingRetry<T>(
+/** Retry a bulk embedding call; see {@link withRetry}. */
+export function withEmbeddingRetry<T>(
    attempt: () => Promise<T>,
-   policy: EmbeddingRetryPolicy,
+   policy: RetryPolicy,
 ): Promise<T> {
-   let waited = 0;
-   for (let n = 1; ; n++) {
-      try {
-         return await attempt();
-      } catch (error) {
-         if (
-            !(error instanceof EmbeddingRequestError) ||
-            !error.retryable ||
-            n >= policy.maxAttempts
-         ) {
-            throw error;
-         }
-         const exponential = Math.min(
-            policy.maxDelayMs,
-            policy.baseDelayMs * 2 ** (n - 1),
-         );
-         const jittered = exponential / 2 + (policy.random() * exponential) / 2;
-         const delay = Math.max(jittered, error.retryAfterMs ?? 0);
-         if (
-            delay > policy.maxDelayMs ||
-            waited + delay > policy.maxTotalDelayMs
-         ) {
-            throw error;
-         }
-         logger.warn("Embedding request failed; retrying", {
-            attempt: n,
-            maxAttempts: policy.maxAttempts,
-            retryInMs: Math.round(delay),
-            status: error.status,
-            error: error.message,
-         });
-         waited += delay;
-         await policy.sleep(delay);
-      }
-   }
+   return withRetry(attempt, policy, "Embedding request");
 }
 
 interface EmbeddingResponseItem {
@@ -273,9 +187,7 @@ export class EmbeddingProvider {
          throw new EmbeddingRequestError(
             `Embedding request to ${url} failed (${response.status}): ${detail}`,
             response.status,
-            response.status === 429 ||
-               response.status === 408 ||
-               response.status >= 500,
+            isRetryableStatus(response.status),
             parseRetryAfterMs(response.headers.get("retry-after")),
          );
       }
