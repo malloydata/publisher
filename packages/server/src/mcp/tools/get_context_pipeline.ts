@@ -91,6 +91,12 @@ export interface RetrievalResult {
    belowCutoffCount: number;
    /** The denominator belowCutoffCount is read against. Semantic only. */
    totalEntities?: number;
+   /**
+    * Semantic only: per source (`""` for none), the entities that cleared the
+    * floor and the scan's per-source window left out. Assembly adds them to
+    * each card of that source, because it never sees the rows.
+    */
+   entitiesCutBySource?: Map<string, number>;
 }
 
 /**

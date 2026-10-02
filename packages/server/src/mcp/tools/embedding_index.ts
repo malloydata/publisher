@@ -137,6 +137,14 @@ export type SemanticSearchResult =
          * `belowCutoffCount` interpretable.
          */
         totalEntities: number;
+        /**
+         * Per source: the entities (sources themselves excluded) that cleared
+         * the floor and were left out of `hits` by the per-source window. A
+         * source with none has no entry. The window drops these rows in SQL,
+         * so a caller that wants to say "N more matched" cannot count them
+         * from `hits`.
+         */
+        cutBySource: Map<string, number>;
      }
    | { unavailable: SemanticUnavailableReason };
 
@@ -1366,7 +1374,12 @@ export async function trySemanticSearch(args: {
    // candidate row there is nothing to rank, and embedding the query text
    // would be a provider call whose result cannot be used.
    if (scopeKeys !== undefined && scopeKeys.length === 0) {
-      return { hits: [], belowCutoffCount: 0, totalEntities: 0 };
+      return {
+         hits: [],
+         belowCutoffCount: 0,
+         totalEntities: 0,
+         cutBySource: new Map(),
+      };
    }
 
    const providerKey = providerKeyFor(provider);
@@ -1486,6 +1499,7 @@ export async function trySemanticSearch(args: {
          best: number | null;
          target_idx: number | null;
          score: number | null;
+         cut: number | null;
       }>(
          `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
          qk(target_idx, kind) AS (VALUES ${kindValues}),${
@@ -1571,12 +1585,30 @@ export async function trySemanticSearch(args: {
              AND p.entity_source = h.entity_source
              AND p.entity_name = h.entity_name
             WHERE h.rn <= ?
+         ),
+         -- What the window left out, per source: entities that cleared the
+         -- floor on some target, less the ones kept. Source rows do not spend
+         -- a slot in assembly's per-source cap, so they are not counted.
+         above_floor AS (
+            SELECT entity_source, COUNT(*) AS n
+            FROM per_entity
+            WHERE best >= ? AND entity_kind <> 'source'
+            GROUP BY entity_source
+         ),
+         kept AS (
+            SELECT entity_source, COUNT(*) AS n
+            FROM hits
+            WHERE entity_kind <> 'source'
+            GROUP BY entity_source
          )
          SELECT agg.total, agg.below,
                 h.entity_kind, h.entity_source, h.entity_name, h.best,
-                s.target_idx, s.score
+                s.target_idx, s.score,
+                CAST(a.n - COALESCE(k.n, 0) AS INTEGER) AS cut
          FROM agg
          LEFT JOIN hits h ON TRUE
+         LEFT JOIN above_floor a ON a.entity_source = h.entity_source
+         LEFT JOIN kept k ON k.entity_source = h.entity_source
          LEFT JOIN scored s
            ON s.entity_kind = h.entity_kind
           AND s.entity_source = h.entity_source
@@ -1597,6 +1629,7 @@ export async function trySemanticSearch(args: {
             provider.minSimilarity,
             provider.minSimilarity,
             perSourceWindow,
+            provider.minSimilarity,
          ],
       );
 
@@ -1613,8 +1646,12 @@ export async function trySemanticSearch(args: {
             targetScores: Map<number, number>;
          }
       >();
+      const cutBySource = new Map<string, number>();
       for (const r of scan) {
          if (r.entity_name === null) continue;
+         if (r.cut !== null && r.cut > 0) {
+            cutBySource.set(r.entity_source as string, r.cut);
+         }
          const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
          let hit = byEntity.get(key);
          if (!hit) {
@@ -1799,6 +1836,7 @@ export async function trySemanticSearch(args: {
          })),
          belowCutoffCount: cutoffCounts?.below ?? 0,
          totalEntities: cutoffCounts?.total ?? 0,
+         cutBySource,
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -1592,6 +1592,7 @@ describe("trySemanticSearch", () => {
          hits: [],
          belowCutoffCount: 0,
          totalEntities: 0,
+         cutBySource: new Map(),
       };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
@@ -2330,11 +2331,18 @@ describe("the candidate window is per source", () => {
          perSourceWindow,
       });
       if (!("hits" in result)) throw new Error("expected hits");
-      return result.hits;
+      return result;
    };
 
+   it("counts the rows the window cut, per source", async () => {
+      const result = await search(10, "window-cut");
+      // 15 wide rows cleared the floor and 10 were kept; tiny lost none.
+      expect([...result.cutBySource]).toEqual([["wide", 5]]);
+      expect([...(await search(15, "window-nocut")).cutBySource]).toEqual([]);
+   });
+
    it("keeps the best rows of each source, and every source", async () => {
-      const hits = await search(10, "window-1");
+      const { hits } = await search(10, "window-1");
       expect(
          hits.filter((h) => h.source === "wide").map((h) => h.name),
       ).toEqual(wide.slice(0, 10).map((e) => e.name));
@@ -2344,7 +2352,7 @@ describe("the candidate window is per source", () => {
    });
 
    it("cuts each source to the window, not the package", async () => {
-      const hits = await search(3, "window-2");
+      const { hits } = await search(3, "window-2");
       expect(
          hits.filter((h) => h.source === "wide").map((h) => h.name),
       ).toEqual(wide.slice(0, 3).map((e) => e.name));

@@ -311,6 +311,12 @@ export function assembleCards(
       card.rows.push(r);
       card.relevance = foldRelevance(card.relevance, r);
    }
+   // Rows the semantic scan's per-source window dropped never reach the loop
+   // above, so the scan counted them. Every card of the source reports them,
+   // as it would have counted its own copies of those rows.
+   for (const card of cards.values()) {
+      card.entitiesDropped += state.entitiesCutBySource?.get(card.source) ?? 0;
+   }
    const { rows: _rows, ...rest } = state;
    return { ...rest, cards: Array.from(cards.values()) };
 }
