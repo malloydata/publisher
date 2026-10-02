@@ -776,7 +776,6 @@ export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
       timeoutMs: file.timeoutMs,
       concurrency: file.concurrency,
       maxCallsPerSync: file.maxCallsPerSync,
-      maxCallsPerRequest: file.maxCallsPerRequest,
    };
 }
 

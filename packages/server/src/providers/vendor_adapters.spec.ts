@@ -17,7 +17,6 @@ function llm(over: Partial<LlmSettings>): LlmSettings {
       timeoutMs: 5_000,
       concurrency: 4,
       maxCallsPerSync: 300,
-      maxCallsPerRequest: 20,
       ...over,
    };
 }

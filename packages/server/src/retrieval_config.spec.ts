@@ -35,7 +35,6 @@ describe("retrieval.llm validation", () => {
          timeoutMs: 30_000,
          concurrency: 4,
          maxCallsPerSync: 300,
-         maxCallsPerRequest: 20,
       });
    });
 
@@ -49,7 +48,6 @@ describe("retrieval.llm validation", () => {
             timeoutMs: "1500",
             concurrency: 2,
             maxCallsPerSync: 10,
-            maxCallsPerRequest: 3,
          },
       });
       expect(cfg?.llm).toMatchObject({
@@ -59,7 +57,6 @@ describe("retrieval.llm validation", () => {
          timeoutMs: 1500,
          concurrency: 2,
          maxCallsPerSync: 10,
-         maxCallsPerRequest: 3,
       });
    });
 
@@ -117,6 +114,13 @@ describe("retrieval.llm validation", () => {
          }),
       ).toThrow(
          "Invalid retrieval.llm: unknown key 'apiKey'. Valid keys: provider, model, baseUrl",
+      );
+      expect(() =>
+         parseRetrievalConfig({
+            llm: { provider: "ollama", model: "m", maxCallsPerRequest: 5 },
+         }),
+      ).toThrow(
+         "Invalid retrieval.llm: unknown key 'maxCallsPerRequest'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync",
       );
    });
 });

@@ -752,7 +752,6 @@ describe("the sync", () => {
             timeoutMs: 5_000,
             concurrency: 1,
             maxCallsPerSync: 10,
-            maxCallsPerRequest: 5,
          },
          { fetchFn, retry: instantRetry() },
       );

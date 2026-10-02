@@ -21,7 +21,6 @@ export const EGRESS_PRESETS: readonly EgressPreset[] = ["default", "full"];
 export const DEFAULT_LLM_TIMEOUT_MS = 30_000;
 export const DEFAULT_LLM_CONCURRENCY = 4;
 export const DEFAULT_LLM_MAX_CALLS_PER_SYNC = 300;
-export const DEFAULT_LLM_MAX_CALLS_PER_REQUEST = 20;
 
 export type RetrievalLlmConfig = {
    provider: ProviderName;
@@ -34,8 +33,6 @@ export type RetrievalLlmConfig = {
    concurrency: number;
    /** Most chat calls one index sync may make; the spend ceiling. */
    maxCallsPerSync: number;
-   /** Most chat calls one `get_context` request may make. */
-   maxCallsPerRequest: number;
 };
 
 export type RetrievalEmbeddingConfig = {
@@ -209,7 +206,6 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       "timeoutMs",
       "concurrency",
       "maxCallsPerSync",
-      "maxCallsPerRequest",
    ];
    const fix = `"llm": { "provider": "anthropic", "model": "<model name>" }`;
    const obj = block(raw, "retrieval.llm", keys, fix);
@@ -288,12 +284,6 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
             "retrieval.llm.maxCallsPerSync",
             "set it to e.g. 300",
          ) ?? DEFAULT_LLM_MAX_CALLS_PER_SYNC,
-      maxCallsPerRequest:
-         positiveInt(
-            obj.maxCallsPerRequest,
-            "retrieval.llm.maxCallsPerRequest",
-            "set it to e.g. 20",
-         ) ?? DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
    };
 }
 

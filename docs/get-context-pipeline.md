@@ -179,8 +179,9 @@ can bypass it.
 - **Egress.** `retrieval.egress.preset` is `default` (entity names, `#(doc)` text and schema context may be sent)
   or `full` (also code and dimension values). Access predicates (`#(access_filter)`, `#(authorize)`) have no
   class and are never sent. Operator only.
-- **Spend ceilings.** `retrieval.llm.maxCallsPerSync` and `maxCallsPerRequest`, set by the operator. A package can
-  turn a stage on, or set `keyphrases: always`, but cannot spend past a ceiling.
+- **Spend ceilings.** `retrieval.llm.maxCallsPerSync`, set by the operator. A package can
+  turn a stage on, or set `keyphrases: always`, but cannot spend past the ceiling. A per-request ceiling arrives with
+  the first request-time LLM step.
 - **Prompts.** A package may point a stage at a prompt file inside the package. A package author already controls the
   text the LLM sees; the ceilings bound what that can cost. Model docs are fenced in the prompt and marked as
   data. The LLM's `match_reason` text is not passed to the calling agent (to confirm when the LLM stages land).

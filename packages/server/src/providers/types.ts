@@ -100,7 +100,6 @@ export interface LlmSettings {
    timeoutMs: number;
    concurrency: number;
    maxCallsPerSync: number;
-   maxCallsPerRequest: number;
 }
 
 /** What `retrieval.embedding` resolves to, with the key from `EMBEDDING_API_KEY`. */
