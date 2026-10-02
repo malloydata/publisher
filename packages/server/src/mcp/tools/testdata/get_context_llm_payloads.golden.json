@@ -473,7 +473,7 @@
     "returned": 2,
     "retrieval": "semantic",
     "below_cutoff_count": 3,
-    "total_entities": 14
+    "total_entities": 11
   },
   "refine and rerank: one target": {
     "sources": [
