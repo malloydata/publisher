@@ -67,6 +67,9 @@ export function TileCard({
                borderRadius: bare ? 0 : 1,
                background: bare ? "none" : theme.tile,
                overflow: "hidden",
+               // A column so a tile's result can take the room under its heading.
+               display: "flex",
+               flexDirection: "column",
                minWidth: 0,
                minHeight: chrome === "none" ? 0 : 120,
                p:

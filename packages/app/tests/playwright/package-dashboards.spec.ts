@@ -456,6 +456,55 @@ test.describe("package-dashboards", () => {
       }).toPass({ timeout: 30_000 });
    });
 
+   test("a short table fills its card beside a chart, under its filter tag", async ({
+      page,
+   }) => {
+      await openDashboard(page, "tiled");
+      const heading = page.locator('[title="tiles -> brand_tile"]');
+      await expect(heading).toBeVisible({ timeout: 30_000 });
+      const card = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: heading });
+      const table = card.locator(".malloy-table.root");
+      await expect(table).toBeVisible({ timeout: 30_000 });
+      const chartCard = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: page.locator('[title="tiles -> region_tile"]') });
+      await expect(
+         chartCard.locator('[data-malloy-sizing="container"]'),
+      ).toBeVisible({
+         timeout: 30_000,
+      });
+
+      // The card pads its body, so the table ends one padding short of its edge.
+      await expect(async () => {
+         const [cardBox, tableBox, chartBox] = await Promise.all([
+            card.boundingBox(),
+            table.boundingBox(),
+            chartCard.boundingBox(),
+         ]);
+         const padding = await card.evaluate((el) =>
+            parseFloat(getComputedStyle(el).paddingBottom),
+         );
+         expect(
+            Math.abs(cardBox!.height - chartBox!.height),
+         ).toBeLessThanOrEqual(1);
+         expect(
+            cardBox!.y +
+               cardBox!.height -
+               padding -
+               (tableBox!.y + tableBox!.height),
+         ).toBeLessThanOrEqual(3);
+      }).toPass({ timeout: 30_000 });
+
+      // The tag sits with the heading at the top of the card, not under the result.
+      const tag = card.getByTestId("tile-filter-tag");
+      await expect(tag).toBeVisible();
+      const tagBox = (await tag.boundingBox())!;
+      const tableBox = (await table.boundingBox())!;
+      expect(tagBox.y + tagBox.height).toBeLessThanOrEqual(tableBox.y);
+   });
+
    /**
     * A clicked cell in the rendered result. The renderer owns this DOM, so
     * there is no test id to hang onto: the cell's own text is the handle, and

@@ -247,3 +247,71 @@ describe("resolveResultHeight", () => {
       expect(at("content", 0, 400)).toBe(400);
    });
 });
+
+describe("resolveResultHeight with a cell to fill", () => {
+   const fill = (
+      sizing: "content" | "container" | undefined,
+      contentHeight: number | undefined,
+      maxHeight: number | undefined,
+      fillHeight: number | undefined,
+   ) => resolveResultHeight({ sizing, contentHeight, maxHeight, fillHeight });
+
+   it("floors a short table at the cell height", () => {
+      expect(fill("content", 308, 400, 440)).toBe(440);
+   });
+
+   it("still caps a tall table at the cap when the cell is no taller", () => {
+      expect(fill("content", 4000, 400, 400)).toBe(400);
+      expect(fill("content", 4000, 400, 300)).toBe(400);
+   });
+
+   it("lets a cell taller than the cap win, so the table reaches its bottom", () => {
+      expect(fill("content", 4000, 400, 520)).toBe(520);
+   });
+
+   it("leaves a chart at its cap", () => {
+      expect(fill("container", undefined, 400, 520)).toBe(400);
+   });
+
+   it("keeps the seed for a table not measured yet", () => {
+      expect(fill("content", undefined, 400, 520)).toBe(400);
+      expect(fill("content", 0, 400, 520)).toBe(400);
+   });
+
+   it("returns today's numbers without a cell to fill", () => {
+      expect(fill("content", 308, 400, undefined)).toBe(308);
+      expect(fill("content", 4000, 400, undefined)).toBe(400);
+      expect(fill("content", 4000, undefined, undefined)).toBe(4000);
+   });
+
+   // `.malloy-table.root` is `height: fit-content; max-height: 100%`, so its
+   // scrollHeight is its content however tall the stage under it is. The floor
+   // is therefore a fixed point: painting at it reads back the same content,
+   // and nothing is re-reported.
+   it("settles in one pass: the floor never feeds back into the measurement", () => {
+      const content = 308;
+      const scrollHeightAt = (_stage: number) => content;
+      const cell = 440;
+      let painted = fill("content", undefined, 400, cell);
+      const seen: number[] = [];
+      for (let pass = 0; pass < 5; pass++) {
+         const measured = scrollHeightAt(painted);
+         seen.push(measured);
+         const next = fill("content", measured, 400, cell);
+         if (next === painted) break;
+         painted = next;
+      }
+      expect(new Set(seen)).toEqual(new Set([content]));
+      expect(painted).toBe(cell);
+   });
+
+   // The cell a container reports to itself is its flex basis grown to fit, and
+   // the basis is the height WITHOUT the floor; a basis that included it could
+   // never shrink when the table's rows do.
+   it("takes its basis from the unfloored height, so a shorter table lets the row shrink", () => {
+      const basis = (content: number) =>
+         fill("content", content, 400, undefined);
+      expect(basis(308)).toBe(308);
+      expect(basis(100)).toBe(100);
+   });
+});

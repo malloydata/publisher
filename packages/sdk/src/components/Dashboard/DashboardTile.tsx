@@ -172,7 +172,9 @@ export function DashboardTile({
                }
             />
          )}
+         {filterLabels && <TileFilterTag labels={filterLabels} />}
          <ResultPanel
+            fill
             state={state}
             context={tile ?? queryName ?? modelPath}
             maxHeight={height}
@@ -185,7 +187,6 @@ export function DashboardTile({
             // aggregates are already tiles.
             transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
          />
-         {filterLabels && <TileFilterTag labels={filterLabels} />}
       </TileCard>
    );
 }
