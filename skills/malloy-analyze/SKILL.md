@@ -234,7 +234,7 @@ For complete chart reference including scatter_chart, shape_map, sparklines, and
 
 # NOTEBOOKS (.malloy)
 
-A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. Prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block; each `run:` is a query cell.
+A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. The format to author is a one-column layout of tiles: `tiles=[…]` in the tag lists prose blocks (`intro { kind=text }`, body in a `##|(markdown) intro` ... `|##` block) and `"source -> view"` queries, and `skill:malloy-notebooks` has the full format. The example below is the older cell form, which Publisher still reads: prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block, and each `run:` is a query cell.
 
 ```malloy
 ## artifact { kind=notebook title="Sales analysis" }
@@ -249,7 +249,7 @@ run: order_analysis -> summary
 
 **A `.malloy` notebook compiles as a model**, so the linter and `/compile` report its errors before you save. An existing `.malloynb` is not covered: its errors show only when a cell runs. Never write a new `.malloynb`.
 
-A notebook is also the home for a polished, narrated report: alternate `##(markdown)` prose (the story) with `run:` cells (the views), and let each `run:` carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
+A notebook is also the home for a polished, narrated report: alternate prose (the story) with queries (the views), and let each view carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
 
 ### Interactive Filters
 

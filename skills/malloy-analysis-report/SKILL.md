@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Creating Reports
 
-An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
+An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy queries. An ad-hoc report is written as `run:` cells, which Publisher still reads and which convert to the one-column tile layout when saved in the Console; when the queries are views on a source, `skill:malloy-notebooks` describes the layout form (`tiles=[…]`) to author instead. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 

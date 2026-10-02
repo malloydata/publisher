@@ -123,8 +123,8 @@ query: overview is order_items -> {
   object and at model level there is none — a `#"` there fails the package load with "Object
   annotation not connected to any object". On the single-query form it is `#"`, attached to the
   `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
-  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`.
-  The format is decided but Publisher does not render text tiles yet, so the lint reports a listed one as left out of the page.
+  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`
+  ([Text tiles](#text-tiles)).
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
@@ -211,16 +211,16 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
-| Construct                                                                           | What it does                                                                                                                                |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `kind=dashboard` in the artifact tag, `kind=query` on a tile entry                  | Explicit spellings of what the file and the tile already are. `kind=notebook` under `dashboards/` is a warning                              |
-| `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                             |
-| `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
-| `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
-| `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
-| A `dashboards/*.malloy` with **no** artifact tag                                    | A shared include, skipped by discovery                                                                                                      |
+| Construct                                                                             | What it does                                                                                                                                |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { title= tiles=[…] givens{…} autorun= }`                                 | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `kind=dashboard` or `kind=notebook` in the artifact tag, `kind=query` on a tile entry | The tag's `kind` decides what the document is; the folder only supplies the default. `kind=text` on an entry is a [text tile](#text-tiles)  |
+| `# artifact { title= givens{…} autorun= }` on a `query:`                              | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
+| `# dashboard { columns=N }`                                                           | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                             |
+| `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view   | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
+| `# label="…"` on an aggregate                                                         | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
+| `# drill { to=[…] given=… }` on a source `dimension:`                                 | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
+| A `dashboards/*.malloy` with **no** artifact tag                                      | A shared include, skipped by discovery                                                                                                      |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -448,6 +448,30 @@ Note the imports in the dashboard file itself. Nothing in that file mentions `CA
 `where:` that does is one file over), but the given namespace is per-file, so without importing them
 the control row would be empty and the tiles would silently run at their defaults.
 
+### Text tiles
+
+Prose between tiles is a tile of its own. List it in `tiles=[…]` as a bare name with `kind=text`, and
+write its body as a `##|(markdown) name` block in the same file:
+
+```malloy
+## artifact { title="Seasonality" tiles=[intro { kind=text colspan=6 break }, "seasonal -> revenue_trend"] } dashboard { columns=12 }
+##|(markdown) intro
+## How to read this page
+
+Revenue first, then the seasonal split.
+|##
+```
+
+The entry reads `colspan` and `break` and nothing else, the same two layout tags a query tile takes
+from its view. The body is markdown (headings, emphasis, lists, links, inline code), so a heading
+goes inside the block: a bare `## Heading` line is a model tag, not prose. The name is one bare word
+on the opener line, the text starts on the next line, and `|##` closes the block at the opener's
+column. Keep the parentheses: `##|markdown` draws a malformed-route warning.
+
+In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break? }` with no `query`,
+and a query tile is `{ kind: "query", query, … }`. Anything that runs a dashboard's tiles skips the
+text ones.
+
 <a id="drill"></a>
 
 ## Drill: making cells clickable
@@ -574,6 +598,9 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   that is wider than the grid and therefore clamped; a `dashboard_columns=` alias, and an error when
   it disagrees with `dashboard { columns= }`; and any property inside the artifact tag that
   Publisher does not read.
+- **Text tiles.** A `kind=text` entry with no `##|(markdown) name` block, a block written twice, a
+  `colspan` that is not a positive integer, and any property on the entry other than `colspan` and
+  `break`.
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
 - **Curation.** A tile, a single query, or a filter `suggest` that reads a source the surface does
@@ -608,7 +635,7 @@ the file, reload again.
 | `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                               |
 | `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state            |
 | `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                      |
-| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles    |
+| `GET …/dashboards/<name>`                                  | The manifest: title, kind, autorun, columns, controls, tiles   |
 | `/<env>/<pkg>/dashboards/<name>/edit`                      | The same dashboard in the builder                              |
 | `PUT …/models/dashboards/<name>.malloy`                    | Write the file into the package and reload; the builder's save |
 
