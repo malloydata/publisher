@@ -76,9 +76,13 @@ is a Console convenience.
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
   a grid you rearrange directly: drag a tile to move it, drag its right edge to resize it, set its
-  view, label and chart from its own menu, add filters from the strip above. The classic dashboard-building
-  feel, over a file you can still read and review — Save writes the
-  `dashboards/*.malloy` back into the package ([dashboards.md](dashboards.md#editing-in-the-console)).
+  view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
+  and text tiles are edited where they are shown: click one and type, with no edit icon to find
+  first. A **text tile** holds markdown (a heading, a paragraph, a list) and is added from the same
+  dialog as a query tile. The classic dashboard-building feel, over a file you can still read and
+  review. **Save** writes the `dashboards/*.malloy` back into the package at once, then offers
+  **View change** (the diff, read-only) and **Undo save**
+  ([dashboards.md](dashboards.md#editing-in-the-console)).
 - **Create a dashboard or notebook** — the package page's **New** menu takes a model, the first view
   and a title, writes the file into the package (it never overwrites an existing one) and opens it in
   its editor. A host with its own record creates it there instead. It is offered when the server takes
@@ -88,29 +92,32 @@ is a Console convenience.
   of a package. An empty Dashboards or Notebooks section carries its own **New dashboard** or
   **New notebook** that opens the same window on that kind. Below 600px wide the Console hides
   **Edit** and the **New** menu, and an editor opened by URL asks for **Edit anyway** first.
-- **Edit a notebook** — a notebook page (a tagged `notebooks/*.malloy`, not a legacy `.malloynb`)
-  has the same **Edit** button. Click a text cell to rewrite it (Done or Cmd/Ctrl+Enter keeps the change, Cancel drops it, and a
-  text the file could not hold is flagged as you type), add text above or below any cell,
-  remove a text cell, or drag cells into a new order (setup lines stay put, and a query stays below
-  what it reads; a button that cannot act says why instead of going dead); query cells run as you edit. Save writes the file back into the package and leaves
-  the rest of the file as it was: an edited cell is written in the `(markdown)` spelling, and removing
-  a cell removes the comment lines directly above it. **Add query** inserts a query cell from a
-  source the notebook reaches, one of its views, a chart and a caption; each query cell has a chart
-  **Viz type** picker listing all eight choices (From the view, Table, Line, Bar, Big value, Scatter, Shape map and
-  Segment map). A choice the view cannot render stays in the list, greyed, with its reason beside it:
-  Big value needs a view with only totals (no group by), and a map needs a view that already carries
-  a map chart. A query
-  can be added only below the setup lines (imports, givens, saved queries), and one added here is not mapped to the notebook's
-  controls: it follows them only if its source reads a given as `$NAME`. Undo is cleared at Save when
-  it removes a query cell that was already in the file, changes the chart of a cell whose chart line
-  the editor cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling), or is the
-  first chart pick on an added query saved without a chart. The picker is disabled, with the reason,
-  for a cell whose chart line the editor does not model (such as `# bar_chart { size=spark }`), and
-  that line is left alone. On a server that does not take writes, Save is off. A notebook the editor
-  cannot place cell by cell (for example two statements on one line, text after a block closer, or a
-  comment straddling a cell boundary) opens read-only and says why. A save whose text declares a
-  real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so the editor
-  opens such a file but cannot save it from the Console; gates live in the model file.
+- **Edit a notebook** — a notebook is a one-column dashboard, and it opens in the same builder as a
+  dashboard (a tagged `notebooks/*.malloy`; a legacy `.malloynb` is read-only). Its prose is text
+  tiles and its queries are query tiles, in file order. Everything is click-to-edit: click the
+  title, the description, a text tile or a tile's heading and type. In a one-line field Enter keeps
+  the edit and Escape puts the old text back; in a text tile, Escape, **Done** or Cmd/Ctrl+Enter
+  keeps it, **Cancel** drops it, and Cmd/Ctrl+S saves from inside the field. Use the **+** on a
+  tile to insert a tile between two tiles, or **Add tile** at the end; each query tile has
+  a **Viz type** picker listing all eight choices (From the view, Table, Line, Bar, Big value,
+  Scatter, Shape map and Segment map). A choice the view cannot render stays in the list, greyed,
+  with its reason beside it: Big value needs a view with only totals (no group by), and a map needs
+  a view that already carries a map chart. The picker is disabled, with the reason, for a tile whose
+  chart line the builder does not model (such as `# bar_chart { size=spark }`), and that line is left
+  alone. Tiles are dragged into a new order.
+  **Settings** holds **Show as** (Dashboard or Notebook, which is a tag edit on the same file, and a
+  notebook has no grid width) and the file's **Sources**: the imports are chips you remove and an
+  **Add a source** picker you add from, and a source a tile reads cannot be removed.
+  A cell-format notebook (the older shape, with `(markdown)` cells) opens already converted to this
+  layout and unsaved: **Save** writes the converted file, and **Undo save** puts the original text
+  back. Nothing is written until you save.
+  **Save** writes at once, with no review step; the caption under the button says where
+  (the package file, this browser, or where the host app keeps it). A notice then offers
+  **View change**, the file's diff read-only, and **Undo save**, which writes the file back as it was
+  before that save. The notice stays until the next edit or save. **Close** leaves, and asks first
+  when edits are unsaved. On a server that does not take writes, Save is off. A save whose text
+  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so
+  the builder opens such a file but cannot save it from the Console; gates live in the model file.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells

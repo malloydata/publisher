@@ -76,18 +76,46 @@ A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it
 
 ## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
-A tagged `notebooks/*.malloy` notebook now has an **Edit** button in the Console. The editor lets you
-rewrite, add and remove markdown cells and reorder cells (definitions stay put, and a query stays
-below what it reads). It also adds and removes query cells: pick a source the notebook reaches, one
-of its views, a chart and a caption, and the editor writes the caption, the chart line and the
-`run:` for you. Save writes the file back into the package and leaves the rest of the file as
-it was: an edited cell is written in the `(markdown)` spelling, and removing a cell removes the
-comment lines directly above it. Save writes to the host's record when the host has one (an
-authoritative workspace), and otherwise to the package, so the Console on a server that does not
-take writes has no Save. A notebook the editor cannot place cell by cell opens read-only and says
-why. The write route (`PUT …/models/{path}`) now accepts tagged `notebooks/*.malloy` as well as
-`dashboards/*.malloy`. The SDK exports `NotebookEditor` from `@malloy-publisher/sdk/builder` for
-hosts that mount it themselves.
+A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
+`notebooks/*.malloy` notebook has an **Edit** button in the Console, and a dashboard and a notebook
+share one set of tools: drag tiles into order, pick a chart, add filters, and add **text tiles**,
+which hold markdown. Dashboards gain text tiles too. Everything is click-to-edit, with no edit icon:
+click a title, a description, a text tile or a tile's heading and type. Insert a tile between two
+with its **+**, and switch a document between **Dashboard** and **Notebook** under **Settings → Show
+as** (a tag edit on the same file). Imports are edited there as a source picker.
+
+**Save writes at once.** There is no review step before a save any more, for notebooks or for
+dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
+shows **View change**, the file's diff read-only, and **Undo save**, which writes the file back as
+it was. The save target is named under the button, and the exit button reads **Close**. Wording elsewhere is plainer: **Viz type**, **Drill-through**, "On or after a date", and a **Filters** heading over the filter strip.
+
+**Cell-format notebooks convert when saved.** A notebook written the older way, with `(markdown)`
+cells, opens converted to the tile layout and unsaved; Save writes the layout and Undo save puts the
+original text back. Nothing is written until you save. Save writes to the host's record when the host
+has one, and otherwise to the package, so the Console on a server that does not take writes has no
+Save. A notebook the editor cannot convert opens read-only and says why. The write route
+(`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`.
+
+**What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
+(`dashboard` or `notebook`), and a tagged file is listed and served from wherever the package puts
+it. The tag can be written in block form (`##|`). Notebooks are authored as layouts
+(`tiles=[…]`), the shape the builder writes, and a layout notebook's read view has no cards around
+its tiles.
+
+**API contract.** `DashboardTile` gains `kind` and `markdown`, and `query` is absent on a text tile,
+so a client that runs a dashboard's tiles should skip `kind=text` tiles when running queries.
+`DashboardManifest` gains `kind`, and `RawNotebook` gains `dashboard`.
+
+**For hosts that mount the builders.**
+
+- `DashboardBuilder`'s `onSave` is now `onSave(source, { purpose, document })`, where `purpose` is `"save"` or `"undo"` and `document` is the document the written text holds. Undo save calls it too, with the text from before the save, so write through the same channel and checks. `SaveContext` and `SaveHandler` are exported from `@malloy-publisher/sdk/builder`.
+- The notice prop is `onSaveNoticeChange(showing)`: hold back replacing the open document while the View change / Undo save notice is up.
+- Undo save reports `notebook.save_undone` or `dashboard.save_undone`, and `notebook.save_undo_refused` or `dashboard.save_undo_refused` when the write is refused; `BuilderEvent` is the union of the dashboard and notebook events.
+- A `DocumentStorage` host sees Undo save as an ordinary `saveDocument` of the earlier text. The host store has no compare-and-swap, so a newer version written elsewhere is overwritten.
+- `DashboardEditor` takes `path` and `kind`, to open a document as its tag's kind from the path the package lists it at. `NotebookEditor` is now a wrapper over the dashboard builder with `kind="notebook"`, and the cell-notebook builder is gone.
+- `useServer().mutable` is `boolean | undefined`: `undefined` while `/status` loads or when it failed, and the editor offers no package Save until it is `true`.
+- Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
+- The read view's `DashboardView` takes a `chrome` prop, and a narrowed tile now narrows instead of keeping the width of the chart it replaced.
 
 The package page has a **New** menu with **Dashboard** and **Notebook**: choose a model, the first
 view and a title, and the file is created and opened in its editor. On the Console it creates the
@@ -110,13 +138,6 @@ that tile or cell with the reason shown.
 A dashboard with no tiles now opens in the editor instead of being refused. It is not served until it
 has a tile (its page 404s and the load lint warns), and the editor will not remove the last tile.
 
-Limits to know about: a query cell added in the editor is not mapped to the notebook's controls, so
-its result follows them only if its source reads a given as `$NAME`; a query can only be added below
-every definition in the notebook; and a save clears the editor's undo history when it removes a
-query cell that was already in the file, changes the chart of a cell whose chart line the editor
-cannot rewrite canonically (a bare `# line_chart`, or an unusual spelling), or is the first chart
-pick on an added query saved without a chart.
-
 **Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
 reached through a join (`products.category`) was written with only its last segment, so its options
 came from the wrong field. It now keeps the full path, always quoted in the file. The dashboard lint
@@ -125,7 +146,7 @@ the source had no such field.
 
 ## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
 
-**Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder`, `DashboardEditor` and `NotebookEditor` shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
+**Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder` and `DashboardEditor` (and `NotebookEditor`, which wraps them) shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
 
 For hosts that mount an editor themselves, the builders now draw "Close" and take two props: `onExit`, called once the user has chosen to leave, and `onDirtyChange(dirty)`, the hook for your own navigation guard. A host that passed its own exit button as `toolbar` should pass `onExit` instead, and a host whose `onExit` also prompts will now prompt twice. `UnsavedChangesDialog` is exported from `@malloy-publisher/sdk` for pages that need the same prompt.
 
@@ -291,7 +312,7 @@ the parts whose text changed.
 **`embeddingIndex.status` keeps its name and changes its basis, so read this if
 you poll it.** On the package resource
 (`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
-from whether cached rows covered the package's current entity *names*. Vectors
+from whether cached rows covered the package's current entity _names_. Vectors
 outlive a restart and a reload, so that reported `ready` immediately — while the
 next question was still answered lexically. Anything following the documented
 "poll until `ready` before measuring retrieval quality" could therefore measure a
@@ -318,7 +339,7 @@ anything never sees `ready`.
 **If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
 now match reality.** The `dims` column records the length the provider actually
 returned, and some providers (Ollama among them) ignore the requested value.
-`embeddedRows` and `embeddedEntities` were counted against the *configured*
+`embeddedRows` and `embeddedEntities` were counted against the _configured_
 value instead, so for those providers they read 0 while retrieval was reading
 those same vectors happily — and that also pinned `status` at `indexing`. Both
 now count on the same rule the sync uses to decide a row is current: the current
@@ -452,14 +473,14 @@ they live. The one change is a tagged dashboard it lists, which reads the surfac
 it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
 this package, then `Fix:` and the one edit:
 
-| `publisher.json` | Warning |
-| --- | --- |
-| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
-| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
-| `explores: []` alone | Does nothing. Delete it. |
-| `queryableSources: "declared"` | Does nothing. Delete it. |
-| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
-| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+| `publisher.json`                     | Warning                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `explores` naming files              | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement.                                         |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`.                                                                                    |
+| `explores: []` alone                 | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "declared"`       | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "all"`            | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case)      | Ignored: only a root file named exactly `index.malloy` decides what is published.                                                                                                                           |
 
 Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
 holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
@@ -632,7 +653,6 @@ and the terms its binding re-applies. It is optional and additive: the key is ab
 declares such a join, so no existing plan changes shape. A consumer generating a strict client from
 `api-doc.yaml` rejects the field until it regenerates.
 
-
 ## [0.8.0] — a refused persist source is skipped, and no longer fails the whole run
 
 **Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
@@ -716,7 +736,7 @@ deprecation warning. An explicit `explores` always wins, and a package with both
 `explores` that omits it carries a warning rather than the server guessing.
 
 **`index.malloy` does not replace `queryableSources: "all"`**, so `"all"` gets no deprecation
-warning. `"all"` is the only way to curate listings *without* refusing queries, and a
+warning. `"all"` is the only way to curate listings _without_ refusing queries, and a
 surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
 defaults to `"declared"`. If you want listings-only curation, keep both keys.
 
@@ -760,7 +780,7 @@ is visible in `loadErrors` where a silently-uncurated one is not. This restores 
 had before the convention, when a non-string entry threw out of path normalization.
 
 **A broken surface explains the 404s it causes.** A package whose surface files all fail to compile
-exposes nothing, so *every* model in it, including the ones that compiled, is refused by name with a
+exposes nothing, so _every_ model in it, including the ones that compiled, is refused by name with a
 404 that reads as "does not exist". It now carries a warning naming the broken files and how many
 working models they took down. This is a narrow case by design: a compile error at first load fails
 the package outright, and a failed reload from the watcher, `reload_package` or `?reload=true` keeps
@@ -792,7 +812,6 @@ now carries a package warning with severity `error`, on every load and reload, i
 A tile whose source cannot be read from its text is not reported rather than guessed at.
 
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
-
 
 **Two annotations, one question each, and two different answers when they say no.**
 
@@ -1155,7 +1174,7 @@ The refusal was aimed at the right danger and drawn in the wrong place. A persis
 
 **Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
 
-**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely _reached_ a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
 
 **A refused `#@ persist` now reaches its author.** A refusal was computed, recorded on the build plan and read by nobody: the package published, the source was served live, and whoever wrote the annotation was told nothing. Each one is now a package warning carrying the gate's own message — the same list the package page's notices surface. It is the one materialization finding the build plan cannot also be read for, since a refused `storage`/`colocated` source is absent from `sources` entirely, so nothing there records that the annotation was written at all.
 

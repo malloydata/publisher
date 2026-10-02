@@ -673,7 +673,9 @@ If you have built dashboards in a classic BI tool, this is the part that will fe
 dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Dashboards or Notebooks section also offers its own **New dashboard** or **New notebook**): pick a
 source and its view (one select), a type (Dashboard or Notebook), and a title, and the file is written into the package and opened in the builder. From there it is
 the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
-view, label and chart from its own menu, and add filters from the strip above the grid.**
+view, label and chart from its own menu, and add filters from the strip above the grid.** Titles,
+descriptions and text tiles are click-to-edit where they stand. A **text tile** is markdown, added
+from the same dialog as a query tile.
 
 The **Viz type** choices are From the view (the view's own chart), Table (no chart), Line, Bar, Big value, Scatter,
 Shape map and Segment map. A choice the view cannot render stays in the list, greyed, with its reason
@@ -700,8 +702,12 @@ There is no proprietary layout document: the builder reads and writes the same
 it, so comments and anything it does not model survive the round trip. The result is a source file
 you can review in a pull request, and one an agent can write by hand just as well.
 
-The builder's **Save** writes the file back
-through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
+The builder's **Save** writes at once, with no review step, and then shows a notice with
+**View change** (the file's diff, read-only) and **Undo save**, which writes the file back as it was
+before that save. The notice stays until the next edit or save. The caption under the button says
+where Save writes. A notebook is the same builder over a one-column document (**Settings → Show as**
+switches the tag); a cell-format notebook opens converted and unsaved, and Undo save restores the
+original text. Save writes back through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
 atomically, reloads the package in place, and restores the previous text if the reload does not
 take it; a copy someone else changed since you opened it is refused (409), never merged. The
 check, the write, the reload and the restore all happen under one hold of the package lock, so two
@@ -827,12 +833,13 @@ to guard the host's other ways out (a nav link, the browser's Back, closing the 
 `false` when the editor unmounts), and block navigation while it is `true`. The Console's
 `DashboardEditPage` does this with a router blocker and a `beforeunload` listener.
 
-Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is the
-notebook counterpart of `DashboardEditor`. `createRoute` says whether a host can create documents
+Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is a thin
+wrapper over `DashboardEditor` with `kind="notebook"` (`DashboardEditor` also takes a `path` and a
+`kind`, to open a document as its tag's kind from the path the package lists it at). `createRoute` says whether a host can create documents
 (`"package"`, `"storage"`, or `undefined`), `useDocumentChoices` lists the models and views the New
 dialog offers, `createDocument` writes the new file by that route, and `newNotebookSource` /
 `newDashboardSource` build the starting text. `locatorFor` names a created document's address in a
-host's own store. The events are `DashboardEvent` and `NotebookEvent`.
+host's own store. The events are `DashboardEvent`, `NotebookEvent` and their union `BuilderEvent`; Undo save reports `*.save_undone`, or `*.save_undo_refused` when the write is refused.
 
 An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
 `resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps
