@@ -47,6 +47,10 @@ import { activeLlmSettings } from "../../providers/active";
 import { LlmMeter, StageError } from "./get_context_llm";
 import { refineStage } from "./get_context_refine";
 import { rerankStage } from "./get_context_rerank";
+import {
+   sourceMatchActive,
+   sourceMatchStage,
+} from "./get_context_source_match";
 import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
@@ -2467,7 +2471,11 @@ function runListing(
 // their exports before they exist whenever one of them is loaded first.
 const QUERY_STAGES: QueryStage[] = [];
 const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
-const rankStages = (): RankStage[] => [refineStage];
+// Source match is listed only for a request it applies to, so a trace shows
+// no row for it otherwise (refine and rerank report "skipped" when off; this
+// one has nothing to say unless it has work).
+const rankStages = (ctx: PipelineContext): RankStage[] =>
+   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
 const cardStages = (): CardStage[] => [rerankStage];
 
 /**
@@ -2598,9 +2606,41 @@ async function runContextQuery(
    // Lexical lunr is the mode only when no provider is configured, and
    // then the payload carries no `retrieval` marker and no per-entity
    // `score`, byte-identical to the lexical-only releases.
+   // The LLM stage settings are read before retrieval because source match
+   // takes the source targets away from the retrievers.
+   try {
+      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
+   // With source match on, source targets are answered by the model, so the
+   // retrievers rank only the other targets. With none left there is nothing
+   // to retrieve; the response keeps the shape of the mode the server is in.
+   const matchingSources = sourceMatchActive(ctx);
+   const retrievalCtx: PipelineContext = matchingSources
+      ? {
+           ...ctx,
+           request: {
+              ...request,
+              searches: request.searches.filter(
+                 (s) => s.targetType !== "source",
+              ),
+           },
+        }
+      : ctx;
    let ranked: RankedState | undefined;
-   for (const retriever of RETRIEVERS) {
-      const result = await retriever.retrieve(ctx);
+   if (matchingSources && retrievalCtx.request.searches.length === 0) {
+      ranked = {
+         rows: [],
+         belowCutoffCount: 0,
+         retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
+      };
+   }
+   for (const retriever of ranked ? [] : RETRIEVERS) {
+      const result = await retriever.retrieve(retrievalCtx);
       if ("unavailable" in result) {
          // "unconfigured" means no provider: the next retriever is the mode.
          if (result.unavailable === "unconfigured") continue;
@@ -2617,8 +2657,7 @@ async function runContextQuery(
    // an unrefined ranking.
    let cards: CardState;
    try {
-      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
-      ranked = await runRankStages(rankStages(), ranked, ctx);
+      ranked = await runRankStages(rankStages(ctx), ranked, ctx);
       // Grouping into cards, paging and serialization are shared by both
       // retrievers so the two cannot drift.
       cards = await runCardStages(

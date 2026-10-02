@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The settings of the request-time LLM stages (refine and rerank): the
+ * The settings of the request-time LLM stages (refine, rerank and source match): the
  * package's `retrieval` block in publisher.json combined with what the
  * operator allows in publisher.config.json. Resolved once per request, before
  * any stage runs.
@@ -10,6 +10,7 @@
 
 import { DEFAULT_REFINE_INSTRUCTIONS } from "../../prompts/refine";
 import { DEFAULT_RERANK_INSTRUCTIONS } from "../../prompts/rerank";
+import { DEFAULT_SOURCE_MATCH_INSTRUCTIONS } from "../../prompts/source_match";
 import { activeLlmSettings, getChatModel } from "../../providers/active";
 import type { ChatModel } from "../../providers/types";
 import type { Package } from "../../service/package";
@@ -17,6 +18,7 @@ import {
    DEFAULT_PACKAGE_RETRIEVAL,
    refineSettingsOf,
    rerankSettingsOf,
+   sourceMatchSettingsOf,
    type RefineLevelName,
 } from "../../service/package_retrieval";
 import { StageError, type LlmMeter } from "./get_context_llm";
@@ -34,6 +36,10 @@ export interface LlmStageSettings {
    rerank?: {
       chat: ChatModel;
       topSources: number;
+      instructions: string;
+   };
+   sourceMatch?: {
+      chat: ChatModel;
       instructions: string;
    };
 }
@@ -56,7 +62,14 @@ export function resolveLlmStages(
       DEFAULT_PACKAGE_RETRIEVAL;
    const refine = refineSettingsOf(retrieval);
    const rerank = rerankSettingsOf(retrieval);
-   if (refine.enabled === false && rerank.enabled === false) return undefined;
+   const sourceMatch = sourceMatchSettingsOf(retrieval);
+   if (
+      refine.enabled === false &&
+      rerank.enabled === false &&
+      sourceMatch.enabled === false
+   ) {
+      return undefined;
+   }
    let chat: ChatModel | null;
    try {
       chat = getChatModel();
@@ -91,6 +104,16 @@ export function resolveLlmStages(
                  instructions:
                     retrieval.prompts.rerank?.text ??
                     DEFAULT_RERANK_INSTRUCTIONS,
+              },
+           }
+         : {}),
+      ...(sourceMatch.enabled !== false
+         ? {
+              sourceMatch: {
+                 chat: metered,
+                 instructions:
+                    retrieval.prompts.sourceMatch?.text ??
+                    DEFAULT_SOURCE_MATCH_INSTRUCTIONS,
               },
            }
          : {}),

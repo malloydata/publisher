@@ -259,7 +259,8 @@ function mapTargets(raw: Map<number, number>): Map<number, number> {
  * scale as everything else once refine ran: its cosine is the raw score.
  */
 function sourceRowOnKnots(row: ResultEntity): ResultEntity {
-   if (row.score === undefined) return row;
+   // Source match already rated this row on the knots: its raw score is a level.
+   if (row.score === undefined || row.raw !== undefined) return row;
    const targetRaw = row.targetScores ? new Map(row.targetScores) : undefined;
    return {
       ...row,

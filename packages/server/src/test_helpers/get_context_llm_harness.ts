@@ -119,6 +119,29 @@ const overlap = (a: Set<string>, b: Set<string>) =>
  * the question is 3, then 2, 1, 0 by overlap; listed best first.
  */
 export function keywordReply(prompt: string): string {
+   if (prompt.includes("Source search phrase:")) {
+      // Source match: 2 or more shared words is HIGH, one is MEDIUM, none is
+      // left out. Each candidate is two lines, so group them by blank line.
+      const phrase = /Source search phrase:\n(.*)/.exec(prompt)![1];
+      const words = contentWords(JSON.parse(phrase));
+      const body = prompt
+         .split("<candidates>\n")[1]
+         .split("\n</candidates>")[0];
+      return JSON.stringify(
+         body.split("\n\n").flatMap((block) => {
+            const index = Number(/^\[(\d+)\]/.exec(block)![1]);
+            const n = overlap(
+               words,
+               contentWords(block.replace(/^\[\d+\]/, "")),
+            );
+            return n >= 2
+               ? [{ index, score: "HIGH" }]
+               : n === 1
+                 ? [{ index, score: "MEDIUM" }]
+                 : [];
+         }),
+      );
+   }
    if (prompt.includes("<candidates>")) {
       const phrase = /Search phrase to rate the candidates against:\n(.*)/.exec(
          prompt,

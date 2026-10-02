@@ -14,6 +14,7 @@ import {
    refineSettingsOf,
    rerankSettingsOf,
    resolvePromptPath,
+   sourceMatchSettingsOf,
 } from "./package_retrieval";
 
 describe("publisher.json retrieval block", () => {
@@ -61,12 +62,12 @@ describe("publisher.json retrieval block", () => {
       }
       expect(error).toBeInstanceOf(PackageManifestError);
       expect((error as Error).message).toBe(
-         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, prompts.",
+         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, prompts.",
       );
       expect(() =>
          parsePackageRetrieval({ prompts: { rephrase: "p.md" } }),
       ).toThrow(
-         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank.",
+         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank, sourceMatch.",
       );
    });
 });
@@ -161,6 +162,46 @@ describe("publisher.json retrieval.refine and retrieval.rerank", () => {
          ),
       ).not.toThrow();
    });
+
+   it("sourceMatch defaults to auto and parses enabled", () => {
+      expect(sourceMatchSettingsOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
+         enabled: "auto",
+      });
+      expect("sourceMatch" in parsePackageRetrieval({})).toBe(false);
+      expect(
+         parsePackageRetrieval({ sourceMatch: { enabled: false } }).sourceMatch,
+      ).toEqual({ enabled: false });
+      expect(parsePackageRetrieval({ sourceMatch: {} }).sourceMatch).toEqual({
+         enabled: "auto",
+      });
+      expect(() =>
+         parsePackageRetrieval({ sourceMatch: { enabled: "yes" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.sourceMatch.enabled: expected "auto", true or false, got "yes". Fix:',
+      );
+      expect(() =>
+         parsePackageRetrieval({ sourceMatch: { topSources: 3 } }),
+      ).toThrow(
+         "retrieval.sourceMatch: unknown key 'topSources'. Valid keys: enabled.",
+      );
+   });
+
+   it("sourceMatch enabled: true without an LLM stops the load and names both fixes", () => {
+      const settings = readSync({ sourceMatch: { enabled: true } });
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         PackageManifestError,
+      );
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         /retrieval\.sourceMatch\.enabled: true needs an LLM.*retrieval\.llm.*LLM_API_KEY.*"auto"/s,
+      );
+      expect(() => assertRequiredStagesAvailable(settings, true)).not.toThrow();
+      expect(() =>
+         assertRequiredStagesAvailable(
+            readSync({ sourceMatch: { enabled: "auto" } }),
+            false,
+         ),
+      ).not.toThrow();
+   });
 });
 
 /** Settings as readPackageRetrieval would return them, with no prompt files. */
@@ -171,6 +212,7 @@ function readSync(raw: unknown) {
       keyphrases: parsed.keyphrases,
       ...(parsed.refine ? { refine: parsed.refine } : {}),
       ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
+      ...(parsed.sourceMatch ? { sourceMatch: parsed.sourceMatch } : {}),
       prompts: {},
    };
 }
@@ -204,6 +246,25 @@ describe("prompt file", () => {
          prompts: { keyphrase: "prompts/k.md" },
       });
       expect(again.prompts.keyphrase?.hash).not.toBe(s.prompts.keyphrase?.hash);
+   });
+
+   it("reads the sourceMatch prompt, with the same path rules as the others", async () => {
+      fs.writeFileSync(path.join(root, "prompts", "s.md"), "Pick sources.");
+      const s = await readPackageRetrieval(root, {
+         prompts: { sourceMatch: "prompts/s.md" },
+      });
+      expect(s.prompts.sourceMatch).toMatchObject({
+         path: "prompts/s.md",
+         text: "Pick sources.",
+      });
+      await expect(
+         readPackageRetrieval(root, { prompts: { sourceMatch: "../x.md" } }),
+      ).rejects.toThrow(
+         /retrieval\.prompts\.sourceMatch: "\.\.\/x\.md" resolves outside the package directory\. Fix: use a path inside the package, e\.g\. "prompts\/sourceMatch\.md"/,
+      );
+      await expect(
+         readPackageRetrieval(root, { prompts: { sourceMatch: outside } }),
+      ).rejects.toThrow("is an absolute path");
    });
 
    it("rejects an absolute path", async () => {
