@@ -293,6 +293,14 @@ The hosted endpoint itself was not called.
 | Lexical fallback     | none                                                                                               | lunr, the mode when no embedding provider is configured         | keep                                                   |
 | Incremental indexing | every version rewrites all entities and re-runs every LLM call                                     | content hash per row                                            | keep                                                   |
 
+Built so far, with an embedding provider configured and no LLM: the index embeds direct entities only, the scan
+keeps the best 10 rows per source per target, joined copies are made at assembly from the join topology to
+depth 10 and damped by `0.9 ** (hops + 1)`, a source's relevance is its best field (direct or joined), and a
+ranked response is cut to whole cards under 35,000 characters (1,000 reserved). The join topology is read from the
+compiled model: each join's alias from the model's join tree, and its target source from the join entry's
+`sourceID`. A join with no named target (an inline table) reaches nothing at assembly. The lexical path still ranks
+the index's own joined copies, to depth 2. Scores stay cosine; the knots, refine and rerank are later steps.
+
 Moving the candidate window, scoring and join handling to hosted values changes what `main` returns when
 embeddings are configured. The no-key path (lexical) does not change and keeps its byte-identical test. The
 keyed path may change freely: few deployments run embeddings today. Its golden entries are updated in a commit
