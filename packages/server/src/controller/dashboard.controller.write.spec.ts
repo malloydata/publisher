@@ -252,6 +252,27 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.writeModelFileTransactional.called).toBe(false);
    });
 
+   it("refuses an untagged dashboards/ file with 400 before compiling", async () => {
+      const { controller, environment } = harness();
+      const error = await controller
+         .putDashboardSource("env", "pkg", PATH, {
+            source: "source: a is duckdb.sql('select 1')\n",
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toContain("not a dashboard");
+      expect(environment.compileSource.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
+   });
+
+   it("lets a dashboards/ file tagged at the query level through the pre-write check", async () => {
+      const { controller, environment } = harness();
+      await controller.putDashboardSource("env", "pkg", PATH, {
+         source: '# artifact { title="T" }\nrun: a -> x\n',
+      });
+      expect(environment.compileSource.called).toBe(true);
+   });
+
    it("refuses a tagged write over an existing untagged file, a shared include", async () => {
       const include = "##(markdown) shared\n";
       const { controller, environment } = harness({ current: include });

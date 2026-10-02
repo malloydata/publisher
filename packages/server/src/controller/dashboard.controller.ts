@@ -22,6 +22,7 @@ import {
    artifactKindInText,
    claimsToBeANotebook,
    documentKind,
+   hasArtifactLineOutsideBlocks,
 } from "../service/notebook";
 import { dashboardSlug, factsCarryArtifactTag } from "../service/dashboard";
 import { formatProblem } from "../service/query_text";
@@ -65,6 +66,9 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
 
 /** The only files the write endpoint accepts: a dashboard or a notebook, at the top of its directory. */
 const DASHBOARD_FILE = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
+
+/** An `# artifact` or `## artifact` line, or the opener of a block holding one. */
+const ANY_ARTIFACT_NOTE = /^#{1,2}(?:\|\s*|[ \t]*)artifact\b/;
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
@@ -211,6 +215,15 @@ export class DashboardController {
             `\`${modelPath}\` has no \`## artifact\` tag, so it is not a notebook. ` +
                `Only a dashboard (\`dashboards/<slug>.malloy\`) or a tagged notebook ` +
                `(\`notebooks/<slug>.malloy\`) can be written here.`,
+         );
+      }
+      // A dashboard may be tagged at the query level (`#`), so either sigil passes; a tag in a comment or string still reaches the reload verify.
+      if (
+         !inNotebooksFolder &&
+         !hasArtifactLineOutsideBlocks(body.source, ANY_ARTIFACT_NOTE)
+      ) {
+         throw new BadRequestError(
+            `\`${modelPath}\` has no \`# artifact\` tag, so it is not a dashboard.`,
          );
       }
       const environment = await this.environmentStore.getEnvironment(
