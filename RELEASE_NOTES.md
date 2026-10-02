@@ -123,6 +123,21 @@ came from the wrong field. It now keeps the full path, always quoted in the file
 now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
 the source had no such field.
 
+## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
+
+**Leaving with unsaved edits now asks.** "Done editing" in `DashboardBuilder`, `DashboardEditor` and `NotebookEditor` shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
+
+For hosts that mount an editor themselves, the builders now draw "Done editing" and take two props: `onExit`, called once the user has chosen to leave, and `onDirtyChange(dirty)`, the hook for your own navigation guard. A host that passed its own exit button as `toolbar` should pass `onExit` instead, and a host whose `onExit` also prompts will now prompt twice. `UnsavedChangesDialog` is exported from `@malloy-publisher/sdk` for pages that need the same prompt.
+
+Smaller changes in the same pass:
+
+- **Text cells** have a Cancel button that discards the draft, Cmd/Ctrl+Enter commits it, Cmd/Ctrl+S saves from inside the field, and an empty or invalid cell is flagged while you type instead of at Save. A newly added text cell that ends empty is dropped.
+- **Disabled controls say why.** Remove tile on a saved dashboard's last tile, and the notebook cell buttons that cannot act (move past a definition, add a query above setup lines), stay focusable and show their reason on screen.
+- **The chart picker lists every chart type**, with the ones that do not fit the view disabled and their reason beside them, rather than hiding them.
+- **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
+- **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
+- **A failed notebook save** now offers Copy my changes, so a refused or conflicting save does not cost the text.
+
 ## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
 
 Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
@@ -276,7 +291,7 @@ the parts whose text changed.
 **`embeddingIndex.status` keeps its name and changes its basis, so read this if
 you poll it.** On the package resource
 (`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
-from whether cached rows covered the package's current entity *names*. Vectors
+from whether cached rows covered the package's current entity _names_. Vectors
 outlive a restart and a reload, so that reported `ready` immediately — while the
 next question was still answered lexically. Anything following the documented
 "poll until `ready` before measuring retrieval quality" could therefore measure a
@@ -303,7 +318,7 @@ anything never sees `ready`.
 **If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
 now match reality.** The `dims` column records the length the provider actually
 returned, and some providers (Ollama among them) ignore the requested value.
-`embeddedRows` and `embeddedEntities` were counted against the *configured*
+`embeddedRows` and `embeddedEntities` were counted against the _configured_
 value instead, so for those providers they read 0 while retrieval was reading
 those same vectors happily — and that also pinned `status` at `indexing`. Both
 now count on the same rule the sync uses to decide a row is current: the current
@@ -437,14 +452,14 @@ they live. The one change is a tagged dashboard it lists, which reads the surfac
 it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
 this package, then `Fix:` and the one edit:
 
-| `publisher.json` | Warning |
-| --- | --- |
-| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
-| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
-| `explores: []` alone | Does nothing. Delete it. |
-| `queryableSources: "declared"` | Does nothing. Delete it. |
-| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
-| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+| `publisher.json`                     | Warning                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `explores` naming files              | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement.                                         |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`.                                                                                    |
+| `explores: []` alone                 | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "declared"`       | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "all"`            | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case)      | Ignored: only a root file named exactly `index.malloy` decides what is published.                                                                                                                           |
 
 Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
 holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
@@ -617,7 +632,6 @@ and the terms its binding re-applies. It is optional and additive: the key is ab
 declares such a join, so no existing plan changes shape. A consumer generating a strict client from
 `api-doc.yaml` rejects the field until it regenerates.
 
-
 ## [0.8.0] — a refused persist source is skipped, and no longer fails the whole run
 
 **Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
@@ -701,7 +715,7 @@ deprecation warning. An explicit `explores` always wins, and a package with both
 `explores` that omits it carries a warning rather than the server guessing.
 
 **`index.malloy` does not replace `queryableSources: "all"`**, so `"all"` gets no deprecation
-warning. `"all"` is the only way to curate listings *without* refusing queries, and a
+warning. `"all"` is the only way to curate listings _without_ refusing queries, and a
 surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
 defaults to `"declared"`. If you want listings-only curation, keep both keys.
 
@@ -745,7 +759,7 @@ is visible in `loadErrors` where a silently-uncurated one is not. This restores 
 had before the convention, when a non-string entry threw out of path normalization.
 
 **A broken surface explains the 404s it causes.** A package whose surface files all fail to compile
-exposes nothing, so *every* model in it, including the ones that compiled, is refused by name with a
+exposes nothing, so _every_ model in it, including the ones that compiled, is refused by name with a
 404 that reads as "does not exist". It now carries a warning naming the broken files and how many
 working models they took down. This is a narrow case by design: a compile error at first load fails
 the package outright, and a failed reload from the watcher, `reload_package` or `?reload=true` keeps
@@ -777,7 +791,6 @@ now carries a package warning with severity `error`, on every load and reload, i
 A tile whose source cannot be read from its text is not reported rather than guessed at.
 
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
-
 
 **Two annotations, one question each, and two different answers when they say no.**
 
@@ -1140,7 +1153,7 @@ The refusal was aimed at the right danger and drawn in the wrong place. A persis
 
 **Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
 
-**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely _reached_ a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
 
 **A refused `#@ persist` now reaches its author.** A refusal was computed, recorded on the build plan and read by nobody: the package published, the source was served live, and whoever wrote the annotation was told nothing. Each one is now a package warning carrying the gate's own message — the same list the package page's notices surface. It is the one materialization finding the build plan cannot also be read for, since a refused `storage`/`colocated` source is absent from `sources` entirely, so nothing there records that the annotation was written at all.
 

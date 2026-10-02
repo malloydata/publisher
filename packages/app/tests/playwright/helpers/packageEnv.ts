@@ -40,12 +40,19 @@ export async function registerPackageEnv(
    pkg: string,
    /** Files added to (or replacing ones in) the copy before the server loads it. */
    files: Record<string, string> = {},
+   /** Paths removed from the copy first, to start a package with a section empty. */
+   remove: string[] = [],
 ): Promise<PackageEnv> {
    const env = tmpName(prefix);
    const location = fs.mkdtempSync(
       path.join(os.tmpdir(), `publisher-${prefix}-`),
    );
    fs.cpSync(source, location, { recursive: true });
+   for (const relative of remove)
+      fs.rmSync(path.join(location, relative), {
+         recursive: true,
+         force: true,
+      });
    for (const [relative, text] of Object.entries(files)) {
       const target = path.join(location, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
