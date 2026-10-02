@@ -1251,6 +1251,104 @@ interface JoinSchemaField {
 }
 
 /**
+ * Step into a nested join: the dotted path so far and the widest relationship
+ * on it. `collectJoinedFields` (index-time copies) and `buildJoinReaches` (the
+ * topology) both walk joins with this, so a path or fan-out is computed one
+ * way. A `one` hop keeps the parent's fan-out; any other relationship
+ * replaces it.
+ */
+function enterJoin(
+   join: { name: string; relationship?: Relationship },
+   from: { joinPath: string; fanout: Relationship },
+): { joinPath: string; fanout: Relationship } {
+   return {
+      joinPath: `${from.joinPath}.${join.name}`,
+      fanout:
+         join.relationship === "one"
+            ? from.fanout
+            : (join.relationship ?? from.fanout),
+   };
+}
+
+/**
+ * The deepest join chain the topology records. Assembly reads it through
+ * `settings.joinMaxDepth`, which may be lower. It is separate from
+ * MAX_JOIN_PATH_DEPTH because the topology holds paths, not one entity per
+ * path, so a deep chain costs nothing against the embedded entity cap.
+ */
+export const JOIN_TOPOLOGY_MAX_DEPTH = 10;
+
+/** The part of a compiled join entry the topology reads. */
+interface CompiledJoin {
+   name?: string;
+   as?: string;
+   join?: string;
+   sourceID?: string;
+   referenceID?: string;
+   fields?: unknown[];
+}
+
+/**
+ * The name of the source a compiled join points at. The IR join entry's own
+ * `name` is the underlying table or SQL, not the source; the source is in
+ * `sourceID`, written "sourceName@modelURL". Undefined for a join with no
+ * such id (an inline table), which has no source to reach.
+ */
+function joinTargetSource(join: CompiledJoin): string | undefined {
+   const id = join.sourceID ?? join.referenceID;
+   if (typeof id !== "string") return undefined;
+   // Greedy, so a name containing "@" still splits at the URL's own "@".
+   const match = /^(.+)@[a-z][a-z0-9+.-]*:\/\//i.exec(id);
+   return match?.[1];
+}
+
+/**
+ * Every source reachable from one source by joins, up to
+ * JOIN_TOPOLOGY_MAX_DEPTH deep. Aliases, relationships and nesting come from
+ * the same SourceInfo join tree `collectJoinedFields` walks; the target
+ * source's name is not in that tree (#1100), so it is read from the compiled
+ * join entry with the same alias (`compiled`). A join with no readable target
+ * records nothing, and its nested joins are still followed.
+ */
+function buildJoinReaches(args: {
+   fields: JoinSchemaField[];
+   compiled: unknown[] | undefined;
+   from?: { joinPath: string; fanout: Relationship };
+   path?: string[];
+   out: JoinReach[];
+}): void {
+   const { fields, compiled, from, path = [], out } = args;
+   for (const field of fields) {
+      if (field.kind !== "join") continue;
+      const entry = (compiled as CompiledJoin[] | undefined)?.find(
+         (candidate) =>
+            candidate.join !== undefined &&
+            activeName(candidate as { name?: string; as?: string }) ===
+               field.name,
+      );
+      const here = from
+         ? enterJoin(field, from)
+         : {
+              joinPath: field.name,
+              fanout: field.relationship as Relationship,
+           };
+      const hopPath = [...path, field.name];
+      const targetSource = entry ? joinTargetSource(entry) : undefined;
+      if (targetSource) {
+         out.push({ targetSource, path: hopPath, fanout: here.fanout });
+      }
+      if (hopPath.length >= JOIN_TOPOLOGY_MAX_DEPTH) continue;
+      buildJoinReaches({
+         fields: field.schema?.fields ?? [],
+         compiled: entry?.fields,
+         from: here,
+         path: hopPath,
+         out,
+      });
+   }
+}
+
+/**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
  * Indexing the join alone is not enough, even though the target source is
@@ -1294,11 +1392,7 @@ function collectJoinedFields(args: {
          collectJoinedFields({
             ...args,
             fields: field.schema?.fields ?? [],
-            joinPath: `${joinPath}.${field.name}`,
-            fanout:
-               field.relationship === "one"
-                  ? fanout
-                  : (field.relationship ?? fanout),
+            ...enterJoin(field, { joinPath, fanout }),
             depth: depth + 1,
          });
          continue;
@@ -1374,6 +1468,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // runs, so both can skip the same names and neither can resurrect a card for
    // one the other dropped (see the query loop and cardFor below).
    const droppedSources = new Set<string>();
+   // Which sources each source reaches by joins; see buildJoinReaches.
+   const topology = new Map<string, JoinReach[]>();
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
@@ -1490,6 +1586,15 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             doc: docText(sourceAnnotations),
             embedDoc: docOnlyText(sourceAnnotations),
          });
+         if (!topology.has(governanceKey)) {
+            const reaches: JoinReach[] = [];
+            buildJoinReaches({
+               fields: (sourceInfo.schema.fields ?? []) as JoinSchemaField[],
+               compiled: findSourceDef(modelDef, sourceName)?.fields,
+               out: reaches,
+            });
+            if (reaches.length > 0) topology.set(governanceKey, reaches);
+         }
          for (const field of sourceInfo.schema.fields ?? []) {
             // Joins are indexed as entities in their own right: an agent that
             // cannot see a declared join concludes the model has none and
@@ -1598,7 +1703,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   return { entities: collapseAliases(deduped), governance, droppedSources };
+   return {
+      entities: collapseAliases(deduped),
+      governance,
+      droppedSources,
+      topology,
+   };
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -1615,6 +1725,8 @@ interface CollectedModel {
    governance: Map<string, SourceGovernance>;
    /** Sources dropped for an unconditional deny-all gate; see isUnconditionalDenyAuthorize. */
    droppedSources: Set<string>;
+   /** Joins each source reaches, keyed by sourceContextKey. */
+   topology: Map<string, JoinReach[]>;
 }
 
 /**
@@ -1767,15 +1879,19 @@ function collapseAliases(entities: Entity[]): Entity[] {
 
 /** One source reachable from a root source by joins. */
 export interface JoinReach {
-   /** sourceContextKey of the source the fields live on. */
-   targetKey: string;
+   /**
+    * Name of the source the fields live on. Not a sourceContextKey: the
+    * compiled join names its target source and the file that defines it, but
+    * not the package-relative path of that file, so a name is all there is.
+    */
+   targetSource: string;
    /** Join names from the root, root not included. Aliases, not source names. */
    path: string[];
    /** Widest relationship on the path; "many" anywhere means fan-out. */
    fanout: Relationship;
 }
 
-/** For each root source key, every source reachable by joins. */
+/** For each root source (sourceContextKey), every source reachable by joins. */
 export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
 
 export interface PackageIndex {
@@ -1791,13 +1907,13 @@ export interface PackageIndex {
    retrievalEntities: readonly Entity[];
    /**
     * `retrievalEntities` without the joined copies (those with a joinPath),
-    * frozen once so it can be fingerprinted and cached the same way. Nothing
-    * searches it yet.
+    * frozen once so it can be fingerprinted and cached the same way.
     */
    directEntities: readonly Entity[];
    /**
-    * Which sources each source reaches by joins. Empty while joined copies
-    * are index rows; nothing reads it yet.
+    * Which sources each source reaches by joins, up to
+    * JOIN_TOPOLOGY_MAX_DEPTH deep, read from the compiled model. A source
+    * whose model has no compiled IR reaches nothing here.
     */
    topology: JoinTopology;
    index: lunr.Index;
@@ -1913,7 +2029,7 @@ function buildSourceContext(
 const indexCache = new WeakMap<Package, PackageIndex>();
 
 /** Get, or lazily build and cache, the lunr entity index for a package. */
-async function getPackageIndex(
+export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
@@ -1951,7 +2067,7 @@ async function getPackageIndex(
       directEntities: Object.freeze(
          retrievalEntities.filter((e) => !e.joinPath),
       ),
-      topology: new Map(),
+      topology: collected.topology,
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
