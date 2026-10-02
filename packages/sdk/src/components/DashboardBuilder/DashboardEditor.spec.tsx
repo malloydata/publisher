@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    clearCache,
@@ -12,6 +12,7 @@ import {
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
 import type { DashboardEvent } from "../Dashboard/telemetry";
+import { globalQueryClient } from "../../utils/queryClient";
 
 /**
  * The Console's path through the builder, with the server mocked at the
@@ -28,10 +29,13 @@ source: a is scoped_orders extend {
 }`;
 
 let served = PACKAGE_FILE;
+/** Set, and the dashboard's own file fails to fetch: a refetch the server could not answer. */
+let fetchFailure: Error | undefined;
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
-   path === "broken.malloy"
-      ? Promise.reject(new Error("reloading"))
+   path === "broken.malloy" ||
+   (fetchFailure && path === "dashboards/overview.malloy")
+      ? Promise.reject(fetchFailure ?? new Error("reloading"))
       : Promise.resolve({
            data:
               path === "dashboards/overview.malloy"
@@ -119,6 +123,7 @@ beforeEach(() => {
    clearCache();
    localStorage.clear();
    served = PACKAGE_FILE;
+   fetchFailure = undefined;
    getDashboard.mockClear();
 });
 
@@ -155,6 +160,28 @@ describe("DashboardEditor", () => {
          ).length,
       ).toBe(2);
       expect(getDashboard).not.toHaveBeenCalled();
+   });
+
+   it("keeps the builder and its unsaved edit through a failed refetch", async () => {
+      mount();
+      await screen.findByText("Storefront");
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.change(screen.getByLabelText("Tile title"), {
+         target: { value: "Categories" },
+      });
+      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+
+      fetchFailure = new Error("the server went away");
+      await act(async () => {
+         await globalQueryClient.refetchQueries({
+            queryKey: ["dashboard-editor-model"],
+         });
+      });
+      expect(
+         await screen.findByText(/could not be re-read from the server/),
+      ).toBeDefined();
+      expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
+      expect(button("Save changes")).toBeDefined();
    });
 
    it("keeps the catalog when one published model fails to load", async () => {

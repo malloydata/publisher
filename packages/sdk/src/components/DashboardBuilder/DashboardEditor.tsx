@@ -547,14 +547,15 @@ export function DashboardEditor(props: DashboardEditorProps) {
             Received: {props.resourceUri}
          </Alert>
       );
-   if (modelQuery.isError)
+   // Only before an open: after one, a failed refetch is a banner above the builder so unsaved edits survive it.
+   if (modelQuery.isError && !opened)
       return (
          <ApiErrorDisplay
             error={modelQuery.error}
             context="Opening the dashboard"
          />
       );
-   if (!packageText || !draftChecked)
+   if (!opened && (!packageText || !draftChecked))
       // The bar first, so the page it is opening into is already the right
       // shape: the reader's view had a bar in this spot, and a spinner where
       // the bar was made the switch look like a page reload.
@@ -583,6 +584,12 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const draftDiffers = draft !== undefined && draft !== packageText;
    return (
       <Stack sx={{ gap: 2 }}>
+         {modelQuery.isError && (
+            <Alert severity="warning">
+               The dashboard could not be re-read from the server:{" "}
+               {modelQuery.error?.message}. Your edits are still here.
+            </Alert>
+         )}
          {!authoritative && offered && draftDiffers && resume === undefined && (
             <Alert
                severity="info"
