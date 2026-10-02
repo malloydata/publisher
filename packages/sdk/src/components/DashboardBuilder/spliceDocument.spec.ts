@@ -1195,13 +1195,15 @@ describe("spliceDashboardDocument: the page's own settings", () => {
    });
 
    it("reorders a list holding a text tile, keeping its entry as written", async () => {
-      const source = fs.readFileSync(
-         path.join(
-            REPO,
-            "packages/server/tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
-         ),
-         "utf8",
-      );
+      const source = fs
+         .readFileSync(
+            path.join(
+               REPO,
+               "packages/server/tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
+            ),
+            "utf8",
+         )
+         .replace(/\r\n/g, "\n");
       const out = await spliced(source, (d) => {
          d.tiles.reverse();
       });

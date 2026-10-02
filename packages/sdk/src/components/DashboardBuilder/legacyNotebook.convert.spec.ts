@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { isQueryTile, isTextTile } from "./document";
 import {
    conversionRefused,
@@ -55,12 +56,14 @@ async function document(text: string) {
 async function compiled(pkg: string, file: string, text: string) {
    const { Runtime } = await import("@malloydata/malloy");
    const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-   const url = new URL(`file://${pkg}/${file}`);
+   const url = pathToFileURL(path.join(pkg, file));
    const connection = new DuckDBConnection("duckdb", ":memory:", pkg);
    const runtime = new Runtime({
       urlReader: {
          readURL: async (at: URL) =>
-            at.href === url.href ? text : fs.readFileSync(at.pathname, "utf8"),
+            at.href === url.href
+               ? text
+               : fs.readFileSync(fileURLToPath(at), "utf8"),
       },
       connections: { lookupConnection: async () => connection },
    } as never);
