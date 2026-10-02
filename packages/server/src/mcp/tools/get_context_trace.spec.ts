@@ -205,17 +205,19 @@ describe("X-Publisher-Retrieval-Trace header", () => {
             headers: { "x-publisher-retrieval-trace": "summary" },
          },
       });
-      // No LLM is configured here, so the one registered stage is skipped.
+      // No LLM is configured here, so both registered stages are skipped.
+      const skipped = (name: string) => ({
+         name,
+         status: "skipped",
+         ms: 0,
+         in: 1,
+         out: 1,
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      });
       expect(payload.retrieval_trace.stages).toEqual([
-         {
-            name: "refine",
-            status: "skipped",
-            ms: 0,
-            in: 1,
-            out: 1,
-            llm_calls: 0,
-            tokens: { input: 0, output: 0 },
-         },
+         skipped("refine"),
+         skipped("rerank"),
       ]);
    });
 

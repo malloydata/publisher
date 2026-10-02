@@ -300,6 +300,7 @@ function expandJoins(
             packageName: row.packageName,
             modelPath: place.modelPath,
             doc: row.doc,
+            ...(row.embedDoc ? { embedDoc: row.embedDoc } : {}),
             relationship: place.fanout,
             joinPath: place.joinPath,
             ...(row.dataType ? { dataType: row.dataType } : {}),

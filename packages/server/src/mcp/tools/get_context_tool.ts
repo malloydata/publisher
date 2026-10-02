@@ -45,6 +45,7 @@ import {
 } from "./get_context_pipeline";
 import { LlmMeter, StageError } from "./get_context_llm";
 import { refineStage } from "./get_context_refine";
+import { rerankStage } from "./get_context_rerank";
 import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
@@ -152,6 +153,12 @@ export interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   /**
+    * The `#(doc)` text alone, with no annotation fallback (see Entity.embedDoc).
+    * The LLM stages read this, never `doc`, which can carry raw annotation
+    * lines. Never serialized.
+    */
+   embedDoc?: string;
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
@@ -593,6 +600,7 @@ export function projectEntity(
       packageName,
       modelPath: e.modelPath,
       doc: e.doc,
+      ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -656,7 +664,7 @@ function shapeCards(
 } {
    const { request, pkgIndex, settings } = ctx;
    const paged = state.cards.slice(0, request.limit);
-   const sources = toSourceResults(
+   const built = toSourceResults(
       paged.flatMap((card) => card.rows),
       pkgIndex.sourceContext,
       request.environmentName,
@@ -669,6 +677,20 @@ function shapeCards(
       request.includeCode,
       pkgIndex.droppedSources,
    );
+   // toSourceResults folds a card's relevance from its rows. After rerank the
+   // card's relevance is the reranker's score, which no row carries, so it is
+   // put back from the draft.
+   const sources = state.reranked
+      ? built.map((card) => {
+           const id = card.source_info.resource_id;
+           const draft = paged.find(
+              (d) => d.key === sourceContextKey(id.model_path, id.source),
+           );
+           return draft?.relevance === undefined
+              ? card
+              : { ...card, relevance: draft.relevance };
+        })
+      : built;
    const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
    // Entities cut inside a card the budget then removed are not reported: the
    // card is not in the answer, and its own cut warning is the budget's.
@@ -678,7 +700,8 @@ function shapeCards(
          : paged;
    return {
       sources: fitted.cards,
-      totalSources: state.cards.length,
+      // Cards the reranker kept out of its top N still matched, so they count.
+      totalSources: state.cards.length + (state.discarded ?? 0),
       entitiesDropped: kept.reduce(
          (sum, card) => sum + card.entitiesDropped,
          0,
@@ -2219,6 +2242,15 @@ const sourceCutWarning = (returned: number, matched: number) =>
       ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
       : undefined;
 /**
+ * Cards the reranker left out because only its top N are ranked. They matched,
+ * and `total_available` counts them, but no page size reaches them: the remedy
+ * is a narrower question.
+ */
+const rerankCutWarning = (dropped: number, top: number | undefined) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
+      : undefined;
+/**
  * A browse that stopped early. Its remedy is NOT the ranked one: a listing
  * has a resumable order, so the rest is one `offset` away and raising the
  * limit is the wrong advice -- it caps at 150 either way, and paging is
@@ -2435,7 +2467,7 @@ function runListing(
 const QUERY_STAGES: QueryStage[] = [];
 const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
 const rankStages = (): RankStage[] => [refineStage];
-const cardStages = (): CardStage[] => [];
+const cardStages = (): CardStage[] => [rerankStage];
 
 /**
  * The values the server runs with; changing one changes responses. Joins are
@@ -2607,6 +2639,14 @@ async function runContextQuery(
    // warning counts them as returned and only the budget warning speaks of them.
    const pageReturned = sources.length + budgetDropped;
    const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
+   // Cards rerank kept out of its top N are in total_available but not in the
+   // page's reach, so raising `limit` would not show them: they get their own
+   // warning and are left out of the page-cut one.
+   const rerankDropped = cards.discarded ?? 0;
+   const rerankWarning = rerankCutWarning(
+      rerankDropped,
+      ctx.llmStages?.rerank?.topSources,
+   );
    if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
@@ -2628,7 +2668,8 @@ async function runContextQuery(
          ...warningsFor(
             // Counted in CARDS, the same unit `returned` reports, so the
             // two cannot disagree.
-            sourceCutWarning(pageReturned, totalSources),
+            sourceCutWarning(pageReturned, totalSources - rerankDropped),
+            rerankWarning,
             budgetWarning,
             entityCutWarning(entitiesDropped),
          ),

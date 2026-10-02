@@ -33,6 +33,8 @@ const search = (
 });
 
 interface RowOptions {
+   /** The `#(doc)` text the model may see. */
+   embedDoc?: string;
    target?: number;
    modelPath?: string;
    kind?: string;
@@ -55,6 +57,7 @@ function row(
       packageName: "p",
       modelPath: o.modelPath ?? "m.malloy",
       doc: "",
+      ...(o.embedDoc ? { embedDoc: o.embedDoc } : {}),
       ...(o.dataType ? { dataType: o.dataType } : {}),
       score: cosine,
       targetScores: new Map([[target, cosine], ...(o.extraTargets ?? [])]),
@@ -68,26 +71,11 @@ function ctxFor(
       searches?: Search[];
       minLevel?: "LOW" | "MEDIUM" | "HIGH";
       concurrency?: number;
-      docs?: Record<string, string>;
    } = {},
 ): PipelineContext {
    const searches = options.searches ?? [search(0, "dimension", "state")];
    return {
       request: { searches } as unknown as ResolvedRequest,
-      pkgIndex: {
-         directEntities: Object.entries(options.docs ?? {}).map(
-            ([key, doc]) => {
-               const [source, name] = key.split(".");
-               return {
-                  modelPath: "m.malloy",
-                  kind: "dimension",
-                  source,
-                  name,
-                  embedDoc: doc,
-               };
-            },
-         ),
-      },
       llmStages: {
          concurrency: options.concurrency ?? 4,
          refine: {
@@ -440,7 +428,10 @@ describe("refine stage", () => {
 describe("refine prompt", () => {
    it("carries the question, the phrase and numbered candidate lines", async () => {
       const rows = [
-         row("orders", "state", 0.6, { dataType: "string" }),
+         row("orders", "state", 0.6, {
+            dataType: "string",
+            embedDoc: "State the order\n  ships to.   ",
+         }),
          row("orders", "total", 0.5, {
             kind: "measure",
             dataType: "number",
@@ -455,9 +446,6 @@ describe("refine prompt", () => {
                search(0, "dimension", "state"),
                search(1, "measure", "revenue"),
             ],
-            docs: {
-               "orders.state": "State the order\n  ships to.   ",
-            },
          }),
       );
       const first = chat.prompts.find((p) => p.includes('"state"')) as string;
@@ -472,8 +460,8 @@ describe("refine prompt", () => {
       const long = `${"word ".repeat(400)}end`;
       const chat = scriptedChat(rateAll("HIGH"));
       await refineStage.run(
-         state([row("s", "f", 0.5)]),
-         ctxFor(chat, { docs: { "s.f": long.replace(/ /g, "\n") } }),
+         state([row("s", "f", 0.5, { embedDoc: long.replace(/ /g, "\n") })]),
+         ctxFor(chat),
       );
       const line = numberedLines(chat.prompts[0])[0][1];
       expect(line).toContain(long);
@@ -483,12 +471,13 @@ describe("refine prompt", () => {
    it("never sends an access predicate", async () => {
       const chat = scriptedChat(rateAll("HIGH"));
       await refineStage.run(
-         state([row("s", "f", 0.5)]),
-         ctxFor(chat, {
-            docs: {
-               "s.f": "Order total. #(access_filter) region = 'secret-region'",
-            },
-         }),
+         state([
+            row("s", "f", 0.5, {
+               embedDoc:
+                  "Order total. #(access_filter) region = 'secret-region'",
+            }),
+         ]),
+         ctxFor(chat),
       );
       expect(chat.prompts[0]).toContain("Order total.");
       expect(chat.prompts[0]).not.toContain("secret-region");
@@ -499,7 +488,7 @@ describe("refine prompt", () => {
       const chat = scriptedChat(rateAll("HIGH"));
       const r = row("s", "f", 0.5);
       r.doc = "#(authorize) region = 'leaked'";
-      await refineStage.run(state([r]), ctxFor(chat, { docs: {} }));
+      await refineStage.run(state([r]), ctxFor(chat));
       expect(chat.prompts[0]).not.toContain("leaked");
    });
 
