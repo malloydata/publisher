@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { internalErrorToHttpError } from "./errors";
+import { deserializeError } from "./package_load/package_load_pool";
 
 // The image runs as uid 1000 (#1273), so a mount the server cannot write is a
 // deployment fault an operator fixes with a chown, not a server bug. Every write
@@ -48,9 +49,9 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
          "/publisher/publisher_data/local/.temp_0123456789abcdef",
       ],
       // S3: a zip location in a root-owned shared package mount.
-      ["EACCES", "mkdir", "/mock/tiny"],
+      ["EACCES", "mkdir", "/tmp/packages/tiny"],
       // S6: a zip location on a read-only mount.
-      ["EROFS", "rm", "/mock/tiny"],
+      ["EROFS", "rm", "/tmp/packages/tiny"],
       // A chown/chmod/rename the kernel refuses outright.
       ["EPERM", "rename", "/publisher/publisher_data/local/tiny"],
    ];
@@ -68,9 +69,25 @@ describe("internalErrorToHttpError: a filesystem write the server cannot make", 
 
    it("recognizes the errno when a write site wraps it in a cause", () => {
       const wrapped = new Error("Failed to install package tiny", {
-         cause: errnoError("EACCES", "mkdir", "/mock/tiny"),
+         cause: errnoError("EACCES", "mkdir", "/tmp/packages/tiny"),
       });
       const { json } = internalErrorToHttpError(wrapped);
+      expect(json.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
+      expect(json.message).toContain("EACCES");
+   });
+
+   it("recognizes the errno after it crosses the package-load worker boundary", () => {
+      // Package loads run in a worker thread, and the pool rebuilds the error
+      // from {name, message, stack} only: `code`, `syscall` and `path` are gone
+      // and only the message text still says EACCES. A fix keyed on `.code`
+      // alone misses every failure that happens inside a package load.
+      const crossed = deserializeError({
+         name: "Error",
+         message:
+            "EACCES: permission denied, open '/publisher/publisher_data/local/tiny/model.malloy'",
+      });
+      expect((crossed as NodeJS.ErrnoException).code).toBeUndefined();
+      const { json } = internalErrorToHttpError(crossed);
       expect(json.message).not.toBe(GENERIC_INTERNAL_MESSAGE);
       expect(json.message).toContain("EACCES");
    });
