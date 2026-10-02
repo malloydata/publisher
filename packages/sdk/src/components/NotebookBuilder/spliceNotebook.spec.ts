@@ -10,6 +10,7 @@ import {
 } from "./readNotebookSource";
 import {
    canMove,
+   markdownProblem,
    notebookDocumentOf,
    spliceNotebookDocument,
    type NotebookDocument,
@@ -512,5 +513,15 @@ describe("spliceNotebookDocument: refusals", () => {
             doc.cells[1].markdown = "Edited.";
          }),
       ).toContain("shares a line with the prose");
+   });
+});
+
+describe("markdownProblem", () => {
+   it("names what the writer would refuse, and nothing else", () => {
+      expect(markdownProblem("Fine.")).toBeUndefined();
+      expect(markdownProblem("Indented\n  |## ok")).toBeUndefined();
+      expect(markdownProblem("")).toContain("remove the cell instead");
+      expect(markdownProblem("  \r\n ")).toContain("remove the cell instead");
+      expect(markdownProblem("a\n|## b")).toContain("|##");
    });
 });

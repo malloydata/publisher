@@ -64,7 +64,7 @@ export function SourceViewPicker({
                disablePadding
                aria-label="Views"
                sx={{
-                  maxHeight: 280,
+                  maxHeight: "min(280px, 30vh)",
                   overflowY: "auto",
                   border: theme.border,
                   borderRadius: 1,

@@ -13,7 +13,14 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import { useEffect, useId, useMemo, useState } from "react";
+import {
+   useCallback,
+   useEffect,
+   useId,
+   useMemo,
+   useRef,
+   useState,
+} from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -27,6 +34,7 @@ import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { CleanMetricCard } from "../styles";
 import { cellFailure } from "./cellResult";
 import { captionOf, queryCode } from "./cellText";
+import { markdownProblem } from "./spliceNotebook";
 
 /** Code as the viewer shows it: highlighted once the highlighter has loaded, plain until then. */
 function Code({ code }: { code: string }) {
@@ -65,6 +73,7 @@ export function MarkdownCell({
    onEdit,
    onCommit,
    onClose,
+   onDraftDirtyChange,
 }: {
    markdown: string;
    editing: boolean;
@@ -72,18 +81,41 @@ export function MarkdownCell({
    onEdit: () => void;
    onCommit: (next: string) => void;
    onClose: () => void;
+   /** Whether the open draft differs from the cell's text; false once it closes. */
+   onDraftDirtyChange?: (dirty: boolean) => void;
 }) {
    // One object per value, or the draft would reset on every render while open.
    const value = useMemo(
       () => (editing ? { text: markdown } : undefined),
       [editing, markdown],
    );
-   const { draft, patch, close } = useDraft<{ text: string }>(
+   const { draft, patch, close, discard } = useDraft<{ text: string }>(
       value,
       editing,
       (next) => onCommit(next.text),
       onClose,
    );
+   const actions = useRef<HTMLDivElement>(null);
+   const caretPlaced = useRef(false);
+   useEffect(() => {
+      if (!editing) caretPlaced.current = false;
+   }, [editing]);
+   const placeCaret = useCallback((field: HTMLTextAreaElement | null) => {
+      if (!field || caretPlaced.current) return;
+      caretPlaced.current = true;
+      field.setSelectionRange(field.value.length, field.value.length);
+   }, []);
+
+   const draftDirty = editing && draft !== undefined && draft.text !== markdown;
+   const reportDirty = useRef(onDraftDirtyChange);
+   useEffect(() => {
+      reportDirty.current = onDraftDirtyChange;
+   });
+   useEffect(() => {
+      reportDirty.current?.(draftDirty);
+   }, [draftDirty]);
+   useEffect(() => () => reportDirty.current?.(false), []);
+
    if (!editing || draft === undefined)
       return (
          <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
@@ -113,14 +145,24 @@ export function MarkdownCell({
             </Tooltip>
          </Stack>
       );
+   // An untouched empty cell is left as it was, so only a changed draft is held to the writer's rules.
+   const problem =
+      draft.text !== markdown ? markdownProblem(draft.text) : undefined;
+   const finish = () => {
+      if (problem === undefined) close();
+   };
    return (
       <Stack spacing={1}>
          <TextField
             multiline
             autoFocus
             minRows={3}
+            maxRows={14}
             fullWidth
             value={draft.text}
+            error={problem !== undefined}
+            helperText={problem}
+            inputRef={placeCaret}
             inputProps={{ "aria-label": "Markdown" }}
             onChange={(event) =>
                patch((next) => {
@@ -129,9 +171,23 @@ export function MarkdownCell({
             }
             onKeyDown={(event) => {
                if (event.key === "Escape") close();
+               else if (
+                  event.key === "Enter" &&
+                  (event.metaKey || event.ctrlKey)
+               ) {
+                  event.preventDefault();
+                  finish();
+               }
             }}
-            // Leaving the field is leaving the edit, so switching to another cell never drops this one.
-            onBlur={close}
+            // Leaving the field is leaving the edit, so switching to another cell never drops this one; moving to Done or Cancel is not leaving.
+            onBlur={(event) => {
+               if (
+                  event.relatedTarget instanceof Node &&
+                  actions.current?.contains(event.relatedTarget)
+               )
+                  return;
+               close();
+            }}
          />
          {draft.text.trim() && (
             <Box aria-label="Preview">
@@ -140,13 +196,36 @@ export function MarkdownCell({
                </Prose>
             </Box>
          )}
-         <Box>
-            <Button size="small" variant="outlined" onClick={close}>
+         <Stack ref={actions} direction="row" spacing={1}>
+            <Button
+               size="small"
+               variant="outlined"
+               disabled={problem !== undefined}
+               onClick={finish}
+            >
                Done
             </Button>
-         </Box>
+            <Button
+               size="small"
+               // Keeps focus in the field, whose blur would otherwise commit the draft Cancel is dropping.
+               onMouseDown={(event) => event.preventDefault()}
+               onClick={() => {
+                  discard();
+                  onClose();
+               }}
+            >
+               Cancel
+            </Button>
+         </Stack>
       </Stack>
    );
+}
+
+/** The folded header in the editor's words: what the line is for, then its own text. */
+function definitionLabel(summary: string): string {
+   if (summary.startsWith("given: ")) return `Given: ${summary.slice(7)}`;
+   if (summary.startsWith("query: ")) return `Saved query: ${summary.slice(7)}`;
+   return `Setup: ${summary}`;
 }
 
 /** A definition cell, folded to its kind and name. */
@@ -192,7 +271,7 @@ export function DefinitionCell({
             ) : (
                <ChevronRightIcon fontSize="small" />
             )}
-            {definitionSummary({ text: queryCode(text) })}
+            {definitionLabel(definitionSummary({ text: queryCode(text) }))}
          </Box>
          {open && (
             <CleanMetricCard id={region} sx={{ mt: 1, padding: "12px 24px" }}>

@@ -150,7 +150,9 @@ const settled = () =>
 const cells = () =>
    screen
       .getAllByRole("group", { hidden: true })
-      .map((cell) => cell.getAttribute("aria-label"));
+      .map((cell) => cell.getAttribute("aria-label"))
+      // An open text field's outline is an unlabelled group too.
+      .filter((label) => label !== null);
 
 const cell = (label: string) =>
    screen.getByRole("group", { name: label, hidden: true });
@@ -189,7 +191,7 @@ describe("NotebookBuilder", () => {
       ]);
       expect(within(cell("Cell 1, text")).getByText("Intro.")).toBeDefined();
       expect(
-         within(cell("Cell 2, definition")).getByText("source: a"),
+         within(cell("Cell 2, definition")).getByText("Setup: source: a"),
       ).toBeDefined();
       // Only prose can be removed here.
       expect(
@@ -356,7 +358,11 @@ describe("NotebookBuilder: markdown", () => {
    it("keeps an emptied cell on screen when the writer refuses it, and says why", async () => {
       let written: string | undefined;
       await mount({ onSave: (s) => void (written = s) });
-      editText("Cell 1, text", "  ");
+      fireEvent.click(inCell("Cell 1, text", "Edit text"));
+      const field = screen.getByLabelText("Markdown");
+      fireEvent.change(field, { target: { value: "  " } });
+      // Done holds while the text is invalid; leaving the field still commits it, and the writer refuses at Save.
+      fireEvent.blur(field);
       fireEvent.click(button("Save changes"));
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain(
@@ -394,17 +400,16 @@ describe("NotebookBuilder: reorder", () => {
       ]);
 
       // Up again would put it above the definition it reads.
-      expect(inCell("Cell 3, query", "Move up")).toHaveProperty(
-         "disabled",
-         true,
-      );
+      expect(
+         inCell("Cell 3, query", "Move up").getAttribute("aria-disabled"),
+      ).toBe("true");
       fireEvent.keyDown(cell("Cell 3, query"), {
          key: "ArrowUp",
          altKey: true,
       });
       expect(cells()[2]).toBe("Cell 3, query");
       expect(screen.getByRole("status").textContent).toContain(
-         "cannot move above a definition",
+         "stay below the setup lines",
       );
 
       // Prose moves anywhere: the text below goes to the top in three moves.
@@ -476,6 +481,55 @@ describe("NotebookBuilder: reorder", () => {
       // `fireEvent` answers false when a handler called preventDefault.
       expect(fireEvent.keyDown(window, { key: "ArrowLeft" })).toBe(true);
       expect(fireEvent.keyDown(window, { key: "ArrowRight" })).toBe(true);
+   });
+
+   it.each([
+      ["Cancel", () => fireEvent.click(button("Cancel"))],
+      [
+         "Escape",
+         () =>
+            fireEvent.keyDown(screen.getByLabelText("Markdown"), {
+               key: "Escape",
+            }),
+      ],
+      ["blur", () => fireEvent.blur(screen.getByLabelText("Markdown"))],
+      ["Done", () => fireEvent.click(button("Done"))],
+   ])(
+      "removes a freshly added text cell that is left empty by %s",
+      async (_name, leave) => {
+         await mount();
+         fireEvent.click(inCell("Cell 1, text", "Add text below"));
+         expect(cells()).toHaveLength(5);
+         leave();
+         expect(cells()).toHaveLength(4);
+      },
+   );
+
+   it("keeps a freshly added cell that has text, and Cancel on it removes it even with text typed", async () => {
+      await mount();
+      fireEvent.click(inCell("Cell 1, text", "Add text below"));
+      fireEvent.change(screen.getByLabelText("Markdown"), {
+         target: { value: "Typed." },
+      });
+      fireEvent.click(button("Cancel"));
+      expect(cells()).toHaveLength(4);
+      fireEvent.click(inCell("Cell 1, text", "Add text below"));
+      fireEvent.change(screen.getByLabelText("Markdown"), {
+         target: { value: "Typed." },
+      });
+      fireEvent.click(button("Done"));
+      expect(cells()).toHaveLength(5);
+   });
+
+   it("cancels an edit to an existing cell without changing the document", async () => {
+      await mount({ onSave: async () => {} });
+      fireEvent.click(inCell("Cell 1, text", "Edit text"));
+      fireEvent.change(screen.getByLabelText("Markdown"), {
+         target: { value: "Dropped." },
+      });
+      fireEvent.click(button("Cancel"));
+      expect(within(cell("Cell 1, text")).getByText("Intro.")).toBeDefined();
+      expect(button("Saved")).toBeDefined();
    });
 
    it("never undoes from inside the markdown field", async () => {

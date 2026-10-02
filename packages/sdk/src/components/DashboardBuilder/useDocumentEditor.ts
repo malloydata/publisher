@@ -164,7 +164,7 @@ export function useDocumentEditor<T>(
       } catch (failure) {
          // The file may or may not have been written; what is certain is that
          // the editor must not pretend it was. Staying dirty is the safe read.
-         const reason = `Could not save: ${failure}`;
+         const reason = `Could not save: ${failure instanceof Error ? failure.message : String(failure)}`;
          setError(reason);
          return { ok: false, reason };
       }

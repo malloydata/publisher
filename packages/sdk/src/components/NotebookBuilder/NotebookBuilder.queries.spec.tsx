@@ -116,6 +116,13 @@ const cell = (label: string) =>
    screen.getByRole("group", { name: label, hidden: true });
 const inCell = (label: string, name: string) =>
    within(cell(label)).getByRole("button", { name, hidden: true });
+/** A button that is off but still focusable, with the reason a screen reader is given: undefined when it is on. */
+const offBecause = (el: HTMLElement) => {
+   if (el.getAttribute("aria-disabled") !== "true") return undefined;
+   expect(el.hasAttribute("disabled")).toBe(false);
+   const id = el.getAttribute("aria-describedby");
+   return (id && document.getElementById(id)?.textContent) || "";
+};
 const cells = () =>
    screen
       .queryAllByRole("group", { hidden: true })
@@ -451,47 +458,71 @@ run: a -> by_cat
 describe("the Add menu", () => {
    it("turns query-above off where a definition would end up below it, and says why", async () => {
       await mount();
-      expect(
-         inCell("Cell 1, text", "Add query above").hasAttribute("disabled"),
-      ).toBe(true);
-      expect(
-         within(cell("Cell 1, text")).getByLabelText(
-            /Add query above: A query cannot go above a definition/,
-         ),
-      ).toBeDefined();
+      expect(offBecause(inCell("Cell 1, text", "Add query above"))).toBe(
+         "Queries go below the setup lines (imports, givens, saved queries). Add it further down.",
+      );
       // Below the definition itself is the first legal slot.
       expect(
-         inCell("Cell 2, definition", "Add query below").hasAttribute(
-            "disabled",
-         ),
-      ).toBe(false);
+         offBecause(inCell("Cell 2, definition", "Add query below")),
+      ).toBeUndefined();
       expect(
-         inCell("Cell 3, query", "Add query above").hasAttribute("disabled"),
-      ).toBe(false);
+         offBecause(inCell("Cell 3, query", "Add query above")),
+      ).toBeUndefined();
+   });
+
+   it("keeps a blocked button focusable, and a click says why instead of doing nothing", async () => {
+      await mount();
+      const blocked = inCell("Cell 1, text", "Add query above");
+      blocked.focus();
+      expect(document.activeElement).toBe(blocked);
+      fireEvent.click(blocked);
+      expect(screen.queryByText("Add a query")).toBeNull();
+      expect(screen.getByRole("status").textContent).toContain(
+         "Queries go below the setup lines",
+      );
+   });
+
+   it("gives the first cell's Move up and the last cell's Move down a reason too", async () => {
+      await mount();
+      expect(offBecause(inCell("Cell 1, text", "Move up"))).toBe(
+         "This is already the first cell.",
+      );
+      expect(offBecause(inCell("Cell 6, query", "Move down"))).toBe(
+         "This is already the last cell.",
+      );
+      expect(offBecause(inCell("Cell 2, definition", "Move up"))).toBe(
+         "Setup lines stay where they are.",
+      );
+      fireEvent.click(inCell("Cell 2, definition", "Move up"));
+      expect(screen.getByRole("status").textContent).toContain(
+         "Setup lines stay where they are.",
+      );
+   });
+
+   it("labels a definition by what it is, keeping its real text", async () => {
+      await mount();
+      expect(
+         within(cell("Cell 2, definition")).getByText("Setup: source: a"),
+      ).toBeDefined();
    });
 
    it("is off while the notebook's sources load, and when it reads none", async () => {
       await mount({ sources: null });
-      expect(
-         inCell("Cell 3, query", "Add query below").hasAttribute("disabled"),
-      ).toBe(true);
-      expect(
-         within(cell("Cell 3, query")).getAllByLabelText(/sources are loading/),
-      ).not.toHaveLength(0);
+      expect(offBecause(inCell("Cell 3, query", "Add query below"))).toMatch(
+         /sources are loading/,
+      );
       cleanup();
       await mount({ sources: [] });
-      expect(
-         within(cell("Cell 3, query")).getAllByLabelText(/reads no source/),
-      ).not.toHaveLength(0);
+      expect(offBecause(inCell("Cell 3, query", "Add query below"))).toMatch(
+         /reads no source/,
+      );
    });
 
    it("says the sources could not be read, not that they load, after a failed read", async () => {
       await mount({ sources: null, sourcesFailed: true });
-      expect(
-         within(cell("Cell 3, query")).getAllByLabelText(
-            /sources could not be read/,
-         ),
-      ).not.toHaveLength(0);
+      expect(offBecause(inCell("Cell 3, query", "Add query below"))).toMatch(
+         /sources could not be read/,
+      );
    });
 
    it("names the import that could not be read, not 'reads no source'", async () => {
@@ -504,12 +535,34 @@ run: a -> by_cat
          sources: [],
          importsFailed: ["shop.malloy"],
       });
-      expect(
-         within(cell("Cell 2, query")).getAllByLabelText(
-            /Could not read shop\.malloy/,
-         ),
-      ).not.toHaveLength(0);
-      expect(screen.queryAllByLabelText(/reads no source/)).toHaveLength(0);
+      expect(offBecause(inCell("Cell 2, query", "Add query below"))).toMatch(
+         /Could not read shop\.malloy/,
+      );
+   });
+
+   it("explains the empty notebook's Add query when it is blocked, and still takes focus", async () => {
+      await mount({
+         source: "## artifact { kind=notebook }\n",
+         sources: null,
+      });
+      const add = button("Add query");
+      expect(offBecause(add)).toMatch(/sources are loading/);
+      add.focus();
+      expect(document.activeElement).toBe(add);
+      fireEvent.click(add);
+      expect(screen.getByRole("status").textContent).toMatch(
+         /sources are loading/,
+      );
+   });
+
+   it("keeps the resting tool strip legible, at 3:1 or better", async () => {
+      await mount();
+      const strip = screen.getAllByLabelText(/^Tools for Cell 1/, {
+         selector: "div",
+      })[0];
+      expect(Number(getComputedStyle(strip).opacity)).toBeGreaterThanOrEqual(
+         0.75,
+      );
    });
 
    it("shows a refused caption on an added cell and does not commit it", async () => {
