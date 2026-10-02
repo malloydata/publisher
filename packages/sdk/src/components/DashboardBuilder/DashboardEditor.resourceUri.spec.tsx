@@ -213,7 +213,7 @@ describe("versionId", () => {
       // screen.
       expect(cacheKeys("dashboard-editor-model")[0]).toContain('"v7"');
       expect(cacheKeys("dashboard-editor-manifest")[0]).toContain('"v7"');
-      expect(cacheKeys("dashboard-editor-dashboards")[0]).toContain('"v7"');
+      expect(cacheKeys("dashboards")[0]).toContain('"v7"');
       await waitFor(() =>
          expect(cacheKeys("dashboard-editor-catalog")[0]).toContain('"v7"'),
       );

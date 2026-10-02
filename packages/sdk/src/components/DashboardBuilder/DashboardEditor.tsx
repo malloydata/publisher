@@ -842,12 +842,9 @@ function Surface({
 
    // The package's other dashboards, by slug: where a clicked cell can go.
    const { data: dashboardList } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-dashboards",
-         environmentName,
-         packageName,
-         versionId,
-      ],
+      // Shares the listing the page's location lookup already fetches.
+      queryKey: ["dashboards", environmentName, packageName, versionId],
+      staleTime: 60_000,
       queryFn: () =>
          apiClients.dashboards.listDashboards(
             environmentName,
