@@ -59,10 +59,11 @@ Concretely:
   write over an existing `notebooks/` file the package does not serve as a notebook is refused with
   400, including one whose only tag is commented out, so a shared include cannot be overwritten
   into a notebook. Both path shapes then share the same post-write check: after the reload the
-  written file must be served as the kind its tag claims, read as discovery reads it, off the
-  compiled model (off the text only for a file that does not compile). A write whose only
+  compiled model must carry the `## artifact` tag and no other file may hold the name, read as
+  discovery reads it, off the compiled model (off the text only for a file that does not compile);
+  a tagged dashboard with no tiles saves and is not served until it has one. A write whose only
   `## artifact` sits inside a `/* */` comment or a string, or an untagged `dashboards/` file,
-  passes compile and is then rolled back with a 500, so no unserved file lands in either folder; and
+  passes compile and is then rolled back with a 500, so no untagged file lands in either folder; and
   a dashboard whose name another file already holds is refused with 409 before anything is
   written, since the name is its URL and its `# drill` target. The compile-first gate is per file,
   and the reload verify checks only the written model, so a model that imports the written file is

@@ -686,7 +686,7 @@ every edit, and the picker is disabled for that tile with the reason shown; so i
 from a declaration on the source, which has no wrapper to carry the line.
 
 A dashboard with `tiles=[]` (only possible by hand-editing, since New always seeds a first tile)
-opens in the builder, but it is not served (the manifest 404s and the load lint warns) until it has a tile, and the builder will not
+opens in the builder, but it is not served (the manifest 404s and the load lint reports it) until it has a tile, and the builder will not
 remove the last tile of a dashboard that was saved with tiles: **Remove tile** stays visible but
 disabled, with "A saved dashboard needs at least one tile." beside it. A filter window shows what is
 wrong with a field only once you have edited something in it, so opening a fresh one is not a wall
@@ -710,8 +710,8 @@ switches the tag); a cell-format notebook opens converted and unsaved, and Undo 
 original text. A file whose tag names no `kind` is edited as the kind its folder implies
 (`notebooks/` is a notebook). Save writes back through `PUT …/models/dashboards/<name>.malloy` (or
 `notebooks/<name>.malloy`), which compiles the text first, writes it atomically, reloads the package
-in place, and restores the previous text if the reload does not take it, or does not serve the file
-as the kind its tag claims (500); a copy someone else changed since you opened it is refused (409),
+in place, and restores the previous text if the reload does not take it, or if the compiled file
+carries no `## artifact` tag (500; a tagged dashboard with no tiles still saves); a copy someone else changed since you opened it is refused (409),
 never merged, and so is a dashboard whose name another file already holds. The
 check, the write, the reload and the restore all happen under one hold of the package lock, so two
 saves racing on one file cannot both pass the check, and a rollback cannot revert the other

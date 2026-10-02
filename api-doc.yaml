@@ -1721,9 +1721,10 @@ paths:
 
         A dashboard whose name (the file's basename) another file already holds
         is refused with 409 before anything is written, since the name is its
-        URL and its `# drill` target. A file the reloaded package does not serve
-        as the kind its tag claims (an untagged `dashboards/` file, or a tag
-        inside a comment or a string) is rolled back and answers 500.
+        URL and its `# drill` target. A file whose compiled model carries no
+        `## artifact` tag (an untagged `dashboards/` file, or a tag inside a
+        comment or a string) is rolled back and answers 500; a tagged
+        dashboard with no tiles saves but is not served until it has one.
 
         A create answers 201 and an update 200; `created` in the body says the
         same thing.

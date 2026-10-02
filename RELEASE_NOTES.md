@@ -63,9 +63,10 @@ the read-level refusals that were already there (a statement above the tag, text
 closer, a comment straddling two cells, a lone carriage return). The write route
 (`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`; an
 untagged write to `notebooks/` is refused with 400. Two refusals are new: a dashboard whose name
-another file already holds answers 409 and nothing is written, and a file the reloaded package does
-not serve as the kind its tag claims (an untagged `dashboards/` file, or a tag inside a comment) is
-rolled back and answers 500 where it used to land unserved.
+another file already holds answers 409 and nothing is written, and a file whose compiled model carries
+no `## artifact` tag (an untagged `dashboards/` file, or a tag inside a comment or a string) is
+rolled back and answers 500 where it used to land unserved. A tagged dashboard with no tiles still
+saves.
 
 **What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
 (`dashboard` or `notebook`), and a tagged file is listed and served from wherever the package puts
@@ -112,7 +113,7 @@ line that turns off the chart tags the view carries (all the others when the cat
 that tile with the reason shown.
 
 A dashboard with no tiles now opens in the editor instead of being refused. It is not served until it
-has a tile (its page 404s and the load lint warns), and the editor will not remove the last tile.
+has a tile (its page 404s and the load lint reports it), and the editor will not remove the last tile.
 
 **Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
 reached through a join (`products.category`) was written with only its last segment, so its options
