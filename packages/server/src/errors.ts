@@ -215,7 +215,10 @@ export function internalErrorToHttpError(
    if (access) {
       // Ahead of the typed branches: a wrap like PackageNotFoundError around
       // an EACCES would otherwise answer 404, which reads as "does not exist"
-      // and sends the operator looking for a file that is there.
+      // and sends the operator looking for a file that is there. That also
+      // means a 4xx class whose cause chain holds a refused access answers 500
+      // with the errno; moving this branch below any typed branch demotes the
+      // errno to that branch's status and message.
       logInternal("Filesystem access refused", error, "warn");
       return httpError(
          500,
