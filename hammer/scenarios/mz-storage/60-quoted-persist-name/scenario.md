@@ -1,6 +1,6 @@
 ---
 id: quoted-persist-name
-tags: serve-correctness, naming
+tags: serve-correctness, naming, known-red
 package: qn
 ---
 <!--
@@ -97,3 +97,14 @@ Expect:
 | order_date | total |
 | ---------- | ----- |
 | 2026-01-01 | 150   |
+
+## Note (since=2026-09-09)
+
+> Refused at load, before any build: `#1106` rejects a `#@ persist name=` that is
+> not a plain identifier path (`persist annotation name must be a plain
+> identifier path`), so an author-quoted name never reaches the write/read
+> mirror this scenario exists to check. The open question is which premise
+> wins: an author may quote a persisted table's name (this scenario), or a
+> persisted name is always a plain identifier (that check). Either answer
+> retires this scenario or that check; until it is made, the scenario stands as
+> the record of the first premise.
