@@ -49,7 +49,11 @@ export interface PipelineSettings {
    joinMaxDepth: number;
    /** Base of the score multiplier for assembled join copies, applied as `base ** (hops + 1)`; null means none. */
    joinDamping: number | null;
-   /** How scores are published. Unused. */
+   /**
+    * How scores are published. Today `cosine`: a row's score is its cosine.
+    * Rows a refine stage rated carry `raw` and are published through the
+    * knots whatever this says, so nothing reads it yet.
+    */
    scoring: "cosine" | "knots";
    /** Response size budget in characters; null means no budget. */
    maxChars: number | null;
@@ -156,6 +160,11 @@ export interface CardDraft {
    source: string;
    /** Best score among the rows, as the wire card's `relevance`. */
    relevance?: number;
+   /**
+    * The unpublished score behind `relevance`, set when a refine stage rated
+    * the rows: the best `raw` among them. Rerank sorts by it.
+    */
+   raw?: number;
    /** In rank order. Includes the `kind: "source"` row when the source matched. */
    rows: ResultEntity[];
    /** Rows the per-source, per-target cap left out of this card. */

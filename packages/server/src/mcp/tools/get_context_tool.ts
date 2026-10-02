@@ -178,8 +178,17 @@ export interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
-   /** Unused until a stage sets it. LOW=1, MEDIUM=2, HIGH=3 after refine. */
+   /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
    level?: number;
+   /**
+    * Set by refine only: the unpublished score, `level + cosine`, 1 to 4. When
+    * it is set, `score` is this value through the knots (see
+    * get_context_scoring). Assembly damps joined copies on this number, and
+    * rerank sorts cards by the best of it.
+    */
+   raw?: number;
+   /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
+   targetRaw?: Map<number, number>;
    /** Unused until a stage sets it. Refine's sentence for matched_targets. */
    reason?: string;
    /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
