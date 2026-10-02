@@ -151,7 +151,7 @@ describe("NewDocumentDialog", () => {
       const [path, source] = write.mock.calls[0];
       expect(path).toBe("notebooks/by-category.malloy");
       expect(source).toContain("kind=notebook");
-      expect(source).toContain("run: order_items -> by_category");
+      expect(source).toContain("view: cell_1 is by_category");
    });
 
    it("switches kind in place, keeping the choices already read", async () => {

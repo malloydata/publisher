@@ -60,8 +60,9 @@ export type {
 export {
    NotebookEditor,
    type NotebookEditorProps,
-} from "./components/NotebookBuilder/NotebookEditor";
+} from "./components/DashboardBuilder/NotebookEditor";
 export type {
+   BuilderEvent,
    NotebookEvent,
    NotebookEventHandler,
 } from "./components/DashboardBuilder/telemetry";

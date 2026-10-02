@@ -15,6 +15,10 @@ import ts from "typescript";
  */
 const SRC = import.meta.dir;
 
+/** Builder-only modules: they pull in the Malloy parser, which the main entry must not reach. */
+const BUILDER_ONLY =
+   /^components\/DashboardBuilder\/(legacyNotebook|DashboardEditor|NotebookEditor|readDocument|spliceDocument|malloyTree|InlineText|InlineMarkdown)\./;
+
 const EXTENSIONS = [".ts", ".tsx", "/index.ts", "/index.tsx"];
 
 function resolve(from: string, specifier: string): string | undefined {
@@ -120,10 +124,7 @@ describe("the main entry", () => {
       const builders = [...modules]
          .map((file) => path.relative(SRC, file))
          .filter(
-            (file) =>
-               file === "builder-entry.ts" ||
-               file.startsWith("components/NotebookBuilder/") ||
-               file === "components/DashboardBuilder/malloyTree.ts",
+            (file) => file === "builder-entry.ts" || BUILDER_ONLY.test(file),
          );
       expect(builders).toEqual([]);
    });
@@ -137,12 +138,7 @@ describe("the main entry", () => {
       const reached = [...modules]
          .map((file) => path.relative(SRC, file))
          .filter(
-            (file) =>
-               file === "builder-entry.ts" ||
-               file.startsWith("components/NotebookBuilder/") ||
-               /(DashboardEditor|NotebookEditor|readDocument|legacyNotebook|malloyTree)\./.test(
-                  file,
-               ),
+            (file) => file === "builder-entry.ts" || BUILDER_ONLY.test(file),
          );
       expect(reached).toEqual([]);
    });
