@@ -12,6 +12,9 @@ import type { ReactNode } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
+/** `card` is a dashboard tile's panel; `none` is a notebook's bare flow. */
+export type TileChrome = "card" | "none";
+
 /**
  * The card a dashboard tile sits in, and nothing else — so the builder, which
  * draws a stand-in tile when it has no server to run one, draws the same card
@@ -42,26 +45,36 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
  */
 export function TileCard({
    borderless = false,
+   chrome = "card",
    sx,
    children,
 }: {
    borderless?: boolean;
+   /** `none` drops the card entirely, for a document that reads top to bottom. */
+   chrome?: TileChrome;
    sx?: SxProps<Theme>;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const bare = borderless || chrome === "none";
    return (
       <Paper
          elevation={0}
+         data-chrome={chrome}
          sx={[
             {
-               border: borderless ? "none" : theme.cardBorder,
-               borderRadius: borderless ? 0 : 1,
-               background: borderless ? "none" : theme.tile,
+               border: bare ? "none" : theme.cardBorder,
+               borderRadius: bare ? 0 : 1,
+               background: bare ? "none" : theme.tile,
                overflow: "hidden",
                minWidth: 0,
-               minHeight: 120,
-               p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
+               minHeight: chrome === "none" ? 0 : 120,
+               p:
+                  chrome === "none"
+                     ? 0
+                     : borderless
+                       ? "12px 0"
+                       : `${DASHBOARD_CARD_PADDING_PX}px`,
             },
             ...(Array.isArray(sx) ? sx : [sx]),
          ]}
@@ -81,7 +94,10 @@ export function TileHeading({
    subtitle,
    tooltip,
    action,
+   quiet = false,
 }: {
+   /** A small caption instead of a heading, for a tile with no card around it. */
+   quiet?: boolean;
    title: string;
    subtitle?: string;
    /** What actually ran, kept reachable without being the heading. */
@@ -91,12 +107,21 @@ export function TileHeading({
 }) {
    const { theme } = usePublisherTheme();
    return (
-      <Box sx={{ pb: 1.5, display: "flex", alignItems: "flex-start", gap: 1 }}>
+      <Box
+         sx={{
+            pb: quiet ? 0.5 : 1.5,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 1,
+         }}
+      >
          <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography
-               variant="subtitle2"
+               variant={quiet ? "caption" : "subtitle2"}
                sx={{
-                  fontWeight: 500,
+                  fontWeight: quiet ? 400 : 500,
+                  display: quiet ? "block" : undefined,
+                  opacity: quiet ? 0.8 : undefined,
                   color: theme.tileTitle,
                   fontFamily: theme.font.family,
                }}

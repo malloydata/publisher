@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Box } from "@mui/material";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
 export const DEFAULT_COLUMNS = 2;
@@ -33,6 +33,26 @@ export function tileGridColumn(
 ): string {
    const span = Math.min(tile.colspan ?? 1, columns);
    return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
+/**
+ * Columns a tile with no `# colspan` spans so it is at least `minTilePx` wide.
+ *
+ * In a 12 or 16 column grid a one-column tile is a sliver a few dozen px wide.
+ * Only tiles that never asked for a width are widened, so an explicit
+ * `colspan=1` stays the author's call. An unmeasured width changes nothing.
+ */
+export function defaultTileSpan(
+   columns: number,
+   containerPx: number,
+   minTilePx: number,
+): number {
+   if (!(containerPx > 0) || columns <= 1) return 1;
+   const track = (containerPx - (columns - 1) * GRID_GAP_PX) / columns;
+   return Math.min(
+      columns,
+      Math.max(1, Math.ceil((minTilePx + GRID_GAP_PX) / (track + GRID_GAP_PX))),
+   );
 }
 
 /** The layout a tile carries, whatever else its own shape holds. */
@@ -69,6 +89,7 @@ export function DashboardGrid<T extends GridTile>({
    columns,
    keyOf,
    renderTile,
+   minTilePx,
 }: {
    tiles: readonly T[];
    /** Track count — `# dashboard { columns=N }`, or {@link DEFAULT_COLUMNS}. */
@@ -81,9 +102,33 @@ export function DashboardGrid<T extends GridTile>({
     */
    keyOf: (tile: T, index: number) => string;
    renderTile: (tile: T, index: number) => ReactNode;
+   /**
+    * Floor on the width of a tile that sets no `colspan`. Off by default: the
+    * builder's drag arithmetic assumes an unset colspan is one column.
+    */
+   minTilePx?: number;
 }) {
+   const ref = useRef<HTMLDivElement>(null);
+   const [width, setWidth] = useState(0);
+   useEffect(() => {
+      const node = ref.current;
+      if (
+         minTilePx === undefined ||
+         !node ||
+         typeof ResizeObserver === "undefined"
+      )
+         return;
+      const observer = new ResizeObserver(([entry]) =>
+         setWidth(entry?.contentRect.width ?? 0),
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+   }, [minTilePx]);
+   const floor =
+      minTilePx === undefined ? 1 : defaultTileSpan(columns, width, minTilePx);
    return (
       <Box
+         ref={ref}
          sx={{
             display: "grid",
             gridTemplateColumns: {
@@ -113,7 +158,14 @@ export function DashboardGrid<T extends GridTile>({
                   minWidth: 0,
                   // Only above `md`: the narrow breakpoint is one column, where
                   // a span would overflow the grid rather than widen anything.
-                  gridColumn: { md: tileGridColumn(tile, columns) },
+                  gridColumn: {
+                     md: tileGridColumn(
+                        tile.colspan === undefined && floor > 1
+                           ? { ...tile, colspan: floor }
+                           : tile,
+                        columns,
+                     ),
+                  },
                }}
             >
                {renderTile(tile, index)}

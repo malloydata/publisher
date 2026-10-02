@@ -14,6 +14,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
+import { DashboardView } from "../Dashboard/DashboardView";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToParams, givensToRequest } from "../given/paramCodec";
@@ -96,8 +97,59 @@ interface NotebookProps {
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
+/** The raw notebook, one cache entry per URI however many components ask. */
+function useNotebookQuery(resourceUri: string) {
+   const { apiClients } = useServer();
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      modelPath: notebookPath,
+   } = parseResourceUri(resourceUri);
+   return useQueryWithApiError<RawNotebook>({
+      queryKey: [resourceUri],
+      queryFn: async () => {
+         const response = await apiClients.notebooks.getNotebook(
+            environmentName,
+            packageName,
+            notebookPath,
+            versionId,
+         );
+         return response.data;
+      },
+   });
+}
+
 // Requires PackageProvider
-export default function Notebook({
+export default function Notebook(props: NotebookProps) {
+   const { data: notebook } = useNotebookQuery(props.resourceUri);
+   // A notebook written as a tile layout renders as a one-column dashboard.
+   if (notebook?.dashboard) {
+      const { environmentName, packageName, versionId, modelPath } =
+         parseResourceUri(props.resourceUri);
+      return (
+         <CleanNotebookContainer>
+            <CleanNotebookSection>
+               <DashboardView
+                  manifest={notebook.dashboard}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  documentName={modelPath}
+                  givens={props.givens}
+                  onGivensChange={props.onGivensChange}
+                  onNavigate={props.onDrillNavigate}
+                  maxResultSize={props.maxResultSize}
+                  chrome="none"
+               />
+            </CleanNotebookSection>
+         </CleanNotebookContainer>
+      );
+   }
+   return <CellNotebook {...props} />;
+}
+
+function CellNotebook({
    resourceUri,
    maxResultSize = 0,
    givens,
@@ -119,18 +171,7 @@ export default function Notebook({
       isSuccess,
       isError,
       error,
-   } = useQueryWithApiError<RawNotebook>({
-      queryKey: [resourceUri],
-      queryFn: async () => {
-         const response = await apiClients.notebooks.getNotebook(
-            environmentName,
-            packageName,
-            notebookPath,
-            versionId,
-         );
-         return response.data;
-      },
-   });
+   } = useNotebookQuery(resourceUri);
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(

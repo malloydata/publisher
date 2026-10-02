@@ -10,7 +10,8 @@ import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
-import { TileCard, TileHeading } from "./TileCard";
+import { TileFilterTag } from "./TileFilterTag";
+import { TileCard, TileHeading, type TileChrome } from "./TileCard";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -54,6 +55,10 @@ export interface DashboardTileProps {
     * the heading, on hover; absent, the heading has no button.
     */
    onExplore?: () => void;
+   /** `none` draws the result bare, its label a quiet caption above it. */
+   chrome?: TileChrome;
+   /** Labels of the filters this tile answers to, shown as a small tag. */
+   filterLabels?: readonly string[];
 }
 
 /**
@@ -98,6 +103,8 @@ export function DashboardTile({
    maxResultSize,
    drill,
    onExplore,
+   chrome = "card",
+   filterLabels,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
    const state = useQueryResult({
@@ -117,7 +124,10 @@ export function DashboardTile({
    return (
       <TileCard
          borderless={borderless}
+         chrome={chrome}
          sx={{
+            // A table is as wide as its tile body, whatever its columns need.
+            "& .malloy-render, & .malloy-table": { width: "100%" },
             // The heading's button shows on hover and keyboard focus, the way
             // a tile's chrome does everywhere else; always-on it competes with
             // the title on every card at once.
@@ -133,6 +143,7 @@ export function DashboardTile({
             <TileHeading
                title={label ?? tileTitle(tile)}
                subtitle={subtitle}
+               quiet={chrome === "none"}
                // The expression is what actually ran, so it stays reachable as
                // a tooltip rather than as the heading.
                tooltip={tile}
@@ -166,6 +177,7 @@ export function DashboardTile({
             // aggregates are already tiles.
             transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
          />
+         {filterLabels && <TileFilterTag labels={filterLabels} />}
       </TileCard>
    );
 }
