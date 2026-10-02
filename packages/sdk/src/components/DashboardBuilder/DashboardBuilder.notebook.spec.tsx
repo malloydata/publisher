@@ -282,7 +282,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
       await waitFor(() => expect(writes).toHaveLength(2));
       expect(writes[1]).toBe(LEGACY);
-      expect(screen.getByLabelText("Tile cell_3")).toBeDefined();
+      expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
       expect(
          screen.getByLabelText("Settings for Monthly revenue"),
       ).toBeDefined();

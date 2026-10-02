@@ -41,6 +41,9 @@ export const malloyPath = (path: string) =>
 /** The server's rule for the tag line: `## artifact` at the start of a line. */
 export const ARTIFACT_LINE = /^##[ \t]*artifact\b/;
 
+/** The block spelling of the same tag: `##|` then `artifact`, which may start the next line. */
+const ARTIFACT_BLOCK = /^##\|\s*artifact\b/;
+
 /**
  * A note's markdown route, by Malloy's prefix rule: the first whitespace-delimited token is
  * `#`/`##`, an optional `|`, and `(markdown)` or its `<>`, `[]`, `{}` twin. `#(markdown)hi` has
@@ -134,13 +137,43 @@ export function markdownLines(
    return out;
 }
 
-/** The line carrying the model-level `## artifact` tag, or -1. */
-export const artifactLine = (lines: string[]) => {
+/** Where the model-level artifact tag sits, written as one `## artifact { … }` line or as a `##|` … `|##` block. */
+export interface ArtifactTag {
+   /** The tag's first line: the `## artifact` line, or a block's `##|` opener. */
+   from: number;
+   /** The last line the tag occupies: the same line when single, else the `|##` closer. */
+   to: number;
+   block: boolean;
+   /** The tag as written: its line, or a block's lines from the opener up to, not including, the closer. */
+   text: string;
+}
+
+export function artifactTag(lines: string[]): ArtifactTag | undefined {
    const inBlock = blockLines(lines);
-   return lines.findIndex(
+   const single = lines.findIndex(
       (l, i) => !inBlock.has(i) && ARTIFACT_LINE.test(l.trim()),
    );
-};
+   const span = blockSpans(lines).find(([from, to]) =>
+      ARTIFACT_BLOCK.test(lines.slice(from, to).join("\n").trim()),
+   );
+   if (span && (single < 0 || span[0] < single))
+      return {
+         from: span[0],
+         to: span[1],
+         block: true,
+         text: lines.slice(span[0], span[1]).join("\n"),
+      };
+   return single < 0
+      ? undefined
+      : { from: single, to: single, block: false, text: lines[single] };
+}
+
+/** The line carrying the model-level artifact tag (a block's opener), or -1. */
+export const artifactLine = (lines: string[]) => artifactTag(lines)?.from ?? -1;
+
+/** A tag's text as the annotation parser takes it: one `#` annotation, whatever the spelling. */
+export const tagAnnotation = (tagText: string) =>
+   tagText.replace(/^\s*##\|?\s*/, "# ");
 
 /** An unnamed `"` note line; `##"word` is a malformed route Malloy drops. */
 const DOC_NOTE = /^##"([ \t]|$)/;

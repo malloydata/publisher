@@ -281,7 +281,9 @@ describe("spliceDashboardDocument: text tiles", () => {
          d.tiles.unshift({ kind: "text", name: "lead", markdown: "Lead." });
       });
       expect(out).toContain('tiles=[lead { kind=text }, "a_tiles -> x"]');
-      expect(out.endsWith("\n\n##|(markdown) lead\nLead.\n|##\n")).toBe(true);
+      expect(out).toContain(
+         "\n\n##|(markdown) lead\nLead.\n|##\n\nsource: a_tiles is a extend",
+      );
       expect(document.kind).toBeUndefined();
       expect(text(document, "lead").markdown).toBe("Lead.");
    });
@@ -332,8 +334,26 @@ describe("spliceDashboardDocument: text tiles", () => {
       const { out, document } = await writes(source, (d) => {
          text(d, "outro").markdown = "Back.";
       });
-      expect(out.endsWith("##|(markdown) outro\nBack.\n|##\n")).toBe(true);
+      expect(out).toContain(
+         "|##\n\n##|(markdown) outro\nBack.\n|##\n\nsource: a_tiles",
+      );
       expect(text(document, "outro").markdown).toBe("Back.");
+   });
+
+   it("puts a new block after the last existing one, and at the end of a file with no block or extension", async () => {
+      const afterLast = await writes(NOTEBOOK, (d) => {
+         d.tiles.push({ kind: "text", name: "coda", markdown: "End." });
+      });
+      expect(afterLast.out).toContain(
+         "Bye.\n|##\n\n##|(markdown) coda\nEnd.\n|##\n",
+      );
+      const bare = `## artifact { kind=notebook tiles=[] }\nimport { a } from "../m.malloy"\n`;
+      const none = await writes(bare, (d) => {
+         d.tiles.push({ kind: "text", name: "solo", markdown: "Only." });
+      });
+      expect(none.out.endsWith("\n\n##|(markdown) solo\nOnly.\n|##\n")).toBe(
+         true,
+      );
    });
 
    it("moves text tiles among the query tiles, keeping each entry as written", async () => {

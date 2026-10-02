@@ -24,11 +24,10 @@ import {
    type TreeView,
 } from "./malloyTree";
 import {
-   ARTIFACT_LINE,
-   blockLines,
+   artifactTag as locateArtifactTag,
    descriptionNotes,
-   markdownNote,
    readPath,
+   tagAnnotation,
    tileSteps,
 } from "./malloyText";
 
@@ -150,28 +149,6 @@ function chartField(tags: Array<{ text: string }>): {
    return chart === "custom"
       ? { chart, chartLines: chartLinesOf(lines) }
       : { chart };
-}
-
-/** The model-level `##` lines, which are not symbols and must be read as text. */
-function modelLines(lines: string[]): {
-   description?: string;
-   artifact: string[];
-} {
-   const artifact: string[] = [];
-   const inside = blockLines(lines);
-   for (const [i, raw] of lines.entries()) {
-      if (inside.has(i)) continue;
-      const text = raw.trim();
-      const note = markdownNote(text);
-      if (
-         text.startsWith("##") &&
-         !text.startsWith('##"') &&
-         !text.startsWith("##!") &&
-         !(note?.level === 2 && !note.block)
-      )
-         artifact.push(text);
-   }
-   return { description: descriptionNotes(lines).text, artifact };
 }
 
 /**
@@ -311,9 +288,9 @@ export async function readDashboardDocument(
       };
    const parsed = parse.parsed;
 
-   const { description, artifact } = modelLines(lines);
-   const artifactLine = artifact.find((l) => ARTIFACT_LINE.test(l));
-   if (artifactLine === undefined) {
+   const description = descriptionNotes(lines).text;
+   const artifactAt = locateArtifactTag(lines);
+   if (artifactAt === undefined) {
       return {
          ok: false,
          reason:
@@ -321,13 +298,13 @@ export async function readDashboardDocument(
       };
    }
 
-   const tag = parseAnnotation([artifactLine.replace(/^##\s*/, "# ")]).tag;
+   const tag = parseAnnotation([tagAnnotation(artifactAt.text)]).tag;
    const artifactTag = tag?.tag("artifact");
    const kind =
       artifactTag?.text("kind") === "notebook"
          ? ("notebook" as const)
          : undefined;
-   const list = readTileList(artifactLine);
+   const list = readTileList(artifactAt.text);
    if (list === undefined) {
       // A notebook is told from a layout one by whether it lists tiles at all.
       if (kind === "notebook")

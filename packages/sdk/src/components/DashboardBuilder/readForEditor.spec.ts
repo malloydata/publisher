@@ -27,7 +27,9 @@ describe("readForEditor", () => {
       const result = await readForEditor(LEGACY);
       if (result.ok === false) throw new Error(result.reason);
       expect(result.conversion?.from).toBe(LEGACY);
-      expect(result.conversion?.to).toContain("tiles=[cell_1 { kind=text }");
+      expect(result.conversion?.to).toContain(
+         "tiles=[\n    text_1 { kind=text }",
+      );
       expect(result.document.kind).toBe("notebook");
       expect(result.document.tiles).toHaveLength(7);
    });

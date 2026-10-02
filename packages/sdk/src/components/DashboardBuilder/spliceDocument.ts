@@ -22,6 +22,8 @@ import { isQueryTile, isTextTile } from "./document";
 import type { LocalGiven } from "./document";
 import {
    artifactLine,
+   artifactTag,
+   type ArtifactTag,
    descriptionNotes,
    isIdentifier,
    isBareName,
@@ -501,14 +503,14 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
    // rebuilt from `source` and `name`, so a file that spells a tile
    // `overview->kpis` keeps its spelling and the diff is the change and nothing else.
    if (!reordered && !resized) return undefined;
-   const artifactAt = artifactLine(lines);
-   if (artifactAt < 0) {
+   const tag = artifactTag(lines);
+   if (!tag) {
       return {
          ok: false,
          reason: "Could not find the `## artifact` tag to reorder.",
       };
    }
-   const line = lines[artifactAt];
+   const line = tag.text;
    const list = readTileList(line);
    if (!list) {
       return {
@@ -560,13 +562,45 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
             "A tile in the new order is not one the `## artifact` tag names.",
       };
    }
-   // The `## artifact` tag must stay on ONE line or the package fails to
-   // compile, so the array is replaced in place rather than reformatted.
+   // A `## artifact` line must stay on ONE line or the package fails to
+   // compile, so the array is replaced in place rather than reformatted; a
+   // `##|` block keeps whatever line layout its array was written in.
    const keyAt = line.slice(0, list.open).search(/tiles\s*=\s*$/);
-   const rewritten = `${line.slice(0, keyAt)}tiles=[${nextEntries.join(", ")}]${line.slice(list.close + 1)}`;
+   const rewritten = `${line.slice(0, keyAt)}tiles=[${arrayBody(line, list, nextEntries)}]${line.slice(list.close + 1)}`;
    if (rewritten !== line)
-      edits.push({ ...wholeLine(artifactAt), text: `${rewritten}\n` });
+      edits.push({ ...tagExtent(wholeLine, tag), text: `${rewritten}\n` });
    return undefined;
+}
+
+/** The whole lines a tag's text occupies; a block's closer is not part of its text. */
+function tagExtent(
+   wholeLine: (line: number) => { start: number; end: number },
+   tag: ArtifactTag,
+) {
+   return {
+      start: wholeLine(tag.from).start,
+      end: wholeLine(tag.block ? tag.to - 1 : tag.from).end,
+   };
+}
+
+/** The text between a list's brackets for `entries`, spaced as the list was: a multi-line list keeps its lead, separator and tail. */
+function arrayBody(
+   line: string,
+   list: NonNullable<ReturnType<typeof readTileList>>,
+   entries: string[],
+): string {
+   const first = list.entries[0];
+   const last = list.entries[list.entries.length - 1];
+   if (!first || !/\n/.test(line.slice(list.open, list.close)))
+      return entries.join(", ");
+   const lead = line.slice(list.open + 1, first.span.start);
+   const tail = line.slice(last.span.end, list.close);
+   const indent = lead.slice(lead.lastIndexOf("\n"));
+   const separator =
+      list.entries.length > 1
+         ? line.slice(first.span.end, list.entries[1].span.start)
+         : `,${indent.startsWith("\n") ? indent : " "}`;
+   return `${lead}${entries.join(separator)}${tail}`;
 }
 
 /**
@@ -647,10 +681,10 @@ function endOfString(line: string, open: number): number {
 function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, current, next, edits } = ctx;
    // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
-   // properties on the one-line `## artifact { … }` tag; the grid width is the
-   // `dashboard { columns=N }` beside it; the description is the run of `##"`
-   // lines above. Each is patched in place on its own line, so the tag stays
-   // on one line — the package fails to compile otherwise — and a property
+   // properties on the `## artifact { … }` tag (one line, or a `##|` block);
+   // the grid width is the `dashboard { columns=N }` beside it; the description is the run of `##"`
+   // lines above. Each is patched in place, so a one-line tag stays one line
+   // — the package fails to compile otherwise — and a property
    // the file spells its own way keeps that spelling when it did not change.
    if (
       kindOf(current) !== kindOf(next) ||
@@ -659,21 +693,20 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       current.columns !== next.columns ||
       canonical(current.startingGivens) !== canonical(next.startingGivens)
    ) {
-      const artifactAt = artifactLine(lines);
-      if (artifactAt < 0) {
+      const tag = artifactTag(lines);
+      if (!tag) {
          return {
             ok: false,
             reason:
                "Could not find the `## artifact` tag to change the page's settings.",
          };
       }
-      // Whatever the reorder wrote to this line is the text to patch further.
+      const extent = tagExtent(wholeLine, tag);
+      // Whatever the reorder wrote to this tag is the text to patch further.
       const already = edits.find(
-         (edit) =>
-            edit.start === wholeLine(artifactAt).start &&
-            edit.end === wholeLine(artifactAt).end,
+         (edit) => edit.start === extent.start && edit.end === extent.end,
       );
-      let line = already ? already.text.replace(/\n$/, "") : lines[artifactAt];
+      let line = already ? already.text.replace(/\n$/, "") : tag.text;
       // Depth-aware, since a text tile's own `kind=text` sits inside the tag.
       if (kindOf(current) !== kindOf(next))
          line = removeArtifactProperty(line, "kind");
@@ -696,16 +729,31 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          };
       }
       let inner = line.slice(braceOpen + 1, braceClose);
+      // A block puts each property on a line of its own, as its array is.
+      const lineBreak = tag.block
+         ? `\n${/\n([ \t]+)\S/.exec(inner)?.[1] ?? "  "}`
+         : " ";
+      const append = (property: string) =>
+         tag.block
+            ? `${inner.replace(/\s+$/, "")}${lineBreak}${property}\n`
+            : `${inner.replace(/\s+$/, "")} ${property} `;
       const setProperty = (key: string, value: string | undefined) => {
          const re = new RegExp(
-            `\\s*\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
+            `${tag.block ? "[ \\t]*" : "\\s*"}\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
          );
-         if (value === undefined) inner = inner.replace(re, "");
-         else if (re.test(inner)) inner = inner.replace(re, ` ${key}=${value}`);
-         else inner = `${inner.replace(/\s+$/, "")} ${key}=${value} `;
+         if (value === undefined) {
+            const own = new RegExp(`\n${re.source}[ \\t]*(?=\n)`);
+            inner = inner.replace(tag.block && own.test(inner) ? own : re, "");
+         } else if (re.test(inner))
+            inner = inner.replace(
+               re,
+               (hit) =>
+                  `${tag.block ? hit.slice(0, hit.length - hit.trimStart().length) : " "}${key}=${value}`,
+            );
+         else inner = append(`${key}=${value}`);
       };
       if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
-         inner = `${inner.replace(/\s+$/, "")} kind=notebook `;
+         inner = append("kind=notebook");
       if (current.title !== next.title)
          setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
@@ -722,12 +770,16 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          // string's text — `CATEGORY="Jeans"` reads as `Jeans`, which is
          // what the document holds and what is written back here.
          if (entries.length > 0)
-            inner = `${inner.replace(/\s+$/, "")} givens { ${entries
-               .map(([k, v]) => `${k}=${quoted(v)}`)
-               .join(" ")} }`;
+            inner = append(
+               `givens { ${entries.map(([k, v]) => `${k}=${quoted(v)}`).join(" ")} }`,
+            );
       }
-      inner = inner.replace(/\s{2,}/g, " ");
-      line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
+      if (tag.block) {
+         line = `${line.slice(0, braceOpen + 1)}${inner}${line.slice(braceClose)}`;
+      } else {
+         inner = inner.replace(/\s{2,}/g, " ");
+         line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
+      }
       if (current.columns !== next.columns) {
          // The deprecated alias would otherwise sit beside the new width and conflict with it.
          line = removeArtifactProperty(line, "dashboard_columns");
@@ -736,7 +788,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
       }
       if (already) already.text = `${line}\n`;
-      else edits.push({ ...wholeLine(artifactAt), text: `${line}\n` });
+      else edits.push({ ...extent, text: `${line}\n` });
    }
    if (current.description !== next.description) {
       // Written above the tag, where the server reads it. A description read
@@ -1466,6 +1518,33 @@ function planTextBlocks(ctx: SpliceContext): SpliceFailure | undefined {
       }
    }
    if (fresh.length > 0) {
+      // Prose blocks group together ahead of the `<source>_tiles` extension, in tile order.
+      const kept = parsed.textBlocks.filter(
+         (block) => block.name === undefined || nowNames.has(block.name),
+      );
+      const lastKept = kept[kept.length - 1];
+      const extension = parsed.sources.find((s) => s.name.endsWith("_tiles"));
+      if (lastKept) {
+         const at = lastKept.span.end;
+         const after = sourceText.slice(at);
+         edits.push({
+            start: at,
+            end: at,
+            text: `\n${fresh.join("\n")}${after === "" || after.startsWith("\n") ? "" : "\n"}`,
+         });
+         return undefined;
+      }
+      if (extension) {
+         const at = ctx.starts[parsed.blockStart(extension.line)];
+         const blankBefore =
+            at === 0 || sourceText.slice(0, at).endsWith("\n\n");
+         edits.push({
+            start: at,
+            end: at,
+            text: `${blankBefore ? "" : "\n"}${fresh.join("\n")}\n`,
+         });
+         return undefined;
+      }
       const at = sourceText.length;
       const lead =
          sourceText === "" || sourceText.endsWith("\n\n")

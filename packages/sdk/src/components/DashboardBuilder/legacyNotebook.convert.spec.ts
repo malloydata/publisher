@@ -107,7 +107,11 @@ describe("convertLegacyNotebook: the storefront category review", () => {
       const original = read(CATEGORY_REVIEW);
       const converted = await convert(original);
       const header = original.slice(0, original.indexOf("import {"));
-      expect(converted).toContain(header.replace(" }\n", " tiles=["));
+      expect(converted).toContain(
+         header
+            .replace("## artifact {", "##| artifact {")
+            .replace(" }\n", "\n  tiles=["),
+      );
       expect(converted).toContain(
          '# description="Narrow to one product category. Leave empty for all"\n# label="Category" control=select suggest { source=products dimension=category }\ngiven: CATEGORY :: filter<string> is f\'\'\n',
       );
@@ -115,7 +119,7 @@ describe("convertLegacyNotebook: the storefront category review", () => {
       // The named query was run once and nowhere else, so it became its view.
       expect(converted).not.toContain("query: top_products_in_category");
       expect(converted).toContain(
-         "view: cell_7 is top_products + { where: category ~ $CATEGORY }",
+         "view: the_ten_best_selling_products_in_the is top_products + { where: category ~ $CATEGORY }",
       );
       expect(converted).not.toMatch(/\n\n\n/);
    });
@@ -149,7 +153,11 @@ describe("convertLegacyNotebook: the storefront category review", () => {
          } as never);
          const model = runtime.loadModel(url);
          await model.getModel();
-         for (const view of ["cell_3", "cell_5", "cell_7"]) {
+         for (const view of [
+            "revenue_by_month",
+            "top_brands_2",
+            "the_ten_best_selling_products_in_the",
+         ]) {
             const rows = await model
                .loadQuery(`run: order_items_tiles -> ${view}`)
                .run();
@@ -215,8 +223,8 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\nquery: q is orders -> kpis\n\nrun: q\n\nrun: q + { limit: 1 }\n`,
       );
       expect(converted).toContain("query: q is orders -> kpis");
-      expect(converted).toContain("view: cell_1 is kpis\n");
-      expect(converted).toContain("view: cell_2 is kpis + { limit: 1 }");
+      expect(converted).toContain("view: tile_1 is kpis\n");
+      expect(converted).toContain("view: tile_2 is kpis + { limit: 1 }");
    });
 
    it("keeps a run-once named query that a definition also names", async () => {
@@ -224,7 +232,7 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\nquery: q is orders -> kpis\n\nquery: r is q + { limit: 1 }\n\nrun: q\n`,
       );
       expect(converted).toContain("query: q is orders -> kpis");
-      expect(converted).toContain("view: cell_1 is kpis");
+      expect(converted).toContain("view: tile_1 is kpis");
    });
 
    it("runs a query of a query as its source's view with the later stages", async () => {
@@ -232,11 +240,11 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\nquery: q is orders -> kpis\n\nrun: q -> { select: order_count }\n`,
       );
       expect(converted).toContain(
-         "view: cell_1 is kpis -> { select: order_count }",
+         "view: tile_1 is kpis -> { select: order_count }",
       );
       const doc = await document(converted);
       expect(doc.tiles[0]).toMatchObject({
-         name: "cell_1",
+         name: "tile_1",
          source: "orders_tiles",
          declaration: { kind: "opaque" },
       });
@@ -258,9 +266,9 @@ describe("convertLegacyNotebook: shapes", () => {
       expect(
          doc.tiles.map((t) => (isQueryTile(t) ? `${t.source}.${t.name}` : "")),
       ).toEqual([
-         "orders_tiles.cell_1",
-         "other_tiles.cell_2",
-         "orders_tiles.cell_3",
+         "orders_tiles.tile_1",
+         "other_tiles.tile_2",
+         "orders_tiles.tile_3",
       ]);
       expect(doc.sources.map((s) => s.name)).toEqual([
          "other",
@@ -284,9 +292,7 @@ describe("convertLegacyNotebook: shapes", () => {
          ["L", "S"],
       ]);
       // Nothing is lost when both are taken: the caption stays as a doc note.
-      expect(converted).toContain(
-         '  # subtitle="S"\n  #" Third\n  view: cell_3',
-      );
+      expect(converted).toContain('  # subtitle="S"\n  #" Third\n  view: l');
    });
 
    it("keeps a caption it cannot write into a tag as a doc note", async () => {
@@ -310,7 +316,7 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\n// why this one\n# big_value\n/* and a block\n   comment */\n# label="K"\nrun: orders -> kpis\n`,
       );
       expect(converted).toContain(
-         '  // why this one\n  # big_value\n  /* and a block\n     comment */\n  # label="K"\n  view: cell_1 is kpis',
+         '  // why this one\n  # big_value\n  /* and a block\n     comment */\n  # label="K"\n  view: k is kpis',
       );
       const [tile] = (await document(converted)).tiles.filter(isQueryTile);
       expect(tile.label).toBe("K");
@@ -320,7 +326,7 @@ describe("convertLegacyNotebook: shapes", () => {
       const converted = await convert(
          `${HEAD}\n#(text) a side note\nrun: orders -> kpis\n`,
       );
-      expect(converted).toContain("  #(text) a side note\n  view: cell_1");
+      expect(converted).toContain("  #(text) a side note\n  view: tile_1");
    });
 
    it("indents a multi-line view body under its declaration", async () => {
@@ -328,7 +334,7 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\nrun: orders -> {\n  group_by: region\n  aggregate: order_count\n}\n`,
       );
       expect(converted).toContain(
-         "  view: cell_1 is {\n    group_by: region\n    aggregate: order_count\n  }",
+         "  view: tile_1 is {\n    group_by: region\n    aggregate: order_count\n  }",
       );
       const [tile] = (await document(converted)).tiles.filter(isQueryTile);
       expect(tile.declaration.kind).toBe("inline");
@@ -339,7 +345,7 @@ describe("convertLegacyNotebook: shapes", () => {
          `${HEAD}\n// the lead-in\n##(markdown) Hello\n\nrun: orders -> kpis\n`,
       );
       expect(converted).toContain(
-         "// the lead-in\n##|(markdown) cell_1\nHello\n|##\n",
+         "// the lead-in\n##|(markdown) text_1\nHello\n|##\n",
       );
    });
 
@@ -372,11 +378,11 @@ describe("convertLegacyNotebook: shapes", () => {
 
    it("takes names that cannot collide with what the file already declares", async () => {
       const converted = await convert(
-         `${HEAD}\nsource: orders_tiles is orders extend { dimension: cell_1 is 1 }\n\nrun: orders -> kpis\n`,
+         `${HEAD}\nsource: orders_tiles is orders extend { dimension: tile_1 is 1 }\n\nrun: orders -> kpis\n`,
       );
       const doc = await document(converted);
       expect(doc.tiles[0]).toMatchObject({
-         name: "cell_1_2",
+         name: "tile_1_2",
          source: "orders_tiles_2",
       });
    });
@@ -389,7 +395,25 @@ describe("convertLegacyNotebook: shapes", () => {
          );
       const converted = await convert(original);
       const doc = await document(converted.replace(/\r\n/g, "\n"));
-      expect(doc.tiles.map((t) => t.name)).toEqual(["cell_1", "cell_2"]);
+      expect(doc.tiles.map((t) => t.name)).toEqual(["text_1", "k"]);
+   });
+
+   it("writes the tag as a block with a tile per line, whether it was a line or a block", async () => {
+      const cells = "\n##(markdown) Hello\n\nrun: orders -> kpis\n";
+      const fromLine = await convert(`${HEAD}${cells}`);
+      expect(fromLine).toContain(
+         '##| artifact { kind=notebook title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
+      );
+      const block = `##! experimental.givens\n##| artifact { kind=notebook\n  title="T"\n}\n|##\nimport "../models/orders.malloy"\n${cells}`;
+      const fromBlock = await convert(block);
+      expect(fromBlock).toContain(
+         '##| artifact { kind=notebook\n  title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
+      );
+      expect(await syntaxErrors(fromBlock)).toEqual([]);
+      expect((await document(fromBlock)).tiles.map((t) => t.name)).toEqual([
+         "text_1",
+         "tile_1",
+      ]);
    });
 
    it("converts a notebook with no run or prose cells to an empty tile list", async () => {

@@ -27,7 +27,7 @@ import {
 } from "./malloyTree";
 import { mentionsChartTag, parseChartLine } from "./chartLine";
 import { annotationTextProblem } from "./annotationText";
-import { artifactLine } from "./malloyText";
+import { artifactTag, isBareName } from "./malloyText";
 
 export type { Span };
 
@@ -111,7 +111,7 @@ const STATEMENT_ACCESSORS: readonly [string, "run" | "notes" | "definition"][] =
       ["exportStatement", "definition"],
    ];
 
-const ARTIFACT_NOTE = /^##[ \t]*artifact\b/;
+const ARTIFACT_NOTE = /^##(?:\|\s*|[ \t]*)artifact\b/;
 const TEXT_BLOCK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PARSE_URL = "file:///publisher-notebook-builder/notebook.malloy";
 
@@ -674,6 +674,18 @@ interface LegacyStatement {
    line: number;
 }
 
+/** A view name from a tile's label or caption: snake_case words, or undefined when nothing usable is left. */
+function viewNameFor(label: string | undefined): string | undefined {
+   const words = (label ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+   // Long labels are cut at a word, not in the middle of one.
+   const cut = words.length > 40 ? words.lastIndexOf("_", 40) : words.length;
+   const slug = words.slice(0, cut > 0 ? cut : 40);
+   return /^[a-z]/.test(slug) && isBareName(slug) ? slug : undefined;
+}
+
 /**
  * Rewrite a cell-format notebook (`run:` cells and prose cells) as a layout
  * notebook: the same file with a `tiles=[…]` list, each prose cell a
@@ -696,10 +708,10 @@ export async function convertLegacyNotebook(
    });
 
    const headerLines = text.slice(header.start, header.end).split("\n");
-   const artifactAt = artifactLine(headerLines);
-   if (artifactAt < 0 || readTileList(headerLines[artifactAt]))
+   const artifact = artifactTag(headerLines);
+   if (!artifact || readTileList(artifact.text))
       return refuse(
-         Math.max(artifactAt, 0),
+         Math.max(artifact?.from ?? 0, 0),
          "this notebook already lists its tiles, so there is nothing to convert.",
       );
 
@@ -905,7 +917,8 @@ export async function convertLegacyNotebook(
    const entries: string[] = [];
    const dropped = new Set<number>();
    const placed = new Map<number, string>();
-   let counter = 0;
+   let textCount = 0;
+   let tileCount = 0;
 
    const consumers = new Map<string, number>();
    for (const statement of analysed.values()) {
@@ -923,7 +936,7 @@ export async function convertLegacyNotebook(
 
    for (const [index, cell] of cells.entries()) {
       if (cell.kind === "markdown") {
-         const name = unique(`cell_${++counter}`);
+         const name = unique(`text_${++textCount}`);
          entries.push(`${name} { kind=text }`);
          const aside = comments.all
             .filter((c) => c.start >= cell.span.start && c.end <= cell.span.end)
@@ -935,7 +948,7 @@ export async function convertLegacyNotebook(
       const statement = analysed.get(index) as LegacyStatement;
       let lead = "";
       if (cell.markdown !== undefined) {
-         const name = unique(`cell_${++counter}`);
+         const name = unique(`text_${++textCount}`);
          entries.push(`${name} { kind=text }`);
          lead = `${textBlock(name, cell.markdown)}\n`;
       }
@@ -955,7 +968,6 @@ export async function convertLegacyNotebook(
       }
 
       const resolved = resolve(statement) as Resolved;
-      const view = unique(`cell_${++counter}`);
       const base = resolved.source.replace(/`/g, "");
       let extension = extensions.get(resolved.source);
       if (!extension) {
@@ -966,7 +978,6 @@ export async function convertLegacyNotebook(
          };
          extensions.set(resolved.source, extension);
       }
-      entries.push(`"${extension.name} -> ${view}"`);
 
       const above = [
          ...resolved.used.flatMap((name) => carried.get(name) ?? []),
@@ -975,6 +986,13 @@ export async function convertLegacyNotebook(
       const tagLines = above.filter((l) => /^\s*#(?!["(|])/.test(l));
       const tag =
          tagLines.length > 0 ? parseAnnotation(tagLines).tag : undefined;
+      // A view is named for what the tile says about itself, else by its place.
+      const view = unique(
+         viewNameFor(tag?.text("label") ?? statement.caption) ??
+            `tile_${tileCount + 1}`,
+      );
+      tileCount++;
+      entries.push(`"${extension.name} -> ${view}"`);
       const lines = above.map(indented);
       if (statement.caption !== undefined) {
          const tagged =
@@ -995,23 +1013,34 @@ export async function convertLegacyNotebook(
    }
 
    // Stitch: the header with its list, each cell's replacement, and the bytes between them as found.
-   const entryList = `tiles=[${entries.join(", ")}]`;
-   const artifact = headerLines[artifactAt];
    const close = (() => {
       let depth = 0;
-      for (let i = artifact.indexOf("{"); i < artifact.length; i++) {
-         if (artifact[i] === '"') {
-            for (i++; i < artifact.length && artifact[i] !== '"'; i++)
-               if (artifact[i] === "\\") i++;
-         } else if (artifact[i] === "{") depth++;
-         else if (artifact[i] === "}" && --depth === 0) return i;
+      const tagText = artifact.text;
+      for (let i = tagText.indexOf("{"); i < tagText.length; i++) {
+         if (tagText[i] === '"') {
+            for (i++; i < tagText.length && tagText[i] !== '"'; i++)
+               if (tagText[i] === "\\") i++;
+         } else if (tagText[i] === "{") depth++;
+         else if (tagText[i] === "}" && --depth === 0) return i;
       }
       return -1;
    })();
    if (close < 0)
-      return refuse(artifactAt, "the `## artifact { … }` tag never closes.");
-   headerLines[artifactAt] =
-      `${artifact.slice(0, close).trimEnd()} ${entryList} ${artifact.slice(close)}`;
+      return refuse(artifact.from, "the `## artifact { … }` tag never closes.");
+   // The tag is written as a `##|` block with a tile on each line, which is how a layout is read and edited.
+   const entryList =
+      entries.length === 0
+         ? "\n  tiles=[]\n"
+         : `\n  tiles=[\n${entries.map((e) => `    ${e}`).join(",\n")}\n  ]\n`;
+   const rewritten = `${artifact.text
+      .slice(0, close)
+      .trimEnd()
+      .replace(/^##(?!\|)/, "##|")}${entryList}${artifact.text.slice(close)}`;
+   headerLines.splice(
+      artifact.from,
+      artifact.block ? artifact.to - artifact.from : 1,
+      ...(artifact.block ? rewritten : `${rewritten}\n|##`).split("\n"),
+   );
 
    // Cells that left their place leave their gaps side by side; a run of blank lines is one.
    const squeeze = (gap: string) => {

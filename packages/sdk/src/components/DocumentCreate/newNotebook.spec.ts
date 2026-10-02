@@ -45,11 +45,17 @@ describe("newNotebookSource", () => {
          document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
       ).toEqual(["text", "query"]);
       const query = document.tiles.find(isQueryTile);
-      expect(query?.name).toBe("cell_1");
+      expect(query?.name).toBe("by_category_tile");
       expect(text).toContain(
          "source: order_items_tiles is order_items extend {",
       );
       expect(text).not.toMatch(/^run:/m);
+   });
+
+   it("writes the artifact tag as a block with a tile on each line, named for its view", () => {
+      expect(newNotebookSource(INPUT)).toContain(
+         '##| artifact { kind=notebook title="Sales \\"West\\""\n  tiles=[\n    intro { kind=text },\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
+      );
    });
 
    it("reads back for a back-quoted source too", async () => {
@@ -89,7 +95,7 @@ describe("newDocumentProblem", () => {
          view: "is",
       });
       expect(text).toContain("import { `source` }");
-      expect(text).toContain("view: cell_1 is `is`");
+      expect(text).toContain("view: is_tile is `is`");
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
       expect(
          newDocumentProblem("dashboard", { ...INPUT, source: "date" }),

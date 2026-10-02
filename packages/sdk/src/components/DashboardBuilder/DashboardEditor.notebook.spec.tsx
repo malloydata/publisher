@@ -205,12 +205,12 @@ describe("DashboardEditor as a notebook", () => {
       expect(
          await screen.findByText(/This notebook is in the cell format/),
       ).toBeDefined();
-      expect(screen.getByLabelText("Tile cell_3")).toBeDefined();
+      expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
 
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(writes).toHaveLength(1));
-      expect(writes[0]).toContain("tiles=[cell_1 { kind=text }");
-      expect(writes[0]).toContain("view: cell_3 is sales_by_month");
+      expect(writes[0]).toContain("tiles=[\n    text_1 { kind=text }");
+      expect(writes[0]).toContain("view: revenue_by_month is sales_by_month");
       expect(
          await screen.findByRole("button", { name: "Undo save" }),
       ).toBeDefined();
