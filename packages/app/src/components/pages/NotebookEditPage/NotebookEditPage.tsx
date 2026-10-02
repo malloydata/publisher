@@ -1,7 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { BackLink, encodeResourceUri, Loading } from "@malloy-publisher/sdk";
+import {
+   BackLink,
+   encodeResourceUri,
+   Loading,
+   NarrowEditGate,
+} from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -44,16 +49,21 @@ export default function NotebookEditPage({
             href={`/${environmentName}/${packageName}`}
             onClick={() => navigate(`/${environmentName}/${packageName}`)}
          />
-         <Suspense fallback={<Loading text="Opening the editor…" />}>
-            <NotebookEditor
-               // Remounts on a route change so another notebook starts from a fresh read.
-               key={`${environmentName}/${packageName}/${notebookName}`}
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
-               notebook={notebookName}
-               onExit={() => navigate(notebookPath)}
-               onEvent={onEvent}
-            />
-         </Suspense>
+         <NarrowEditGate>
+            <Suspense fallback={<Loading text="Opening the editor…" />}>
+               <NotebookEditor
+                  // Remounts on a route change so another notebook starts from a fresh read.
+                  key={`${environmentName}/${packageName}/${notebookName}`}
+                  resourceUri={encodeResourceUri({
+                     environmentName,
+                     packageName,
+                  })}
+                  notebook={notebookName}
+                  onExit={() => navigate(notebookPath)}
+                  onEvent={onEvent}
+               />
+            </Suspense>
+         </NarrowEditGate>
       </Box>
    );
 }

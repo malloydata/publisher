@@ -581,6 +581,23 @@ describe("DashboardBuilder: tiles added and removed", () => {
    });
 });
 
+describe("DashboardBuilder: the last tile", () => {
+   it("cannot be removed while the saved dashboard has tiles, and says why on screen", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
+      const remove = screen.getByRole("button", { name: /Remove tile/ });
+      expect(remove.getAttribute("aria-disabled")).toBe("true");
+      const reason = screen.getByText(
+         "A saved dashboard needs at least one tile.",
+      );
+      expect(remove.getAttribute("aria-describedby")).toBe(reason.id);
+      fireEvent.click(remove);
+      expect(screen.getByLabelText("Tile by_brand")).toBeDefined();
+   });
+});
+
 describe("DashboardBuilder: a tile's own settings", () => {
    it("retitles a tile from its menu, as one history entry", async () => {
       await mount();

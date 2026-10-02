@@ -667,6 +667,13 @@ export function DashboardBuilder({
                onRemove={() => {
                   if (menu !== undefined) removeTile(menu.index);
                }}
+               {...(editor.document.tiles.length === 1 &&
+               editor.saved.tiles.length > 0
+                  ? {
+                       removeBlocked:
+                          "A saved dashboard needs at least one tile.",
+                    }
+                  : {})}
                columns={columns}
                view={menuView}
                onDrills={() => {

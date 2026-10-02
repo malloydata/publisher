@@ -62,6 +62,10 @@ const optionsOf = (name: string) => {
    const menu = screen.getAllByRole("listbox", { hidden: true }).at(-1)!;
    return within(menu).getAllByRole("option", { hidden: true });
 };
+const enabledNames = (name: string) =>
+   optionsOf(name)
+      .filter((o) => o.getAttribute("aria-disabled") !== "true")
+      .map((o) => o.textContent);
 const choose = (name: string, option: string) =>
    fireEvent.click(
       optionsOf(name).find((o) => o.textContent === option) as HTMLElement,
@@ -74,8 +78,8 @@ describe("DashboardBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      const names = optionsOf("a by_cat").map((o) => o.textContent);
-      // The wrapper's view `by_category` carries a shape map, so it is offered.
+      const names = enabledNames("a by_cat");
+      // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
          "Default",
          "No chart (table)",
@@ -163,18 +167,14 @@ describe("DashboardBuilder: charts", () => {
          screen.getByRole("button", { name: "Add tile", hidden: true }),
       );
       fireEvent.click(screen.getByLabelText("View table_view"));
-      expect(optionsOf("new tile").map((o) => o.textContent)).not.toContain(
-         "Big value",
-      );
+      expect(enabledNames("new tile")).not.toContain("Big value");
       fireEvent.click(
          within(
             screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
          ).getByRole("option", { name: "Default", hidden: true }),
       );
       fireEvent.click(screen.getByLabelText("View kpis"));
-      expect(optionsOf("new tile").map((o) => o.textContent)).toContain(
-         "Big value",
-      );
+      expect(enabledNames("new tile")).toContain("Big value");
       choose("new tile", "Big value");
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(

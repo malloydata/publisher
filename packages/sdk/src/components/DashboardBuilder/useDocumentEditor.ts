@@ -18,6 +18,8 @@ import { type SpliceResult, spliceFailed } from "./spliceResult";
 
 export interface DocumentEditor<T> {
    document: T;
+   /** The document as of the last save (or open). */
+   saved: T;
    /** The file as it currently stands, which is what a save patches. */
    source: string;
    canUndo: boolean;
@@ -200,6 +202,7 @@ export function useDocumentEditor<T>(
 
    return {
       document,
+      saved,
       source,
       canUndo: history.index > 0,
       canRedo: history.index < history.stack.length - 1,

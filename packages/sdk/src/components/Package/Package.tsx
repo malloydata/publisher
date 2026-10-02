@@ -12,6 +12,7 @@ import {
    IconButton,
    Menu,
    MenuItem,
+   Stack,
    Table,
    TableBody,
    TableCell,
@@ -23,6 +24,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Database } from "../../client";
+import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
@@ -43,7 +45,6 @@ import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
-import { AddButton } from "../buttons";
 import { AppDialog } from "../AppDialog";
 import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
@@ -83,6 +84,7 @@ export default function Package({
       undefined,
    );
    const [newMenu, setNewMenu] = useState<HTMLElement | null>(null);
+   const narrow = useNarrowScreen();
 
    // Dashboards the host keeps for this package and the package does not have:
    // the builder's drafts, listed so they are found rather than stumbled on.
@@ -399,7 +401,7 @@ export default function Package({
                   {description}
                </Typography>
             )}
-            {canCreate && (
+            {canCreate && !narrow && (
                <>
                   <Button
                      variant="outlined"
@@ -487,20 +489,19 @@ export default function Package({
                   </Box>
                )}
                {(dashboards.length > 0 || canCreate) && (
-                  <PackageSection
-                     title="Dashboards"
-                     count={dashboards.length}
-                     action={
-                        canCreate ? (
-                           <AddButton
-                              label="Dashboard"
-                              onClick={() => setCreating("dashboard")}
-                           />
-                        ) : undefined
-                     }
-                  >
+                  <PackageSection title="Dashboards" count={dashboards.length}>
                      {dashboards.length === 0 && (
-                        <EmptyRow label="No dashboards yet" />
+                        <EmptyRow
+                           label="No dashboards yet"
+                           {...(canCreate
+                              ? {
+                                   action: {
+                                      label: "New dashboard",
+                                      onClick: () => setCreating("dashboard"),
+                                   },
+                                }
+                              : {})}
+                        />
                      )}
                      {dashboards.map((dashboard) => {
                         // A title equal to the slug is what the server falls
@@ -573,20 +574,19 @@ export default function Package({
                    heading over the words "No notebooks" is a row of furniture
                    saying nothing. */}
                {(notebooks.length > 0 || canCreate) && (
-                  <PackageSection
-                     title="Notebooks"
-                     count={notebooks.length}
-                     action={
-                        canCreate ? (
-                           <AddButton
-                              label="Notebook"
-                              onClick={() => setCreating("notebook")}
-                           />
-                        ) : undefined
-                     }
-                  >
+                  <PackageSection title="Notebooks" count={notebooks.length}>
                      {notebooks.length === 0 && (
-                        <EmptyRow label="No notebooks yet" />
+                        <EmptyRow
+                           label="No notebooks yet"
+                           {...(canCreate
+                              ? {
+                                   action: {
+                                      label: "New notebook",
+                                      onClick: () => setCreating("notebook"),
+                                   },
+                                }
+                              : {})}
+                        />
                      )}
                      {notebooks.map((notebook) => {
                         // Named the way dashboards and data apps are: a notebook
@@ -796,15 +796,28 @@ function PackageItemRow({
    );
 }
 
-function EmptyRow({ label }: { label: string }) {
+function EmptyRow({
+   label,
+   action,
+}: {
+   label: string;
+   action?: { label: string; onClick: () => void };
+}) {
    return (
-      <Typography
-         variant="body2"
-         color="text.secondary"
-         sx={{ py: 1, fontStyle: "italic" }}
-      >
-         {label}
-      </Typography>
+      <Stack direction="row" sx={{ alignItems: "center", gap: 1, py: 1 }}>
+         <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ fontStyle: "italic" }}
+         >
+            {label}
+         </Typography>
+         {action && (
+            <Button size="small" onClick={action.onClick}>
+               {action.label}
+            </Button>
+         )}
+      </Stack>
    );
 }
 
