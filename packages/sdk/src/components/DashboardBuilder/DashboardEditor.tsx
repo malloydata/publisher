@@ -256,6 +256,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
            source: string;
            document: DashboardDocument;
            conversion?: { from: string; to: string };
+           /** The package file when this opened, which a draft's save overwrites. */
+           packageText?: string;
            generation: number;
         }
       | undefined
@@ -362,6 +364,9 @@ export function DashboardEditor(props: DashboardEditorProps) {
                source: opening,
                document: result.document,
                ...(result.conversion ? { conversion: result.conversion } : {}),
+               ...(packageAtOpen !== undefined
+                  ? { packageText: packageAtOpen }
+                  : {}),
                generation: (previous?.generation ?? 0) + 1,
             }));
             onEventRef.current?.(
@@ -719,6 +724,11 @@ export function DashboardEditor(props: DashboardEditorProps) {
                }
                {...(versionId !== undefined ? { versionId } : {})}
                opened={opened}
+               {...(fromDraft &&
+               writer === "package" &&
+               opened.packageText !== undefined
+                  ? { replaces: opened.packageText }
+                  : {})}
                onSave={save}
                onDirtyChange={reportDirty}
                onSaveNoticeChange={setUndoOffered}
@@ -765,6 +775,7 @@ function Surface({
    slug,
    versionId,
    opened,
+   replaces,
    onSave,
    onDirtyChange,
    onSaveNoticeChange,
@@ -787,6 +798,7 @@ function Surface({
       conversion?: { from: string; to: string };
       generation: number;
    };
+   replaces?: string;
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
    onSaveNoticeChange: (showing: boolean) => void;
@@ -1044,6 +1056,7 @@ function Surface({
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}
+            {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
          />
          <Box sx={{ px: 0.5 }}>

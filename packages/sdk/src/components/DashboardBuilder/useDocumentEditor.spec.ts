@@ -202,6 +202,34 @@ describe("useDocumentEditor: undoing a save", () => {
          await view.result.current.save();
       });
 
+   it("undoing a save that replaced a different file writes that file back, not the text the editor read", async () => {
+      const { writes, onSave } = writer();
+      const view = renderHook(() =>
+         useDocumentEditor<Doc>({
+            source: "D",
+            replaces: "P",
+            document: { items: ["a"] },
+            splice,
+            structural,
+            onSave,
+         }),
+      );
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      expect(view.result.current.lastSave?.before).toBe("P");
+      await act(async () => {
+         expect(await view.result.current.undoSave()).toEqual({ ok: true });
+      });
+      expect(writes.map((w) => [w.source, w.purpose])).toEqual([
+         ["a,b", "save"],
+         ["P", "undo"],
+      ]);
+      expect(view.result.current.source).toBe("D");
+      // A save after the undo still replaces the file the draft was opened over.
+      await saveIt(view);
+      expect(view.result.current.lastSave?.before).toBe("P");
+   });
+
    it("offers to undo a save, and undoing writes the file back and restores the editor to just before Save", async () => {
       const { writes, onSave } = writer();
       const view = open({ onSave });

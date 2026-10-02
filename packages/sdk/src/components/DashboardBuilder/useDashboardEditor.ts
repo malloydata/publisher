@@ -44,6 +44,8 @@ export function useDashboardEditor(options: {
     * and the open is unsaved ({@link DocumentEditorOptions.opensDirty}).
     */
    conversion?: { from: string; to: string };
+   /** The file a save overwrites when `source` is a draft of it ({@link DocumentEditorOptions.replaces}). */
+   replaces?: string;
    /** The file's path within the package. */
    modelPath?: string;
 }): DashboardEditor {

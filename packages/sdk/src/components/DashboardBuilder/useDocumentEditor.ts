@@ -117,6 +117,8 @@ export interface DocumentEditorOptions<T> {
    splice: (source: string, document: T) => Promise<SpliceResult>;
    /** The open is itself unsaved: the document is a conversion of the file, so Save is on before any edit and Undo save returns to it. */
    opensDirty?: boolean;
+   /** The file the first save overwrites when it is not `source` (a draft opened over the package's file): what Undo save writes back. */
+   replaces?: string;
    /** Whether `document` differs structurally from `saved`; omit for never. */
    structural?: (saved: T, document: T) => boolean;
    /** Whether saving `document` over `saved` makes the history unsafe to step back into; the stack is then emptied on save. */
@@ -149,6 +151,8 @@ export function useDocumentEditor<T>(
    const [saved, setSaved] = useState(options.document);
    // Cleared by a save, restored by the undo of that save.
    const [pendingOpen, setPendingOpen] = useState(opensDirty);
+   // Cleared by a save, restored by the undo of that save.
+   const [replacing, setReplacing] = useState(options.replaces);
 
    const document = history.stack[history.index];
    // Read by `save` and `undoSave`, which compare against the latest history rather than the one their render closed over.
@@ -169,6 +173,7 @@ export function useDocumentEditor<T>(
               saved: T;
               history: History<T>;
               pendingOpen: boolean;
+              replacing: string | undefined;
            };
            after: History<T>;
            lastSave: LastSave;
@@ -238,6 +243,7 @@ export function useDocumentEditor<T>(
          saved,
          history: historyRef.current,
          pendingOpen,
+         replacing,
       };
       const clearing = isClearing?.(saved, document) ?? false;
       const lastStructural = isStructural?.(saved, document) ?? false;
@@ -262,6 +268,7 @@ export function useDocumentEditor<T>(
          setSource(result.source);
          setSaved(document);
          setPendingOpen(false);
+         setReplacing(undefined);
          const after = clearing
             ? { stack: [document], index: 0 }
             : before.history;
@@ -280,7 +287,7 @@ export function useDocumentEditor<T>(
                     before,
                     after,
                     lastSave: {
-                       before: source,
+                       before: replacing ?? source,
                        after: result.source,
                        structural: lastStructural,
                        clearsHistory: clearing,
@@ -300,6 +307,7 @@ export function useDocumentEditor<T>(
       source,
       saved,
       pendingOpen,
+      replacing,
       isClearing,
       isStructural,
    ]);
@@ -316,7 +324,7 @@ export function useDocumentEditor<T>(
       const { before } = undoable;
       setWriting(true);
       try {
-         await onSave(before.source, {
+         await onSave(before.replacing ?? before.source, {
             purpose: "undo",
             document: before.saved,
          });
@@ -332,6 +340,7 @@ export function useDocumentEditor<T>(
       setSource(before.source);
       setSaved(before.saved);
       setPendingOpen(before.pendingOpen);
+      setReplacing(before.replacing);
       // An edit typed during the undo's write is kept, as it is during a save's; it is unsaved against the restored file.
       setHistory((p) => (p === undoable.after ? before.history : p));
       setUndoable(undefined);

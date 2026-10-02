@@ -193,6 +193,8 @@ export interface DashboardBuilderProps {
     * same event.
     */
    savesTo?: SavesTo;
+   /** The file a save overwrites when `source` is a draft of it, so Undo save restores that file rather than the draft. */
+   replaces?: string;
    /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
    modelPath?: string;
    /**
@@ -221,6 +223,7 @@ export function DashboardBuilder({
    onEvent,
    conversion,
    savesTo = "package",
+   replaces,
    modelPath,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
@@ -228,6 +231,7 @@ export function DashboardBuilder({
       document,
       ...(onSave ? { onSave } : {}),
       ...(conversion ? { conversion } : {}),
+      ...(replaces !== undefined ? { replaces } : {}),
       ...(modelPath !== undefined ? { modelPath } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
