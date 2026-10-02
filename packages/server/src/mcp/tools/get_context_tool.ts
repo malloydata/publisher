@@ -43,6 +43,7 @@ import {
    type Retriever,
    type Unavailable,
 } from "./get_context_pipeline";
+import { activeLlmSettings } from "../../providers/active";
 import { LlmMeter, StageError } from "./get_context_llm";
 import { refineStage } from "./get_context_refine";
 import { rerankStage } from "./get_context_rerank";
@@ -2557,7 +2558,7 @@ async function runContextQuery(
       embeddingConfigured: embeddingConfigured(),
       settings: PIPELINE_SETTINGS,
       trace: [],
-      meter: new LlmMeter(),
+      meter: new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null),
    };
    const warningsFor = makeWarningsFor(ctx);
    // Spread into a ranked payload. Without the request header it is {}, so

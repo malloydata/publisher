@@ -35,6 +35,7 @@ describe("retrieval.llm validation", () => {
          timeoutMs: 30_000,
          concurrency: 4,
          maxCallsPerSync: 300,
+         maxCallsPerRequest: 20,
       });
    });
 
@@ -48,6 +49,7 @@ describe("retrieval.llm validation", () => {
             timeoutMs: "1500",
             concurrency: 2,
             maxCallsPerSync: 10,
+            maxCallsPerRequest: 3,
          },
       });
       expect(cfg?.llm).toMatchObject({
@@ -57,6 +59,7 @@ describe("retrieval.llm validation", () => {
          timeoutMs: 1500,
          concurrency: 2,
          maxCallsPerSync: 10,
+         maxCallsPerRequest: 3,
       });
    });
 
@@ -117,11 +120,27 @@ describe("retrieval.llm validation", () => {
       );
       expect(() =>
          parseRetrievalConfig({
-            llm: { provider: "ollama", model: "m", maxCallsPerRequest: 5 },
+            llm: { provider: "ollama", model: "m", maxCalls: 5 },
          }),
       ).toThrow(
-         "Invalid retrieval.llm: unknown key 'maxCallsPerRequest'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync",
+         "Invalid retrieval.llm: unknown key 'maxCalls'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync, maxCallsPerRequest",
       );
+   });
+
+   it("maxCallsPerRequest defaults to 20 and must be a positive integer", () => {
+      const llm = { provider: "ollama", model: "m" };
+      expect(parseRetrievalConfig({ llm })?.llm?.maxCallsPerRequest).toBe(20);
+      expect(
+         parseRetrievalConfig({ llm: { ...llm, maxCallsPerRequest: "7" } })?.llm
+            ?.maxCallsPerRequest,
+      ).toBe(7);
+      for (const bad of [0, -1, 2.5, "many"]) {
+         expect(() =>
+            parseRetrievalConfig({ llm: { ...llm, maxCallsPerRequest: bad } }),
+         ).toThrow(
+            `Invalid retrieval.llm.maxCallsPerRequest: expected a positive integer, got ${JSON.stringify(bad)}. Fix: set it to e.g. 20`,
+         );
+      }
    });
 });
 
