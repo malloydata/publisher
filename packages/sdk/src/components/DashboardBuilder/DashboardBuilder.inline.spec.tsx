@@ -230,6 +230,24 @@ describe("click-to-edit markdown in a text tile", () => {
    });
 });
 
+describe("the save shortcut inside a markdown field", () => {
+   it("saves the open draft, not the text before it", async () => {
+      let written: string | undefined;
+      await mount({
+         onSave: (source) => {
+            written = source;
+         },
+      });
+      fireEvent.click(within(tile("intro")).getByRole("button", { name: /Read/ }));
+      const field = screen.getByLabelText("Markdown");
+      field.focus();
+      fireEvent.change(field, { target: { value: "Drafted, never closed" } });
+      fireEvent.keyDown(field, { key: "s", ctrlKey: true, metaKey: true });
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain("##|(markdown) intro\nDrafted, never closed\n|##");
+   });
+});
+
 describe("undo and redo point at the tile they changed", () => {
    it("scrolls to it and lights it briefly, for the buttons and the keyboard", async () => {
       const scrolled = mock((_options?: unknown) => {});
