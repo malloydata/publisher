@@ -979,7 +979,11 @@ export async function convertLegacyNotebook(
       }
 
       const resolved = resolve(statement) as Resolved;
-      const base = resolved.source.replace(/`/g, "");
+      // The generated name is a bare identifier; the quoted base stays verbatim on the `extend`.
+      const base = resolved.source
+         .replace(/`/g, "")
+         .replace(/[^A-Za-z0-9_]+/g, "_")
+         .replace(/^(?=[0-9])/, "_");
       let extension = extensions.get(resolved.source);
       if (!extension) {
          extension = {

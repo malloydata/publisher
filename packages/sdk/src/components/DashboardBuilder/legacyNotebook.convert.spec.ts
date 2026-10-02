@@ -447,6 +447,20 @@ describe("convertLegacyNotebook: shapes", () => {
       });
    });
 
+   it("names the extension for a backtick-quoted source with a valid identifier", async () => {
+      const converted = await convert(
+         `${HEAD}\nrun: \`order-items\` -> kpis\n`,
+      );
+      expect(converted).toContain(
+         "source: order_items_tiles is `order-items` extend {",
+      );
+      expect(converted).toContain('"order_items_tiles -> tile_1"');
+      expect(await syntaxErrors(converted)).toEqual([]);
+      expect((await document(converted)).tiles[0]).toMatchObject({
+         source: "order_items_tiles",
+      });
+   });
+
    it("converts a CRLF notebook", async () => {
       const original =
          `${HEAD}\n##(markdown) Hello\n\n# label="K"\nrun: orders -> kpis\n`.replace(
