@@ -15,6 +15,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import type { ProviderName } from "./providers/types";
 import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
@@ -647,6 +648,11 @@ export interface EmbeddingConfig {
     * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
     */
    minSimilarity: number;
+   /** Which provider the settings came from; absent means openai-compatible. */
+   provider?: ProviderName;
+   /** Put before a search query / before indexed text. Default ''. */
+   queryPrefix?: string;
+   documentPrefix?: string;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
