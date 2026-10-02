@@ -406,33 +406,40 @@ function NotebookSession({
       const packageAtOpen = packageTextRef.current;
       const routeAtOpen = routeRef.current;
       const from = fromRecord ? "record" : "package";
-      void readNotebookSource(opening).then((result) => {
-         if (stale) return;
-         if (notebookSourceRefused(result)) {
-            setOpenError(result.refused);
+      void readNotebookSource(opening)
+         .then((result) => {
+            if (stale) return;
+            if (notebookSourceRefused(result)) {
+               setOpenError(result.refused);
+               onEventRef.current?.({
+                  type: "notebook.open_refused",
+                  reason: result.refused,
+               });
+               return;
+            }
+            setOpenError(undefined);
+            packageBaseRef.current = packageAtOpen;
+            savedHashRef.current = undefined;
+            setOpened((previous) => ({
+               source: opening,
+               from,
+               route: routeAtOpen,
+               notebook: result.source,
+               generation: (previous?.generation ?? 0) + 1,
+            }));
             onEventRef.current?.({
-               type: "notebook.open_refused",
-               reason: result.refused,
+               type: "notebook.opened",
+               from,
+               cells: result.source.cells.length,
+               durationMs: now() - startedAt.current,
             });
-            return;
-         }
-         setOpenError(undefined);
-         packageBaseRef.current = packageAtOpen;
-         savedHashRef.current = undefined;
-         setOpened((previous) => ({
-            source: opening,
-            from,
-            route: routeAtOpen,
-            notebook: result.source,
-            generation: (previous?.generation ?? 0) + 1,
-         }));
-         onEventRef.current?.({
-            type: "notebook.opened",
-            from,
-            cells: result.source.cells.length,
-            durationMs: now() - startedAt.current,
+         })
+         .catch((error: unknown) => {
+            if (stale) return;
+            const reason = `Could not read the notebook: ${error instanceof Error ? error.message : String(error)}`;
+            setOpenError(reason);
+            onEventRef.current?.({ type: "notebook.open_refused", reason });
          });
-      });
       return () => {
          stale = true;
       };

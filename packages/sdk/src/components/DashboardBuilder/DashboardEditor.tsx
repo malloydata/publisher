@@ -316,37 +316,44 @@ export function DashboardEditor(props: DashboardEditorProps) {
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readDashboardDocument(opening).then((result) => {
-         if (stale) return;
-         if (readFailed(result)) {
-            const reason = result.line
-               ? `${result.reason} (line ${result.line})`
-               : result.reason;
+      void readDashboardDocument(opening)
+         .then((result) => {
+            if (stale) return;
+            if (readFailed(result)) {
+               const reason = result.line
+                  ? `${result.reason} (line ${result.line})`
+                  : result.reason;
+               setOpenError(reason);
+               onEventRef.current?.({ type: "dashboard.open_refused", reason });
+               return;
+            }
+            setOpenError(undefined);
+            // A different document is open, so what this editor wrote before is
+            // no longer the base anything is spliced against; the package file
+            // the reader is now answering for is the one current at this open.
+            savedHashRef.current = undefined;
+            packageBaseRef.current = packageAtOpen;
+            setWrote(undefined);
+            setAccepted(undefined);
+            setSeen(latestAtOpen);
+            setOpened((previous) => ({
+               source: opening,
+               document: result.document,
+               generation: (previous?.generation ?? 0) + 1,
+            }));
+            onEventRef.current?.({
+               type: "dashboard.opened",
+               from: fromRef.current,
+               tiles: result.document.tiles.length,
+               durationMs: now() - startedAt.current,
+            });
+         })
+         .catch((error: unknown) => {
+            if (stale) return;
+            const reason = `Could not read the dashboard: ${error instanceof Error ? error.message : String(error)}`;
             setOpenError(reason);
             onEventRef.current?.({ type: "dashboard.open_refused", reason });
-            return;
-         }
-         setOpenError(undefined);
-         // A different document is open, so what this editor wrote before is
-         // no longer the base anything is spliced against; the package file
-         // the reader is now answering for is the one current at this open.
-         savedHashRef.current = undefined;
-         packageBaseRef.current = packageAtOpen;
-         setWrote(undefined);
-         setAccepted(undefined);
-         setSeen(latestAtOpen);
-         setOpened((previous) => ({
-            source: opening,
-            document: result.document,
-            generation: (previous?.generation ?? 0) + 1,
-         }));
-         onEventRef.current?.({
-            type: "dashboard.opened",
-            from: fromRef.current,
-            tiles: result.document.tiles.length,
-            durationMs: now() - startedAt.current,
          });
-      });
       return () => {
          stale = true;
       };

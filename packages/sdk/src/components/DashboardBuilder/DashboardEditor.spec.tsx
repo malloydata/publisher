@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    clearCache,
@@ -182,6 +188,15 @@ describe("DashboardEditor", () => {
       ).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
       expect(button("Save changes")).toBeDefined();
+   });
+
+   it("says why when reading the file throws, rather than loading forever", async () => {
+      // A body the reader cannot take apart, so the read rejects instead of refusing.
+      served = 42 as unknown as string;
+      mount();
+      expect(
+         await screen.findByText(/cannot be opened in the builder/),
+      ).toBeDefined();
    });
 
    it("keeps the catalog when one published model fails to load", async () => {
