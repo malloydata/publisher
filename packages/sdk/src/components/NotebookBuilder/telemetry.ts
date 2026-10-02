@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { SavesTo } from "../DashboardBuilder/documentSession";
 import type { NotebookCreatedEvent } from "../DocumentCreate/events";
 
 /** What the notebook editor reports about itself, for the host to log; context-free like `DashboardEvent`. */
@@ -16,7 +17,7 @@ export type NotebookEvent =
    | {
         type: "notebook.saved";
         cells: number;
-        where: "package" | "browser" | "host";
+        where: SavesTo;
         /** The save added or removed a cell, which is when the diff was shown. */
         structural?: boolean;
         /** The host workspace that took the write; never set for a package save. */

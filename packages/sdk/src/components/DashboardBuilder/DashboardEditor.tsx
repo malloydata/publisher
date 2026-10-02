@@ -8,11 +8,11 @@ import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
-import {
-   now,
-   type DashboardEvent,
-   type DashboardEventHandler,
+import type {
+   DashboardEvent,
+   DashboardEventHandler,
 } from "../Dashboard/telemetry";
+import { now } from "../../utils/clock";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { parseResourceUri } from "../../utils/formatting";
 import {
@@ -42,6 +42,7 @@ import {
    saveCaption,
    saveTarget,
    storageErrorMessage,
+   type SavesTo,
 } from "./documentSession";
 import { readDashboardDocument, readFailed } from "./readDocument";
 
@@ -708,7 +709,7 @@ function Surface({
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
    onEvent?: DashboardEventHandler;
-   savesTo: "package" | "browser" | "host";
+   savesTo: SavesTo;
    onExit?: () => void;
    note: string;
 }) {

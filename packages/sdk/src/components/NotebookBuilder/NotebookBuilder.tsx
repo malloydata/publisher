@@ -35,7 +35,8 @@ import type { Given } from "../../client";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { GIVEN_SETTLE_MS, useSettled } from "../../hooks/useSettled";
 import { SecondaryButton } from "../buttons";
-import { now } from "../Dashboard/telemetry";
+import { now } from "../../utils/clock";
+import type { SavesTo } from "../DashboardBuilder/documentSession";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "../DashboardBuilder/BuilderToolbar";
 import { DiffDialog } from "../DashboardBuilder/DiffDialog";
@@ -105,7 +106,7 @@ export interface NotebookBuilderProps extends QueryTarget {
    /** Saves and refusals, for the host to log. */
    onEvent?: NotebookEventHandler;
    /** Where `onSave` puts the file, for the event it reports. */
-   savesTo?: "package" | "browser" | "host";
+   savesTo?: SavesTo;
    /** The host's own extra actions for the edit bar; leaving is `onExit`, which draws Done. */
    toolbar?: ReactNode;
    /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { SavesTo } from "../DashboardBuilder/documentSession";
 import type { DashboardCreatedEvent } from "../DocumentCreate/events";
 
 /**
@@ -42,7 +43,7 @@ export type DashboardEvent =
          * "dashboards are being edited" unreadable, because a read-only server
          * reports exactly as much saving as a writable one.
          */
-        where: "package" | "browser" | "host";
+        where: SavesTo;
         /** The workspace that took the write, so the event says so itself. */
         workspace?: string;
         durationMs: number;
@@ -60,7 +61,3 @@ export type DashboardEvent =
    | { type: "dashboard.explored"; tile: string };
 
 export type DashboardEventHandler = (event: DashboardEvent) => void;
-
-/** A monotonic clock in milliseconds, for durations. */
-export const now = (): number =>
-   typeof performance !== "undefined" ? performance.now() : Date.now();

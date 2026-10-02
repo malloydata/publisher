@@ -14,7 +14,9 @@ import {
 } from "react";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
-import { now, type DashboardEventHandler } from "../Dashboard/telemetry";
+import { now } from "../../utils/clock";
+import type { SavesTo } from "./documentSession";
+import type { DashboardEventHandler } from "../Dashboard/telemetry";
 import {
    acceptsField,
    applyMapping,
@@ -168,7 +170,7 @@ export interface DashboardBuilderProps {
     * this browser, and into a host store that holds the record are not the
     * same event.
     */
-   savesTo?: "package" | "browser" | "host";
+   savesTo?: SavesTo;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save. Leaving is `onExit`, not this: the builder draws Done itself.

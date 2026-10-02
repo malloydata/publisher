@@ -11,7 +11,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { SecondaryButton } from "../buttons";
-import { now } from "../Dashboard/telemetry";
+import { now } from "../../utils/clock";
 import { buildCatalog } from "../DashboardBuilder/catalog";
 import {
    apiErrorMessage,
