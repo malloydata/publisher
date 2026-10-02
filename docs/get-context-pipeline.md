@@ -179,12 +179,11 @@ can bypass it.
 - **Egress.** `retrieval.egress.preset` is `default` (entity names, `#(doc)` text and schema context may be sent)
   or `full` (also code and dimension values). Access predicates (`#(access_filter)`, `#(authorize)`) have no
   class and are never sent. Operator only.
-- **Spend ceilings.** `retrieval.llm.maxCallsPerSync`, set by the operator. A package can
-  turn a stage on, or set `keyphrases: always`, but cannot spend past the ceiling. A per-request ceiling arrives with
-  the first request-time LLM step.
+- **Spend ceilings.** `retrieval.llm.maxCallsPerSync` and `retrieval.llm.maxCallsPerRequest`, set by the operator. A package can
+  turn a stage on, or set `keyphrases: always`, but cannot spend past either ceiling.
 - **Prompts.** A package may point a stage at a prompt file inside the package. A package author already controls the
   text the LLM sees; the ceilings bound what that can cost. Model docs are fenced in the prompt and marked as
-  data. The LLM's `match_reason` text is not passed to the calling agent (to confirm when the LLM stages land).
+  data. The model's reason text for a rating is not passed to the calling agent.
 - **Vector-affecting settings are not per package.** The embedding model, its dimensions and its prefixes are
   per server, because one process-wide provider embeds for every package. `representation` and `keyphrases`
   are per package. So "settings travel with the package" is true for how a package is searched, not for the
@@ -280,11 +279,11 @@ The hosted endpoint itself was not called.
 | Candidate window     | 10 rows per source per target, no global window                                                    | global window                                                   | per source, 10                                         |
 | Similarity floor     | 0.20                                                                                               | 0.20                                                            | same                                                   |
 | Entities searched    | direct entities only; joined copies are made later, at assembly                                    | joined copies are indexed, embedded and ranked as separate rows | search direct entities, expand joins at assembly       |
-| Refine               | LLM rates LOW/MEDIUM/HIGH; 10 per source, 120 total, batches of 15; drops below MEDIUM and unrated | absent                                                          | later step                                             |
-| Score                | level (LOW 1, MEDIUM 2, HIGH 3) + cosine, through the knots 0, .4, .7, .9, 1                       | cosine only                                                     | later step                                             |
+| Refine               | LLM rates LOW/MEDIUM/HIGH; 10 per source, 120 total, batches of 15; drops below MEDIUM and unrated | absent                                                          | built (2.10)                                           |
+| Score                | level (LOW 1, MEDIUM 2, HIGH 3) + cosine, through the knots 0, .4, .7, .9, 1                       | cosine only                                                     | built (2.10)                                           |
 | Join damping         | `0.9 ** (hops + 1)` on the whole score, so one hop is 0.81                                         | none                                                            | at assembly                                            |
 | Source relevance     | best entity score                                                                                  | rank of the best entity                                         | same                                                   |
-| Source rerank        | LLM 0 to 3, top 8 sources only, the rest discarded, drops below 2 unless the scope pins the source | absent                                                          | later step                                             |
+| Source rerank        | LLM 0 to 3, top 8 sources only, the rest discarded, drops below 2 unless the scope pins the source | absent                                                          | built (2.10)                                           |
 | Source-target search | separate LLM match over all sources, batches of 10; if more than 8 rate HIGH, MEDIUM is dropped    | embedding or lexical path                                       | later step                                             |
 | Dimension values     | every distinct value of `#(index)` dimensions, then LLM refine                                     | not indexed                                                     | later step                                             |
 | Access-gated sources | values withheld; the card names the unsearched dimensions                                          | absent                                                          | later step                                             |
@@ -300,7 +299,7 @@ depth 10 and damped by `0.9 ** (hops + 1)`, a source's relevance is its best fie
 ranked response is cut to whole cards under 35,000 characters (1,000 reserved). The join topology is read from the
 compiled model: each join's alias from the model's join tree, and its target source from the join entry's
 `sourceID`. A join with no named target (an inline table) reaches nothing at assembly. The lexical path still ranks
-the index's own joined copies, to depth 2. Scores stay cosine; the knots, refine and rerank are later steps.
+the index's own joined copies, to depth 2. Without an LLM, scores stay cosine; with one, refine, the knots and rerank apply (2.10).
 
 Moving the candidate window, scoring and join handling to hosted values changes what `main` returns when
 embeddings are configured. The no-key path (lexical) does not change and keeps its byte-identical test. The
@@ -363,6 +362,22 @@ LLM-written phrase, ten entities per call, stored in `entity_keyphrases` and reg
 inputs, the prompt text or the model change. The keyphrase step runs before embedding in the sync, reports
 `keyphraseProgress`, and an LLM failure puts the sync in `error` with the stage `keyphrase`. The settings, their
 precedence and the provider requirements are documented in [configuration.md](configuration.md).
+
+### 2.10 Query-time LLM stages
+
+This step registers the first two LLM stages. **Refine** is a RankStage: per entity-search target it rates the
+best 10 fields per source (120 overall) LOW, MEDIUM or HIGH in batches of 15, drops what falls below the package's
+`minLevel` (default MEDIUM) or is not returned, and scores a survivor `level + cosine`. **Rerank** is a CardStage
+after assembly: with two or more source cards it scores the best 8 (`topSources`) from 0 to 3 in one call, adds a
+tiebreak from the order the model listed them, drops cards below 2 unless the scope pins a source, and keeps the
+cards it cut from the top 8 in `total_available`. When refine ran, published scores are the raw score through the
+knots, and a joined copy is damped by `0.9 ** (hops + 1)` on the whole raw score. Both stages are `auto` (on when an
+LLM is configured), take their prompt text from a built-in default or a file in the package, and send only names,
+kinds, types and `#(doc)` text. A failure in either returns an error result that names the stage; there is no
+unrefined fallback. `retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat calls one request makes, and the
+runner records `{name, status, ms, in, out, llmCalls, tokens}` per stage, returned as `retrieval_trace` when the
+request carries `X-Publisher-Retrieval-Trace: summary`. With no LLM configured nothing runs and the response is
+unchanged. Both stages run only on the semantic ranking. Settings: [configuration.md](configuration.md).
 
 ## 3. Pull request sequence
 

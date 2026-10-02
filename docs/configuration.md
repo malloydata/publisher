@@ -356,7 +356,8 @@ credentials, what may leave the machine and the spend ceilings are all in the op
       "model": "<a model your provider serves>",
       "timeoutMs": 30000,
       "concurrency": 4,
-      "maxCallsPerSync": 300
+      "maxCallsPerSync": 300,
+      "maxCallsPerRequest": 20
     },
     "embedding": {
       "provider": "openai",
@@ -378,7 +379,8 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.    |
 | `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                           |
 | `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                       |
-| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat calls in one index sync (default `300`). A package cannot raise it. A per-request ceiling arrives with the first request-time LLM step.                                             |
+| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat calls in one index sync (default `300`). A package cannot raise it.                                                                                                                 |
+| `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request, counted across refine and rerank (default `20`; a positive integer). A package cannot raise it. See "Refine and rerank".                        |
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                             |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                        |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.            |
@@ -436,16 +438,22 @@ on reload (and a reload that changes nothing keeps the warm index):
   "retrieval": {
     "representation": "single",
     "keyphrases": "auto",
+    "refine": { "enabled": "auto", "minLevel": "MEDIUM" },
+    "rerank": { "enabled": "auto", "topSources": 8 },
     "prompts": { "keyphrase": "prompts/keyphrase.md" }
   }
 }
 ```
 
-| Key                 | Values                    | Default  | Meaning                                                                                                                                                                                     |
-| ------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `representation`    | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                                   |
-| `keyphrases`        | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                                           |
-| `prompts.keyphrase` | a path inside the package | built in | A file holding the instructions the LLM gets when it writes keyphrases. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
+| Key                                                     | Values                    | Default  | Meaning                                                                                                                                                                         |
+| ------------------------------------------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `representation`                                        | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                       |
+| `keyphrases`                                            | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                               |
+| `refine.enabled`                                        | `auto`, `true`, `false`   | `auto`   | See "Refine and rerank". `auto`: on when the operator has an LLM configured. `true` with no LLM configured is an error at package load.                                         |
+| `refine.minLevel`                                       | `LOW`, `MEDIUM`, `HIGH`   | `MEDIUM` | Candidates the model rates below this are dropped.                                                                                                                              |
+| `rerank.enabled`                                        | `auto`, `true`, `false`   | `auto`   | As for `refine.enabled`.                                                                                                                                                        |
+| `rerank.topSources`                                     | a positive integer        | `8`      | Sources scored; the rest are dropped from the answer but still counted in `total_available`.                                                                                    |
+| `prompts.keyphrase`, `prompts.refine`, `prompts.rerank` | a path inside the package | built in | A file holding the instructions the LLM gets for that step. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
 
 An unknown key is an error that names the valid keys, and the package is not served until it is
 fixed (HTTP 424, like any unusable publisher.json).
@@ -481,6 +489,96 @@ shows `embeddingIndex.status: "error"`, `stage: "keyphrase"` and the reason in `
 is embedded, and the next question after the cool-down retries from where the saved batches left
 off. There is no quiet fallback to embedding the doc or the name. `embeddingIndex.keyphraseProgress`
 (`done`, `total`) counts the entities that need an LLM keyphrase while the step runs.
+
+### Refine and rerank
+
+Two LLM steps run on a ranked `get_context` search when the server has an LLM configured and an
+embedding provider (they do not run on the lexical ranking, which has no cosine score to build on).
+With no LLM configured neither runs, and the response is the one the server gave before they
+existed, byte for byte.
+
+**Refine** rates the candidate fields of each entity-search target (`dimension`, `measure`, `view`,
+`join`; not `source`). For each target the server takes the best 10 fields per source by cosine and
+the best 120 overall, sends them in batches of 15 (up to `retrieval.llm.concurrency` batches at a
+time), and asks the model to rate each `LOW`, `MEDIUM` or `HIGH` against the search text. A field
+rated below `refine.minLevel`, or not returned, is dropped for that target. A survivor's raw score
+is its level (`LOW` 1, `MEDIUM` 2, `HIGH` 3) plus its cosine. The model's reason, if it gives one,
+is ignored and never sent to the caller.
+
+**Scores.** After refine, `relevance` (on entities, on `matched_targets` and on sources) is the raw
+score through a piecewise linear map with knots at 0, 1, 2, 3, 4 and values 0, 0.4, 0.7, 0.9, 1.0,
+rounded to 2 places. A `MEDIUM` field with cosine 0.5 publishes as 0.80, a `HIGH` one with cosine
+0.4 as 0.94. A joined copy of a field (a field reached through a join) is scored as the whole raw
+score times `0.9 ** (hops + 1)`, then mapped: a `HIGH` field one join away loses about a fifth of
+its raw score and can land in the `MEDIUM` band. A source's relevance is its best entity's.
+
+**Rerank** scores whole sources in one call. With 0 or 1 sources it is skipped. Otherwise the best
+`rerank.topSources` (default 8) sources by raw relevance go to the model, which scores each 0 to 3.
+The rest are dropped from the answer, but `total_available` still counts them and a warning says so.
+A source's relevance becomes its score plus a tiebreak: within one score, the sources the model
+listed first get larger tiebreaks (`(n - 1 - rank) * 0.1`). A source the model left out gets 0. A
+source scored below 2 is dropped, unless the request's `scopes[].source` pins one (then nothing is
+dropped). Entity relevances do not change.
+
+**Turning them on and off.** Both default to `auto`: on when `retrieval.llm` is configured (a
+provider with its key, or `ollama` or `vertex`). A package can set `enabled: false` to turn one off.
+`enabled: true` on a server with no LLM configured stops the package from loading, with a message
+that names the fix; use `auto` if the package should work on both kinds of server. The prompts are
+built in. A package can replace the instructions with `prompts.refine` or `prompts.rerank` (a file
+inside the package); the question, the candidates and the reply format are always added by the
+server.
+
+**If a step fails, the call fails.** When the model cannot be reached, or does not return usable
+JSON after the provider layer's retries and its one re-ask, `get_context` returns an error result
+whose message names the step (`refine` or `rerank`) and the reason, with `retrieval_stage` and
+`retrieval_reason: "llm-stage-failed"` beside it and no sources. It never answers with an unrefined
+or keyword ranking. A request with no `search_text` (a listing) runs no LLM step.
+
+**Spend ceiling.** `retrieval.llm.maxCallsPerRequest` (default 20) bounds the chat calls one request
+makes across both steps. The check runs before each call, so the call that would pass the limit is
+not sent; the request fails as above, with a message that names the step and this setting. A request
+makes one refine call per 15 candidates per target and one rerank call. A provider's own retries and
+the one JSON re-ask are not counted separately.
+
+**What is sent.** Entity names, kinds, data types, source names, model paths, the package name and
+`#(doc)` text (a source's own docs for rerank). Never any other annotation, so an access predicate
+cannot leave the process whatever the egress preset says. Dimension values would be sent only under
+`egress.preset: "full"`; none are indexed yet, so none are sent.
+
+**Trace.** A request that carries the header `X-Publisher-Retrieval-Trace: summary` gets a
+`retrieval_trace` block with one row per stage:
+
+```json
+{
+  "retrieval_trace": {
+    "stages": [
+      {
+        "name": "refine",
+        "status": "ran",
+        "ms": 412,
+        "in": 36,
+        "out": 14,
+        "llm_calls": 3,
+        "tokens": { "input": 4210, "output": 190 }
+      },
+      {
+        "name": "rerank",
+        "status": "ran",
+        "ms": 280,
+        "in": 4,
+        "out": 2,
+        "llm_calls": 1,
+        "tokens": { "input": 900, "output": 40 }
+      }
+    ]
+  }
+}
+```
+
+`status` is `ran`, `skipped` (off, or not applicable: a lexical ranking, or fewer than two
+sources) or `failed`. `in` and `out` count ranked rows for refine and sources for rerank. The
+header is a diagnostic only: it changes no result, and without it the response has no
+`retrieval_trace` key. It applies to ranked responses and to the error a failed step returns.
 
 ## Semantic ranking for `search_database_schema`
 
