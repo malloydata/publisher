@@ -90,7 +90,7 @@ What you mount has to be writable by uid 1000 too. Per kind of mount:
 | A new named volume on `/publisher/publisher_data` or `/publisher/ducklake_data` | writes | Nothing: Docker seeds it from the image, owned by uid 1000. |
 | A new named volume anywhere else | writes | `docker run --rm --user 0 --entrypoint chown -v <volume>:/path ms2data/malloy-publisher -R 1000:1000 /path`, once. |
 | A volume an older, root-run image wrote to | writes | The same `chown`, once, before starting the new image. With Compose, `docker compose run --rm --no-deps --user 0 --entrypoint chown publisher -R 1000:1000 /publisher/publisher_data`. |
-| A bind of a host directory the server writes | writes | `sudo chown -R 1000:1000 <dir>`, or keep your ownership and add an ACL: `sudo setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>`. |
+| A bind of a host directory the server writes | writes | `sudo chown -R 1000:1000 <dir>`, or keep your ownership and add an ACL, which needs no `sudo` on a directory you own: `setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>`. |
 | A bind of a host directory the server only reads (a package `location`, a directory of zips) | reads | Readable by others, `chmod -R o+rX <dir>`, or group-readable with `sudo chgrp -R 1000 <dir> && chmod -R g+rX <dir>`. Mount it `:ro`. |
 | A single bound file (the config, a key file) | reads | Readable by others or by gid 1000; a `0600` file is not. See the key-file recipes below. Mount it `:ro`. |
 | A Kubernetes PersistentVolume | writes | `fsGroup: 1000` and `fsGroupChangePolicy: OnRootMismatch` in the pod's `securityContext`. |
@@ -124,10 +124,10 @@ Before starting the server, the probe at the end of this section confirms a moun
 
   `docker volume ls` shows the volume's full name if you would rather use the `docker run` form.
 
-- **A bind mount** keeps the host directory's ownership. On Linux, `sudo chown -R 1000:1000` the host directory, or keep it yours and grant uid 1000 through a POSIX ACL, which also covers files created later:
+- **A bind mount** keeps the host directory's ownership. On Linux, `sudo chown -R 1000:1000` the host directory, or keep it yours and grant uid 1000 through a POSIX ACL, which also covers files created later and, unlike `chown`, needs no `sudo` on a directory you own:
 
   ```bash
-  sudo setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>
+  setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>
   ```
 
   Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
