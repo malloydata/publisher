@@ -5,6 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
    exampleFixture,
    registerPackageEnv,
+   serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
 
@@ -87,7 +88,20 @@ async function measure(
    };
 }
 
+// A layout notebook with a query tile: an unsaved conversion draws placeholders until it is saved.
+const NOTEBOOK_PKG = "notebooks-malloyyo";
+const NOTEBOOK_FILE = "notebooks/browser_tour.malloy";
+const NOTEBOOK_SOURCE = `##! experimental.givens
+## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, "orders -> kpis"] }
+import "../models/orders.malloy"
+
+##|(markdown) first
+First note.
+|##
+`;
+
 let pe: PackageEnv;
+let notebookEnv: PackageEnv;
 
 test.describe("builder request budget", () => {
    // eslint-disable-next-line no-empty-pattern
@@ -98,14 +112,23 @@ test.describe("builder request budget", () => {
          exampleFixture("storefront"),
          "storefront",
       );
+      notebookEnv = await registerPackageEnv(
+         testInfo.project.use.baseURL ?? "http://localhost:4000",
+         "budgetnb",
+         serverFixture(NOTEBOOK_PKG),
+         NOTEBOOK_PKG,
+         { [NOTEBOOK_FILE]: NOTEBOOK_SOURCE },
+      );
    });
    test.afterAll(async () => {
       await pe?.dispose();
+      await notebookEnv?.dispose();
    });
 
    const editors = [
       {
          name: "dashboard",
+         env: () => pe,
          path: "dashboards/overview",
          ready: (page: Page) =>
             expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
@@ -117,14 +140,15 @@ test.describe("builder request budget", () => {
       },
       {
          name: "notebook",
-         path: "notebooks/category-review",
+         env: () => notebookEnv,
+         path: "notebooks/browser_tour",
          ready: (page: Page) =>
             expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
                {
                   timeout: 60_000,
                },
             ),
-         link: /Category review/,
+         link: /Browser tour/,
       },
    ];
 
@@ -144,7 +168,9 @@ test.describe("builder request budget", () => {
             page,
             () =>
                page
-                  .goto(`/${pe.env}/${pe.pkg}/${editor.path}/edit`)
+                  .goto(
+                     `/${editor.env().env}/${editor.env().pkg}/${editor.path}/edit`,
+                  )
                   .then(() => undefined),
             () => editor.ready(page),
          );
@@ -157,7 +183,7 @@ test.describe("builder request budget", () => {
       test(`${editor.name} editor: navigation from the package page`, async ({
          page,
       }) => {
-         await page.goto(`/${pe.env}/${pe.pkg}`);
+         await page.goto(`/${editor.env().env}/${editor.env().pkg}`);
          await expect(
             page.getByRole("button", { name: editor.link }).first(),
          ).toBeVisible({ timeout: 60_000 });

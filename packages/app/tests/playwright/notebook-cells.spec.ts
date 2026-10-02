@@ -66,6 +66,9 @@ run: orders -> by_month + { where: region ~ $REGION }
 let pe: PackageEnv;
 
 test.describe("notebook tiles", () => {
+   // Tall enough that a drag's target tile is on screen, since a pointer cannot drop onto what is scrolled away.
+   test.use({ viewport: { width: 1280, height: 1600 } });
+
    // eslint-disable-next-line no-empty-pattern
    test.beforeEach(async ({}, testInfo) => {
       pe = await registerPackageEnv(
@@ -161,7 +164,10 @@ test.describe("notebook tiles", () => {
          .click();
       await page.getByRole("button", { name: "Remove tile" }).click();
       await saveChanges(page);
-      await expect(page.getByRole("status")).toContainText("Removed 1 tile");
+      // The drag-and-drop live region is a status too, so pick this one by its text.
+      await expect(
+         page.getByRole("status").filter({ hasText: "Removed 1 tile" }),
+      ).toBeVisible();
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");
       expect(file).not.toContain("second { kind=text }");

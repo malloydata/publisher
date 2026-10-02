@@ -45,6 +45,8 @@ test.describe("builder chart type", () => {
    }) => {
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/category-review/edit`);
       await editorOpen(page);
+      // Opened as an unsaved conversion, whose tiles are placeholders until it is saved.
+      await saveChanges(page);
       // The monthly query carries an explicit `# line_chart`.
       const tile = queryTiles(page).first();
       await expect(renderAs(tile)).toHaveAttribute(
