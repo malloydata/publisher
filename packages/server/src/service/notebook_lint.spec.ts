@@ -295,7 +295,7 @@ describe("notebook lint", () => {
             line: 3,
             code: "notebook-markdown-block-unreferenced",
             message:
-               "Line 3: the `(markdown)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard. Fix: delete the block, or list it in `tiles`.",
+               "Line 3: the `(markdown)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard. Fix: delete the block, or list `intro { kind=text }` in `tiles`.",
          },
       ]);
    });
@@ -661,7 +661,7 @@ describe("notebook lint", () => {
                line: 6,
                code: "notebook-markdown-block-unreferenced",
                message:
-                  "Line 6: the `(markdown)` block `extra` is not named by any entry in `tiles=[…]`, so it is not shown on the notebook. Fix: delete the block, or list it in `tiles`.",
+                  "Line 6: the `(markdown)` block `extra` is not named by any entry in `tiles=[…]`, so it is not shown on the notebook. Fix: delete the block, or list `extra { kind=text }` in `tiles`.",
             },
          ]);
       });
@@ -687,6 +687,72 @@ describe("notebook lint", () => {
             },
          ]);
          expect(lint(`${TILES_1}${SOURCE}${BLOCK}`)).toEqual([]);
+      });
+
+      it("reads an unquoted source -> view entry as a layout and says how to quote it", () => {
+         const found = lint(
+            `## artifact { kind=notebook tiles=[intro { kind=text }, orders_tiles -> headline] }\n${SOURCE}${BLOCK}`,
+         );
+         expect(found.map((f) => f.code)).toEqual([
+            "notebook-artifact-unparsed",
+         ]);
+         expect(found[0].message).toContain(
+            'every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`)',
+         );
+         expect(found[0].message).not.toContain("kind=notebook }`.");
+      });
+
+      it("says a bare entry naming a block needs kind=text", () => {
+         expect(
+            lint(
+               `## artifact { kind=notebook tiles=[intro, "a -> v"] }\n${SOURCE}${BLOCK}`,
+            ),
+         ).toEqual([
+            {
+               line: 3,
+               code: "notebook-markdown-block-unreferenced",
+               message:
+                  "Line 3: the `(markdown)` block `intro` is named by a tile with no `kind=text`, so that tile is read as a query and the block is not shown. Fix: write `intro { kind=text }` in `tiles`.",
+            },
+         ]);
+      });
+
+      it("warns that colspan and break mean nothing on a one-column notebook", () => {
+         expect(
+            lint(
+               `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE}${BLOCK}`,
+            ),
+         ).toEqual([
+            {
+               line: 1,
+               code: "notebook-tile-layout-ignored",
+               message:
+                  "Line 1: `colspan`, `break` on the `intro` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove them.",
+            },
+         ]);
+      });
+
+      it("reads the artifact tag written as a ##| block", () => {
+         const block = `##| artifact { kind=notebook\n  tiles=[\n    intro { kind=text },\n    "a -> v"\n  ]\n}\n|##\n`;
+         expect(lint(`${block}${SOURCE}${BLOCK}`)).toEqual([]);
+         expect(
+            lint(`${block}${SOURCE}${BLOCK}${RUN}`).map((f) => f.code),
+         ).toEqual(["notebook-layout-run"]);
+      });
+
+      it("names the document's own kind when it says a dashboard reads no attached note", () => {
+         const nested = `source: n is duckdb.sql("select 1 as x") extend {\n   #(markdown) hi\n   measure: c is count()\n}\n`;
+         const messages = (head: string, modelPath?: string) =>
+            lint(`${head}${nested}${BLOCK}`, modelPath)
+               .map((f) => f.message)
+               .join("\n");
+         expect(messages(TILES)).toContain("a notebook reads no attached note");
+         expect(
+            messages(
+               `## artifact { tiles=[intro { kind=text }] }\n`,
+               "dashboards/d.malloy",
+            ),
+         ).toContain("a dashboard reads no attached note");
       });
 
       it("is a layout from the tag, whichever folder holds it", () => {

@@ -114,6 +114,29 @@ describe("notebooks written as tiles (worker path)", () => {
       });
    });
 
+   it("serves the same layout when the artifact tag is a multi-line ##| block", async () => {
+      write(
+         "notebooks/tour.malloy",
+         LAYOUT.replace(
+            /^## artifact .*\n/,
+            `##| artifact { kind=notebook title="Tour"\n  tiles=[\n    intro { kind=text },\n    "base -> by_label"\n  ]\n}\n|##\n`,
+         ),
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.isServedNotebook("notebooks/tour.malloy")).toBe(true);
+         const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
+         expect(raw.dashboard).toMatchObject({
+            kind: "notebook",
+            title: "Tour",
+            tiles: [
+               { kind: "text", name: "intro" },
+               { kind: "query", query: "base -> by_label" },
+            ],
+         });
+         expect(warningsOf(pkg, "notebooks/tour.malloy")).toEqual([]);
+      });
+   });
+
    it("synthesizes cells from the tiles, in tile order, after the file's definitions", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {

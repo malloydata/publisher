@@ -52,7 +52,8 @@ export function documentKind(
    return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
 }
 
-const ARTIFACT_NOTE = /^##[ \t]*artifact\b/;
+/** A `## artifact` line, or the opener of a `##| artifact … |##` block. */
+const ARTIFACT_NOTE = /^##(?:\|\s*|[ \t]*)artifact\b/;
 
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
@@ -142,7 +143,13 @@ function findArtifactLineOutsideBlocks(
       const opener = /^(#{1,2})\|/.exec(trimmed);
       if (opener) {
          const wanted = `|${opener[1]}`;
-         if (trimmed.includes(wanted, opener[0].length)) continue;
+         const sameLine = trimmed.indexOf(wanted, opener[0].length);
+         if (sameLine !== -1) {
+            const block = trimmed.slice(0, sameLine);
+            if (artifactLine.test(block.replace(/^(#{1,2})\|\s*/, "$1 ")))
+               return block;
+            continue;
+         }
          const column = lines[i].length - trimmed.length;
          let end = -1;
          for (let at = i + 1; at < lines.length; at++)
@@ -152,6 +159,10 @@ function findArtifactLineOutsideBlocks(
             }
          // An unclosed opener holds no block, so it must not hide the rest of the file.
          if (end !== -1) {
+            const block = [trimmed, ...lines.slice(i + 1, end)].join("\n");
+            // An artifact tag may itself be written as a block, so the opener decides, not the body.
+            if (artifactLine.test(block.replace(/^(#{1,2})\|\s*/, "$1 ")))
+               return block;
             i = end;
             continue;
          }
@@ -180,7 +191,7 @@ export function artifactKindInText(source: string): string | undefined {
    const line = findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
    return line === undefined
       ? undefined
-      : tagText(motlyTag([`${line}\n`])?.tag("artifact"), "kind");
+      : tagText(motlyTag([line])?.tag("artifact"), "kind");
 }
 
 /* ------------------------------------------------------------------ */

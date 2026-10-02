@@ -31,6 +31,7 @@ import {
    docNotesAboveArtifact,
    documentKind,
    hasArtifactLineOutsideBlocks,
+   isArtifactNoteText,
    isDocumentModelPath,
    isNotebookModelPath,
 } from "./notebook";
@@ -82,6 +83,20 @@ describe("notebook predicates", () => {
       expect(
          artifactKindInText('##|"\n## artifact { kind=notebook }\n|##\nrun: x'),
       ).toBeUndefined();
+   });
+
+   it("reads the artifact tag written as a ##| block", () => {
+      const block =
+         '##| artifact { kind=notebook\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
+      expect(artifactKindInText(block)).toBe("notebook");
+      expect(claimsToBeANotebook(block)).toBe(true);
+      expect(
+         artifactKindInText("##| artifact { kind=dashboard } |##\nrun: x"),
+      ).toBe("dashboard");
+      expect(claimsToBeANotebook("##| artifacts\nprose\n|##\nrun: x")).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("##| artifact { kind=notebook }")).toBe(true);
    });
 
    it("locates the artifact note by its line, and only the ## form", () => {

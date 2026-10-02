@@ -1348,6 +1348,17 @@ export function lintDashboard(
          referencedTileGivens(tile, facts) !== undefined ||
          ("name" in parts &&
             facts.queries.some((query) => query.name === parts.name));
+      if (
+         !resolved &&
+         "name" in parts &&
+         textBlocks.some((block) => block.name === parts.name)
+      ) {
+         add(
+            `tile "${tile}" names the ##|(markdown) ${tile} block but has no kind=text, so it is read as a query. Fix: write ${tile} { kind=text }`,
+            "error",
+         );
+         continue;
+      }
       if (!resolved) {
          const detail =
             "source" in parts

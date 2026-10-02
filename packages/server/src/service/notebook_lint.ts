@@ -47,6 +47,9 @@ const KNOWN_KINDS = ["notebook", "dashboard", "text"];
 
 const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
 
+const TILE_ENTRY_FIX =
+   'Fix: every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`), and a text entry is a bare name followed by `{ kind=text }` (`intro { kind=text }`).';
+
 /** The first `max` characters of a line, for quoting it in a message. */
 const quoted = (line: string, max = 60) => line.trim().slice(0, max);
 
@@ -103,13 +106,24 @@ export function lintNotebookText(
    // The artifact tag decides what the file is; the folder only when the tag names no kind.
    let tagKind: string | undefined;
    let hasTiles = false;
-   for (const token of tokens) {
-      if (symbolOf(token) !== "DOC_ANNOTATION") continue;
-      const note = tokenText(token);
+   for (let i = 0; i < tokens.length; i++) {
+      const name = symbolOf(tokens[i]);
+      if (name !== "DOC_ANNOTATION" && name !== "DOC_BLOCK_ANNOTATION_BEGIN")
+         continue;
+      let note = tokenText(tokens[i]);
+      for (
+         let j = i + 1;
+         name === "DOC_BLOCK_ANNOTATION_BEGIN" &&
+         j < tokens.length &&
+         symbolOf(tokens[j]) === "BLOCK_ANNOTATION_TEXT";
+         j++
+      )
+         note += tokenText(tokens[j]);
       if (!isArtifactNoteText(note)) continue;
       const tag = motlyTag([note])?.tag("artifact");
       tagKind = tagText(tag, "kind");
-      hasTiles = tag?.has("tiles") ?? false;
+      // A tag that does not parse still says `tiles=`, and the layout lint explains its parse error.
+      hasTiles = (tag?.has("tiles") ?? false) || /\btiles\s*=/.test(note);
       break;
    }
    const kind = documentKind(modelPath, tagKind);
@@ -187,7 +201,7 @@ export function lintNotebookText(
             docNotes.push({ line: lineOfNode(note), text: bodyText });
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
                artifact = {
-                  text: noteText,
+                  text: bodyText,
                   line: lineOfNode(note),
                   startIndex: note.start.startIndex,
                };
@@ -545,7 +559,7 @@ export function lintNotebookText(
       return `\`${quoted(note)}\` sits inside a statement, where nothing reads a \`(markdown)\` note, so it is not shown. Fix: ${
          inNotebooks
             ? "move it above the statement it describes"
-            : `a dashboard reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it`
+            : `a ${page} reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it`
       }.`;
    }
 
@@ -718,18 +732,26 @@ export function lintNotebookText(
       );
    }
 
-   /** A `(markdown)` block is a tile only when `tiles` names it. */
+   /** A `(markdown)` block is a tile only when `tiles` names it with `{ kind=text }`. */
    function lintUnreferencedMarkdownBlocks(tagNote: { text: string }): void {
-      const tiles = motlyTag([tagNote.text])
-         ?.tag("artifact")
-         ?.array("tiles")
-         ?.map((tile) => tagText(tile));
+      if (motlyParseErrors([tagNote.text])[0] !== undefined) return;
+      const entries =
+         motlyTag([tagNote.text])?.tag("artifact")?.array("tiles") ?? [];
+      const textTiles = entries
+         .filter((tile) => tagText(tile, "kind") === "text")
+         .map((tile) => tagText(tile));
+      const bare = entries
+         .filter((tile) => tagText(tile, "kind") !== "text")
+         .map((tile) => tagText(tile));
       for (const block of readMarkdownBlocks(notebookParse, text)) {
-         if (block.name === undefined || tiles?.includes(block.name)) continue;
+         if (block.name === undefined || textTiles.includes(block.name))
+            continue;
          add(
             block.line,
             "notebook-markdown-block-unreferenced",
-            `the \`(${block.route})\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the ${page}. Fix: delete the block, or list it in \`tiles\`.`,
+            bare.includes(block.name)
+               ? `the \`(${block.route})\` block \`${block.name}\` is named by a tile with no \`kind=text\`, so that tile is read as a query and the block is not shown. Fix: write \`${block.name} { kind=text }\` in \`tiles\`.`
+               : `the \`(${block.route})\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the ${page}. Fix: delete the block, or list \`${block.name} { kind=text }\` in \`tiles\`.`,
          );
       }
    }
@@ -740,7 +762,7 @@ export function lintNotebookText(
          add(
             tagNote.line,
             "notebook-artifact-unparsed",
-            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
+            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
             "error",
          );
          return;
@@ -787,6 +809,17 @@ export function lintNotebookText(
             "notebook-kind-unknown",
             `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
          );
+      }
+      if (layoutNotebook) {
+         for (const entry of tag.array("tiles") ?? []) {
+            const ignored = ["colspan", "break"].filter((p) => entry.has(p));
+            if (ignored.length === 0) continue;
+            add(
+               tagNote.line,
+               "notebook-tile-layout-ignored",
+               `\`${ignored.join("`, `")}\` on the \`${tagText(entry) ?? "a"}\` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove ${ignored.length > 1 ? "them" : "it"}.`,
+            );
+         }
       }
       const columns = motlyTag(modelNotes)?.tag("dashboard");
       if (layoutNotebook && columns?.has("columns")) {

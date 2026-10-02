@@ -2476,6 +2476,21 @@ describe("service/dashboard text tile entries", () => {
       expect(manifest?.givens).toEqual([]);
    });
 
+   it("says a bare tile naming a (markdown) block needs kind=text", () => {
+      const g = facts({
+         ...f,
+         modelAnnotations: [
+            '## artifact { tiles=[intro, "orders -> kpis"] }\n',
+            "##|(markdown) intro\nhello",
+         ],
+      });
+      const manifest = build(g);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(g, manifest).map((x) => x.message)).toEqual([
+         'tile "intro" names the ##|(markdown) intro block but has no kind=text, so it is read as a query. Fix: write intro { kind=text }',
+      ]);
+   });
+
    it("gives a text tile with no block an empty body and a finding", () => {
       const g = facts({
          ...f,
