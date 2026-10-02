@@ -184,8 +184,8 @@ describe("the chart picker", () => {
    it("lists every chart, with no sparkline, and disables those the view cannot render", async () => {
       await mount();
       expect(optionNames("Cell 3, query").map((o) => o.name)).toEqual([
-         "Default",
-         "No chart (table)",
+         "From the view",
+         "Table",
          "Line",
          "Bar",
          "Big value",
@@ -194,8 +194,8 @@ describe("the chart picker", () => {
          "Segment map",
       ]);
       expect(enabledNames("Cell 3, query")).toEqual([
-         "Default",
-         "No chart (table)",
+         "From the view",
+         "Table",
          "Line",
          "Bar",
          "Scatter",
@@ -230,7 +230,7 @@ run: a -> geo
          .getAllByRole("option", { hidden: true })
          .find((o) => o.textContent?.startsWith("Big value"))!;
       fireEvent.click(disabled);
-      expect(picker("Cell 3, query").textContent).toBe("Default");
+      expect(picker("Cell 3, query").textContent).toBe("From the view");
    });
 
    it("names each control by its cell", async () => {
@@ -239,7 +239,7 @@ run: a -> geo
          within(cell("Cell 3, query"))
             .getByRole("combobox", { hidden: true })
             .getAttribute("aria-label"),
-      ).toBe("Chart, cell 3");
+      ).toBe("Viz type, cell 3");
    });
 
    it("starts on the cell's own chart state", async () => {
@@ -301,7 +301,7 @@ run: a -> by_cat
       );
    });
 
-   it("takes the chart line back off the cell on Default", async () => {
+   it("takes the chart line back off the cell on From the view", async () => {
       await mount({
          source: `## artifact { kind=notebook }
 source: a is duckdb.table('t')
@@ -312,7 +312,7 @@ run: a -> by_cat
       });
       await settled();
       expect(lastQuery()).toContain(chartLineText("bar_chart"));
-      choose("Cell 2, query", "Default");
+      choose("Cell 2, query", "From the view");
       await settled();
       expect(lastQuery()).not.toContain("bar_chart");
       expect(lastQuery()).toContain("run: a -> by_cat");

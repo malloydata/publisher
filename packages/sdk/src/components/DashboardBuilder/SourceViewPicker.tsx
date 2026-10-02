@@ -41,8 +41,21 @@ export function SourceViewPicker({
             inputProps={{ "aria-label": "Source" }}
          >
             {sources.map((s) => (
-               <MenuItem key={s.name} value={s.name}>
+               <MenuItem
+                  key={s.name}
+                  value={s.name}
+                  disabled={s.views.length === 0}
+               >
                   {s.name}
+                  {s.views.length === 0 && (
+                     <Typography
+                        component="span"
+                        variant="caption"
+                        sx={{ ml: 1 }}
+                     >
+                        declares no views
+                     </Typography>
+                  )}
                   {s.description && (
                      <Typography
                         component="span"

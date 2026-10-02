@@ -40,7 +40,7 @@ export interface BuilderToolbarProps {
    saveButton?: Ref<HTMLButtonElement>;
    /** The host's own extra actions, beside Done. */
    actions?: ReactNode;
-   /** Leave editing: draws "Done editing" at the right edge. Absent, no such button. */
+   /** Leave editing: draws "Close" at the right edge. Absent, no such button. */
    onExit?: () => void;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
@@ -167,7 +167,7 @@ export function BuilderToolbar({
                {actions}
                {onExit && (
                   <SecondaryButton
-                     label="Done editing"
+                     label="Close"
                      icon={<CheckIcon />}
                      onClick={onExit}
                   />

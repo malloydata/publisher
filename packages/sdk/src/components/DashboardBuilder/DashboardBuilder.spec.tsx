@@ -676,7 +676,7 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(button("Clickable cells…"));
+      fireEvent.click(button("Drill-through…"));
 
       fireEvent.mouseDown(
          screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
@@ -711,7 +711,7 @@ source: a is scoped_orders extend {
    it("explains itself when the source declares no dimension here", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(button("Clickable cells…"));
+      fireEvent.click(button("Drill-through…"));
       expect(
          screen.getByText(/declares no dimensions of its own/),
       ).toBeDefined();

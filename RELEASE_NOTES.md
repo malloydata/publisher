@@ -100,10 +100,10 @@ on a pinned version of a package. The same primitives (`createDocument`, `create
 that carries `notebook.created` (both `{ where }` only; additive, but a host that switches
 exhaustively over `DashboardEvent` will see one new case).
 
-A dashboard tile and a notebook query cell each get a **chart picker**: Default (the view's own
-chart), No chart (table), Line, Bar, Big value (offered when every output of the view is an
+A dashboard tile and a notebook query cell each get a **Viz type** picker: From the view (the view's own
+chart), Table, Line, Bar, Big value (offered when every output of the view is an
 aggregate), Scatter, and a map only when the view already carries one. The picker writes one chart
-line that turns off the other chart tags. A chart line it did not write (for example
+line that turns off the chart tags the view carries (all the others when the catalog does not know the view). A chart line it did not write (for example
 `# bar_chart { size=spark }`) is kept byte for byte on every edit, and the picker is disabled for
 that tile or cell with the reason shown.
 
@@ -125,9 +125,9 @@ the source had no such field.
 
 ## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
 
-**Leaving with unsaved edits now asks.** "Done editing" in `DashboardBuilder`, `DashboardEditor` and `NotebookEditor` shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
+**Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder`, `DashboardEditor` and `NotebookEditor` shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
 
-For hosts that mount an editor themselves, the builders now draw "Done editing" and take two props: `onExit`, called once the user has chosen to leave, and `onDirtyChange(dirty)`, the hook for your own navigation guard. A host that passed its own exit button as `toolbar` should pass `onExit` instead, and a host whose `onExit` also prompts will now prompt twice. `UnsavedChangesDialog` is exported from `@malloy-publisher/sdk` for pages that need the same prompt.
+For hosts that mount an editor themselves, the builders now draw "Close" and take two props: `onExit`, called once the user has chosen to leave, and `onDirtyChange(dirty)`, the hook for your own navigation guard. A host that passed its own exit button as `toolbar` should pass `onExit` instead, and a host whose `onExit` also prompts will now prompt twice. `UnsavedChangesDialog` is exported from `@malloy-publisher/sdk` for pages that need the same prompt.
 
 Smaller changes in the same pass:
 

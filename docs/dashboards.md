@@ -629,7 +629,7 @@ source and its view (one select), a type (Dashboard or Notebook), and a title, a
 the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
 view, label and chart from its own menu, and add filters from the strip above the grid.**
 
-The chart choices are Default (the view's own chart), No chart (a table), Line, Bar, Big value, Scatter,
+The **Viz type** choices are From the view (the view's own chart), Table (no chart), Line, Bar, Big value, Scatter,
 Shape map and Segment map. A choice the view cannot render stays in the list, greyed, with its reason
 beside it: Big value needs a view with only totals (no group by), and a map needs a view that already
 carries a map chart. A choice writes one chart line on the tile's wrapper that turns off the other chart
@@ -773,9 +773,9 @@ import { DashboardEditor } from "@malloy-publisher/sdk/builder";
 </ServerProvider>;
 ```
 
-The editor's **Done editing** button asks about unsaved edits itself (Keep editing, Discard changes, or
+The editor's **Close** button asks about unsaved edits itself (Keep editing, Discard changes, or
 Save and exit), and calls `onExit` only once the person has chosen to leave. An `onExit` that also
-prompts would ask twice, so have it navigate and nothing more. Done is the only exit the editor owns:
+prompts would ask twice, so have it navigate and nothing more. Close is the only exit the editor owns:
 to guard the host's other ways out (a nav link, the browser's Back, closing the tab), track
 `onDirtyChange`, which reports whether anything is unsaved (an open text edit counts, and it reports
 `false` when the editor unmounts), and block navigation while it is `true`. The Console's

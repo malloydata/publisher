@@ -36,6 +36,8 @@ export interface NewTile {
    label?: string;
    /** A chart for the tile; absent keeps the view's own. */
    chart?: ChartPick | "none";
+   /** The chart tags the view carries, so the chart line negates only those. */
+   chartCarried?: string[];
    colspan: number;
 }
 
@@ -87,7 +89,13 @@ export function AddTileDialog({
       if (!open) return;
       // Open on the source the tiles already read, so the common case is one
       // click on a view.
-      setBase(document.sources[0]?.base ?? sources[0]?.name ?? "");
+      const withViews = (name: string) =>
+         sources.some((s) => s.name === name && s.views.length > 0);
+      setBase(
+         document.sources.map((s) => s.base).find(withViews) ??
+            sources.find((s) => s.views.length > 0)?.name ??
+            "",
+      );
       setView("");
       setLabel("");
       setChart("default");
@@ -122,7 +130,18 @@ export function AddTileDialog({
                         base,
                         view,
                         ...(label.trim() ? { label: label.trim() } : {}),
-                        ...(chart !== "default" ? { chart } : {}),
+                        ...(chart !== "default"
+                           ? {
+                                chart,
+                                ...(picked
+                                   ? {
+                                        chartCarried: picked.chart
+                                           ? [picked.chart]
+                                           : [],
+                                     }
+                                   : {}),
+                             }
+                           : {}),
                         colspan,
                      })
                   }

@@ -85,8 +85,6 @@ export function DiffDialog({
                               : line.kind === "del"
                                 ? "rgba(168, 41, 31, 0.14)"
                                 : "transparent",
-                        textDecoration:
-                           line.kind === "del" ? "line-through" : "none",
                         opacity: line.kind === "del" ? 0.8 : 1,
                      }}
                   >

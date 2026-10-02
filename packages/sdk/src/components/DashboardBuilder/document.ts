@@ -162,6 +162,8 @@ export interface DashboardTile {
    chart?: ChartState;
    /** The chart lines behind a `"custom"` chart, as written; read-only, so a picker can say what it will not change. */
    chartLines?: string[];
+   /** The chart tags the tile's view carries, when the catalog knows them: the writer negates only these. Never read from a file. */
+   chartCarried?: string[];
    colspan?: number;
    break?: boolean;
    borderless?: boolean;

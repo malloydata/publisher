@@ -233,7 +233,7 @@ export const CONTROL_KINDS: ReadonlyArray<{
    },
    {
       kind: "date",
-      label: "Since a date",
+      label: "On or after a date",
       hint: "A date picker; tiles keep rows on or after it",
    },
 ];

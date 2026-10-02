@@ -64,8 +64,8 @@ export function chartChoices(
       "segment_map",
    ];
    return [
-      { value: "default", label: "Default" },
-      { value: "none", label: "No chart (table)" },
+      { value: "default", label: "From the view" },
+      { value: "none", label: "Table" },
       ...picks.map((pick): ChartChoice => {
          const reason = reasonFor(pick);
          return {
@@ -108,7 +108,7 @@ export function ChartPicker({
          select
          size="small"
          variant="standard"
-         label="Chart"
+         label="Viz type"
          value={state}
          disabled={disabledReason !== undefined}
          onChange={(event) => {
@@ -129,7 +129,7 @@ export function ChartPicker({
             // A disabled choice stays focusable so a keyboard user reaches its reason.
             MenuProps: { MenuListProps: { disabledItemsFocusable: true } },
             SelectDisplayProps: {
-               "aria-label": `Chart, ${cellLabel}`,
+               "aria-label": `Viz type, ${cellLabel}`,
                "aria-labelledby": undefined,
                ...(disabledReason ? { "aria-describedby": reasonId } : {}),
             },

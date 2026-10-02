@@ -210,7 +210,7 @@ export function previewTileQuery(
    const chart = tile.chart;
    const annotation =
       chart === "none" || isChartPick(chart)
-         ? chartLineText(chart)
+         ? chartLineText(chart, tile.chartCarried)
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
            : chart === "default" && dropsBaseChart(tile.declaration)

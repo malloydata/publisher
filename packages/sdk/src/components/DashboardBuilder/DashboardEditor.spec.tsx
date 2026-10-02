@@ -301,7 +301,7 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       expect(onExit).toHaveBeenCalledTimes(1);
    });
 });

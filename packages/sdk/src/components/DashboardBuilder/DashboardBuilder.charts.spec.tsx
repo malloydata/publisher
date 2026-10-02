@@ -56,7 +56,7 @@ const mount = async (onSave?: (source: string) => void) => {
 };
 
 const chartPicker = (name: string) =>
-   screen.getByRole("combobox", { name: `Chart, ${name}`, hidden: true });
+   screen.getByRole("combobox", { name: `Viz type, ${name}`, hidden: true });
 const optionsOf = (name: string) => {
    fireEvent.mouseDown(chartPicker(name));
    const menu = screen.getAllByRole("listbox", { hidden: true }).at(-1)!;
@@ -81,8 +81,8 @@ describe("DashboardBuilder: charts", () => {
       const names = enabledNames("a by_cat");
       // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
-         "Default",
-         "No chart (table)",
+         "From the view",
+         "Table",
          "Line",
          "Bar",
          "Scatter",
@@ -95,7 +95,7 @@ describe("DashboardBuilder: charts", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("line_chart")}\n  view: by_cat is by_category`,
+         `  ${chartLineText("line_chart", ["shape_map"])}\n  view: by_cat is by_category`,
       );
    });
 
@@ -106,7 +106,7 @@ describe("DashboardBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       choose("a by_cat", "Bar");
-      choose("a by_cat", "Default");
+      choose("a by_cat", "From the view");
       fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
       const save = screen.queryByRole("button", {
          name: "Save changes",
@@ -124,7 +124,10 @@ describe("DashboardBuilder: charts", () => {
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
       expect(
          screen
-            .getByRole("combobox", { name: "Chart, a by_brand", hidden: true })
+            .getByRole("combobox", {
+               name: "Viz type, a by_brand",
+               hidden: true,
+            })
             .getAttribute("aria-disabled"),
       ).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
@@ -148,7 +151,7 @@ describe("DashboardBuilder: charts", () => {
       expect(
          screen
             .getByRole("combobox", {
-               name: "Chart, orders by_brand",
+               name: "Viz type, orders by_brand",
                hidden: true,
             })
             .getAttribute("aria-disabled"),
@@ -171,7 +174,7 @@ describe("DashboardBuilder: charts", () => {
       fireEvent.click(
          within(
             screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
-         ).getByRole("option", { name: "Default", hidden: true }),
+         ).getByRole("option", { name: "From the view", hidden: true }),
       );
       fireEvent.click(screen.getByLabelText("View kpis"));
       expect(enabledNames("new tile")).toContain("Big value");
@@ -182,7 +185,7 @@ describe("DashboardBuilder: charts", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("big_value")}\n  view: kpis_tile is kpis`,
+         `  ${chartLineText("big_value", [])}\n  view: kpis_tile is kpis`,
       );
    });
 

@@ -78,6 +78,21 @@ describe("a tile's chart line", () => {
       expect((await openDocument(out)).tiles[0].chart).toBe("line_chart");
    });
 
+   it("negates only the tags the view carries when the tile says which, and reads it back", async () => {
+      const out = await spliced(FILE(""), (d) => {
+         d.tiles[0].chart = "line_chart";
+         d.tiles[0].chartCarried = ["bar_chart"];
+      });
+      expect(out).toContain("  # -bar_chart -viz line_chart\n  view: x is vx");
+      expect((await openDocument(out)).tiles[0].chart).toBe("line_chart");
+      const table = await spliced(FILE(""), (d) => {
+         d.tiles[0].chart = "none";
+         d.tiles[0].chartCarried = [];
+      });
+      expect(table).toContain("  # -viz\n  view: x is vx");
+      expect((await openDocument(table)).tiles[0].chart).toBe("none");
+   });
+
    it("replaces a recognized line, bare or written, and removes it for Default", async () => {
       const bare = await spliced(FILE("  # bar_chart\n"), (d) => {
          d.tiles[0].chart = "big_value";

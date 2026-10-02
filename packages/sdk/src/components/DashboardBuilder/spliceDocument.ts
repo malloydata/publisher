@@ -164,7 +164,7 @@ function tagsFor(tile: DashboardTile, withChart = true): string[] {
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
-   if (chart !== undefined) tags.push(chartLineText(chart));
+   if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
    return tags;
 }
 
@@ -1172,10 +1172,10 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          if (chartChanged && parseChartLine(tag.text)) {
             if (wantChart === undefined)
                edits.push({ ...wholeLine(tag.line), text: "" });
-            else if (tag.text !== chartLineText(wantChart))
+            else if (tag.text !== chartLineText(wantChart, tile.chartCarried))
                edits.push({
                   ...wholeLine(tag.line),
-                  text: `${indent}${chartLineText(wantChart)}\n`,
+                  text: `${indent}${chartLineText(wantChart, tile.chartCarried)}\n`,
                });
             chartPlaced = true;
             continue;
@@ -1198,7 +1198,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // looks for them and where `blockAbove` will find them again.
       const added = wanted.filter((text) => !seen.has(tagKey(text) ?? text));
       if (chartChanged && wantChart !== undefined && !chartPlaced)
-         added.push(chartLineText(wantChart));
+         added.push(chartLineText(wantChart, tile.chartCarried));
       if (added.length > 0) {
          const at = starts[declLine];
          edits.push({
@@ -1245,9 +1245,9 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 const chartOf = (tile: DashboardTile) =>
    tile.chart === "default" ? undefined : tile.chart;
 
-/** The tile as the writer compares it: "default" is no line, and the read-only `chartLines` are not part of what is asked for. */
+/** The tile as the writer compares it: "default" is no line, and `chartLines` and `chartCarried` are not part of what is asked for. */
 const withoutDefaultChart = (tile: DashboardTile): DashboardTile => {
-   const { chartLines: _lines, ...rest } = tile;
+   const { chartLines: _lines, chartCarried: _carried, ...rest } = tile;
    if (rest.chart !== "default") return rest;
    const { chart: _chart, ...bare } = rest;
    return bare;

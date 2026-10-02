@@ -260,7 +260,7 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
-The model Explorer shows the same Parameters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: parameters](explorer.md#parameters).
+The model Explorer shows the same Filters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: filters](explorer.md#filters).
 
 | Malloy type                                                | Widget                                                                                                                                                |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -294,7 +294,7 @@ for a gated source's options to load, and no more, so the list still does not
 depend on the page's other filters and is cached across them.
 
 `#(description="...")` annotations render as MUI helper text beneath the input. A
-**Reset** button appears next to the "Parameters" heading whenever any given has a
+**Reset** button appears next to the "Filters" heading whenever any given has a
 value set, whether it was typed, picked, or carried in by the URL. A given left
 unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
 the type: for a `string` or a `filter<…>` the empty string is a real value (the
@@ -376,7 +376,7 @@ Things worth knowing while converting:
 - **A range (`greater_than` and `less_than` on one dimension) becomes one
   `filter<number>` or `filter<date>` given**, e.g. `where: amount ~ $AMOUNT`,
   and the caller sends a filter expression such as `>= 50`.
-- **The name is the reader-facing label**, so it appears in the Parameters panel
+- **The name is the reader-facing label**, so it appears in the Filters panel
   and in the URL. `#(description=…)` supplies the helper text underneath.
 
 ### Parameters live in the URL
@@ -454,4 +454,4 @@ The bundled `examples` environment ships [`governed-analytics`](../examples/gove
 http://localhost:4000/examples/governed-analytics
 ```
 
-The Parameters panel auto-renders above the cells with the declared defaults; change `REGION` (or `MIN_AMOUNT`) and every cell re-executes with the new value.
+The Filters panel auto-renders above the cells with the declared defaults; change `REGION` (or `MIN_AMOUNT`) and every cell re-executes with the new value.

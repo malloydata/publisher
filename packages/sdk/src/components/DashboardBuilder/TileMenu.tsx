@@ -134,7 +134,15 @@ export function TileMenu({
                               if (next === (was ?? "default")) {
                                  if (was === undefined) delete t.chart;
                                  else t.chart = was;
-                              } else t.chart = next;
+                                 delete t.chartCarried;
+                              } else {
+                                 t.chart = next;
+                                 if (view)
+                                    t.chartCarried = view.chart
+                                       ? [view.chart]
+                                       : [];
+                                 else delete t.chartCarried;
+                              }
                            })
                         }
                      />
@@ -218,7 +226,7 @@ export function TileMenu({
                            onDrills();
                         }}
                      >
-                        Clickable cells…
+                        Drill-through…
                      </Button>
                   ) : (
                      <span />

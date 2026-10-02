@@ -85,7 +85,7 @@ export type DashboardEditorProps = (
         dashboardName: string;
      }
 ) & {
-   /** Leave the editor: its "Done editing", which asks first when edits are unsaved. Absent, no such button. */
+   /** Leave the editor: its "Close", which asks first when edits are unsaved. Absent, no such button. */
    onExit?: () => void;
    /**
     * What the editor does — opened, saved, refused — for the host to log or

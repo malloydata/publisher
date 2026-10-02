@@ -76,22 +76,29 @@ export function mentionsChartTag(line: string): boolean {
    );
 }
 
-/** The line for a pick: it negates every other chart tag and `viz`, so it needs no knowledge of the view underneath. */
-export function chartLineText(chart: ChartPick | "none"): string {
-   const negated = PLUGIN_TAGS.filter((tag) => tag !== chart).map(
-      (tag) => `-${tag}`,
-   );
+/**
+ * The line for a pick. Given the chart tags the view carries it negates only those; without them
+ * (the catalog does not know the view) it negates every other chart tag. `-viz` stays either way,
+ * since the catalog does not report a `viz=` tag.
+ */
+export function chartLineText(
+   chart: ChartPick | "none",
+   carried?: readonly string[],
+): string {
+   const negated = PLUGIN_TAGS.filter(
+      (tag) =>
+         tag !== chart && (carried === undefined || carried.includes(tag)),
+   ).map((tag) => `-${tag}`);
    return ["#", ...negated, "-viz", ...(chart === "none" ? [] : [chart])].join(
       " ",
    );
 }
 
-/** What a recognized line says: its pick, a table when it negates everything, otherwise a line the picker cannot show. */
+/** What a recognized line says: its pick, a table when it negates `viz` and picks nothing, otherwise a line the picker cannot show. */
 function chartStateOfParts(parts: ChartLineParts): ChartState {
    if (parts.pick !== undefined)
       return isChartPick(parts.pick) ? parts.pick : "custom";
-   const all = [...PLUGIN_TAGS, "viz"];
-   return all.every((name) => parts.negated.includes(name)) ? "none" : "custom";
+   return parts.negated.includes("viz") ? "none" : "custom";
 }
 
 /** The picker state of a tile's or cell's recognized chart lines. */

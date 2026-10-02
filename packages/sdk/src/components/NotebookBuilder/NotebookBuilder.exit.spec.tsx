@@ -81,15 +81,15 @@ beforeEach(clearCache);
 afterEach(cleanup);
 
 describe("NotebookBuilder: leaving", () => {
-   it("renders no Done editing without an onExit", async () => {
+   it("renders no Close without an onExit", async () => {
       await mount();
-      expect(screen.queryByRole("button", { name: "Done editing" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
    });
 
    it("exits at once when nothing is unsaved", async () => {
       const onExit = mock(() => {});
       await mount({ onExit });
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       expect(onExit).toHaveBeenCalledTimes(1);
    });
 
@@ -97,7 +97,7 @@ describe("NotebookBuilder: leaving", () => {
       const onExit = mock(() => {});
       await mount({ onExit, onSave: async () => {} });
       edit();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       expect(screen.getByRole("dialog")).toBeDefined();
       expect(onExit).not.toHaveBeenCalled();
       fireEvent.click(button("Keep editing"));
@@ -109,7 +109,7 @@ describe("NotebookBuilder: leaving", () => {
       const onSave = mock(async () => {});
       await mount({ onExit, onSave });
       edit();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Discard changes"));
       expect(onExit).toHaveBeenCalledTimes(1);
       expect(onSave).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ describe("NotebookBuilder: leaving", () => {
       const onSave = mock(async () => {});
       await mount({ onExit, onSave });
       edit();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Save and exit"));
       await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
       expect(onSave).toHaveBeenCalledTimes(1);
@@ -133,7 +133,7 @@ describe("NotebookBuilder: leaving", () => {
       });
       await mount({ onExit, onSave });
       edit();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Save and exit"));
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
       await screen.findByText(/nope/);
@@ -143,7 +143,7 @@ describe("NotebookBuilder: leaving", () => {
    it("offers no Save and exit when the builder cannot save", async () => {
       await mount({ onExit: () => {} });
       edit();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       expect(
          screen.queryByRole("button", { name: "Save and exit" }),
       ).toBeNull();
@@ -172,7 +172,7 @@ describe("NotebookBuilder: leaving with a structural edit", () => {
       const onSave = mock(async () => {});
       await mount({ onExit: () => {}, onSave });
       removeText();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       shortcut("s");
       shortcut("z");
       await settleTick();
@@ -185,7 +185,7 @@ describe("NotebookBuilder: leaving with a structural edit", () => {
       const onSave = mock(async () => {});
       await mount({ onExit, onSave });
       removeText();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Save and exit"));
       await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
       expect(onSave).toHaveBeenCalledTimes(1);
@@ -201,7 +201,7 @@ describe("NotebookBuilder: leaving with a structural edit", () => {
       edit();
       fireEvent.click(button("Save changes"));
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Save and exit"));
       await settleTick();
       expect(onExit).not.toHaveBeenCalled();
@@ -219,11 +219,11 @@ describe("NotebookBuilder: leaving with a text draft still open", () => {
       fireEvent.blur(field, { relatedTarget: button("Done") });
    };
 
-   it("asks before Done editing exits, since the draft is unsaved", async () => {
+   it("asks before Close exits, since the draft is unsaved", async () => {
       const onExit = mock(() => {});
       await mount({ onExit, onSave: async () => {} });
       typeThenTabToDone();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       expect(screen.getByRole("dialog")).toBeDefined();
       expect(onExit).not.toHaveBeenCalled();
    });
@@ -233,7 +233,7 @@ describe("NotebookBuilder: leaving with a text draft still open", () => {
       const onSave = mock(async (_source: string) => {});
       await mount({ onExit, onSave });
       typeThenTabToDone();
-      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Close"));
       fireEvent.click(button("Save and exit"));
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
       expect(onSave.mock.calls[0][0]).toContain("Changed.");

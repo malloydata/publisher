@@ -96,7 +96,7 @@ is a Console convenience.
   the rest of the file as it was: an edited cell is written in the `(markdown)` spelling, and removing
   a cell removes the comment lines directly above it. **Add query** inserts a query cell from a
   source the notebook reaches, one of its views, a chart and a caption; each query cell has a chart
-  picker listing all eight choices (Default, No chart, Line, Bar, Big value, Scatter, Shape map and
+  **Viz type** picker listing all eight choices (From the view, Table, Line, Bar, Big value, Scatter, Shape map and
   Segment map). A choice the view cannot render stays in the list, greyed, with its reason beside it:
   Big value needs a view with only totals (no group by), and a map needs a view that already carries
   a map chart. A query
@@ -120,7 +120,7 @@ is a Console convenience.
 ![The storefront business-overview dashboard rendered inline in a notebook](screenshots/storefront-dashboard.png)
 
 - **Tune parameters live** — when a model declares [givens](givens.md), a dashboard over it shows a
-  control row and a notebook a **Parameters panel**; change a control and every tile or cell re-runs.
+  control row and a notebook a **Filters panel**; change a control and every tile or cell re-runs.
   Try `http://localhost:4000/examples/governed-analytics`.
 
 ![A notebook's Parameters panel, generated automatically from the model's givens](screenshots/givens-parameters-panel.png)

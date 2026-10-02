@@ -65,7 +65,7 @@ export type NotebookEditorProps = (
         notebookName: string;
      }
 ) & {
-   /** Leave the editor: its "Done editing", which asks first when edits are unsaved. Absent, no such button. */
+   /** Leave the editor: its "Close", which asks first when edits are unsaved. Absent, no such button. */
    onExit?: () => void;
    /** What the editor does — opened, saved, refused — for the host to log. */
    onEvent?: NotebookEventHandler;
@@ -571,11 +571,7 @@ function NotebookSession({
    }, []);
 
    const exit = onExit && (
-      <SecondaryButton
-         label="Done editing"
-         icon={<CheckIcon />}
-         onClick={onExit}
-      />
+      <SecondaryButton label="Close" icon={<CheckIcon />} onClick={onExit} />
    );
 
    if (openError)

@@ -19,7 +19,7 @@ describe("ChartPicker", () => {
          />,
       );
       const shown = container.querySelector('[role="combobox"]');
-      expect(shown?.textContent).toBe("No chart (table)");
+      expect(shown?.textContent).toBe("Table");
       expect(shown?.querySelector(".MuiListItemText-root")).toBeNull();
    });
 });

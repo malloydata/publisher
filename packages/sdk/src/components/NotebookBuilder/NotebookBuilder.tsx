@@ -109,7 +109,7 @@ export interface NotebookBuilderProps extends QueryTarget {
    savesTo?: SavesTo;
    /** The host's own extra actions for the edit bar; leaving is `onExit`, which draws Done. */
    toolbar?: ReactNode;
-   /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
+   /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
    onExit?: () => void;
    /** SPA navigation for links in prose. */
    onNavigate?: (to: string, event?: NavigationClick) => void;

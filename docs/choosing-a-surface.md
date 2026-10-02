@@ -66,7 +66,7 @@ nothing. Import the ones you filter by.
 
 A notebook interleaves markdown prose with live query cells, in the order the author wants them
 read. A cell tagged `# dashboard` can render a KPI grid inline, and a model's givens surface as a
-Parameters panel above the cells. A new notebook is a
+Filters panel above the cells. A new notebook is a
 `.malloy` file directly under `notebooks/` whose model-level notes include `## artifact { kind=notebook }`.
 Its prose is `(markdown)` annotations: `##|(markdown)` … `|##` or `##(markdown) text` for a cell of its own,
 and `#(markdown) text` above a `run:` for a header that renders with that query's result.

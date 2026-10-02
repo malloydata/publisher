@@ -14,7 +14,7 @@ export interface ExitGuardOptions {
 
 type Phase = "idle" | "asking" | "waiting" | "saving";
 
-/** "Done editing" exits at once when clean and asks otherwise; "Save and exit" exits only once its own save settles clean. */
+/** "Close" exits at once when clean and asks otherwise; "Save and exit" exits only once its own save settles clean. */
 export function useExitGuard({
    dirty,
    saving,

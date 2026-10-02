@@ -138,15 +138,15 @@ describe("layout and title", () => {
       options: new Map([["BRAND", ["Nike"]]]),
    };
 
-   it('titles the panel "Parameters" by default', () => {
+   it('titles the panel "Filters" by default', () => {
       render(<GivensPanel {...props} />);
-      expect(screen.getByText("Parameters")).toBeDefined();
+      expect(screen.getByText("Filters")).toBeDefined();
    });
 
    it("uses a given title in place of the default", () => {
-      render(<GivensPanel {...props} title="Filters" />);
-      expect(screen.getByText("Filters")).toBeDefined();
-      expect(screen.queryAllByText("Parameters")).toHaveLength(0);
+      render(<GivensPanel {...props} title="Refine" />);
+      expect(screen.getByText("Refine")).toBeDefined();
+      expect(screen.queryAllByText("Filters")).toHaveLength(0);
    });
 
    it("renders the bar layout with its controls and no heading", () => {
@@ -154,7 +154,7 @@ describe("layout and title", () => {
       // The bar is meant to sit inline above a dashboard, so it carries the
       // controls but drops the heading the panel layout shows.
       expect(screen.getByRole("combobox")).toBeDefined();
-      expect(screen.queryAllByText("Parameters")).toHaveLength(0);
+      expect(screen.queryAllByText("Filters")).toHaveLength(0);
    });
 
    it("still offers Reset from the bar layout", () => {

@@ -172,7 +172,7 @@ export interface DashboardBuilderProps {
     * and save. Leaving is `onExit`, not this: the builder draws Done itself.
     */
    toolbar?: ReactNode;
-   /** Leave the builder: renders "Done editing", which asks first when there are unsaved edits. */
+   /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
    onExit?: () => void;
 }
 
@@ -424,6 +424,7 @@ export function DashboardBuilder({
             colspan: tile.colspan,
             ...(tile.label ? { label: tile.label } : {}),
             ...(tile.chart ? { chart: tile.chart } : {}),
+            ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
          });
       });
       setSelected(editor.document.tiles.length);

@@ -77,6 +77,26 @@ describe("chartLineText", () => {
       );
    });
 
+   it("negates only the chart tags the view carries when the catalog knows them", () => {
+      expect(chartLineText("line_chart", ["bar_chart"])).toBe(
+         "# -bar_chart -viz line_chart",
+      );
+      expect(chartLineText("none", ["bar_chart"])).toBe("# -bar_chart -viz");
+      expect(chartLineText("bar_chart", ["bar_chart"])).toBe(
+         "# -viz bar_chart",
+      );
+      expect(chartLineText("line_chart", [])).toBe("# -viz line_chart");
+      expect(chartLineText("none", [])).toBe("# -viz");
+   });
+
+   it("reads a narrowed line back as the same state", () => {
+      expect(chartStateOf([chartLineText("line_chart", ["bar_chart"])])).toBe(
+         "line_chart",
+      );
+      expect(chartStateOf([chartLineText("none", ["bar_chart"])])).toBe("none");
+      expect(chartStateOf([chartLineText("none", [])])).toBe("none");
+   });
+
    it("emits lines the recognizer reads back as the same state", () => {
       for (const pick of CHART_TAGS.filter(isChartPick))
          expect(chartStateOf([chartLineText(pick)])).toBe(pick);
@@ -107,6 +127,19 @@ describe("chartLineText through the tag parser", () => {
             const { tag, log } = parseAnnotation([
                base,
                `${chartLineText(pick)}\n`,
+            ]);
+            expect(log).toEqual([]);
+            for (const name of [...PLUGINS, "viz"])
+               expect(tag.has(name)).toBe(name === pick);
+         }
+   });
+
+   it("a narrowed line over a view carrying its tag leaves the same tags as the full line", () => {
+      for (const carried of PLUGINS)
+         for (const pick of [...PLUGINS, "none" as const]) {
+            const { tag, log } = parseAnnotation([
+               `# ${carried}`,
+               `${chartLineText(pick, [carried])}\n`,
             ]);
             expect(log).toEqual([]);
             for (const name of [...PLUGINS, "viz"])
