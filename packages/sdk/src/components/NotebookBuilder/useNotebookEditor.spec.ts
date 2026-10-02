@@ -8,6 +8,7 @@ import {
    readNotebookSource,
 } from "./readNotebookSource";
 import { notebookDocumentOf, type NotebookDocument } from "./spliceNotebook";
+import type { SaveContext } from "../DashboardBuilder/useDocumentEditor";
 import { takePlacement, useNotebookEditor } from "./useNotebookEditor";
 
 const DEF = 'source: a is duckdb.sql("select 1 as x")';
@@ -205,6 +206,118 @@ describe("useNotebookEditor: undoing past a saved removal", () => {
       expect(saves[1]).toContain("##(markdown) A.\n");
       expect(saves[1]).not.toContain("B.");
       expect(saves[1]).not.toContain("// about B");
+   });
+});
+
+describe("useNotebookEditor: undoing a save", () => {
+   const TWO = `## artifact { kind=notebook }\n// about A\n##(markdown) A.\n\n// about B\n##(markdown) B.\n\n${DEF}\n`;
+
+   async function openTwo(
+      onSave: (source: string, context: SaveContext<NotebookDocument>) => void,
+   ) {
+      const document = await docOf(TWO);
+      const view = renderHook(() =>
+         useNotebookEditor({ source: TWO, document, onSave }),
+      );
+      return view;
+   }
+   const removeA = (view: Awaited<ReturnType<typeof openTwo>>) =>
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells = d.cells.filter((c) => c.markdown !== "A.");
+         }),
+      );
+
+   it("writes the pre-save file back, and the next splice reproduces the first save byte for byte", async () => {
+      const saves: string[] = [];
+      const view = await openTwo((s) => void saves.push(s));
+      removeA(view);
+      await act(async () => {
+         expect(await view.result.current.save()).toEqual({ ok: true });
+      });
+      expect(saves[0]).not.toContain("// about A");
+      await act(async () => {
+         expect(await view.result.current.undoSave()).toEqual({ ok: true });
+      });
+      expect(saves[1]).toBe(TWO);
+      expect(view.result.current.source).toBe(TWO);
+      expect(view.result.current.dirty).toBe(true);
+      await act(async () => {
+         expect(await view.result.current.save()).toEqual({ ok: true });
+      });
+      expect(saves[2]).toBe(saves[0]);
+   });
+
+   it("reads the cells against the file as opened again once the save is undone", async () => {
+      const saves: string[] = [];
+      const view = await openTwo((s) => void saves.push(s));
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells = [...d.cells].reverse();
+         }),
+      );
+      await act(async () => void (await view.result.current.save()));
+      await act(async () => void (await view.result.current.undoSave()));
+      // Without the opened placement back, the ids would name the reordered file's cells.
+      act(() =>
+         view.result.current.update((d) => {
+            const b = d.cells.find((c) => c.markdown === "B.");
+            if (b) b.markdown = "B, edited.";
+         }),
+      );
+      await act(async () => {
+         expect(await view.result.current.save()).toEqual({ ok: true });
+      });
+      expect(saves[2]).toBe(
+         saves[0].replace("##(markdown) B.", "##(markdown) B, edited."),
+      );
+   });
+
+   it("lists, at save time, the comments the save removed with their cells", async () => {
+      const view = await openTwo(() => {});
+      removeA(view);
+      await act(async () => void (await view.result.current.save()));
+      expect(view.result.current.lastSave?.removedComments).toEqual([
+         "// about A",
+      ]);
+   });
+
+   it("lists no removed comments for a save that only edits text", async () => {
+      const view = await openTwo(() => {});
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells[0].markdown = "A, edited.";
+         }),
+      );
+      await act(async () => void (await view.result.current.save()));
+      expect(view.result.current.lastSave?.removedComments).toEqual([]);
+   });
+
+   it("keeps the saved placement when the undo write is refused", async () => {
+      const saves: string[] = [];
+      const view = await openTwo((s, context) => {
+         if (context.purpose === "undo")
+            throw new Error("the file changed since you opened it");
+         saves.push(s);
+      });
+      removeA(view);
+      await act(async () => void (await view.result.current.save()));
+      await act(async () => {
+         expect((await view.result.current.undoSave()).ok).toBe(false);
+      });
+      expect(view.result.current.canUndoSave).toBe(true);
+      expect(view.result.current.source).toBe(saves[0]);
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells[0].markdown = "B, edited.";
+         }),
+      );
+      await act(async () => {
+         expect(await view.result.current.save()).toEqual({ ok: true });
+      });
+      expect(saves[1]).toBe(
+         saves[0].replace("##(markdown) B.", "##(markdown) B, edited."),
+      );
    });
 });
 

@@ -5,6 +5,7 @@ import { type DashboardDocument } from "./document";
 import { spliceDashboardDocument, tileFileKey } from "./spliceDocument";
 import {
    type DocumentEditor,
+   type SaveHandler,
    type SaveOutcome,
    useDocumentEditor,
 } from "./useDocumentEditor";
@@ -35,7 +36,7 @@ export function useDashboardEditor(options: {
    /** The document that file produced. */
    document: DashboardDocument;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
-   onSave?: (source: string) => Promise<void> | void;
+   onSave?: SaveHandler<DashboardDocument>;
 }): DashboardEditor {
    return useDocumentEditor({
       ...options,

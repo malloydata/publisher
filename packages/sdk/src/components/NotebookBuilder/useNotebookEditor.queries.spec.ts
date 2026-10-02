@@ -175,6 +175,28 @@ describe("useNotebookEditor: query cells", () => {
       expect(view.result.current.canUndo).toBe(false);
    });
 
+   it("puts an added query back out of the file when its save is undone, so its run is editable again", async () => {
+      const { view, saves } = await open();
+      addQuery(view);
+      await act(async () => void (await view.result.current.save()));
+      expect(view.result.current.isInFile("added-q")).toBe(true);
+      await act(async () => {
+         expect(await view.result.current.undoSave()).toEqual({ ok: true });
+      });
+      expect(saves[1]).toBe(TEXT);
+      expect(view.result.current.isInFile("added-q")).toBe(false);
+      act(() =>
+         view.result.current.update((d) => {
+            d.cells[d.cells.length - 1].run = { source: "a", view: "other" };
+         }),
+      );
+      await act(async () => {
+         expect(await view.result.current.save()).toEqual({ ok: true });
+      });
+      expect(saves[2]).toContain("run: a -> other\n");
+      expect(saves[2]).not.toContain("run: a -> v\n");
+   });
+
    it("knows an added query is not in the file until it is saved", async () => {
       const { view } = await open();
       addQuery(view);

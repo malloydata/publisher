@@ -5,6 +5,9 @@ import { useCallback, useRef, useState } from "react";
 import type { SpliceResult } from "../DashboardBuilder/spliceResult";
 import {
    type DocumentEditor,
+   type LastSave,
+   type SaveContext,
+   type SaveHandler,
    type SaveOutcome,
    useDocumentEditor,
 } from "../DashboardBuilder/useDocumentEditor";
@@ -23,7 +26,10 @@ import {
 
 export type { SaveOutcome };
 
-export interface NotebookEditor extends DocumentEditor<NotebookDocument> {
+export interface NotebookEditor
+   extends Omit<DocumentEditor<NotebookDocument>, "lastSave"> {
+   /** The save an undo would take back, with the comment lines it removed along with their cells. */
+   lastSave?: LastSave & { removedComments: string[] };
    /** Whether `cells[from]` may land at `to`, judged against the file as opened and as last saved. */
    canMove: (from: number, to: number) => boolean;
    /** The comment lines that saving now would remove along with the cells they open, from the file as last saved. */
@@ -125,6 +131,33 @@ export function takePlacement(
    return placement;
 }
 
+/** The comment lines a save of `document` over `source` removes along with the cells they open. */
+async function commentsRemoved(
+   source: string,
+   document: NotebookDocument,
+   placed: Placement | undefined,
+): Promise<string[]> {
+   const read = await readNotebookSource(source);
+   if (notebookSourceRefused(read)) return [];
+   const kept = new Set(
+      rebased(document, placed)
+         .cells.filter((cell) => !cell.added)
+         .map((cell) => cell.id),
+   );
+   const { text, cells } = read.source;
+   return cells
+      .filter((cell) => cell.kind !== "definition" && !kept.has(cell.id))
+      .flatMap((cell) => {
+         const span = text.slice(cell.span.start, cell.span.end);
+         // A query's span can also carry comments between its tags and its run.
+         const lines =
+            cell.kind === "query"
+               ? wholeLineComments(span)
+               : (leadingComments(span) ?? "").split(/\r?\n/);
+         return [...new Set(lines.filter((line) => line.trim() !== ""))];
+      });
+}
+
 /** The span's whole-line comments (line or block), which the writer deletes with their cell. */
 function wholeLineComments(span: string): string[] {
    const out: string[] = [];
@@ -147,7 +180,7 @@ export function useNotebookEditor(options: {
    /** The document that file produced. */
    document: NotebookDocument;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
-   onSave?: (source: string) => Promise<void> | void;
+   onSave?: SaveHandler<NotebookDocument>;
    /** The sources the notebook's compiled model offers, which an added query cell must pick from. */
    reachableSources?: readonly string[];
 }): NotebookEditor {
@@ -201,14 +234,61 @@ export function useNotebookEditor(options: {
       [opened, reachableSources],
    );
 
+   // What the writer's refs held before the last save, which an undo of it puts back.
+   const beforeSave = useRef<
+      | {
+           placed: Placement | undefined;
+           written: Map<string, string>;
+           pendingRuns: Map<string, Map<string, string>>;
+        }
+      | undefined
+   >(undefined);
+   const [removed, setRemoved] = useState<
+      { after: string; comments: string[] } | undefined
+   >(undefined);
+   // The file and document as of the last render, which a save reads before its write.
+   const savedRef = useRef<{ source: string; saved: NotebookDocument }>({
+      source: options.source,
+      saved: options.document,
+   });
+
    const save = useCallback(
-      async (source: string) => {
+      async (source: string, context: SaveContext<NotebookDocument>) => {
+         if (context.purpose === "undo") {
+            // The text is the file before the save, which no splice produced, so there is no placement to take.
+            const back = beforeSave.current;
+            await onSave?.(source, context);
+            placed.current = back?.placed;
+            written.current = back?.written ?? new Map();
+            pendingRuns.current = back?.pendingRuns ?? new Map();
+            beforeSave.current = undefined;
+            return;
+         }
          const placement = takePlacement(pending.current, source);
          const runs = pendingRuns.current.get(source) ?? new Map();
+         const back = {
+            placed: placed.current,
+            written: written.current,
+            pendingRuns: new Map(pendingRuns.current),
+         };
+         const { source: from, saved } = savedRef.current;
+         // Only a save that adds, removes or clears history can take comments with it, and reading the file costs a parse.
+         const comments =
+            cellsChanged(saved, context.document) ||
+            undoUnsafeAfter(saved, context.document)
+               ? // A list the notice cannot show is no reason to refuse the write.
+                 await commentsRemoved(
+                    from,
+                    context.document,
+                    placed.current,
+                 ).catch((): string[] => [])
+               : [];
          pendingRuns.current.clear();
-         await onSave?.(source);
+         await onSave?.(source, context);
          placed.current = placement;
          written.current = runs;
+         beforeSave.current = back;
+         setRemoved({ after: source, comments });
       },
       [onSave],
    );
@@ -223,6 +303,7 @@ export function useNotebookEditor(options: {
    });
 
    const { document, source } = editor;
+   savedRef.current = { source, saved: editor.saved };
    const canMoveHere = useCallback(
       (from: number, to: number) => {
          const onDisk = rebased(document, placed.current);
@@ -231,27 +312,10 @@ export function useNotebookEditor(options: {
       [document, opened],
    );
 
-   const removedComments = useCallback(async () => {
-      const read = await readNotebookSource(source);
-      if (notebookSourceRefused(read)) return [];
-      const kept = new Set(
-         rebased(document, placed.current)
-            .cells.filter((cell) => !cell.added)
-            .map((cell) => cell.id),
-      );
-      const { text, cells } = read.source;
-      return cells
-         .filter((cell) => cell.kind !== "definition" && !kept.has(cell.id))
-         .flatMap((cell) => {
-            const span = text.slice(cell.span.start, cell.span.end);
-            // A query's span can also carry comments between its tags and its run.
-            const lines =
-               cell.kind === "query"
-                  ? wholeLineComments(span)
-                  : (leadingComments(span) ?? "").split(/\r?\n/);
-            return [...new Set(lines.filter((line) => line.trim() !== ""))];
-         });
-   }, [document, source]);
+   const removedComments = useCallback(
+      () => commentsRemoved(source, document, placed.current),
+      [document, source],
+   );
 
    const isInFile = useCallback(
       (id: string) => {
@@ -264,5 +328,20 @@ export function useNotebookEditor(options: {
       [document],
    );
 
-   return { ...editor, canMove: canMoveHere, removedComments, isInFile };
+   const { lastSave, ...rest } = editor;
+   return {
+      ...rest,
+      ...(lastSave
+         ? {
+              lastSave: {
+                 ...lastSave,
+                 removedComments:
+                    removed?.after === lastSave.after ? removed.comments : [],
+              },
+           }
+         : {}),
+      canMove: canMoveHere,
+      removedComments,
+      isInFile,
+   };
 }

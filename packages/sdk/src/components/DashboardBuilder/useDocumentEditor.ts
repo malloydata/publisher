@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { type SpliceResult, spliceFailed } from "./spliceResult";
 
 /**
@@ -54,9 +54,37 @@ export interface DocumentEditor<T> {
    structural: boolean;
    /** Whether saving the unsaved change empties the undo stack, as the caller defines it (false when it defines nothing). */
    clearsHistory: boolean;
+   /** Whether the last save can still be taken back: true from a save that landed until the next edit, undo, redo or write. */
+   canUndoSave: boolean;
+   /** What the save `undoSave` would take back did to the file; absent once that offer is withdrawn. */
+   lastSave?: LastSave;
+   /** Write the file as it stood before the last save, then put the editor back to just before Save: edits unsaved, history intact. */
+   undoSave: () => Promise<SaveOutcome>;
 }
 
 export type SaveOutcome = { ok: true } | { ok: false; reason: string };
+
+/** The save an undo would take back. */
+export interface LastSave {
+   /** The file before the save. */
+   before: string;
+   /** The file the save wrote. */
+   after: string;
+   structural: boolean;
+   clearsHistory: boolean;
+}
+
+/** Why a write happens, and the document the written file holds. */
+export interface SaveContext<T> {
+   purpose: "save" | "undo";
+   document: T;
+}
+
+/** Persists the patched file; rejecting leaves the editor as it was. */
+export type SaveHandler<T> = (
+   source: string,
+   context: SaveContext<T>,
+) => Promise<void> | void;
 
 interface History<T> {
    /** Every document state, oldest first. */
@@ -81,7 +109,7 @@ export interface DocumentEditorOptions<T> {
    /** The document that file produced. */
    document: T;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
-   onSave?: (source: string) => Promise<void> | void;
+   onSave?: SaveHandler<T>;
    /** Patch the document into the file, or say why that was refused. */
    splice: (source: string, document: T) => Promise<SpliceResult>;
    /** Whether `document` differs structurally from `saved`; omit for never. */
@@ -115,6 +143,25 @@ export function useDocumentEditor<T>(
    const [saved, setSaved] = useState(options.document);
 
    const document = history.stack[history.index];
+   // Read by `save` and `undoSave`, which compare against the latest history rather than the one their render closed over.
+   const historyRef = useRef(history);
+   historyRef.current = history;
+   // A ref as well as state, so a second click before the re-render is refused rather than written twice.
+   const busyRef = useRef(false);
+   const [busy, setBusy] = useState(false);
+   const setWriting = (value: boolean) => {
+      busyRef.current = value;
+      setBusy(value);
+   };
+   // The editor as it stood when the last save began, and the history that save left. Any later edit, undo or redo replaces `history`, which withdraws the offer.
+   const [undoable, setUndoable] = useState<
+      | {
+           before: { source: string; saved: T; history: History<T> };
+           after: History<T>;
+           lastSave: LastSave;
+        }
+      | undefined
+   >(undefined);
 
    const update = useCallback((change: (draft: T) => void) => {
       setError(undefined);
@@ -171,30 +218,95 @@ export function useDocumentEditor<T>(
    );
 
    const save = useCallback(async (): Promise<SaveOutcome> => {
-      const result = await safeSplice(source, document);
-      if (spliceFailed(result)) {
-         setError(result.reason);
-         return { ok: false, reason: result.reason };
-      }
+      const before = { source, saved, history: historyRef.current };
+      const clearing = isClearing?.(saved, document) ?? false;
+      const lastStructural = isStructural?.(saved, document) ?? false;
+      setWriting(true);
       try {
-         await onSave?.(result.source);
+         const result = await safeSplice(source, document);
+         if (spliceFailed(result)) {
+            setError(result.reason);
+            return { ok: false, reason: result.reason };
+         }
+         try {
+            await onSave?.(result.source, { purpose: "save", document });
+         } catch (failure) {
+            // The file may or may not have been written; what is certain is that
+            // the editor must not pretend it was. Staying dirty is the safe read.
+            const reason = `Could not save: ${failure instanceof Error ? failure.message : String(failure)}`;
+            setError(reason);
+            return { ok: false, reason };
+         }
+         // The patched file is the new baseline, so a second save patches what is
+         // now on disk rather than re-deriving from the text this session opened.
+         setSource(result.source);
+         setSaved(document);
+         const after = clearing
+            ? { stack: [document], index: 0 }
+            : before.history;
+         // Whatever is current when the write resolves survives, including edits typed during it.
+         setHistory((p) =>
+            p === before.history
+               ? after
+               : clearing
+                 ? { stack: [p.stack[p.index]], index: 0 }
+                 : p,
+         );
+         // An edit typed during the write moved `history` off `after`, so it is never offered.
+         setUndoable(
+            onSave
+               ? {
+                    before,
+                    after,
+                    lastSave: {
+                       before: source,
+                       after: result.source,
+                       structural: lastStructural,
+                       clearsHistory: clearing,
+                    },
+                 }
+               : undefined,
+         );
+         setError(undefined);
+         return { ok: true };
+      } finally {
+         setWriting(false);
+      }
+   }, [document, safeSplice, onSave, source, saved, isClearing, isStructural]);
+
+   const undoSave = useCallback(async (): Promise<SaveOutcome> => {
+      if (busyRef.current)
+         return { ok: false, reason: "A save is still being written." };
+      if (
+         !onSave ||
+         undoable === undefined ||
+         undoable.after !== historyRef.current
+      )
+         return { ok: false, reason: "There is no save to undo." };
+      const { before } = undoable;
+      setWriting(true);
+      try {
+         await onSave(before.source, {
+            purpose: "undo",
+            document: before.saved,
+         });
       } catch (failure) {
-         // The file may or may not have been written; what is certain is that
-         // the editor must not pretend it was. Staying dirty is the safe read.
-         const reason = `Could not save: ${failure instanceof Error ? failure.message : String(failure)}`;
+         // The save still stands, so the offer does too.
+         const reason = `Could not undo the save: ${failure instanceof Error ? failure.message : String(failure)}`;
          setError(reason);
          return { ok: false, reason };
+      } finally {
+         setWriting(false);
       }
-      // The patched file is the new baseline, so a second save patches what is
-      // now on disk rather than re-deriving from the text this session opened.
-      setSource(result.source);
-      setSaved(document);
-      // Whatever is current when the write resolves survives, including edits typed during it.
-      if (isClearing?.(saved, document))
-         setHistory((p) => ({ stack: [p.stack[p.index]], index: 0 }));
+      // One batch, so no render sees the restored file under the saved history.
+      setSource(before.source);
+      setSaved(before.saved);
+      // An edit typed during the undo's write is kept, as it is during a save's; it is unsaved against the restored file.
+      setHistory((p) => (p === undoable.after ? before.history : p));
+      setUndoable(undefined);
       setError(undefined);
       return { ok: true };
-   }, [document, safeSplice, onSave, source, saved, isClearing]);
+   }, [onSave, undoable]);
 
    const dirty = useMemo(
       () => JSON.stringify(document) !== JSON.stringify(saved),
@@ -208,6 +320,7 @@ export function useDocumentEditor<T>(
       () => isClearing?.(saved, document) ?? false,
       [document, saved, isClearing],
    );
+   const offered = undoable !== undefined && undoable.after === history;
    const preview = useCallback(async () => {
       const result = await safeSplice(source, document);
       return spliceFailed(result)
@@ -230,5 +343,8 @@ export function useDocumentEditor<T>(
       preview,
       structural,
       clearsHistory,
+      canUndoSave: offered && !busy && onSave !== undefined,
+      ...(offered ? { lastSave: undoable.lastSave } : {}),
+      undoSave,
    };
 }

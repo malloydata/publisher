@@ -4,7 +4,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { type SpliceResult } from "./spliceDocument";
-import { useDocumentEditor } from "./useDocumentEditor";
+import { type SaveContext, useDocumentEditor } from "./useDocumentEditor";
 
 interface Doc {
    items: string[];
@@ -18,7 +18,11 @@ const splice = async (source: string, doc: Doc): Promise<SpliceResult> =>
 const structural = (saved: Doc, doc: Doc) =>
    saved.items.length !== doc.items.length;
 
-const open = (extra: { onSave?: (s: string) => void } = {}) =>
+const open = (
+   extra: {
+      onSave?: (s: string, context: SaveContext<Doc>) => Promise<void> | void;
+   } = {},
+) =>
    renderHook(() =>
       useDocumentEditor<Doc>({
          source: "a",
@@ -151,5 +155,256 @@ describe("useDocumentEditor", () => {
       expect(saves).toEqual(["a,c"]);
       expect(result.current.dirty).toBe(false);
       expect(result.current.source).toBe("a,c");
+   });
+});
+
+describe("useDocumentEditor: undoing a save", () => {
+   type Write = { source: string } & SaveContext<Doc>;
+   const writer = () => {
+      const writes: Write[] = [];
+      const onSave = (source: string, context: SaveContext<Doc>) =>
+         void writes.push({ source, ...context });
+      return { writes, onSave };
+   };
+   const saveIt = (view: ReturnType<typeof open>) =>
+      act(async () => {
+         await view.result.current.save();
+      });
+
+   it("offers to undo a save, and undoing writes the file back and restores the editor to just before Save", async () => {
+      const { writes, onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      act(() => view.result.current.update((d) => void d.items.push("c")));
+      expect(view.result.current.canUndoSave).toBe(false);
+      await saveIt(view);
+      expect(view.result.current.canUndoSave).toBe(true);
+      expect(view.result.current.lastSave).toEqual({
+         before: "a",
+         after: "a,b,c",
+         structural: true,
+         clearsHistory: false,
+      });
+
+      await act(async () => {
+         expect(await view.result.current.undoSave()).toEqual({ ok: true });
+      });
+      expect(writes.map((w) => [w.source, w.purpose])).toEqual([
+         ["a,b,c", "save"],
+         ["a", "undo"],
+      ]);
+      expect(writes[0].document).toEqual({ items: ["a", "b", "c"] });
+      // The undo write carries the document the restored file holds.
+      expect(writes[1].document).toEqual({ items: ["a"] });
+      const editor = view.result.current;
+      expect(editor.source).toBe("a");
+      expect(editor.saved).toEqual({ items: ["a"] });
+      expect(editor.document.items).toEqual(["a", "b", "c"]);
+      expect(editor.dirty).toBe(true);
+      expect(editor.canUndoSave).toBe(false);
+      expect(editor.lastSave).toBeUndefined();
+      act(() => view.result.current.undo());
+      expect(view.result.current.document.items).toEqual(["a", "b"]);
+   });
+
+   it("restores the undo stack a history-clearing save emptied", async () => {
+      const { onSave } = writer();
+      const view = renderHook(() =>
+         useDocumentEditor<Doc>({
+            source: "a",
+            document: { items: ["a"] },
+            splice,
+            clearsHistory: () => true,
+            onSave,
+         }),
+      );
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await act(async () => {
+         await view.result.current.save();
+      });
+      expect(view.result.current.canUndo).toBe(false);
+      expect(view.result.current.lastSave?.clearsHistory).toBe(true);
+      await act(async () => {
+         await view.result.current.undoSave();
+      });
+      expect(view.result.current.canUndo).toBe(true);
+      act(() => view.result.current.undo());
+      expect(view.result.current.document.items).toEqual(["a"]);
+      expect(view.result.current.dirty).toBe(false);
+   });
+
+   it("withdraws the offer on the first edit after the save", async () => {
+      const { writes, onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      act(() => view.result.current.update((d) => void d.items.push("c")));
+      expect(view.result.current.canUndoSave).toBe(false);
+      expect(view.result.current.lastSave).toBeUndefined();
+      await act(async () => {
+         expect((await view.result.current.undoSave()).ok).toBe(false);
+      });
+      expect(writes).toHaveLength(1);
+   });
+
+   it("keeps the offer through an edit that changes nothing", async () => {
+      const { onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      act(() => view.result.current.update((d) => void (d.items[0] = "a")));
+      expect(view.result.current.canUndoSave).toBe(true);
+   });
+
+   it("withdraws the offer on toolbar undo, and redo does not bring it back", async () => {
+      const { onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      act(() => view.result.current.undo());
+      expect(view.result.current.canUndoSave).toBe(false);
+      act(() => view.result.current.redo());
+      expect(view.result.current.canUndoSave).toBe(false);
+   });
+
+   it("withdraws the offer on toolbar redo", async () => {
+      const { onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      act(() => view.result.current.update((d) => void d.items.push("c")));
+      act(() => view.result.current.undo());
+      await saveIt(view);
+      expect(view.result.current.canUndoSave).toBe(true);
+      act(() => view.result.current.redo());
+      expect(view.result.current.canUndoSave).toBe(false);
+   });
+
+   it("replaces the offer with a later save's, whose undo goes back only that far", async () => {
+      const { writes, onSave } = writer();
+      const view = open({ onSave });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      act(() => view.result.current.update((d) => void d.items.push("c")));
+      await saveIt(view);
+      expect(view.result.current.lastSave?.before).toBe("a,b");
+      await act(async () => {
+         await view.result.current.undoSave();
+      });
+      expect(writes.at(-1)?.source).toBe("a,b");
+      expect(view.result.current.saved).toEqual({ items: ["a", "b"] });
+      expect(view.result.current.document.items).toEqual(["a", "b", "c"]);
+   });
+
+   it("makes no offer when an edit was typed while the write was in flight", async () => {
+      let finish!: () => void;
+      const view = open({
+         onSave: () => new Promise<void>((resolve) => (finish = resolve)),
+      });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      let saving!: Promise<unknown>;
+      act(() => {
+         saving = view.result.current.save();
+      });
+      await act(async () => {
+         await Promise.resolve();
+      });
+      act(() => view.result.current.update((d) => void d.items.push("typed")));
+      await act(async () => {
+         finish();
+         await saving;
+      });
+      expect(view.result.current.document.items).toEqual(["a", "b", "typed"]);
+      expect(view.result.current.canUndoSave).toBe(false);
+   });
+
+   it("refuses to undo while a write is in flight", async () => {
+      const writes: string[] = [];
+      let finish!: () => void;
+      const view = open({
+         onSave: (source: string) => {
+            writes.push(source);
+            return new Promise<void>((resolve) => (finish = resolve));
+         },
+      });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      let saving!: Promise<unknown>;
+      act(() => {
+         saving = view.result.current.save();
+      });
+      await act(async () => {
+         await Promise.resolve();
+      });
+      expect(view.result.current.canUndoSave).toBe(false);
+      await act(async () => {
+         finish();
+         await saving;
+      });
+      let undoing!: Promise<unknown>;
+      act(() => {
+         undoing = view.result.current.undoSave();
+      });
+      expect(view.result.current.canUndoSave).toBe(false);
+      await act(async () => {
+         expect(await view.result.current.undoSave()).toEqual({
+            ok: false,
+            reason: "A save is still being written.",
+         });
+      });
+      await act(async () => {
+         finish();
+         await undoing;
+      });
+      expect(writes).toEqual(["a,b", "a"]);
+   });
+
+   it("keeps the offer and the saved state when the undo write is refused", async () => {
+      let refuse = false;
+      const view = open({
+         onSave: () => {
+            if (refuse) throw new Error("the file changed since you opened it");
+         },
+      });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      refuse = true;
+      await act(async () => {
+         expect((await view.result.current.undoSave()).ok).toBe(false);
+      });
+      const editor = view.result.current;
+      expect(editor.error).toContain("the file changed since you opened it");
+      expect(editor.source).toBe("a,b");
+      expect(editor.dirty).toBe(false);
+      expect(editor.canUndoSave).toBe(true);
+   });
+
+   it("keeps an edit typed while the undo was writing, unsaved against the restored file", async () => {
+      let finish: (() => void) | undefined;
+      const view = open({
+         onSave: (_s, context) =>
+            context.purpose === "undo"
+               ? new Promise<void>((resolve) => (finish = resolve))
+               : undefined,
+      });
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      let undoing!: Promise<unknown>;
+      act(() => {
+         undoing = view.result.current.undoSave();
+      });
+      act(() => view.result.current.update((d) => void d.items.push("typed")));
+      await act(async () => {
+         finish?.();
+         await undoing;
+      });
+      expect(view.result.current.document.items).toEqual(["a", "b", "typed"]);
+      expect(view.result.current.source).toBe("a");
+      expect(view.result.current.dirty).toBe(true);
+   });
+
+   it("never offers an undo without a writer", async () => {
+      const view = open();
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      expect(view.result.current.canUndoSave).toBe(false);
    });
 });
