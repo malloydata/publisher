@@ -89,6 +89,64 @@ export function numberedLines(prompt: string): Array<[number, string]> {
    ]);
 }
 
+const STOP = new Set(
+   "a an the of to per one row is are for in on and or by that it its this with from".split(
+      " ",
+   ),
+);
+
+/** Lowercase words, identifiers split on `_`, without filler words. */
+export function contentWords(text: string): Set<string> {
+   return new Set(
+      (
+         text
+            .toLowerCase()
+            .replace(/_/g, " ")
+            .match(/[a-z0-9]+/g) ?? []
+      ).filter((w) => !STOP.has(w)),
+   );
+}
+
+const overlap = (a: Set<string>, b: Set<string>) =>
+   [...a].filter((w) => b.has(w)).length;
+
+/**
+ * A deterministic stand-in for an LLM that answers both stages by keyword
+ * overlap with the text it is shown.
+ *
+ * Refine: a candidate sharing 2 or more words with the phrase is HIGH, one
+ * word is MEDIUM, none is LOW. Rerank: a source sharing 3 or more words with
+ * the question is 3, then 2, 1, 0 by overlap; listed best first.
+ */
+export function keywordReply(prompt: string): string {
+   if (prompt.includes("<candidates>")) {
+      const phrase = /Search phrase to rate the candidates against:\n(.*)/.exec(
+         prompt,
+      )![1];
+      const words = contentWords(JSON.parse(phrase));
+      return JSON.stringify(
+         numberedLines(prompt).map(([index, line]) => {
+            const n = overlap(words, contentWords(line));
+            return {
+               index,
+               score: n >= 2 ? "HIGH" : n === 1 ? "MEDIUM" : "LOW",
+            };
+         }),
+      );
+   }
+   const question = /Question the user is asking:\n(.*)/.exec(prompt)![1];
+   const words = contentWords(question);
+   const body = prompt.split("<sources>\n")[1].split("\n</sources>")[0];
+   const scored = body.split("\n\n").map((block, i) => {
+      const text = block.replace(/^\[\d+\] Source: [^\n]*\n/, "");
+      const name = /^\[\d+\] Source: ([^,]+),/.exec(block)![1];
+      const n = overlap(words, contentWords(`${name} ${text}`));
+      return { index: i + 1, score: Math.min(3, n) };
+   });
+   scored.sort((a, b) => b.score - a.score || a.index - b.index);
+   return JSON.stringify(scored);
+}
+
 /** Install `chat` as the process-wide chat model, with settings overrides. */
 export function useChat(
    chat: ChatModel | null,

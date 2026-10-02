@@ -35,7 +35,6 @@ import type { RankStage, RankedState } from "./get_context_pipeline";
 import { LEVEL_VALUE, mapRawScore, type Level } from "./get_context_scoring";
 import {
    bestTargetOf,
-   entityCardKey,
    type ResolvedRequest,
    type ResultEntity,
 } from "./get_context_tool";
@@ -150,14 +149,12 @@ function validateRatings(size: number) {
    };
 }
 
-/** The descriptions the model may see: `#(doc)` text only, scrubbed, by entity. */
-function describeFrom(ctx: Parameters<RankStage["run"]>[1]) {
-   const docs = new Map<string, string>();
-   for (const e of ctx.pkgIndex.directEntities) {
-      docs.set(entityCardKey(e), scrubForEgress(e.embedDoc));
-   }
-   return (row: ResultEntity) => docs.get(entityCardKey(row)) ?? "";
-}
+/**
+ * What the model may see of a row's description: its `#(doc)` text only (never
+ * `doc`, which can fall back to raw annotation lines), scrubbed again so an
+ * access predicate cannot ride along.
+ */
+const describe = (row: ResultEntity) => scrubForEgress(row.embedDoc ?? "");
 
 export const refineStage: RankStage = {
    name: "refine",
@@ -172,7 +169,6 @@ export const refineStage: RankStage = {
       if (!cfg) return state;
       const { request } = ctx;
       const question = request.searches.map((s) => s.text).join(". ");
-      const describe = describeFrom(ctx);
 
       const jobs = refinedSearches(request).flatMap((search) => {
          const candidates = selectCandidates(state.rows, search.targetIndex);

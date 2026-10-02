@@ -178,6 +178,17 @@ export interface CardDraft {
 export interface CardState extends Omit<RankedState, "rows"> {
    /** Best-first: the order sources first appear in the ranked rows. */
    cards: CardDraft[];
+   /**
+    * Cards a stage cut out of its top N. They are not in `cards`, but they
+    * matched, so `total_available` still counts them.
+    */
+   discarded?: number;
+   /**
+    * Set by rerank: each card's `relevance` is now the reranker's score, which
+    * no row carries, so shapeCards publishes the card's own instead of the
+    * best of its rows.
+    */
+   reranked?: boolean;
 }
 
 /** Runs after assembly and before paging. Rerank and prune live here. */

@@ -1,0 +1,838 @@
+{
+  "a model that returns an unusable reply fails the call": {
+    "error": "get_context failed in the refine step: openai-compatible scripted did not return usable JSON after one repair: the reply is not valid JSON (JSON Parse error: Unexpected identifier \"I\")",
+    "suggestions": [
+      "Ask the same question again; a timeout or a malformed model reply is often transient.",
+      "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. To search without the LLM steps, set the package's retrieval.refine and retrieval.rerank to enabled: false.",
+      "A request with no search_text (a listing) runs no LLM step and still works."
+    ],
+    "sources": [],
+    "retrieval": "error",
+    "retrieval_reason": "llm-stage-failed",
+    "retrieval_stage": "refine"
+  },
+  "both stages off": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "both-stages-off",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.8571,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8571
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.2182,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.2182
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "both-stages-off",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "ship_state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:shipments:ship_state",
+            "relevance": 0.5071,
+            "description": "State a shipment goes to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.5071
+              }
+            ]
+          }
+        ],
+        "relevance": 0.5071
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "both-stages-off",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.3381,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.3381
+              }
+            ]
+          }
+        ],
+        "relevance": 0.3381
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 3,
+    "returned": 3,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "listing runs no LLM stage": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "listing-runs-no-LLM-stage",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        }
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "listing-runs-no-LLM-stage",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        }
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "listing-runs-no-LLM-stage",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        }
+      }
+    ],
+    "ranking": "prominence",
+    "total_available": 3,
+    "returned": 3
+  },
+  "minLevel HIGH keeps only exact matches": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "minLevel-HIGH-keeps-only-exact-matches",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "minLevel LOW keeps every rated candidate": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "minLevel-LOW-keeps-every-rated-candidate",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "minLevel-LOW-keeps-every-rated-candidate",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "ship_state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:shipments:ship_state",
+            "relevance": 0.8,
+            "description": "State a shipment goes to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8
+              }
+            ]
+          }
+        ],
+        "relevance": 0.8
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "minLevel-LOW-keeps-every-rated-candidate",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 3,
+    "returned": 3,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "refine and rerank: multiple targets": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-and-rerank-multiple-targets",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "total_revenue",
+            "entity_type": "measure",
+            "entity_id": "measure:orders:total_revenue",
+            "relevance": 1,
+            "description": "Sum of order revenue.",
+            "matched_targets": [
+              {
+                "search_text": "sum of order revenue",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          },
+          {
+            "name": "order_count",
+            "entity_type": "measure",
+            "entity_id": "measure:orders:order_count",
+            "relevance": 0.79,
+            "description": "Number of orders.",
+            "matched_targets": [
+              {
+                "search_text": "sum of order revenue",
+                "relevance": 0.79
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74
+              }
+            ]
+          }
+        ],
+        "relevance": 0.9
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-and-rerank-multiple-targets",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77
+              }
+            ]
+          }
+        ],
+        "relevance": 0.7
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 2,
+    "returned": 2,
+    "retrieval": "semantic",
+    "below_cutoff_count": 3,
+    "total_entities": 14
+  },
+  "refine and rerank: one target": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-and-rerank-one-target",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74
+              }
+            ]
+          }
+        ],
+        "relevance": 0.9
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "refine only": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-only",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-only",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "ship_state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:shipments:ship_state",
+            "relevance": 0.8,
+            "description": "State a shipment goes to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8
+              }
+            ]
+          }
+        ],
+        "relevance": 0.8
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "refine-only",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 3,
+    "returned": 3,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "rerank only": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "rerank-only",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.8571,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8571
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.2182,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.2182
+              }
+            ]
+          }
+        ],
+        "relevance": 0.9
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "scoped to one source: one card, so rerank is skipped": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "scoped-to-one-source-one-card-so-rerank-is-skipped",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 1,
+    "total_entities": 2
+  },
+  "topSources 2 counts the discarded source in total_available": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "topSources-2-counts-the-discarded-source-in-total-available",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74
+              }
+            ]
+          }
+        ],
+        "relevance": 0.9
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 2,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7,
+    "warnings": [
+      "1 further source matched but was not ranked: only the best 2 are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see it."
+    ]
+  }
+}
