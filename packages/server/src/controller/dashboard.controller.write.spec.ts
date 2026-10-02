@@ -319,7 +319,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("accepts a tile-less dashboard, which has no manifest, when the reloaded model carries the artifact tag", async () => {
       const { controller, pkg } = harness({
-         reloadedNotes: ['## artifact { kind=dashboard tiles=[] }'],
+         reloadedNotes: ["## artifact { kind=dashboard tiles=[] }"],
       });
       pkg.getDashboard = () => undefined;
       const result = await controller.putDashboardSource("env", "pkg", PATH, {
@@ -340,7 +340,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("rolls back a tagged tile-less dashboard whose slug another file holds", async () => {
       const { controller, pkg } = harness({
-         reloadedNotes: ['## artifact { kind=dashboard tiles=[] }'],
+         reloadedNotes: ["## artifact { kind=dashboard tiles=[] }"],
       });
       pkg.getDashboard = () => ({ path: "dashboards/other.malloy" });
       await expect(
