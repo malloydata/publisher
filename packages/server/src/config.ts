@@ -15,7 +15,27 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
-import type { ProviderName } from "./providers/types";
+import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
+import type {
+   EmbeddingSettings,
+   LlmSettings,
+   ProviderName,
+} from "./providers/types";
+import {
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   parseRetrievalConfig,
+   type RetrievalConfig,
+   type RetrievalEmbeddingConfig,
+   type RetrievalLlmConfig,
+} from "./retrieval_config";
+
+// The retrieval settings live in ./retrieval_config; these names have always
+// been importable from here.
+export {
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   parseRetrievalConfig,
+   type RetrievalConfig,
+};
 import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
@@ -123,86 +143,12 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
-/**
- * The `retrieval` block of publisher.config.json. Only the key below exists
- * today; the block is where the rest of get_context's retrieval settings
- * will live, so unknown keys inside it are ignored rather than rejected.
- */
-export type RetrievalConfig = {
-   indexing?: {
-      /**
-       * Most entities a package may have and still be embedded. A package
-       * over this is not embedded, and `get_context` answers it with an error
-       * that names this setting. See {@link DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES}.
-       */
-      maxEntities?: number;
-   };
-};
-
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
    retrieval?: RetrievalConfig;
    environments: Environment[];
 };
-
-/**
- * Default for `retrieval.indexing.maxEntities`. A package past this is not
- * embedded: its first index would take minutes of provider calls and rate
- * limit. The bundled examples sit around a few hundred entities.
- *
- * Counted in ENTITIES, not rows. Faceting means a documented entity costs
- * more than one embedding (a name row plus its doc rows), so the ceiling on
- * first-sync provider calls is a small multiple of this number. It is still
- * expressed in entities because the check runs before facets are computed and
- * it is the figure an operator can reason about from their model.
- */
-export const DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES = 5_000;
-
-/**
- * Validate the `retrieval` block. Throws, naming the key and the fix, on a
- * value that cannot be used: a bad value must stop the server at startup
- * rather than silently fall back to a cap the operator did not choose.
- *
- * A digit-only string is accepted for `maxEntities` because `${VAR}`
- * substitution in the config file always produces a string.
- */
-export function parseRetrievalConfig(
-   raw: unknown,
-): RetrievalConfig | undefined {
-   if (raw === undefined || raw === null) return undefined;
-   if (typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error(
-         `Invalid retrieval: expected an object, got ${JSON.stringify(raw)}. ` +
-            `Fix: "retrieval": { "indexing": { "maxEntities": 20000 } }`,
-      );
-   }
-   const indexing = (raw as { indexing?: unknown }).indexing;
-   if (indexing === undefined || indexing === null) return {};
-   if (typeof indexing !== "object" || Array.isArray(indexing)) {
-      throw new Error(
-         `Invalid retrieval.indexing: expected an object, got ${JSON.stringify(indexing)}. ` +
-            `Fix: "indexing": { "maxEntities": 20000 }`,
-      );
-   }
-   const value = (indexing as { maxEntities?: unknown }).maxEntities;
-   if (value === undefined || value === null) return { indexing: {} };
-   const parsed =
-      typeof value === "string" && /^\d+$/.test(value.trim())
-         ? Number(value.trim())
-         : value;
-   if (
-      typeof parsed !== "number" ||
-      !Number.isSafeInteger(parsed) ||
-      parsed <= 0
-   ) {
-      throw new Error(
-         `Invalid retrieval.indexing.maxEntities: expected a positive integer, got ${JSON.stringify(value)}. ` +
-            `Fix: set it to e.g. 20000`,
-      );
-   }
-   return { indexing: { maxEntities: parsed } };
-}
 
 export type ProcessedEnvironment = {
    name: string;
@@ -685,18 +631,33 @@ export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
  *
  * Throws on malformed companion values (bad URL, bad integer) so a typo
  * surfaces loudly in the log rather than silently degrading to lexical.
+ *
+ * `file` is `retrieval.embedding` from publisher.config.json. A key in the file
+ * wins over the matching `EMBEDDING_*` variable; the variable is the fallback.
+ * Covers the OpenAI-style providers only (`openai`, `openai-compatible`,
+ * `ollama`, or no provider named); see {@link getEmbeddingSettings} for the
+ * rest.
  */
-export const getEmbeddingConfig = (): EmbeddingConfig | null => {
-   const apiKey = process.env.EMBEDDING_API_KEY?.trim();
-   if (!apiKey) {
+export const getEmbeddingConfig = (
+   file?: RetrievalEmbeddingConfig,
+): EmbeddingConfig | null => {
+   const provider = file?.provider;
+   if (provider === "google" || provider === "vertex") return null;
+   const envKey = process.env.EMBEDDING_API_KEY?.trim();
+   // Ollama serves without a key; for every other provider no key means the
+   // feature is off, never an error.
+   if (!envKey && provider !== "ollama") {
       return null;
    }
+   const apiKey = envKey || "ollama";
 
    const rawBase = process.env.EMBEDDING_API_BASE;
-   const baseUrl = (rawBase?.trim() || DEFAULT_EMBEDDING_API_BASE).replace(
-      /\/+$/,
-      "",
-   );
+   const baseUrl = (
+      file?.baseUrl ||
+      rawBase?.trim() ||
+      (provider ? defaultOpenAiBaseUrl(provider) : undefined) ||
+      DEFAULT_EMBEDDING_API_BASE
+   ).replace(/\/+$/, "");
    try {
       new URL(baseUrl);
    } catch {
@@ -705,15 +666,32 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   const model = process.env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
+   const model =
+      file?.model ||
+      process.env.EMBEDDING_MODEL?.trim() ||
+      DEFAULT_EMBEDDING_MODEL;
 
-   const dimensions = parseIntEnv("EMBEDDING_DIMENSIONS");
+   const dimensions = file?.dimensions ?? parseIntEnv("EMBEDDING_DIMENSIONS");
    if (dimensions !== undefined && dimensions <= 0) {
       throw new Error(
          `EMBEDDING_DIMENSIONS must be a positive integer (got ${dimensions})`,
       );
    }
 
+   return {
+      apiKey,
+      model,
+      baseUrl,
+      dimensions,
+      minSimilarity: embeddingMinSimilarity(),
+      ...(provider ? { provider } : {}),
+      ...(file?.queryPrefix ? { queryPrefix: file.queryPrefix } : {}),
+      ...(file?.documentPrefix ? { documentPrefix: file.documentPrefix } : {}),
+   };
+};
+
+/** The cosine floor from `EMBEDDING_MIN_SIMILARITY`, validated. */
+function embeddingMinSimilarity(): number {
    const minSimilarity =
       parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
       DEFAULT_EMBEDDING_MIN_SIMILARITY;
@@ -727,9 +705,80 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
             `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
       );
    }
+   return minSimilarity;
+}
 
-   return { apiKey, model, baseUrl, dimensions, minSimilarity };
-};
+/**
+ * The embedding provider settings in force, for every provider, or `null`
+ * when the feature is off. On iff the provider is named and has what it needs
+ * (a key in `EMBEDDING_API_KEY`, or the provider is Ollama or Vertex, which
+ * need none), or, with no provider named, `EMBEDDING_API_KEY` is set.
+ */
+export function getEmbeddingSettings(
+   file?: RetrievalEmbeddingConfig,
+): EmbeddingSettings | null {
+   const queryPrefix = file?.queryPrefix ?? "";
+   const documentPrefix = file?.documentPrefix ?? "";
+   const provider = file?.provider;
+   if (provider === "google" || provider === "vertex") {
+      const apiKey = process.env.EMBEDDING_API_KEY?.trim() || undefined;
+      if (provider === "google" && !apiKey) return null;
+      if (!file?.model) return null;
+      return {
+         provider,
+         model: file.model,
+         dimensions: file.dimensions,
+         baseUrl: file.baseUrl,
+         projectId: file.projectId,
+         location: file.location,
+         // Vertex authenticates with Application Default Credentials.
+         apiKey: provider === "google" ? apiKey : undefined,
+         minSimilarity: embeddingMinSimilarity(),
+         queryPrefix,
+         documentPrefix,
+      };
+   }
+   const config = getEmbeddingConfig(file);
+   if (!config) return null;
+   const keyless =
+      provider === "ollama" && !process.env.EMBEDDING_API_KEY?.trim();
+   return {
+      provider: config.provider ?? "openai-compatible",
+      model: config.model,
+      dimensions: config.dimensions,
+      baseUrl: config.baseUrl,
+      apiKey: keyless ? undefined : config.apiKey,
+      minSimilarity: config.minSimilarity,
+      queryPrefix,
+      documentPrefix,
+   };
+}
+
+/**
+ * The LLM settings in force, or `null` when every LLM feature is off. On iff
+ * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
+ * provider needs none (Ollama, Vertex). The key is an environment variable and
+ * never a file entry. An ambient `OPENAI_API_KEY`-style variable is not read,
+ * for the reason {@link getEmbeddingConfig} gives.
+ */
+export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
+   if (!file) return null;
+   const apiKey = process.env.LLM_API_KEY?.trim() || undefined;
+   const needsKey = file.provider !== "ollama" && file.provider !== "vertex";
+   if (needsKey && !apiKey) return null;
+   return {
+      provider: file.provider,
+      model: file.model,
+      baseUrl: file.baseUrl,
+      projectId: file.projectId,
+      location: file.location,
+      apiKey,
+      timeoutMs: file.timeoutMs,
+      concurrency: file.concurrency,
+      maxCallsPerSync: file.maxCallsPerSync,
+      maxCallsPerRequest: file.maxCallsPerRequest,
+   };
+}
 
 /**
  * Whether `search_database_schema` may send a connection's table and
@@ -1372,6 +1421,15 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 export const getSemanticIndexMaxEntities = (serverRoot: string): number =>
    getPublisherConfig(serverRoot).retrieval?.indexing?.maxEntities ??
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+
+/**
+ * The validated `retrieval` block of publisher.config.json, or undefined when
+ * the file has none. Read once at startup; throws, with the fix, on an
+ * invalid value.
+ */
+export const getRetrievalConfig = (
+   serverRoot: string,
+): RetrievalConfig | undefined => getPublisherConfig(serverRoot).retrieval;
 
 /**
  * Sanitize a raw theme value pulled from JSON. Returns a Theme on success

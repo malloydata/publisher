@@ -13,10 +13,8 @@
  */
 
 import type lunr from "lunr";
-import {
-   getEmbeddingProvider,
-   type EmbeddingProvider,
-} from "../../service/embedding_provider";
+import type { EmbeddingModel } from "../../providers/types";
+import { getEmbeddingProvider } from "../../service/embedding_provider";
 import { logger } from "../../logger";
 import {
    entityRowKey,
@@ -47,7 +45,7 @@ import {
  */
 async function indexStatusFor(
    ctx: PipelineContext,
-   provider: EmbeddingProvider,
+   provider: EmbeddingModel,
 ): Promise<EmbeddingIndexStatus | undefined> {
    const { request, environmentStore, pkgIndex } = ctx;
    try {
@@ -77,7 +75,7 @@ export const semanticRetriever: Retriever = {
       // reach (see scopeKeysWithJoins). Otherwise the scan is the index's.
       const assembling = ctx.settings.joins === "assembly";
       if (!ctx.embeddingConfigured) return { unavailable: "unconfigured" };
-      let provider: EmbeddingProvider | null = null;
+      let provider: EmbeddingModel | null = null;
       try {
          provider = getEmbeddingProvider();
       } catch (error) {

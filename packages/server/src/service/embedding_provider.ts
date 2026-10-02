@@ -1,7 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EmbeddingConfig, getEmbeddingConfig } from "../config";
+import { EmbeddingConfig, getEmbeddingSettings } from "../config";
+import { createEmbeddingModel } from "../providers/registry";
+import { loadedRetrievalConfig } from "../retrieval_config";
 import {
    DEFAULT_RETRY,
    HttpRequestError,
@@ -261,12 +263,12 @@ export class EmbeddingProvider implements EmbeddingModel {
    }
 }
 
-// Cached on a config fingerprint, never on null: a call after the env
+// Cached on a settings fingerprint, never on null: a call after the env
 // changes (tests, operator restarts with new vars are moot, but the
 // integration suite runs many specs in one process) always sees the
 // current configuration instead of a stale provider or a sticky "off".
-let cached: { fingerprint: string; provider: EmbeddingProvider } | null = null;
-let testOverride: { provider: EmbeddingProvider | null } | null = null;
+let cached: { fingerprint: string; provider: EmbeddingModel } | null = null;
+let testOverride: { provider: EmbeddingModel | null } | null = null;
 
 /**
  * Whether the operator has turned the embedding feature on at all.
@@ -279,43 +281,36 @@ export function embeddingConfigured(): boolean {
       return testOverride.provider !== null;
    }
    try {
-      return getEmbeddingConfig() !== null;
+      return getEmbeddingSettings(loadedRetrievalConfig()?.embedding) !== null;
    } catch {
       return true;
    }
 }
 
 /**
- * The process-wide provider for the current embedding configuration, or
- * null when `EMBEDDING_API_KEY` is unset. Throws on malformed companion
- * env vars (see getEmbeddingConfig); callers on the tool path catch and
- * degrade.
+ * The process-wide embedding model for the current configuration, or null
+ * when the feature is off (see getEmbeddingSettings). Throws on malformed
+ * companion env vars; callers on the tool path catch and degrade.
  */
-export function getEmbeddingProvider(): EmbeddingProvider | null {
+export function getEmbeddingProvider(): EmbeddingModel | null {
    if (testOverride) {
       return testOverride.provider;
    }
-   const config = getEmbeddingConfig();
-   if (!config) {
+   const settings = getEmbeddingSettings(loadedRetrievalConfig()?.embedding);
+   if (!settings) {
       cached = null;
       return null;
    }
-   const fingerprint = [
-      config.baseUrl,
-      config.model,
-      config.dimensions ?? "",
-      config.apiKey,
-      config.minSimilarity,
-   ].join("\u0000");
+   const fingerprint = JSON.stringify(settings);
    if (!cached || cached.fingerprint !== fingerprint) {
-      cached = { fingerprint, provider: new EmbeddingProvider(config) };
+      cached = { fingerprint, provider: createEmbeddingModel(settings) };
    }
    return cached.provider;
 }
 
 /** Test seam: force the provider (or null). Undo with _clear...(). */
 export function _setEmbeddingProviderForTests(
-   provider: EmbeddingProvider | null,
+   provider: EmbeddingModel | null,
 ): void {
    testOverride = { provider };
 }

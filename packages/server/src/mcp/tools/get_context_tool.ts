@@ -3,6 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "path";
+import type { EmbeddingModel } from "../../providers/types";
 import { fileURLToPath } from "url";
 import { z } from "zod/v3";
 import lunr from "lunr";
@@ -13,7 +14,6 @@ import { Package } from "../../service/package";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
-   type EmbeddingProvider,
 } from "../../service/embedding_provider";
 import { referencedGivenNames } from "../../service/authorize";
 import { InvalidArgumentError } from "../../errors";
@@ -2879,7 +2879,7 @@ export async function getPackageEmbeddingStatus(
       embeddedEntities: 0,
    };
    if (!embeddingConfigured()) return { status: "lexical", ...empty };
-   let provider: EmbeddingProvider | null;
+   let provider: EmbeddingModel | null;
    try {
       provider = getEmbeddingProvider();
    } catch (error) {
