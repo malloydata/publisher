@@ -123,4 +123,6 @@ export type FetchFn = typeof fetch;
 export interface ProviderDeps {
    fetchFn?: FetchFn;
    retry?: RetryPolicy;
+   /** Vertex only: returns an OAuth access token. Defaults to Application Default Credentials. */
+   getAccessToken?: () => Promise<string>;
 }
