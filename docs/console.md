@@ -85,7 +85,9 @@ is a Console convenience.
   writes (the file goes into the package) or when a host keeps the record and can store; a workspace
   that keeps drafts in the browser beside a writable server still gets it, and writes to the package.
   It is not offered when neither route exists, on a record that cannot store, or on a pinned version
-  of a package.
+  of a package. An empty Dashboards or Notebooks section carries its own **New dashboard** or
+  **New notebook** that opens the same window on that kind. Below 600px wide the Console hides
+  **Edit** and the **New** menu, and an editor opened by URL asks for **Edit anyway** first.
 - **Edit a notebook** — a notebook page (a tagged `notebooks/*.malloy`, not a legacy `.malloynb`)
   has the same **Edit** button. Click a text cell to rewrite it (Done or Cmd/Ctrl+Enter keeps the change, Cancel drops it, and a
   text the file could not hold is flagged as you type), add text above or below any cell,

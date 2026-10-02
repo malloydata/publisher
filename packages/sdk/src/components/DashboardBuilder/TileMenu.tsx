@@ -9,6 +9,7 @@ import {
    TextField,
    Typography,
 } from "@mui/material";
+import { useId } from "react";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
@@ -32,6 +33,8 @@ export interface TileMenuProps {
    onCommit: (next: DashboardTile) => void;
    /** Take the tile off the dashboard. Offered on every tile: order is this file's. */
    onRemove: () => void;
+   /** Why removing is refused, shown beside a Remove that stays focusable; absent when it is allowed. */
+   removeBlocked?: string;
    /** The grid's width, which the width presets are fractions of. */
    columns: number;
    /** Open the clickable-cells window for this tile's source. */
@@ -53,10 +56,12 @@ export function TileMenu({
    onClose,
    onCommit,
    onRemove,
+   removeBlocked,
    columns,
    onDrills,
    view,
 }: TileMenuProps) {
+   const removeReasonId = useId();
    const { theme } = usePublisherTheme();
    const { draft, patch, close, discard } = useDraft(
       tile,
@@ -221,7 +226,19 @@ export function TileMenu({
                   <Button
                      color="error"
                      size="small"
+                     // aria-disabled, not disabled, so the reason stays reachable by keyboard.
+                     aria-disabled={removeBlocked !== undefined || undefined}
+                     aria-describedby={
+                        removeBlocked !== undefined ? removeReasonId : undefined
+                     }
+                     disableRipple={removeBlocked !== undefined}
+                     sx={
+                        removeBlocked !== undefined
+                           ? { opacity: 0.5, cursor: "default" }
+                           : undefined
+                     }
                      onClick={() => {
+                        if (removeBlocked !== undefined) return;
                         discard();
                         onRemove();
                      }}
@@ -229,6 +246,15 @@ export function TileMenu({
                      Remove tile
                   </Button>
                </Stack>
+               {removeBlocked !== undefined && (
+                  <Typography
+                     id={removeReasonId}
+                     variant="caption"
+                     sx={{ color: theme.tileTitle }}
+                  >
+                     {removeBlocked}
+                  </Typography>
+               )}
             </Stack>
          )}
       </Popover>

@@ -216,7 +216,7 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 | `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
 | `kind=dashboard` in the artifact tag, `kind=query` on a tile entry                  | Explicit spellings of what the file and the tile already are. `kind=notebook` under `dashboards/` is a warning                              |
 | `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                                                          |
+| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                             |
 | `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
 | `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
 | `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
@@ -624,21 +624,28 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has a **New** menu (and an **Add** button on the Dashboards section): pick a
+dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Dashboards or Notebooks section also offers its own **New dashboard** or **New notebook**): pick a
 source and its view (one select), a type (Dashboard or Notebook), and a title, and the file is written into the package and opened in the builder. From there it is
 the classic loop — **drag a tile by its grip to move it, drag its right edge to resize it, pick its
 view, label and chart from its own menu, and add filters from the strip above the grid.**
 
-The chart choices are Default (the view's own chart), No chart (a table), Line, Bar, Big value
-(offered only when every output of the view is an aggregate), Scatter, and a map when the view already
-carries one. A choice writes one chart line on the tile's wrapper that turns off the other chart
+The chart choices are Default (the view's own chart), No chart (a table), Line, Bar, Big value, Scatter,
+Shape map and Segment map. A choice the view cannot render stays in the list, greyed, with its reason
+beside it: Big value needs a view with only totals (no group by), and a map needs a view that already
+carries a map chart. A choice writes one chart line on the tile's wrapper that turns off the other chart
 tags. A chart line it does not model, such as `# bar_chart { size=spark }`, is kept byte for byte on
 every edit, and the picker is disabled for that tile with the reason shown; so is a tile inherited
 from a declaration on the source, which has no wrapper to carry the line.
 
 A dashboard with `tiles=[]` (only possible by hand-editing, since New always seeds a first tile)
 opens in the builder, but it is not served (the manifest 404s and the load lint warns) until it has a tile, and the builder will not
-remove the last one. A filter on a dimension reached through a join keeps its full dotted path
+remove the last tile of a dashboard that was saved with tiles: **Remove tile** stays visible but
+disabled, with "A saved dashboard needs at least one tile." beside it. A filter window shows what is
+wrong with a field only once you have edited something in it, so opening a fresh one is not a wall
+of red; **Apply** stays disabled until it is valid either way. On a screen narrower than 600px the
+Console hides **Edit** and the package page's **New** menu, and opening an editor's URL there shows
+"Editing works best on a larger screen" with an **Edit anyway** button (decided once when the page
+opens, so rotating a phone never swaps the editor away). A filter on a dimension reached through a join keeps its full dotted path
 (`products.category`), written quoted, and the lint accepts one level of join there.
 
 What makes it different from a classic BI tool is not the editing, it is what the editing produces.

@@ -149,8 +149,18 @@ const optionNames = (label: string) => {
    fireEvent.click(
       options.find((o) => o.getAttribute("aria-selected") === "true")!,
    );
-   return options.map((o) => o.textContent);
+   return options.map((o) => ({
+      name: o.querySelector(".MuiListItemText-primary")?.textContent,
+      disabled: o.getAttribute("aria-disabled") === "true",
+      reason: o.querySelector(".MuiListItemText-secondary")?.textContent,
+   }));
 };
+const enabledNames = (label: string) =>
+   optionNames(label)
+      .filter((o) => !o.disabled)
+      .map((o) => o.name);
+const reasonOf = (label: string, name: string) =>
+   optionNames(label).find((o) => o.name === name)?.reason;
 const choose = (label: string, option: string) => {
    fireEvent.click(
       within(openMenu(label)).getByRole("option", {
@@ -175,9 +185,19 @@ beforeEach(() => {
 });
 
 describe("the chart picker", () => {
-   it("offers the renderer's charts, with no sparkline and no map the view does not carry", async () => {
+   it("lists every chart, with no sparkline, and disables those the view cannot render", async () => {
       await mount();
-      expect(optionNames("Cell 3, query")).toEqual([
+      expect(optionNames("Cell 3, query").map((o) => o.name)).toEqual([
+         "Default",
+         "No chart (table)",
+         "Line",
+         "Bar",
+         "Big value",
+         "Scatter",
+         "Shape map",
+         "Segment map",
+      ]);
+      expect(enabledNames("Cell 3, query")).toEqual([
          "Default",
          "No chart (table)",
          "Line",
@@ -186,20 +206,35 @@ describe("the chart picker", () => {
       ]);
    });
 
-   it("offers big value only for a view whose every column is an aggregate", async () => {
+   it("enables big value only for a view whose every column is an aggregate", async () => {
       await mount();
-      expect(optionNames("Cell 4, query")).toContain("Big value");
-      expect(optionNames("Cell 3, query")).not.toContain("Big value");
+      expect(enabledNames("Cell 4, query")).toContain("Big value");
+      expect(enabledNames("Cell 3, query")).not.toContain("Big value");
+      expect(reasonOf("Cell 3, query", "Big value")).toBe(
+         "Needs a view with only totals (no group by)",
+      );
    });
 
-   it("offers a map only when the view already carries that map tag", async () => {
+   it("enables a map only when the view already carries that map tag", async () => {
       await mount({
          source: `${SOURCE}
 run: a -> geo
 `,
       });
-      expect(optionNames("Cell 7, query")).toContain("Shape map");
-      expect(optionNames("Cell 7, query")).not.toContain("Segment map");
+      expect(enabledNames("Cell 7, query")).toContain("Shape map");
+      expect(enabledNames("Cell 7, query")).not.toContain("Segment map");
+      expect(reasonOf("Cell 7, query", "Segment map")).toBe(
+         "Needs a view that already carries a map chart",
+      );
+   });
+
+   it("does not take a disabled chart when it is clicked", async () => {
+      await mount();
+      const disabled = within(openMenu("Cell 3, query"))
+         .getAllByRole("option", { hidden: true })
+         .find((o) => o.textContent?.startsWith("Big value"))!;
+      fireEvent.click(disabled);
+      expect(picker("Cell 3, query").textContent).toBe("Default");
    });
 
    it("names each control by its cell", async () => {

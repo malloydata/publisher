@@ -5,7 +5,13 @@
  * Creating a dashboard or notebook from the package page: who is offered it,
  * where the file goes, where the reader lands, and what is fetched for it.
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   cleanup,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { ReactNode } from "react";
 import {
@@ -144,12 +150,11 @@ describe("who is offered New", () => {
       mount();
       await settled();
       expect(screen.getByRole("button", { name: "New" })).toBeDefined();
+      // One create entry, the header's: the sections carry none of their own.
       expect(
-         screen.getByRole("button", { name: "Add dashboard" }),
-      ).toBeDefined();
-      expect(
-         screen.getByRole("button", { name: "Add notebook" }),
-      ).toBeDefined();
+         screen.queryByRole("button", { name: "Add dashboard" }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: "Add notebook" })).toBeNull();
    });
 
    it("no one when the server takes no writes and nothing authoritative keeps documents", async () => {
@@ -179,6 +184,45 @@ describe("who is offered New", () => {
       await waitFor(() =>
          expect(screen.getByRole("button", { name: "New" })).toBeDefined(),
       );
+   });
+
+   it("an empty section's row offers its own kind, and no one when New is not offered", async () => {
+      mount();
+      await settled();
+      expect(
+         screen.getByRole("button", { name: "New notebook" }),
+      ).toBeDefined();
+      // Dashboards has one, so its row is not empty.
+      expect(
+         screen.queryByRole("button", { name: "New dashboard" }),
+      ).toBeNull();
+      cleanup();
+      context.mutable = false;
+      mount();
+      await settled();
+      expect(screen.queryByRole("button", { name: "New notebook" })).toBeNull();
+   });
+
+   it("no New menu below 600px, where the editors step aside", async () => {
+      const was = window.matchMedia;
+      window.matchMedia = ((query: string) => ({
+         matches: query.includes("max-width"),
+         media: query,
+         addEventListener: () => {},
+         removeEventListener: () => {},
+         addListener: () => {},
+         removeListener: () => {},
+         onchange: null,
+         dispatchEvent: () => false,
+      })) as unknown as typeof window.matchMedia;
+      try {
+         mount();
+         await settled();
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+      } finally {
+         window.matchMedia = was;
+      }
    });
 
    it("nothing until the models listing, which names the taken files, has landed", async () => {
@@ -217,6 +261,17 @@ describe("creating", () => {
       expect(getModel).toHaveBeenCalledTimes(1);
       // dashboards/ files are not models to start from.
       expect(getModel.mock.calls[0][2]).toBe("storefront.malloy");
+   });
+
+   it("opens the dialog on the kind of the empty row's action", async () => {
+      mount();
+      await settled();
+      fireEvent.click(
+         await screen.findByRole("button", { name: "New notebook" }),
+      );
+      await waitFor(() =>
+         expect(screen.getByLabelText("Notebook title")).toBeDefined(),
+      );
    });
 
    it("writes a dashboard into the package, refreshes the listings, and opens its editor", async () => {

@@ -321,7 +321,7 @@ test.describe("embedded host", () => {
          page.getByRole("button", { name: "New", exact: true }),
       ).toHaveCount(0);
       await expect(
-         page.getByRole("button", { name: "Add notebook" }),
+         page.getByRole("button", { name: "New notebook" }),
       ).toHaveCount(0);
    });
 });

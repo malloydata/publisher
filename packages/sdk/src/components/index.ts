@@ -11,6 +11,7 @@ export { AddButton, SecondaryButton } from "./buttons";
 export { AppDialog } from "./AppDialog";
 export { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 export { BackLink } from "./BackLink";
+export { NarrowEditGate } from "./NarrowEditGate";
 export { DashboardBar } from "./Dashboard/DashboardBar";
 // The Console's palette, and the two maps drawn from it. Exported so a host
 // paints its own chrome — the Publisher app's theme included — from the same

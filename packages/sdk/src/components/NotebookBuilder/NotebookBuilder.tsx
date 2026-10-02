@@ -570,6 +570,7 @@ export function NotebookBuilder({
          <ChartPicker
             state={pickerState(cell.chart, read?.chart)}
             view={view}
+            {...(view ? {} : { viewStatus: offered ? "unlisted" : "loading" })}
             cellLabel={`cell ${index + 1}`}
             {...(onSourcesWanted ? { onOpen: onSourcesWanted } : {})}
             {...(locked ? { disabledReason: locked } : {})}

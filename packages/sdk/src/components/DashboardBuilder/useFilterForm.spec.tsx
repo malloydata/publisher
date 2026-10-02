@@ -91,6 +91,28 @@ describe("useFilterForm: a new control", () => {
       expect(view.result.current.included).toBe(1);
    });
 
+   it("shows no problem on a form nobody has edited, yet still holds Apply", async () => {
+      const { view } = await form(await openDocument(SOURCE));
+      expect(view.result.current.canApply).toBe(false);
+      expect(view.result.current.commonProblem).toBeUndefined();
+      expect(
+         view.result.current.rowProblems.every((p) => p === undefined),
+      ).toBe(true);
+      act(() => view.result.current.pickField("nope"));
+      expect(view.result.current.commonProblem).toContain("Not a field of");
+      expect(view.result.current.rowProblems.some((p) => p !== undefined)).toBe(
+         true,
+      );
+   });
+
+   it("shows a problem once a row or the kind is edited", async () => {
+      const { view } = await form(await openDocument(SOURCE));
+      act(() => view.result.current.setRow(0, { include: true }));
+      expect(view.result.current.commonProblem).toBe(
+         "Pick the field this filter compares.",
+      );
+   });
+
    it("declares the control it applies, suggesting over the ticked tile's source", async () => {
       const { view, onApply } = await form(await openDocument(SOURCE));
       act(() => view.result.current.pickField("brand"));

@@ -6,6 +6,7 @@ import {
    DashboardBar,
    encodeResourceUri,
    Loading,
+   NarrowEditGate,
 } from "@malloy-publisher/sdk";
 import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
@@ -58,23 +59,28 @@ export default function DashboardEditPage({
             href={`/${environmentName}/${packageName}`}
             onClick={() => navigate(`/${environmentName}/${packageName}`)}
          />
-         {/* The bar, at the height the reader's view had it, so the page does
-             not collapse and refill while the builder's chunk arrives. */}
-         <Suspense
-            fallback={
-               <Stack sx={{ gap: 2 }}>
-                  <DashboardBar />
-                  <Loading text="Opening the builder…" />
-               </Stack>
-            }
-         >
-            <DashboardEditor
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
-               dashboard={dashboardName}
-               onExit={() => navigate(dashboardPath)}
-               onEvent={onEvent}
-            />
-         </Suspense>
+         <NarrowEditGate>
+            {/* The bar, at the height the reader's view had it, so the page does
+                not collapse and refill while the builder's chunk arrives. */}
+            <Suspense
+               fallback={
+                  <Stack sx={{ gap: 2 }}>
+                     <DashboardBar />
+                     <Loading text="Opening the builder…" />
+                  </Stack>
+               }
+            >
+               <DashboardEditor
+                  resourceUri={encodeResourceUri({
+                     environmentName,
+                     packageName,
+                  })}
+                  dashboard={dashboardName}
+                  onExit={() => navigate(dashboardPath)}
+                  onEvent={onEvent}
+               />
+            </Suspense>
+         </NarrowEditGate>
       </Box>
    );
 }
