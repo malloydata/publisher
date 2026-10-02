@@ -1,4 +1,8 @@
->>>markdown
+##" One or more scored runs over one evaluation set: the analytical tables.
+## artifact { kind=notebook title="Eval run" }
+import "../eval_run.malloy"
+
+##|(markdown)
 # Eval run
 
 One or more scored runs over one evaluation set. Publisher renders this natively,
@@ -12,9 +16,9 @@ open a drawer.
 
 Read it top to bottom: the headline, then whether the headline is trustworthy,
 then where the failures are, then what to do about them.
->>>malloy
-import 'eval_run.malloy'
->>>markdown
+|##
+
+##|(markdown)
 ## 1. The headline
 
 Pass rate over **decided** verdicts -- `match` against `no_match`. Two things are
@@ -28,9 +32,11 @@ quietly depresses every arm:
 Read `confident_count` alongside the rate: two arms are only comparable when they
 answered the same cases. Read `near_matches` too. It is the leading indicator of
 rubrics going vague, and it moves before the pass rate does.
->>>malloy
+|##
+
 run: run_summary
->>>markdown
+
+##|(markdown)
 ## 2. Is the headline trustworthy?
 
 A pass rate means nothing if the attempts behind it were contaminated, if the
@@ -39,7 +45,8 @@ harness fell over, or if the arms did not face the same set.
 Any contamination at all voids the run -- an attempt that saw the gold answer is
 not evidence about the model. Harness errors are excluded from the rate rather
 than counted as failures: a timeout is the eval failing, not the answerer.
->>>malloy
+|##
+
 run: attempts -> {
   group_by: arm is runs.label
   aggregate:
@@ -50,18 +57,21 @@ run: attempts -> {
     judge_version is runs.judge_version.max()
     set_version is runs.set_version.max()
 }
->>>markdown
+
+##|(markdown)
 ## 3. What it cost
 
 The claim a semantic model makes is not only that the agent gets the right
 answer, but that it gets there quickly: fewer turns, fewer tokens, less money.
 An arm that wins on accuracy while costing three times as much has not obviously
 won.
->>>malloy
+|##
+
 run: cost
->>>malloy
+
 run: effort
->>>markdown
+
+##|(markdown)
 ## 4. Where the failures are
 
 Every failure carries exactly one **where to fix**, so these counts sum to the
@@ -82,9 +92,11 @@ tables below disagree with each other.
 - **coverage not measured** -- a miss on a case with no measured coverage label.
   Retrieval's or the model's, and nothing says which, so it is charged to
   neither.
->>>malloy
+|##
+
 run: failures_by_where_to_fix
->>>markdown
+
+##|(markdown)
 ### Pass rate by coverage
 
 Coverage is the ceiling on what any agent can do. A model-shaped problem shows up
@@ -93,9 +105,11 @@ only by assembling it, and the agent could not.
 
 `absent` cases are scored on the **refusal** -- passing means the agent correctly
 declined.
->>>malloy
+|##
+
 run: pass_by_coverage
->>>markdown
+
+##|(markdown)
 ## 5. Retrieval
 
 **Per-question entity recall**: of the entities each golden answer depends on, how
@@ -103,16 +117,20 @@ many the agent's own `get_context` calls delivered -- as a ranked entity, under 
 sibling source, or named in a returned source's documentation. It uses the search
 terms the answerer chose, so it moves when the answerer changes; use it to
 attribute a failure *within* one arm, not to compare retrieval across arms.
->>>malloy
+|##
+
 run: retrieval_as_used
->>>markdown
+
+##|(markdown)
 ### Entities most often needed and not returned
 
 The ranked retrieval backlog. An entity high on this list is one fix that several
 cases are waiting on.
->>>malloy
+|##
+
 run: most_missed_entities
->>>markdown
+
+##|(markdown)
 ## 6. What to do next
 
 Failures grouped by shared root cause, ordered by how many cases one edit would
@@ -122,17 +140,21 @@ clear. Eight failures are rarely eight problems.
 proposal is an open question, and that is an honest state -- a generated proposal
 that nobody stands behind is worse than a blank, because a reviewer has to
 disprove it.
->>>malloy
+|##
+
 run: backlog
->>>markdown
+
+##|(markdown)
 ### Coverage gaps in the set itself
 
 Independent of any run: cases the model cannot answer outright, with the entity
 that would close the gap. This is the model-improvement backlog even before an
 agent has attempted anything, and it is the part a customer can act on directly.
->>>malloy
+|##
+
 run: coverage_gaps
->>>markdown
+
+##|(markdown)
 ## 7. Refusal behaviour
 
 Refusal is scored in both directions, and getting one right while getting the
@@ -143,9 +165,11 @@ other wrong is a common and misleading result.
 - A case tagged **answerable-sounds-unanswerable** passes by *answering*. An agent
   that has learned to refuse whenever a question sounds hard will fail these while
   looking well-calibrated on the ones above.
->>>malloy
+|##
+
 run: refusal_behaviour
->>>markdown
+
+##|(markdown)
 ## 8. Comparing arms
 
 Only meaningful with two or more arms loaded.
@@ -156,12 +180,15 @@ one case. What matters is which cases actually moved, and in which direction.
 
 `arms_passed` between 1 and `arms` means the arms disagree. Read the nested
 verdicts to see who won each one.
->>>malloy
+|##
+
 run: flips
->>>markdown
+
+##|(markdown)
 ### Cases every arm failed
 
 Changing the answerer will not move these. They are where model and retrieval
 work pays off, and they are the most durable finding in the whole run.
->>>malloy
+|##
+
 run: failed_everywhere

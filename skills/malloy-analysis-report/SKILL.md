@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Creating Reports
 
-An ad-hoc report is a `.malloynb` notebook that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full `.malloynb` cell format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure).
+An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
@@ -23,31 +23,65 @@ Do NOT build the notebook in the same turn as `execute_query`. Explain first, th
 
 ## Filters are inherited from the model, don't declare them in the report
 
-Reports do not (and cannot) define their own filters. If the source declares `given:` parameters (or legacy `#(filter)` annotations), Publisher renders the controls, parses caller parameters, and applies them server-side automatically: the report inherits and displays them with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `given:` to the source itself, not to wedge a filter widget into the report. `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. The `malloy-model` skill covers this under § Legacy: Parameterizable Filters. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
+Do not declare filters in an ad-hoc report. If the source declares `given:` parameters (or legacy `#(filter)` annotations), Publisher renders the controls, parses caller parameters, and applies them server-side automatically: the report inherits and displays them with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `given:` to the source itself, not to wedge a filter widget into the report. `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. The `malloy-model` skill covers this under § Legacy: Parameterizable Filters. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
 
 ## What goes in the report
 
-Do NOT add an H1 heading in any cell (use H2 and below for sections); the notebook name serves as the title. To redo the structure rather than tweak one cell, rewrite the notebook file end-to-end.
+Do NOT add an H1 heading in any markdown (use H2 and below for sections); the `title` in the `## artifact` tag serves as the title. To redo the structure rather than tweak one cell, rewrite the notebook file end-to-end.
 
 Markdown cells own narrative; query cells own a single Malloy query whose chart annotation tells the renderer how to display the result. Markdown supports H2 headings, lists, bold, and inline code. Keep narrative cells short, one idea per cell, so the rendered output reads as a story instead of a wall of text.
 
-In a `.malloynb` file each cell is delimited by a `>>>markdown` or `>>>malloy` marker. A markdown cell looks like:
+The file starts with `## artifact { kind=notebook title="..." }`, then the `import` for the model file. Definitions (`import`, `source:`, `query:`, `given:`) come before the first markdown or `run:`. Prose is `##|(markdown)` ... `|##` for a block (body on the lines between) or `##(markdown) text` for one line. Each `run:` is a query cell, and its tags sit directly above it with nothing between. A `#"` directly above the `run:` is its caption. Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.
 
-```
->>>markdown
-## Section heading
-Narrative text here.
-```
+Each `run:` must be a standalone query (for example `run: source -> { ... }`). The `import` is file-wide: query cells never repeat it. Compile the file with `/compile` (`"scope": "file"`, at the path `notebooks/<slug>.malloy`) before saving; a `.malloy` notebook compiles as a model, so its errors come back there. A complete report:
 
-A query cell looks like:
+```malloy
+## artifact { kind=notebook title="Sales report" }
+import "../order_analysis.malloy"
 
-```
->>>malloy
+##|(markdown)
+## Overview
+What is driving sales, and which categories carry it? The queries below cover every order in the model.
+|##
+
+# big_value
+run: order_analysis -> {
+  aggregate:
+    # label="Revenue"
+    # currency
+    total_revenue
+
+    # label="Orders"
+    # number=auto
+    order_count
+}
+
+##(markdown) ## Trend: how does revenue move over time?
+
+#" Revenue by month
+# line_chart
+run: order_analysis -> {
+  group_by: order_date.month
+  aggregate: total_revenue
+  order_by: 1
+}
+
+##|(markdown)
+## Breakdown
+Which categories account for the most revenue?
+|##
+
+#" Top ten categories by revenue
 # bar_chart
-run: source -> { group_by: dim; aggregate: measure }
-```
+run: order_analysis -> {
+  group_by: category
+  aggregate: total_revenue
+  order_by: total_revenue desc
+  limit: 10
+}
 
-Each Malloy cell must be a standalone query (for example `run: source -> { ... }`). The notebook's leading `>>>malloy` cell holds the `import` statement for the model file; individual query cells do not repeat it. If a query fails validation when executed, fix it and rerun.
+##(markdown) ## Key takeaways: what to look at next.
+```
 
 A well-structured report typically follows this pattern:
 
@@ -123,7 +157,7 @@ Key rendering rules to keep in mind when shaping a cell:
 
 ## Editing an existing report
 
-For small targeted changes (fix one cell, insert one new cell), edit that cell in the `.malloynb` file rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file.
+For small targeted changes (fix one cell, insert one new cell), edit the cell's statement or markdown in place rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file. An existing `.malloynb` is read-only in a Credible draft (it can be deleted): to edit its story, write a `.malloy` notebook.
 
 ## IMPORTANT
 

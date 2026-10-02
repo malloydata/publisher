@@ -572,8 +572,9 @@ const embedded = createEmbeddedQueryResult({
 ## Dimensional Filters
 
 The SDK supports interactive dimensional filtering for hand-built data apps.
-Filters are configured through annotations in Malloy source files. The `Notebook`
-component does not use this mechanism; see [Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
+You configure each filter in code, with a `dimensionSpecs` entry passed to the
+hooks below. The `Notebook` component does not use this mechanism; see
+[Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
 
 ### Filter Types
 
@@ -585,69 +586,17 @@ component does not use this mechanism; see [Notebooks use `given:`](#notebooks-u
 | `Retrieval`  | Semantic search input | Free-text semantic search          |
 | `Boolean`    | Toggle switch         | Boolean fields                     |
 
-### Source Declaration Syntax
+### Choosing a filter type and label
 
-Add filter annotations to dimensions in your Malloy source files using the `#(filter)` tag:
+Set `filterType` and `label` on each `dimensionSpecs` entry, as in the hook
+example below. The model needs no annotation for this.
 
-```malloy
-source: flights is duckdb.table('data/flights.parquet') extend {
-  dimension:
-    // Multi-select dropdown for string values
-    #(filter) {"type": "Star"}
-    origin_code is origin
-
-    // Range slider for numeric values
-    #(filter) {"type": "MinMax"}
-    distance_miles is distance
-
-    // Date range picker
-    #(filter) {"type": "DateMinMax"}
-    flight_departure is dep_time
-
-  join_one: carriers with carrier
-}
-
-source: carriers is duckdb.table('data/carriers.parquet') extend {
-  dimension:
-    #(filter) {"type": "Star"}
-    nickname is nickname_old
-
-    // Semantic search for text fields (requires embedding index)
-    #(index_values) n=-1
-    #(filter) {"type": "Retrieval"}
-    name is name_old
-}
-
-source: recalls is duckdb.table('data/recalls.csv') extend {
-  dimension:
-    // Boolean toggle filter
-    #(filter) {"type": "Boolean"}
-    is_major_recall is potentially_affected > 100000
-}
-```
-
-### Custom Labels
-
-By default, filters display the dimension field name in the UI. You can customize the display label using the `# label="..."` annotation:
-
-```malloy
-source: recalls is duckdb.table('data/recalls.csv') extend {
-  dimension:
-    #(filter) {"type": "Star"}
-    # label="Vehicle Manufacturer"
-    Manufacturer is Manufacturer_old
-
-    #(filter) {"type": "Retrieval"}
-    # label="Recall Subject"
-    Subject is Subject_old
-
-    #(filter) {"type": "MinMax"}
-    # label="Number of Affected Vehicles"
-    potentially_affected is affected_count
-}
-```
-
-The `# label="..."` annotation can be placed before or after the `#(filter)` annotation. When present, the label value will be displayed in the filter UI instead of the raw field name.
+Do not add a `#(filter) {"type": "..."}` annotation to a dimension to pick the
+type. `#(filter)` is deprecated in every form, and this JSON form is legacy
+syntax. `extractDimensionSpecs` still reads it, and `# label="..."`, from a
+model that already has them, so existing apps keep working. To make a model
+filterable by its callers, declare a `given:` on the source instead; see
+[docs/givens.md](../../docs/givens.md).
 
 ### Notebooks use `given:`, not these annotations
 
@@ -657,8 +606,8 @@ come from the `given:` parameters its model declares, which is the mechanism
 described in [docs/givens.md](../../docs/givens.md). A `##(filters)` annotation in
 a notebook cell is inert.
 
-The `#(filter)` source annotations above still work, and so do the hooks below.
-They are what a hand-built data app uses; only the notebook's own panel changed.
+The hooks below still work. They are what a hand-built data app uses; only the
+notebook's own panel changed.
 
 ### React Hooks for Programmatic Filtering
 

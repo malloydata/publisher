@@ -1,0 +1,17 @@
+##! experimental.givens
+## artifact { kind=notebook title="Attached prose" }
+import "../models/orders.malloy"
+
+#(markdown) The region filter.
+given: REGION :: filter<string> is f''
+
+#(markdown) Orders in the US only.
+source: us_orders is orders extend { where: region = 'US' }
+
+# bar_chart
+#|(markdown)
+### Orders by region
+Excludes refunds.
+|#
+# label="Orders"
+run: us_orders -> { aggregate: order_count }

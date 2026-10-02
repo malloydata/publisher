@@ -30,9 +30,10 @@ pipeline starts from its own query's source, and there is no way to combine two,
 unrelated sources has to be tiles.
 
 The format is the one [Malloyyo](https://github.com/malloydata/malloyyo) uses, so a model repo with
-a `dashboards/` directory largely works unchanged in either. The one grammar difference: Publisher
-spells the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the
-old name as a property it does not read rather than laying out at the default in silence. One form
+a `dashboards/` directory largely works unchanged in either. The grid width is `dashboard { columns=N }`
+beside the artifact tag; `dashboard_columns=N` inside the tag is a deprecated alias that Publisher
+still reads and reports as a warning, and if the two disagree the package warning is an error naming
+both values and `columns` wins. One form
 Malloyyo accepts, `# artifact` on a `view:`, is not served here; the package warning says so and
 names the two spellings that are. The dated list of everything else that differs is
 [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
@@ -122,7 +123,8 @@ query: overview is order_items -> {
   object and at model level there is none — a `#"` there fails the package load with "Object
   annotation not connected to any object". On the single-query form it is `#"`, attached to the
   `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
-  one line; prose BETWEEN tiles is not something the format can express.
+  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`.
+  The format is decided but Publisher does not render text tiles yet, so the lint reports a listed one as left out of the page.
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
@@ -212,8 +214,9 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 | Construct                                                                           | What it does                                                                                                                                |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `kind=dashboard` in the artifact tag, `kind=query` on a tile entry                  | Explicit spellings of what the file and the tile already are. `kind=notebook` under `dashboards/` is a warning                              |
 | `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. One spelling                                                                            |
+| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                                                          |
 | `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
 | `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
 | `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
@@ -221,8 +224,8 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
-`dashboard_columns=N`, which earlier versions of this grammar accepted, is that warning's main
-customer: write `# dashboard { columns=N }`.
+`dashboard_columns=N` is the one exception: it is read as a deprecated alias of
+`# dashboard { columns=N }` on a composite, so write the latter.
 
 Two spellings that bite:
 
@@ -567,8 +570,9 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   that file cannot see, or declares a `suggest` in a form that cannot fetch options at all.
 - **Layout and tiles.** A tile that does not resolve to a real view; a `# dashboard { columns= }`
   that is not a positive integer; a `# colspan` on a tile's view that is not a positive integer, or
-  that is wider than the grid and therefore clamped; and any property inside the artifact tag that
-  Publisher does not read, `dashboard_columns=` included.
+  that is wider than the grid and therefore clamped; a `dashboard_columns=` alias, and an error when
+  it disagrees with `dashboard { columns= }`; and any property inside the artifact tag that
+  Publisher does not read.
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
 - **Curation.** A tile, a single query, or a filter `suggest` that reads a source the surface does

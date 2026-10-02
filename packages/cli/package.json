@@ -30,7 +30,7 @@
     "fs-extra": "^11.3.3"
   },
   "devDependencies": {
-    "@openapitools/openapi-generator-cli": "^2.20.2",
+    "@openapitools/openapi-generator-cli": "^2.40.1",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.10.0",
     "@typescript-eslint/eslint-plugin": "^8.16.0",

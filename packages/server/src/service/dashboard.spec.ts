@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import {
    buildDashboardManifest,
    normalizeTileExpression,
@@ -179,6 +181,16 @@ describe("service/dashboard render-log filtering", () => {
       ];
       expect(filterPublisherOwnedRenderLogs(owned, DASH)).toEqual([]);
       expect(filterPublisherOwnedRenderLogs(owned, PLAIN)).toEqual([]);
+   });
+
+   it("drops the unknown-tag line for the artifact kind of a notebook", () => {
+      const kind = [
+         { message: "Unknown render tag 'artifact.kind' on field 'root'" },
+      ];
+      expect(
+         filterPublisherOwnedRenderLogs(kind, "notebooks/n.malloy"),
+      ).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(kind, DASH)).toEqual([]);
    });
 
    // Every tile is a standalone query, and the renderer reads these only for the
@@ -519,6 +531,36 @@ describe("service/dashboard given specs (the control contract)", () => {
       // The reserved routes still drive the control contract rather than
       // appearing as annotations.
       expect(manifest?.givens[0].label).toBe("Region");
+   });
+
+   it("leaves a given's own (markdown) prose out of its annotations, at either level", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["REGION"],
+               },
+            ],
+            givens: new Map([
+               given("REGION", "filter<string>", [
+                  "#(doc) Which region\n",
+                  "#(markdown) hi\n",
+                  "##(markdown) hi\n",
+                  "#|(markdown)\nhi",
+                  "#[markdown] hi\n",
+                  "#(markdown_help) near miss\n",
+                  "#(Markdown) near miss, cased\n",
+               ]),
+            ]),
+         }),
+      );
+      expect(manifest?.givens[0].annotations).toEqual([
+         "#(doc) Which region\n",
+         "#(markdown_help) near miss\n",
+         "#(Markdown) near miss, cased\n",
+      ]);
    });
 
    it("ignores a control kind it does not recognize", () => {
@@ -2037,20 +2079,80 @@ describe("service/dashboard grid width and hostile literals", () => {
       ).toEqual([]);
    });
 
-   // The spelling this grammar dropped. Nothing reads it, so without the
-   // enumeration lint a package carrying it serves a default-width grid and says
-   // nothing — the exact failure that made two spellings worth collapsing.
-   it("names dashboard_columns as doing nothing, and what to write instead", () => {
+   it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
       const f = composite(
          '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
       );
+      expect(build(f)?.dashboardColumns).toBe(4);
+      expect(lintOf(f)).toEqual([]);
+   });
+
+   it("lets a dashboard { columns } that is not a width win over the alias", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=0 }\n',
+      );
       expect(build(f)?.dashboardColumns).toBeUndefined();
-      expect(lintOf(f)).toEqual([
+   });
+
+   it("says a kind=text tile is not rendered yet, rather than that kind is unread", () => {
+      const f = composite(
+         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+      );
+      const message = lintOf(f).find((finding) => finding.includes("`intro`"));
+      expect(message).toContain("does not render text tiles yet");
+      expect(message).not.toContain("carries");
+   });
+
+   it("prefers dashboard { columns } over the dashboard_columns alias", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 } dashboard { columns=6 }\n',
+      );
+      expect(build(f)?.dashboardColumns).toBe(6);
+   });
+
+   it("ignores an alias that is not a positive integer", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=0 }\n',
+      );
+      expect(build(f)?.dashboardColumns).toBeUndefined();
+   });
+
+   it("names dashboard_columns on a single query as doing nothing", () => {
+      const findings = lintOf(
+         singleQuery("# artifact { dashboard_columns=4 }\n"),
+      );
+      expect(findings).toEqual([
          expect.stringContaining(
             "`dashboard_columns` in the artifact tag does nothing in Publisher",
          ),
       ]);
-      expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
+   });
+
+   it("says nothing about a tile entry that carries only kind=query", () => {
+      const f = composite(
+         "## artifact { tiles=[orders_totals { kind=query }] }\n",
+      );
+      expect(
+         lintOf(f).find((finding) => finding.includes("carries")),
+      ).toBeUndefined();
+      const withMore = composite(
+         "## artifact { tiles=[orders_totals { kind=query colspan=3 }] }\n",
+      );
+      expect(
+         lintOf(withMore).find((finding) =>
+            finding.includes("carries `colspan`"),
+         ),
+      ).toBeDefined();
+   });
+
+   it("does not call kind unknown, since the notebook lint judges its value", () => {
+      expect(
+         lintOf(
+            composite(
+               '## artifact { kind=notebook tiles=["orders -> totals"] }\n',
+            ),
+         ),
+      ).toEqual([]);
    });
 
    // A tile entry is the run expression alone, and a property hung off one is
@@ -2060,7 +2162,7 @@ describe("service/dashboard grid width and hostile literals", () => {
    // resolve, and be told only that the query failed.
    it("names a property on a tile entry as unread, and where layout goes", () => {
       const f = composite(
-         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+         '## artifact { tiles=[intro { colspan=3 }, "orders -> totals"] }\n',
       );
       // It builds, and the entry is reduced to its text.
       expect(build(f)?.tiles?.map((tile) => tile.query)).toEqual([
@@ -2068,7 +2170,7 @@ describe("service/dashboard grid width and hostile literals", () => {
          "orders -> totals",
       ]);
       const carried = lintOf(f).find((finding) =>
-         finding.includes("carries `kind`"),
+         finding.includes("carries `colspan`"),
       );
       expect(carried).toContain("`intro` in `tiles=[…]`");
       expect(carried).toContain("run expression alone");
@@ -2193,23 +2295,13 @@ describe("service/dashboard inherits the annotation guards", () => {
       }
    });
 
-   // The parser's property bag is a plain object, so `__proto__` reaches the
-   // prototype chain. The block form throws RangeError and poisons the process
-   // for every later parse; the bare form pollutes silently. Both must be
-   // stopped BEFORE the parse, which is why the guard cannot be a try/catch.
-   //
-   // Read the scope of this narrowly. It proves the guard covers the route
-   // dashboard discovery uses, which is every read going through `motlyTag`.
-   // It does NOT mean the process is safe from `__proto__`, and this comment
-   // says so because the title alone invites that inference. `##!` and `#@` are
-   // parsed EAGERLY BY THE COMPILER during `getModel()`, before any parse of
-   // ours runs, and `motlyAnnotations` drops both routes, so the guard never
-   // sees them and cannot undo damage that predates its snapshot. Measured on
-   // this tree rather than taken on trust: `##! __proto__ { a=b }` leaves
-   // `Object.prototype` carrying `location` and `properties`, and the next
-   // ordinary parse throws RangeError. That is live on `main` today and is not
-   // this slice's to fix; the real repair is upstream in `motly-ts-parser`,
-   // where the property bags want to be `Object.create(null)`.
+   // Before Malloy 0.0.434 the tag parser stored properties in a plain object,
+   // so a `__proto__` key reached the prototype chain. The block form threw
+   // RangeError and broke every later parse in the process; the bare form
+   // polluted silently. 0.0.434 fixed the parser (`motly-ts-parser` 0.9.1,
+   // malloydata/malloy#3078), and Publisher's own guard was removed. This test
+   // now checks the parser on the route dashboard discovery reads: the hostile
+   // tags do not throw, and an ordinary tag parsed afterwards still works.
    it("survives a __proto__ artifact tag without poisoning later parses", () => {
       for (const hostile of [
          "# artifact { __proto__ { a=b } }\n",
@@ -2292,5 +2384,41 @@ describe("service/dashboard tile normalization", () => {
       // The old expression took ~2.3s on this input; a generous ceiling still
       // fails by orders of magnitude if the quadratic form comes back.
       expect(elapsed).toBeLessThan(500);
+   });
+});
+
+describe("service/dashboard text tile entries", () => {
+   const fixture = fs.readFileSync(
+      path.resolve(
+         __dirname,
+         "../../tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
+      ),
+      "utf8",
+   );
+   const f = facts({
+      modelAnnotations: fixture
+         .split("\n")
+         .filter((line) => line.startsWith("## artifact"))
+         .map((line) => `${line}\n`),
+      viewGivens: new Map([["orders -> kpis", []]]),
+      viewAnnotations: new Map([["orders -> kpis", []]]),
+      sourceFields: new Map([["orders", new Set(["kpis"])]]),
+   });
+
+   // Text tiles do not render yet, so the entry is left out of the manifest
+   // rather than shown as a run expression that cannot resolve.
+   it("leaves a kind=text entry out of the manifest and draws one warning", () => {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.tiles?.map((tile) => tile.query)).toEqual([
+         "orders -> kpis",
+      ]);
+      const findings = lintDashboard(f, manifest);
+      expect(findings.map((x) => [x.severity, x.message])).toEqual([
+         [
+            "warn",
+            "`intro` in `tiles=[…]` is a text tile, but Publisher does not render text tiles yet, so it is left out of the page.",
+         ],
+      ]);
    });
 });

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run an eval arm headlessly and write a conformant ledger. Stdlib only.
 
-  python run_baseline.py --set evals/ecommerce --out results/2026-08-30-sonnet \
-      --model sonnet --label sonnet-baseline \
-      --environment samples --package ecommerce
+  python run_baseline.py --set <set-dir> --model sonnet --label sonnet-baseline
+  # servers, names and the run directory come from the set's eval.toml;
+  # eval.py run takes the same flags
 
 Each case gets one fresh `claude -p` answerer holding the Publisher MCP tools and
 nothing else, then one fresh judge that sees the golden and the answer but never
@@ -177,6 +177,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -191,6 +192,7 @@ from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 import verify_definitions  # noqa: E402
+import check_findable  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -1563,7 +1565,6 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
-                  publisher: str, environment: str,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
@@ -1743,33 +1744,69 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   f"check_coverage.py --set {set_dir} --model <package-dir> "
                   f"--out coverage.json"]
 
-    pkg_name = f"eval-{out.name}"
-    pkg_dir = f"/tmp/{pkg_name}"
+    # The register command and the two URLs are printed by the builder, the
+    # one place that knows the package's path and which server it goes on.
+    # A copy here drifted: it skipped diagnose, built into /tmp and named the
+    # model server, which the answerer can read, for a package holding the key.
     lines += ["", "DEEP DIVE",
               "  A run directory is JSONL, which is a record, not a report.",
-              "  build_run_package.py turns it into a servable Malloy package:",
-              "  a model over the run's CSVs, eval_run.malloynb for the",
-              "  aggregate tables, and an in-package HTML app for the case",
-              "  matrix and its per-case drawer. Register it and open it:",
+              "  Diagnose the failures, then build the report: a Malloy",
+              "  package with notebooks/eval_run.malloy for the aggregate",
+              "  tables and an HTML app for the case matrix. The builder",
+              "  refuses a run with no diagnosis, then registers the report",
+              "  on the truth server and prints both of its URLs:",
               "",
-              f"    python3 skills/eval-loop/scripts/build_run_package.py \\",
-              f"      --run {out} --set {set_dir} --out {pkg_dir}",
+              f"    python3 skills/eval-loop/scripts/eval.py diagnose "
+              f"--set {set_dir} --run {out}",
+              f"    python3 skills/eval-loop/scripts/eval.py package "
+              f"--set {set_dir} --run {out}",
               "",
-              f"    curl -sS -X POST {publisher}/api/v0/environments/"
-              f"{environment}/packages \\",
-              "      -H 'content-type: application/json' \\",
-              f"      -d '{{\"name\":\"{pkg_name}\","
-              f"\"location\":\"{pkg_dir}\"}}'",
-              "",
-              f"    {publisher}/environments/{environment}/packages/"
-              f"{pkg_name}/",
-              "",
-              "  The POST needs no restart, and lands the package in the",
-              f"  environment this run used ({environment}); move it to another",
-              "  if you would rather the package listing stay untouched.",
               f"  Raw events: {out}/events.jsonl ({events_n} events)",
               "=" * 64]
     return lines
+
+
+def expected_entity_lint(cases: list[dict[str, Any]],
+                         declared: dict[str, set[str]] | None,
+                         model_src: str) -> tuple[list[str] | None, list[str]]:
+    """The expectedEntities ids the served model does not have, and what to print.
+
+    Checked against the COMPILED model when it can be read
+    (`check_findable.declared_findings`). A source exposes every column of its
+    table without declaring it, and a joined field is named by its path, so a
+    search of the model text misses both: on the storefront tour it reported
+    `retail_price`, `signup_date` and `customers.customer_id`, which all exist.
+    The text search is kept only for when the compiled model cannot be read,
+    and says it may be wrong. None when there is nothing to lint against.
+    """
+    if declared:
+        findings = check_findable.declared_findings(cases, declared)
+        stale = sorted({f.split(": ", 1)[0] for f in findings})
+        if not findings:
+            return stale, []
+        return stale, ([f"  ! {len(stale)} expected entit"
+                        f"{'y' if len(stale) == 1 else 'ies'} the served model "
+                        f"does not declare -- a stale set, not a retrieval "
+                        f"miss; fix expectedEntities:"]
+                       + [f"      {f}" for f in findings[:8]]
+                       + (["      ..."] if len(findings) > 8 else []))
+    if not model_src:
+        return None, []
+    names = {e.split(":")[-1] for c in cases
+             for e in ((c.get("expectedEntities") or {}).get("required") or [])
+             + [x for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf") or []
+                for x in grp]}
+    stale = sorted(n for n in names
+                   if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
+                                          + r"(?![A-Za-z0-9_])", model_src))
+    if not stale:
+        return stale, []
+    return stale, [f"  ! {len(stale)} expected entity name(s) appear nowhere in "
+                   f"the model text: {', '.join(stale[:8])}"
+                   f"{' ...' if len(stale) > 8 else ''}. The compiled model "
+                   f"could not be read, so a column the model exposes without "
+                   f"declaring it is listed too; check each before editing "
+                   f"expectedEntities"]
 
 
 def golden_check_note(golden_check: str, stale: list[str],
@@ -2785,10 +2822,52 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_config(a: argparse.Namespace) -> config.Config:
+    """Fill every unset server, name and path from the set's eval.toml.
+
+    A platform run is the exception for the environment and package: there
+    they name a hosted organization and workspace, which a local config file
+    does not describe, so they are never taken from it.
+    """
+    cfg = config.load(a.set_dir)
+    if a.target == "platform":
+        if not (a.environment and a.package):
+            raise SystemExit(
+                "--target platform needs --environment (the hosted "
+                "organization) and --package (the workspace). They are never "
+                "read from eval.toml, which describes a local server.")
+        a.mcp_url = a.mcp_url or LOCAL_MCP_URL   # refused below, by name
+    else:
+        a.environment = cfg.need(a.environment, "model", "environment",
+                                 "--environment")
+        a.package = cfg.need(a.package, "model", "package", "--package")
+        a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+        a.model_repo = a.model_repo or cfg.get("model", "repo")
+    a.publisher = a.publisher or cfg.model_publisher()
+    a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
+    a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    if a.out is None:
+        runs = cfg.workdir() / "runs"
+        a.label = a.label or next_run_label(runs / "_", cfg.set_name, a.phase)
+        a.out = runs / a.label
+        print(f"run directory: {a.out}")
+    outer = config.enclosing_package(a.out)
+    if outer:
+        raise SystemExit(
+            f"Invalid --out {a.out}: it is inside the Malloy package {outer}. "
+            f"The run writes a model.malloy snapshot there, which puts that "
+            f"package into loadErrors. Fix: pass an --out outside any package, "
+            f"or omit it for {cfg.workdir() / 'runs'}")
+    return cfg
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="the run directory. Default: <workdir>/runs/<label>, "
+                         "outside the repository (config.py says why)")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--judge-model", default="sonnet")
     ap.add_argument("--label", default=None)
@@ -2825,13 +2904,15 @@ def main(argv: list[str] | None = None) -> int:
                          "call answers from whatever the workspace serves at "
                          "the time, whatever run.json says it measured; "
                          "--target-version fills it in when @version is absent")
-    ap.add_argument("--environment", default="samples",
-                    help="local: the Publisher environment. "
-                         "platform: the hosted ORGANIZATION")
-    ap.add_argument("--package", default="ecommerce",
-                    help="local: the served package. "
-                         "platform: the hosted WORKSPACE")
-    ap.add_argument("--mcp-url", default=LOCAL_MCP_URL,
+    ap.add_argument("--environment", default=None,
+                    help="local: the Publisher environment, default [model] "
+                         "environment in eval.toml. "
+                         "platform: the hosted ORGANIZATION, always passed")
+    ap.add_argument("--package", default=None,
+                    help="local: the served package, default [model] package "
+                         "in eval.toml, else set.json targetPackage. "
+                         "platform: the hosted WORKSPACE, always passed")
+    ap.add_argument("--mcp-url", default=None,
                     help="where the answerer's MCP tools live, which is what "
                          "separates the three ways to run: a LOCAL Publisher "
                          f"({LOCAL_MCP_URL}); the hosted engine through an "
@@ -2839,10 +2920,13 @@ def main(argv: list[str] | None = None) -> int:
                          "the extension prints, no OAuth because it holds the "
                          "credential); or the hosted engine directly (its "
                          "https endpoint, needing a cached OAuth login). The "
-                         "last two are both --target platform")
-    ap.add_argument("--publisher", default="http://localhost:4811",
+                         "last two are both --target platform. Default: "
+                         "from [model] mcp_port in eval.toml, else "
+                         f"{LOCAL_MCP_URL}")
+    ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
-                         "final query so the judge sees rows rather than prose")
+                         "final query so the judge sees rows rather than prose. "
+                         "Default: from [model] port in eval.toml")
     ap.add_argument("--model-path", default=None,
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
@@ -2886,12 +2970,14 @@ def main(argv: list[str] | None = None) -> int:
                          "differs from --environment. A truth package is "
                          "usually served on its own server, which the answerer "
                          "has no route to, and that server names its "
-                         "environments independently")
+                         "environments independently. Default: [truth] "
+                         "environment in the set's eval.toml")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
-                         "pre-run golden check. Defaults to --publisher on a "
-                         "local target; on a platform target the check is "
-                         "skipped unless this is given")
+                         "pre-run golden check. Default: the [truth] server in "
+                         "the set's eval.toml; with no [truth] section, "
+                         "--publisher on a local target, and on a platform "
+                         "target the check is skipped unless this is given")
     ap.add_argument("--skip-golden-check", action="store_true",
                     help="start even if goldens do not re-derive. The run is "
                          "then measuring against numbers nobody can reproduce, "
@@ -2940,6 +3026,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="reuse the saved answers but score them again, for a "
                          "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
+    cfg = resolve_config(a)
     imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
@@ -3244,27 +3331,20 @@ def main(argv: list[str] | None = None) -> int:
                    "the served model could not be located")
             print(f"  ! not re-executing predictions: {why}")
 
-    # Lint the set's expected entities against the model text when there is
-    # one: a name that appears nowhere in the served source is a stale set,
-    # not a retrieval miss, and both VideoAmp platform runs carried five of
-    # them (the set was written against a later package) which read as misses
-    # until someone checked by hand. No model text on a platform target, so
-    # the lint is skipped there and the report has to say so.
-    stale: list[str] = []
-    if model_src:
-        names = {e.split(":")[-1] for c in cases
-                 for g in (c.get("expectedEntities") or {}).get("required", [])
-                 for e in [g]} | {e.split(":")[-1] for c in cases
-                                  for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf", [])
-                                  for e in grp}
-        stale = sorted(n for n in names
-                       if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
-                                              + r"(?![A-Za-z0-9_])", model_src))
-        if stale:
-            print(f"  ! {len(stale)} expected entity name(s) appear nowhere in the "
-                  f"served model: {', '.join(stale[:8])}{' ...' if len(stale) > 8 else ''}"
-                  f" -- a stale set, not a retrieval miss; fix expectedEntities")
-    elif a.target == "platform":
+    # Lint the set's expected entities before a dollar is spent: an id the
+    # model does not declare is a stale set, not a retrieval miss, and both
+    # VideoAmp platform runs carried five of them (the set was written against
+    # a later package) which read as misses until someone checked by hand.
+    declared = None
+    if a.target != "platform" and a.publisher:
+        declared, warning = check_findable.current_entities(
+            a.publisher, a.environment, a.package)
+        if warning:
+            print(f"  ! expected entities: {warning}")
+    stale, lint = expected_entity_lint(cases, declared, model_src)
+    for line in lint:
+        print(line)
+    if stale is None and a.target == "platform":
         print("  ! expected entities not linted against the model (platform target "
               "serves no model text)")
 
@@ -3296,7 +3376,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"is what this run is for: their answers are what keys get "
                   f"derived from.")
 
-    golden_check = golden_check_note(golden_check, stale, bool(model_src))
+    golden_check = golden_check_note(golden_check, stale or [],
+                                     stale is not None)
 
     retrieval_gate = run_retrieval_gate(a)
 
@@ -3385,6 +3466,7 @@ def main(argv: list[str] | None = None) -> int:
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],
         mcpUrl=a.mcp_url, publisher=a.publisher,
+        evalConfig=cfg.summary(),
         predictionsReExecuted=reexec,
         goldenCheck=golden_check,
         # The names themselves, not only a count: each one depresses recall on
@@ -3392,7 +3474,7 @@ def main(argv: list[str] | None = None) -> int:
         # way to tell a stale set from a model that really is missing them.
         # `null` when there was no model text to lint against, which is a
         # different fact from an empty list.
-        staleEntityNames=(stale if model_src else None),
+        staleEntityNames=stale,
     ), indent=2))
 
     if a.rebuild:
@@ -3682,7 +3764,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
-            publisher=a.publisher, environment=a.environment):
+):
         print(line)
 
     # Recorded, not only printed. The next command is usually diagnose, and a

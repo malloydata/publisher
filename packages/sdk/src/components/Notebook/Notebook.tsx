@@ -19,6 +19,7 @@ import { givensToParams, givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
 
@@ -303,8 +304,8 @@ export default function Notebook({
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
-               // Markdown cells don't need execution
-               if (rawCell.type === "markdown") continue;
+               // Prose and definitions have nothing to run.
+               if (!cellRuns(rawCell)) continue;
 
                // Capture cell index for closure
                const cellIndex = i;
@@ -507,6 +508,14 @@ export default function Notebook({
       executeCells,
    ]);
 
+   const shownCells =
+      enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
+   // A served notebook can open with definition cells; a .malloynb keeps the icon on its first cell.
+   const copyLinkIndex =
+      notebook?.format === "malloy"
+         ? shownCells.findIndex((cell) => cell.type === "markdown")
+         : 0;
+
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
@@ -521,14 +530,11 @@ export default function Notebook({
 
                {/* Notebook Cells */}
                {isSuccess &&
-                  (enhancedCells.length > 0
-                     ? enhancedCells
-                     : notebook?.notebookCells || []
-                  ).map((cell, index) => (
+                  shownCells.map((cell, index) => (
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
                         key={index}
-                        index={index}
+                        showCopyLink={index === copyLinkIndex}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}

@@ -69,6 +69,12 @@ describe("classifySpaFallback", () => {
          });
       });
 
+      it("keeps a served notebook whose slug ends in an asset extension", () => {
+         expect(classify("/examples/storefront/notebooks/report.csv")).toEqual({
+            kind: "spa",
+         });
+      });
+
       it("no longer claims the retired `pages` segment", () => {
          // The pre-0.0.242 alias for `data-apps`. With the redirect gone from
          // the app, a `pages/<file>` path is a plain static path again, so a

@@ -31,7 +31,155 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
+## [Unreleased] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
+
+0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount at boot, whose `loadErrors` entry now carries the errno instead of only `Failed to mount local directory`. An unreadable package directory, which answered 404 `Package manifest … does not exist.`, now names the errno too.
+
+**A local `.zip` package location is extracted into `publisher_data/`, never beside the archive.** It used to be extracted into a directory next to the zip, named after it, after removing any directory already at that path. So a location like `/data/pkgs/sales.zip` deleted an operator's own `/data/pkgs/sales/` if one was there. It also made a package mount a write mount, which is how uid 1000 met it. A package mount, or a directory of zips, now only needs to be readable, including when bound read-only, and nothing beside the zip is created or removed. A `.zip` declared in `publisher.config.json` loads too, on a boot that mounts the environment from the config; a server restoring an environment it already holds keeps what it had until that package is reloaded. Before, it never did, whatever the uid: the boot path copied the archive file onto the package directory (`EISDIR` on the Bun runtime).
+
+`GET /api/v0/status` reports two failures it did not:
+
+- A package add through `POST /environments/{env}/packages` that fails on the server's side (any 5xx) is listed under `loadErrors`, like a configured package that did not load, with the same message the add was answered with. It clears when that package is later added successfully, or deleted. A rejection of the package's own content (4xx) is answered with its reason and is not listed.
+- A new `initError` field says why initialization failed, for example a config file the server cannot read, or a read-only server root it cannot create `publisher.db` in. Such a server stays up at `operationalState: "initializing"`, which used to be indistinguishable from one still starting; the reason was only on stderr. The field is absent when initialization succeeded. MCP `get_status` carries it too. It is an optional, additive field on `ServerStatus`: a client generated from an older copy of the spec ignores it, and one regenerated from this release's `api-doc.yaml` gains it.
+
+`GOOGLE_APPLICATION_CREDENTIALS` naming a directory, which is what a bind mount of a host path that does not exist produces, is now reported as a directory on a `gs://` package add and on a BigQuery connection test, rather than as a key file that "does not exist".
+
+On Kubernetes, a volume is not seeded from the image the way a new Docker named volume is, so a volume on `/publisher/publisher_data` starts root-owned; set `fsGroup: 1000` in the pod's `securityContext`. See `packages/server/README.docker.md`.
+
+## [0.9.0] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
+
+`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. Removing Python also drops `netbase` and `media-types`, which only Python pulled in, so `/etc/services`, `/etc/protocols` and `/etc/mime.types` are no longer in the image and `getent services https` fails; the server reads none of them.
+
+A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20). That wrapper runs `node file.js` and `node -e`, but it rejects `node --version` and `node -v` ("does not support a repl"), so a healthcheck or script that calls those needs to change. `python3` is no longer present either. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it; `/usr/bin/env node` still finds the fallback.
+
+Image builds also pick up Debian security updates the day they are published, instead of waiting for the ISO week to roll over.
+
+## [0.9.0] — Malloy 0.0.434: two security fixes, and changes that can break a model
+
+Publisher now builds on `@malloydata/*` 0.0.434, up from 0.0.432. Two of the changes are security fixes:
+
+- **An unsafe `timezone:` name is now a compile error** ([malloydata/malloy#3089](https://github.com/malloydata/malloy/pull/3089)). On 0.0.432 any ad-hoc query could put raw SQL in `timezone:`, and it ran past givens and `#(authorize)`. It now fails with `Invalid timezone`.
+- **The tag parser no longer writes onto `Object.prototype`** ([malloydata/malloy#3078](https://github.com/malloydata/malloy/pull/3078)). A model annotation such as `# __proto__ { a=b }` or `##! __proto__ { a=b }` used to write onto shared objects in the server process, after which every later tag parse failed, for every package on that worker. Publisher had a guard on the `#` annotations it reads itself. The parser fix makes it unnecessary, so it is removed. One effect: while anything had added an accessor to `Object.prototype`, the guard refused every given's filter control. That no longer happens.
+
+These can stop an existing model compiling, or change what a query returns:
+
+- **`select: *` leaves out private fields** ([malloydata/malloy#3051](https://github.com/malloydata/malloy/pull/3051)). A query that does `-> { select: * }` and then names a private field in a later stage stops compiling with `'<field>' is not defined`. A data-app page that read that column from the result now gets `undefined`, with no error.
+- **MySQL `TINYINT(1)` and `BOOLEAN` columns are integers, not booleans** ([malloydata/malloy#3058](https://github.com/malloydata/malloy/pull/3058)). A MySQL model with `where: is_active` stops compiling on reload; write `where: is_active = 1`. DECIMAL values are also cast differently.
+- **Generated SQL changes** for filtered joins, including how BigQuery packs them ([malloydata/malloy#3075](https://github.com/malloydata/malloy/pull/3075)), and for the ordering of multi-stage nests ([malloydata/malloy#3083](https://github.com/malloydata/malloy/pull/3083)). Results should not change; SQL you compare or cache will.
+- **The Trino driver moves to `@trinodb/trino-js-client`** ([malloydata/malloy#3066](https://github.com/malloydata/malloy/pull/3066)).
+
+## [0.9.0] — The Docker image runs the server as a non-root user
+
+`ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.
+
+**If you persist `/publisher/publisher_data` in a named volume that an earlier image wrote to, chown it before you upgrade.** That volume holds root-owned files the new server cannot write to. The server still reports `serving`, but each environment it cannot write is missing, and `GET /api/v0/status` lists it under `loadErrors` with `EACCES: permission denied`. The fix:
+
+```bash
+# docker run: name the volume you mount
+docker run --rm --user 0 --entrypoint chown \
+  -v publisher_data:/publisher/publisher_data \
+  ms2data/malloy-publisher -R 1000:1000 /publisher/publisher_data
+
+# Compose: run it through the service, from the directory holding docker-compose.yml
+docker compose run --rm --no-deps --user 0 --entrypoint chown \
+  publisher -R 1000:1000 /publisher/publisher_data
+```
+
+Use the Compose form under Compose. Compose names the volume `<project>_publisher_data`, so the `docker run` form would chown a new, empty `publisher_data` volume, exit 0, and leave the real one root-owned.
+
+A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it from the image, ownership included. It is the only writable mount point the image prepares. A new named volume anywhere else, such as a local DuckLake `bucketUrl`, starts root-owned and must be chowned to uid 1000 first; DuckDB reports that case as `No such file or directory`, not `EACCES`. A bind mount the server writes to must be writable by uid 1000. A read-only mount, such as the config file, only has to be readable. Until you can change the ownership, `--user 0` runs the server as root, as before. [`packages/server/README.docker.md`](packages/server/README.docker.md#the-server-runs-as-a-non-root-user) has the details.
+
+## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
+
+`@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
+
+Each request now sends its own `Accept` header (`application/json` for every operation the SDK calls) in place of axios's default `application/json, text/plain, */*`. Publisher does not negotiate on `Accept`, so responses are unchanged.
+
+## [0.8.5] — Model listings mark a hidden file with `isHidden`, not `onSurface`
+
+0.8.4 added `onSurface` to each entry of `GET …/models`. It is renamed to `isHidden`, with the
+meaning flipped to match `includeHiddenFilesAndSources`: `true` for a file the listing includes
+only because the request set that option. Every other entry is `false`, and a server that sends no
+field at all reads the same way. A client reading `onSurface` should read `isHidden` instead.
+
+## [0.8.4] — Publisher serves `.malloy` notebooks
+
+A `.malloy` file directly under a package's top-level `notebooks/` whose model-level notes include
+`## artifact { kind=notebook … }` is now a served notebook. Its cells are read from the file in order:
+floating `(markdown)` notes, one query cell per `run:` with its tag block, and one definition
+cell per other statement. List-notebooks includes served notebooks beside `.malloynb` files. Get-notebook returns
+one with a `format` (`malloynb` or `malloy`) and, per cell, a `kind` (`markdown`, `query` or
+`definition`). A code cell also carries a `markdown` field when `(markdown)` prose is attached to its
+statement, a `proseLines` field naming the lines of its `text` that hold that prose (0-based,
+inclusive `[start, end]` pairs, `[]` when none), a `codeLine` field with the line where its
+statement's code starts, and a `caption` field with its leading `#"` text when it has one. The Console opens one at `notebooks/<slug>`. A served notebook keeps
+`modelType: model`, so the model GET, `/compile`, MCP `execute_query` and the declared-givens fetch
+treat it as any model.
+
+Behavior changes to know about:
+
+- **list-models excludes served notebooks**, with or without a surface, so they are absent from MCP
+  `get_context` as well. Use list-notebooks.
+- **Notebook prose is an annotation on the `(markdown)` route, and the number of `#` says what it
+  belongs to.** `##|(markdown)` … `|##` (the body starts on the next line) or `##(markdown) text` is
+  a cell of its own, and adjacent lines merge. `#(markdown) text` or `#|(markdown)` … `|#` belongs
+  to the statement below it (`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that
+  cell, as a header above a `run:`'s result and above its `#"` caption. It cannot sit above an
+  `import` or `export`, which take no annotations; use `##|(markdown)` there. Earlier
+  spellings are still read: `##"`, `##|"`, `##(text)` and `##|(text)` notes below a notebook's tag
+  are markdown cells too, with no lint finding (a name on a block draws a warning).
+- **A notebook's description is the unnamed `"` notes above `## artifact`.** A dashboard's is the
+  same, and when it has none above it still reads the ones below the tag, with a lint warning to
+  move them above. The in-repo dashboards already put theirs above. On a dashboard, `##|(text) name`
+  is still a text tile, with no lint finding.
+- **`notebooks` is a segment the Console owns.** `/<env>/<pkg>/notebooks/<file.ext>` no longer reaches
+  a package's `public/notebooks/`.
+- **The published-names filter now applies to `modelInfo.anonymous_queries` on the model GET for every
+  curated model**, and to a `.malloynb` GET's `anonymous_queries` under a surface: only runs over
+  published sources are returned.
+- **`/compile` reports new lint problems on files under `notebooks/` and `dashboards/`**, each naming
+  its line and the fix, and they appear in package warnings. A served notebook whose cells cannot be
+  read is an `error`.
+- **New metrics**: `publisher_notebook_discovery_total{format,outcome}`,
+  `publisher_notebook_cell_executions_total{format,kind,outcome}` and
+  `publisher_notebook_cell_execution_duration_ms{format,outcome}`.
+
+## [0.8.4] — `dashboard_columns` is read again, as a deprecated alias
+
+The 0.2.1 note that said `dashboard_columns` is gone is superseded.
+`dashboard { columns=N }` beside the artifact tag stays the canonical grid width, and
+`dashboard_columns=N` inside the artifact tag is a deprecated alias that Publisher reads when
+`columns` is absent. It draws a warning, and when the two disagree it is an error naming both values
+and `columns` is what is served. A package that spelled the alias and got the default width now gets
+the width it wrote.
+
+`kind=dashboard` on a `dashboards/` file's artifact tag and `kind=query` on a tile entry are accepted
+as the explicit defaults. A text tile is a named `##|(markdown) name` block listed in `tiles` with
+`kind=text`; the format is decided, but text tiles are not rendered yet. Eight finding codes fail
+`/compile` regardless: `notebook-statement-above-artifact`, `notebook-tag-above-artifact` and
+`notebook-markdown-above-artifact` (a statement, a tag or a `(markdown)` note above a served
+notebook's `## artifact`), `notebook-columns-conflict` (a tiled dashboard's `dashboard_columns`
+disagrees with `dashboard { columns }`), `notebook-markdown-opener-text` (more than a name after
+`(markdown)` on a block's opener), `notebook-markdown-attached-nowhere` (a `#(markdown)` note with no
+statement to take it), `notebook-artifact-unparsed` (an `## artifact` tag that does not parse), and
+`notebook-cells-unreadable` (a served notebook's cells could not be read).
+Package-scope `/compile` fails when any file in the package has one.
+
+## [0.8.5] — an MCP tool call with invalid arguments returns a tool error, and zipped packages may not contain symlinks
+
+The MCP SDK moves from 1.18 to 1.31 to clear three advisories, and with it one wire behavior
+changes. A tool call whose arguments fail the tool's input schema, such as `execute_query` without
+`modelPath`, used to be rejected with a JSON-RPC `InvalidParams` error. It now resolves as a tool
+result with `isError: true` and the text `MCP error -32602: Input validation error: …`, the same
+shape Publisher already used for errors raised inside a tool, so an agent reads the message and
+retries with corrected arguments. A client that branched on the JSON-RPC error code for bad
+arguments should check `isError` instead.
+
+A `.zip` environment or package that contains a symbolic link entry is now refused, and nothing from
+it is left on disk. The bundled extractor does not validate where a link points, so an archive could
+otherwise write outside its destination directory.
+
+## [0.8.3] — a partitioned storage build no longer runs out of memory on a wide, many-partition source
 
 A `#@ persist partition=` build of a wide source with many partition values failed against the
 build session's `memory_limit` — `Out of Memory Error: failed to pin block of size 256.0 KiB` —
@@ -57,7 +205,7 @@ with the bound completes in 9.5 s; from BigQuery, interleaved fails at 54 s and 
 completes in 36 s. An unpartitioned build, and a chained build, are byte-identical to what they
 were.
 
-## [Unreleased] — /status names the server version, and says why it is empty
+## [0.8.3] — /status names the server version, and says why it is empty
 
 `GET /api/v0/status` and the `get_status` MCP tool now report `version`, the server's release, and
 the MCP handshake reports the same value instead of `0.0.1`. A stale copy from the `npx` cache is
@@ -68,7 +216,7 @@ deployments start empty and create environments over the API. It now also report
 naming the path it checked. It is set for a mistyped `--config` path too. The field is absent once
 any environment exists, and absent when a config was found but lists none.
 
-## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+## [0.8.3] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
 
 **Reloading a package no longer costs you a lexically-ranked answer.** A reload
 never dropped a package's vectors — they are keyed by package name in
@@ -129,7 +277,7 @@ Unrelated to the above, and unchanged: `--init` still drops the vector cache
 along with the rest of persisted storage. It resets the server root, and it
 remains the reclaim path for rows orphaned by a configuration change.
 
-## [Unreleased] — a given the query reads is no longer silently replaced by its default
+## [0.8.3] — a given the query reads is no longer silently replaced by its default
 
 Publisher withholds a given the entry model doesn't surface when a gate is the only thing reading
 it, so the gate can still evaluate. It also withheld it when the query itself read a given of the
@@ -140,7 +288,7 @@ same name, such as a `where:` on a source from another file that declares its ow
 request that used to return rows at the default now fails with a 400. To fix the model, import the
 given at the entry model.
 
-## [Unreleased] — a gate on a joined field checks what the join reads
+## [0.8.3] — a gate on a joined field checks what the join reads
 
 The filter-binding check introduced in 0.8.1 now also compares, for a gate on a joined field such
 as `#(access_filter) child.org_id in $GROUPS`, what decides which joined row each row reaches. That

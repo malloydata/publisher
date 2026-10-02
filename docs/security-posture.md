@@ -42,13 +42,26 @@ Concretely:
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
-  close registration on a deployment where that matters.
+  close registration on a deployment where that matters. A `.zip` environment or package that
+  contains a symlink entry is refused, and nothing from it is left on disk, because the
+  extractor would otherwise follow the link out of the destination directory.
 - **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
   dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
   kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
   registration; it has no authentication of its own, so on a reachable server it sits behind the
   same gateway or is closed by the same setting. An attacker who can reach it can already register
   a package, so it opens no door that was shut.
+- **Error bodies name the server's own paths, deliberately.** A filesystem access the server
+  cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
+  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
+  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  the message is composed from the errno's fields, never copied from a driver or an SDK. Every
+  other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
+  or a connection string, and a recorded load failure never says more than the response did.
+  A caller who can reach the port can already register a package at any readable path, so
+  naming the path of a refused one widens nothing; it does mean an unauthenticated reader of
+  `/status` learns the layout of the server's data directory, which the gateway in front is
+  expected to keep from the public.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
@@ -125,8 +138,8 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again through `realpath`, and a symlink escaping the directory returns 403.
 
-**Notebooks and dashboards carry no author-written JavaScript file.** A `.malloynb` is markdown
-and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
+**Notebooks and dashboards carry no author-written JavaScript file.** A notebook (`notebooks/*.malloy`, or a
+legacy `.malloynb`) is markdown and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.

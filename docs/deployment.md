@@ -119,6 +119,11 @@ text as `emptyReason` for as long as no environment exists.
 
 If you expected packages and see `environments=0`, the config did not reach `/publisher`.
 
+The server runs as uid 1000, not root, so a volume or bind mount it writes to must be writable by
+that uid. A new named volume is. One that an earlier image, which ran as root, wrote to needs a
+one-time chown; [`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
+has the command.
+
 ### Build from source
 
 ```bash

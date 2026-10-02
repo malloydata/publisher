@@ -5,8 +5,12 @@ import type {
    GivenValue,
    LogMessage,
    Model as MalloyModel,
+   ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
+import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
+import { isDashboardModelPath } from "./dashboard";
+import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -248,6 +252,19 @@ export type CompileScope = (typeof COMPILE_SCOPES)[number];
  *  problems from every file share one array. */
 export type TaggedLogMessage = LogMessage & { model?: string };
 
+/** The package-relative model path of a file inside the package, `/`-separated on every platform; undefined outside it. */
+export function packageRelativeModelPath(
+   packagePath: string,
+   filePath: string,
+   pathModule: Pick<typeof path, "relative" | "isAbsolute" | "sep"> = path,
+): string | undefined {
+   const rel = pathModule.relative(packagePath, filePath);
+   if (rel === "" || rel.startsWith("..") || pathModule.isAbsolute(rel)) {
+      return undefined;
+   }
+   return rel.split(pathModule.sep).join("/");
+}
+
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
    gate: () => Promise<void>,
@@ -267,6 +284,9 @@ async function denyHiddenAsNotQueryable(
       throw error;
    }
 }
+
+/** Cap on runtime add failures kept per environment for /status. */
+const MAX_RECORDED_ADD_FAILURES = 100;
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
@@ -298,6 +318,8 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /** Runtime add failures recorded in {@link mountErrors}, oldest first. */
+   private recordedAddFailures: string[] = [];
    /**
     * Why a SERVING package's most recent reload failed to compile, keyed by
     * package name.
@@ -424,7 +446,7 @@ export class Environment {
          );
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
-         throw new Error(`Failed to update environment README`);
+         throw new Error(`Failed to update environment README`, { cause: err });
       }
    }
 
@@ -811,10 +833,10 @@ export class Environment {
                let model: string | undefined;
                if (url && url.startsWith("file:")) {
                   try {
-                     const rel = path.relative(packagePath, fileURLToPath(url));
-                     if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-                        model = rel;
-                     }
+                     model = packageRelativeModelPath(
+                        packagePath,
+                        fileURLToPath(url),
+                     );
                   } catch {
                      // Not a resolvable file URL — leave the tag off.
                   }
@@ -954,6 +976,18 @@ export class Environment {
                      compiled.modelPath,
                   );
                }
+               const readerProblem =
+                  compiled.modelDef && compiled.modelSourceText !== undefined
+                     ? notebookReaderProblem(
+                          compiled.modelPath,
+                          compiled.modelSourceText,
+                          compiled.modelDef as ModelDef,
+                          pathToFileURL(
+                             path.join(packagePath, compiled.modelPath),
+                          ).toString(),
+                       )
+                     : undefined;
+               if (readerProblem) collect([readerProblem], compiled.modelPath);
                if (compiled.compilationError) {
                   const compilerProblems =
                      compiled.compilationError.malloyProblems;
@@ -973,6 +1007,33 @@ export class Environment {
                         compiled.modelPath,
                      );
                   }
+               }
+               // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               const lintText = !(
+                  isNotebookModelPath(compiled.modelPath) ||
+                  isDashboardModelPath(compiled.modelPath)
+               )
+                  ? undefined
+                  : (compiled.modelSourceText ??
+                    (compiled.modelPath === modelName && source !== undefined
+                       ? source
+                       : await fs.promises
+                            .readFile(
+                               path.join(packagePath, compiled.modelPath),
+                               "utf8",
+                            )
+                            .catch(() => undefined)));
+               if (lintText !== undefined) {
+                  collect(
+                     notebookLintProblems(
+                        compiled.modelPath,
+                        lintText,
+                        pathToFileURL(
+                           path.join(packagePath, compiled.modelPath),
+                        ).toString(),
+                     ),
+                     compiled.modelPath,
+                  );
                }
             }
             if (
@@ -1229,11 +1290,40 @@ export class Environment {
             }
 
             // If successful, return any non-fatal warnings
-            return { problems: tagProblems(model.problems), sql };
+            const readerProblem = notebookReaderProblem(
+               modelName,
+               fullSource,
+               model._modelDef,
+               virtualUri,
+            );
+            // Its positions are in the concatenated file at "append", so the lint is for a whole file only.
+            const lintProblems =
+               scope === "append"
+                  ? []
+                  : notebookLintProblems(modelName, fullSource, virtualUri);
+            return {
+               problems: tagProblems([
+                  ...model.problems,
+                  ...(readerProblem ? [readerProblem] : []),
+                  ...lintProblems,
+               ]),
+               sql,
+            };
          } catch (error) {
             // If parsing/compilation fails, return the errors
             if (error instanceof MalloyError) {
-               return { problems: tagProblems(error.problems) };
+               return {
+                  problems: tagProblems([
+                     ...error.problems,
+                     ...(scope === "append"
+                        ? []
+                        : notebookLintProblems(
+                             modelName,
+                             fullSource,
+                             virtualUri,
+                          )),
+                  ]),
+               };
             }
             // If it's a system error (e.g. file not found), throw it up
             throw error;
@@ -2850,7 +2940,7 @@ export class Environment {
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`);
+         throw new Error(`Failed to update package manifest`, { cause: error });
       }
    }
 
@@ -3046,14 +3136,43 @@ export class Environment {
       this.mountErrors.set(packageName, message);
    }
 
+   /**
+    * Record a runtime add that failed before the package could serve, so
+    * /status reports it the way it reports a configured package whose location
+    * never mounted. Skipped while the name has any status: a failed re-install
+    * rolls back to the previous tree, which is not a failed package. Cleared
+    * like every other load failure, by a later successful add or install of
+    * the name, or by deleting it.
+    *
+    * Names are the caller's, so the record is bounded: past
+    * MAX_RECORDED_ADD_FAILURES the oldest recorded add failure is dropped.
+    * Boot-time mount errors are not subject to the cap.
+    */
+   public recordPackageAddFailure(packageName: string, message: string): void {
+      if (this.packageStatuses.has(packageName)) return;
+      if (!this.mountErrors.has(packageName)) {
+         this.recordedAddFailures.push(packageName);
+         while (this.recordedAddFailures.length > MAX_RECORDED_ADD_FAILURES) {
+            const evicted = this.recordedAddFailures.shift();
+            if (evicted !== undefined) this.mountErrors.delete(evicted);
+         }
+      }
+      this.mountErrors.set(packageName, message);
+   }
+
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      const recorded = this.recordedAddFailures.indexOf(packageName);
+      if (recorded !== -1) this.recordedAddFailures.splice(recorded, 1);
       this.staleCompileErrors.delete(packageName);
    }
 
-   /** Packages configured for this environment that did not load, and why. */
+   /**
+    * Packages configured for, or added to, this environment that did not load,
+    * and why.
+    */
    public getFailedPackages(): ReadonlyMap<string, string> {
       if (this.mountErrors.size === 0) return this.failedPackages;
       // Mount errors last, so the specific cause overwrites the generic

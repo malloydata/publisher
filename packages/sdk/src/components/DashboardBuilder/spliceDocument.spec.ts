@@ -13,6 +13,7 @@ import {
 } from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 import { whatMoved } from "./__test__/inventory";
+import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -1010,6 +1011,24 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(flowed).not.toContain("dashboard {");
    });
 
+   it("replaces the dashboard_columns alias when a width is set, and the result lints clean", async () => {
+      const aliased = SOURCE.replace(
+         '"a -> by_brand"] } dashboard { columns=12 }',
+         '"a -> by_brand"] dashboard_columns=8 }',
+      );
+      expect(aliased).toContain("dashboard_columns=8");
+      const out = await spliced(aliased, (d) => {
+         d.columns = 12;
+      });
+      expect(out).not.toContain("dashboard_columns");
+      expect(out).toContain("dashboard { columns=12 }");
+      const removed = await spliced(aliased, (d) => {
+         delete d.columns;
+      });
+      expect(removed).not.toContain("dashboard_columns");
+      expect(removed).not.toContain("dashboard {");
+   });
+
    it("adds and removes autorun and starting values inside the tag", async () => {
       const out = await spliced(SOURCE, (d) => {
          d.autorun = false;
@@ -1049,6 +1068,177 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       expect(
          out.startsWith('##" Now with prose.\n## artifact { title="T"'),
       ).toBe(true);
+   });
+
+   // The saved file is what the server lints, so it is linted here rather than re-read.
+   const lintCodes = (source: string) =>
+      lintNotebookText("dashboards/d.malloy", source).map((f) => f.code);
+   const TAIL = `import "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
+
+   describe("a width change against the deprecated alias", () => {
+      it("removes the alias whatever spacing surrounds its =", async () => {
+         const source = `## artifact { title="T" tiles=["a -> x"] dashboard_columns = 3 }\n${TAIL}`;
+         const out = await spliced(source, (d) => {
+            d.columns = 6;
+         });
+         expect(out).not.toContain("dashboard_columns");
+         expect(out).toContain("dashboard { columns=6 }");
+         expect(lintCodes(out)).toEqual([]);
+      });
+
+      it("removes the alias, not the same words inside a quoted title", async () => {
+         const source = `## artifact { title="a dashboard_columns=2 b" tiles=["a -> x"] dashboard_columns=3 }\n${TAIL}`;
+         const out = await spliced(source, (d) => {
+            d.columns = 6;
+         });
+         expect(out).toContain('title="a dashboard_columns=2 b"');
+         expect(out.match(/dashboard_columns/g)).toHaveLength(1);
+         expect(lintCodes(out)).toEqual([]);
+      });
+   });
+
+   it("refuses to reorder, add or remove tiles when tiles holds a text tile, and leaves the file alone", async () => {
+      const source = fs.readFileSync(
+         path.join(
+            REPO,
+            "packages/server/tests/fixtures/notebooks-malloyyo/dashboards/text_tiles.malloy",
+         ),
+         "utf8",
+      );
+      // The file has one quoted tile beside the text tile, so removal is the edit that reaches the list.
+      const reason = await refused(source, (d) => {
+         d.tiles.pop();
+      });
+      expect(reason).toContain("text tile");
+      // A settings edit that does not touch the tile list still works.
+      const out = await spliced(source, (d) => {
+         d.title = "Renamed";
+      });
+      expect(out).toContain("intro { kind=text colspan=12 }");
+      expect(out).toContain('title="Renamed"');
+   });
+
+   it("changes the width of a file whose title holds dashboard { }", async () => {
+      const source = `## artifact { title="my dashboard {x}" tiles=["a -> x"] } dashboard { columns=4 }\n${TAIL}`;
+      const out = await spliced(source, (d) => {
+         d.columns = 6;
+      });
+      expect(out).toContain('title="my dashboard {x}"');
+      expect(out).toContain("dashboard { columns=6 }");
+      expect(out.match(/dashboard \{ columns/g)).toHaveLength(1);
+      const removed = await spliced(source, (d) => {
+         delete d.columns;
+      });
+      expect(removed).toContain('title="my dashboard {x}"');
+      expect(removed).not.toContain("columns=");
+   });
+
+   describe("the description's place", () => {
+      const artifact = '## artifact { title="T" tiles=["a -> x"] }';
+
+      it("moves a description read from below the tag above it", async () => {
+         const source = `${artifact}\n##" Legacy\n##" text\n${TAIL}`;
+         expect(lintCodes(source)).toEqual([
+            "notebook-description-below-artifact",
+         ]);
+         const out = await spliced(source, (d) => {
+            d.description = "Edited\ntext";
+         });
+         expect(out.startsWith(`##" Edited\n##" text\n${artifact}\n`)).toBe(
+            true,
+         );
+         expect(out).not.toContain("Legacy");
+         expect(lintCodes(out)).toEqual([]);
+         expect((await openDocument(out)).description).toBe("Edited\ntext");
+      });
+
+      it("clears the prose-less notes above when it moves one from below", async () => {
+         const out = await spliced(
+            `##"\n${artifact}\n##" Legacy\n${TAIL}`,
+            (d) => {
+               d.description = "Edited";
+            },
+         );
+         expect(out.startsWith(`##" Edited\n${artifact}\n`)).toBe(true);
+         expect(lintCodes(out)).toEqual([]);
+      });
+
+      it("removes a description read from below, and only that", async () => {
+         const out = await spliced(`${artifact}\n##" Legacy\n${TAIL}`, (d) => {
+            delete d.description;
+         });
+         expect(out).toBe(`${artifact}\n${TAIL}`);
+      });
+
+      it("edits the description and the title on a file whose prose says artifact", async () => {
+         const source = `##" This artifact shows revenue\n${artifact}\n${TAIL}`;
+         const edited = await spliced(source, (d) => {
+            d.description = "New";
+         });
+         expect(edited).toBe(`##" New\n${artifact}\n${TAIL}`);
+         const retitled = await spliced(source, (d) => {
+            d.title = "Renamed";
+         });
+         expect(retitled).toContain('title="Renamed"');
+         expect(retitled).toContain(`##" This artifact shows revenue\n`);
+      });
+
+      it('refuses to edit a description held in a ##|" block, and touches nothing', async () => {
+         const source = `##|"\nBlock prose\n|##\n${artifact}\n##" Legacy\n${TAIL}`;
+         const reason = await refused(source, (d) => {
+            d.description = "New";
+         });
+         expect(reason).toContain("block");
+         expect(reason).toContain("##|");
+         await refused(source, (d) => {
+            delete d.description;
+         });
+         const out = await spliced(source, (d) => {
+            d.title = "Renamed";
+         });
+         expect(out).toContain('##|"\nBlock prose\n|##\n');
+         expect(out).toContain('##" Legacy\n');
+      });
+
+      it("refuses to edit a fallback description held in a block below the tag", async () => {
+         const source = `${artifact}\n##|"\nBelow block\n|##\n${TAIL}`;
+         const reason = await refused(source, (d) => {
+            d.description = "New";
+         });
+         expect(reason).toContain("block");
+         await refused(source, (d) => {
+            delete d.description;
+         });
+      });
+
+      it("refuses to clear a description above when a block below would take its place", async () => {
+         await refused(
+            `##" Above\n${artifact}\n##|"\nBelow block\n|##\n${TAIL}`,
+            (d) => {
+               delete d.description;
+            },
+         );
+      });
+
+      it("clears the notes below the tag too when it clears one above", async () => {
+         const out = await spliced(
+            `##" Above\n${artifact}\n##" Ignored\n${TAIL}`,
+            (d) => {
+               delete d.description;
+            },
+         );
+         expect(out).toBe(`${artifact}\n${TAIL}`);
+      });
+
+      it("edits the notes above and leaves the ones below, which the server ignores", async () => {
+         const out = await spliced(
+            `##" Above\n${artifact}\n##" Ignored\n${TAIL}`,
+            (d) => {
+               d.description = "New";
+            },
+         );
+         expect(out).toBe(`##" New\n${artifact}\n##" Ignored\n${TAIL}`);
+      });
    });
 
    it("retitles and reorders in one write, on the same line", async () => {
@@ -1342,8 +1532,7 @@ describe("every composite dashboard survives an edit", () => {
    const editable = found.filter((f) => {
       const text = fs.readFileSync(f, "utf8");
       return (
-         /##\s*artifact[\s\S]*tiles\s*=/.test(text) &&
-         !f.includes("dashboards-lint")
+         /##\s*artifact[\s\S]*tiles\s*=/.test(text) && !/-lint[\\/]/.test(f)
       );
    });
 
@@ -2091,5 +2280,210 @@ source: a is scoped_orders extend {
       expect(out).not.toContain(
          "  view: other is { aggregate: m is count() }\n    where:",
       );
+   });
+});
+
+describe("spliceDashboardDocument: the (markdown) route", () => {
+   const TEXT_TILE = `##" Above
+## artifact { title="T" tiles=[intro { kind=text colspan=12 }, "a -> x"] }
+##(markdown) a floating one-liner
+import "../m.malloy"
+
+##|(markdown) intro
+## How to read this page
+|##
+
+source: a is one extend {
+  #|(markdown)
+  # Lead tile
+  |#
+  # colspan=6
+  view: x is vx
+}`;
+
+   it("round-trips a text-tile dashboard, heading line and markdown lines included, byte for byte", async () => {
+      const doc = await openDocument(TEXT_TILE);
+      expect(doc.title).toBe("T");
+      expect(doc.description).toBe("Above");
+      expect(doc.tiles.find((t) => t.name === "x")?.colspan).toBe(6);
+      const result = await spliceDashboardDocument(TEXT_TILE, doc);
+      if (spliceFailed(result)) throw new Error(result.reason);
+      expect(result.source).toBe(TEXT_TILE);
+   });
+
+   it("still refuses a tile-list edit over the text tile", async () => {
+      const reason = await refused(TEXT_TILE, (d) => {
+         d.tiles.pop();
+      });
+      expect(reason).toContain("text tile");
+   });
+
+   it("rewrites a description and a tile's colspan without touching the markdown around them", async () => {
+      const out = await spliced(TEXT_TILE, (d) => {
+         d.description = "New";
+         d.tiles.find((t) => t.name === "x")!.colspan = 4;
+      });
+      expect(out).toContain('##" New\n## artifact');
+      expect(out).toContain("##(markdown) a floating one-liner\n");
+      expect(out).toContain(
+         "##|(markdown) intro\n## How to read this page\n|##\n",
+      );
+      expect(out).toContain(
+         "  #|(markdown)\n  # Lead tile\n  |#\n  # colspan=4\n",
+      );
+   });
+
+   it("takes an attached markdown block away with the given it describes", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+#|(markdown)
+# About the category filter
+|#
+# label="Category"
+given: CATEGORY :: filter<string> is f''
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "CATEGORY",
+         );
+      });
+      expect(out).not.toContain("About the category filter");
+      expect(out).toContain('# label="Since"\ngiven: SINCE');
+   });
+
+   // A closer-looking line inside a block comment is comment text, not the end of the
+   // previous declaration's markdown block.
+   const WITH_COMMENTED_CLOSER = `## artifact { title="T" tiles=["a -> u", "a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  #|(markdown)
+  # Prev
+  |#
+  view: u is vu
+
+  # colspan=6
+  /*
+  |# looks like a closer
+  */
+  view: x is vx
+}`;
+
+   it("changes a tile's width when a block comment above it holds a closer-looking line", async () => {
+      const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
+         d.tiles.find((t) => t.name === "x")!.colspan = 4;
+      });
+      expect(out).toContain("  # colspan=4\n  /*\n  |# looks like a closer\n");
+      expect(out).not.toContain("colspan=6");
+      expect(out).toContain(
+         "  #|(markdown)\n  # Prev\n  |#\n  view: u is vu\n",
+      );
+   });
+
+   it("removes a tile without taking the previous tile's markdown block with it", async () => {
+      const out = await spliced(WITH_COMMENTED_CLOSER, (d) => {
+         d.tiles = d.tiles.filter((t) => t.name !== "x");
+      });
+      expect(out).not.toContain("view: x");
+      expect(out).toContain("  #|(markdown)\n  # Prev\n  |#\n  view: u is vu");
+   });
+
+   it("leaves a comment holding `#(markdown)` text in place when its given is removed", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+/*
+#(markdown) only a comment
+*/
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "SINCE",
+         );
+      });
+      expect(out).not.toContain("SINCE");
+      expect(out).toContain("/*\n#(markdown) only a comment\n*/");
+   });
+
+   it("does not bleed a control from the given above a comment holding a closer-looking line", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+#|(markdown)
+# About
+|#
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''
+
+/*
+|# looks like a closer
+*/
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const doc = await openDocument(source);
+      const since = doc.localGivens?.find((g) => g.name === "SINCE");
+      expect(since?.label).toBe("Since");
+      expect(since?.control).toBeUndefined();
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "SINCE",
+         );
+      });
+      expect(out).not.toContain("SINCE");
+      expect(out).toContain("given: CATEGORY");
+   });
+
+   const FLOATING = (
+      body: string,
+      tag = '# label="Category" control=select',
+   ) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+##|(markdown)
+${body}
+Use the filters.
+|##
+${tag}
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+
+   it("keeps a floating text block's heading when the given right below it is removed", async () => {
+      const out = await spliced(FLOATING("# Welcome"), (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "CATEGORY",
+         );
+      });
+      expect(out).toContain("##|(markdown)\n# Welcome\nUse the filters.\n|##");
+      expect(out).not.toContain("CATEGORY");
+   });
+
+   it("does not read a floating text block's # line as the given's label", async () => {
+      const doc = await openDocument(
+         FLOATING('# label="Introduction"', "# control=select"),
+      );
+      const given = doc.localGivens?.find((g) => g.name === "CATEGORY");
+      expect(given?.label).toBeUndefined();
    });
 });

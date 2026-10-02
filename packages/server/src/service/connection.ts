@@ -72,6 +72,7 @@ import {
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
+import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    CloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
@@ -3058,6 +3059,16 @@ export async function testConnectionConfig(
          connectionConfig.type === "ducklake"
       ) {
          assertSafePackageName(connectionConfig.name);
+      }
+
+      // A BigQuery connection with no inline key authenticates through
+      // GOOGLE_APPLICATION_CREDENTIALS, whose directory case google-auth
+      // reports as a file that does not exist.
+      if (
+         connectionConfig.type === "bigquery" &&
+         !connectionConfig.bigqueryConnection?.serviceAccountKeyJson
+      ) {
+         assertGoogleCredentialsIsNotADirectory();
       }
 
       // Root the throwaway config in a fresh temp directory. DuckDB/DuckLake

@@ -39,7 +39,8 @@ import type {
    TurtleDef,
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
-import { ownModelNotes } from "./annotations";
+import { ownModelNoteObjects } from "./annotations";
+import { dashboardDescriptionNotes, isMarkdownNote } from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -62,7 +63,6 @@ import {
    tagNumeric,
    tagText,
    unwrapFilterLiteral,
-   UNSAFE_TO_PARSE,
    ENV_REFERENCE_DROPPED,
    ANNOTATION_TOO_LONG,
 } from "./motly";
@@ -307,9 +307,15 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "tiles",
    "givens",
    "autorun",
+   // Not read here: notebook_lint.ts judges `kind` on a model-level `## artifact`; this lint only stays quiet about it.
+   "kind",
+   // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
+   "dashboard_columns",
 ];
 const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
-   COMPOSITE_ARTIFACT_PROPERTIES.filter((property) => property !== "tiles");
+   COMPOSITE_ARTIFACT_PROPERTIES.filter(
+      (property) => property !== "tiles" && property !== "dashboard_columns",
+   );
 
 /**
  * Properties that reach the artifact tag by mistake, and what to write instead.
@@ -320,7 +326,7 @@ const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
  */
 const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
    dashboard_columns:
-      "Write the grid width as `# dashboard { columns=N }` beside the artifact tag.",
+      "A single query has no grid; a composite's width is `dashboard { columns=N }` beside its artifact tag.",
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
@@ -347,9 +353,12 @@ function readArtifactTag(
 
    return {
       title: tagText(artifact, "title"),
+      // A `kind=text` entry is not a run expression and text tiles do not render
+      // yet, so it is left out here and the lint says so.
       tiles: artifact
          .array("tiles")
-         ?.map((tile) => tagText(tile))
+         ?.filter((tile) => tagText(tile, "kind") !== "text")
+         .map((tile) => tagText(tile))
          .filter((tile): tile is string => tile !== undefined),
       // One spelling for both forms: the `# dashboard { columns=N }` render tag
       // sitting beside the artifact tag, which is also what the renderer reads
@@ -362,9 +371,12 @@ function readArtifactTag(
       // null against a field the spec declares an integer. That put a value on
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
-      dashboardColumns: positiveInteger(
-         tagNumeric(tag.tag("dashboard"), "columns"),
-      ),
+      // `columns` wins whenever it is written, even when it is not a width.
+      dashboardColumns: tag.tag("dashboard")?.has("columns")
+         ? positiveInteger(tagNumeric(tag.tag("dashboard"), "columns"))
+         : artifact.array("tiles")
+           ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
+           : undefined,
       givens,
       autorun,
    };
@@ -398,6 +410,11 @@ export interface DashboardModelFacts {
    modelPath: string;
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
+   /**
+    * The own notes that describe the dashboard, of every route; the doc-comment
+    * reader keeps the `"` ones. Absent means all of `modelAnnotations`.
+    */
+   descriptionNotes?: string[];
    /**
     * Every named query in the file, uncurated — `explores` curation is about
     * the discovery surface for agents, and a dashboard is a separate artifact.
@@ -618,11 +635,13 @@ export function readDashboardModelFacts(
       }
    }
 
+   const modelNotes = ownModelNoteObjects(modelDef);
    return {
       modelPath,
       // This file's own `##` only. An `## artifact` in a shared include
       // describes that include, not everything importing it.
-      modelAnnotations: ownModelNotes(modelDef),
+      modelAnnotations: modelNotes.map((note) => note.text),
+      descriptionNotes: dashboardDescriptionNotes(modelNotes),
       queries,
       givens,
       viewGivens,
@@ -834,8 +853,9 @@ function givenSpec(
       // Do not read this as a note to widen later. The API `annotations`
       // narrowing is permanent: Credible's app consumes that field from another
       // repo, so widening reintroduces a live bug this repo cannot see.
-      annotations: declaration.annotations.filter((text) =>
-         /^##?\(/.test(text),
+      // `(markdown)` is a notebook cell's own prose, not helper text for the control.
+      annotations: declaration.annotations.filter(
+         (text) => /^##?\(/.test(text) && !isMarkdownNote(text),
       ),
       ...control,
    };
@@ -897,7 +917,7 @@ export function buildDashboardManifest(
          };
       });
       const doc = docCommentTitleAndDescription(
-         facts.modelAnnotations,
+         facts.descriptionNotes ?? facts.modelAnnotations,
          composite.title,
       );
       return {
@@ -1088,8 +1108,7 @@ export function lintDashboard(
    // Every property `readArtifactTag` does not read, named. The reader looks up
    // sub-paths by name, so a misspelling or a property on the wrong form is not
    // an error there — it is simply never asked for, and the dashboard serves as
-   // if the author had not written it. `dashboard_columns`, which this grammar
-   // no longer has, is the case that made it worth enumerating.
+   // if the author had not written it.
    //
    // Top level only, and `givens` is opaque: its keys are the author's own given
    // names, so descending into it would warn about every control on the page.
@@ -1125,7 +1144,19 @@ export function lintDashboard(
    // failure as an `# artifact` on a view, which is silently a shared include
    // and got its own finding for the same reason.
    for (const entry of artifactTag?.array("tiles") ?? []) {
-      const carried = Object.keys(entry.dict ?? {});
+      const kind = tagText(entry, "kind");
+      if (kind === "text") {
+         add(
+            `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` is a text tile, ` +
+               `but Publisher does not render text tiles yet, so it is left out ` +
+               `of the page.`,
+         );
+         continue;
+      }
+      // `kind=query` says nothing new.
+      const carried = Object.keys(entry.dict ?? {}).filter(
+         (property) => !(property === "kind" && kind === "query"),
+      );
       if (carried.length === 0) continue;
       const named = carried.map((property) => `\`${property}\``).join(", ");
       add(
@@ -1357,16 +1388,13 @@ export function lintDashboard(
 /**
  * How a `motlyParseErrors` message should be introduced to an author.
  *
- * Three of the four messages are REFUSALS rather than syntax errors: the
- * annotation is well formed and was not parsed, by policy or by a guard. Saying
+ * Two of the three messages are REFUSALS rather than syntax errors: the
+ * annotation is well formed and was not parsed, by policy. Saying
  * "does not parse" for those sends the author hunting a syntax error in a line
  * that has none. Kept as one function because the set has grown twice and both
  * times a call site was left behind.
  */
 function describeParseFailure(message: string): string {
-   if (message === UNSAFE_TO_PARSE) {
-      return `was refused rather than parsed (${message}), which can be caused by something outside this file`;
-   }
    if (message === ENV_REFERENCE_DROPPED) {
       return `was dropped rather than parsed (${message}), so nothing on that line took effect`;
    }
