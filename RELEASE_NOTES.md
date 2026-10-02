@@ -44,7 +44,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 `GOOGLE_APPLICATION_CREDENTIALS` naming a directory, which is what a bind mount of a host path that does not exist produces, is now reported as a directory on a `gs://` package add and on a BigQuery connection test, rather than as a key file that "does not exist".
 
-On Kubernetes, a volume is not seeded from the image the way a new Docker named volume is, so a volume on `/publisher/publisher_data` starts root-owned; set `fsGroup: 1000` in the pod's `securityContext`. See `packages/server/README.docker.md`.
+The image also prepares `/publisher/ducklake_data`, owned by uid 1000, as the mount point for a DuckLake storage destination whose `bucketUrl` is a local path: a new named volume there is seeded writable, the way one on `/publisher/publisher_data` is, instead of starting root-owned. On Kubernetes, a volume is not seeded from the image the way a new Docker named volume is, so a volume on either path starts root-owned; set `fsGroup: 1000` in the pod's `securityContext`. `packages/server/README.docker.md` has a per-mount section on granting uid 1000 access.
 
 ## [0.9.0] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
 
