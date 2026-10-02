@@ -273,7 +273,9 @@ test.describe("notebook tiles", () => {
       });
       await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
       await open(page, "autorun_off");
-      await expect(page.getByRole("button", { name: "Apply" })).toBeVisible({
+      await expect(
+         page.getByRole("button", { name: "Apply", exact: true }),
+      ).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
