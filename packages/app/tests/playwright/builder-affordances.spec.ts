@@ -68,7 +68,7 @@ test.describe("builder affordances", () => {
       );
 
       // Refused, not ignored: the click changes nothing.
-      await remove.click();
+      await remove.click({ force: true });
       await expect(tile).toBeVisible();
    });
 
