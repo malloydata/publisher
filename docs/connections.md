@@ -301,7 +301,7 @@ control on the tunnel itself, and is required unless the deployment opts out.
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
-(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+(a direct connection can set it too - see below). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
 **hostname** can't be checked from the tunnel address alone. The supported modes:
 
@@ -320,6 +320,22 @@ than the query driver, and every mode above keeps its meaning there: libpq dials
 endpoint as `hostaddr` while `host` stays the database's own name, so `verify-full` checks the
 certificate against the real host through the tunnel, with the same trust set the query path
 uses.
+
+### TLS and statement timeout on a direct connection
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
+federated Postgres source accept the same two per-connection settings:
+
+- `sslmode` - the same four modes as above, applied against the configured host. When unset,
+  the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
+  the string's own `sslmode` applies and the field is ignored, with a warning logged.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. When
+  unset, the database's own `statement_timeout` applies. The query driver sets it on each
+  session with `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). A connection pooler in transaction mode may not carry a
+  session setting from one statement to the next.
+
+Neither setting is applied to a DuckLake catalog connection.
 
 ## Credentials in API responses
 

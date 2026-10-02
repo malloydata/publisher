@@ -69,6 +69,7 @@ import {
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
+   postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
@@ -586,11 +587,54 @@ async function attachSnowflake(
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
-function buildPgConnectionString(
+/**
+ * A raw connectionString with the connection's statement timeout appended, in
+ * whichever of libpq's two forms the string is written: a URI takes it as an
+ * `options` query parameter, a keyword/value string as an `options` pair.
+ * Unchanged when the connection sets no statement timeout.
+ */
+function withLibpqStatementTimeout(
+   name: string,
+   connectionString: string,
    pg: components["schemas"]["PostgresConnection"],
 ): string {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   if (ms === undefined) return connectionString;
+   if (/^postgres(ql)?:\/\//i.test(connectionString)) {
+      const separator = connectionString.includes("?") ? "&" : "?";
+      return `${connectionString}${separator}options=${encodeURIComponent(`-c statement_timeout=${ms}`)}`;
+   }
+   return `${connectionString} ${pgConninfoPair("options", `-c statement_timeout=${ms}`)}`;
+}
+
+/**
+ * The libpq conninfo a DuckDB `TYPE postgres` attach opens a postgres connection
+ * with.
+ *
+ * `applyConnectionOptions` decides whether the connection's own `sslmode` and
+ * `statementTimeoutMilliseconds` reach the string. It is false for a DuckLake
+ * catalog, whose string is built exactly as it was before those fields existed;
+ * true for an attached database and a federated source. When false, or when
+ * the field is unset, TLS comes from the deployment PGSSLMODE as before.
+ *
+ * Exported for tests.
+ */
+export function buildPgConnectionString(
+   pg: components["schemas"]["PostgresConnection"],
+   {
+      name,
+      applyConnectionOptions,
+   }: { name: string; applyConnectionOptions: boolean },
+): string {
    if (pg.connectionString) {
-      return pg.connectionString;
+      if (!applyConnectionOptions) return pg.connectionString;
+      if (pg.sslmode != null) {
+         logger.warn(
+            `Connection '${name}' sets both postgresConnection.sslmode and ` +
+               `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
+         );
+      }
+      return withLibpqStatementTimeout(name, pg.connectionString, pg);
    }
 
    const parts: string[] = [];
@@ -599,6 +643,20 @@ function buildPgConnectionString(
    if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
    if (pg.userName) parts.push(`user=${pg.userName}`);
    if (pg.password) parts.push(`password=${pg.password}`);
+
+   if (applyConnectionOptions) {
+      parts.push(...libpqStatementTimeoutParts(name, pg));
+      if (pg.sslmode != null) {
+         parts.push(
+            ...libpqSslmodeParts(
+               `Connection '${name}'`,
+               pg.sslmode,
+               defaultProxiedAttachTrust(),
+            ),
+         );
+         return parts.join(" ");
+      }
+   }
 
    const pgSSLMode = process.env.PGSSLMODE;
 
@@ -639,7 +697,10 @@ async function attachPostgres(
    await installAndLoadExtension(connection, "postgres");
 
    const config = attachedDb.postgresConnection;
-   const attachString: string = buildPgConnectionString(config);
+   const attachString: string = buildPgConnectionString(config, {
+      name: attachedDb.name,
+      applyConnectionOptions: true,
+   });
 
    const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
    await connection.runSQL(attachCommand);
@@ -865,7 +926,10 @@ async function attachDuckLakeWithMode(
    }
 
    const pg = ducklakeConfig.catalog.postgresConnection;
-   const pgConnString: string = buildPgConnectionString(pg);
+   const pgConnString: string = buildPgConnectionString(pg, {
+      name: dbName,
+      applyConnectionOptions: false,
+   });
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
    // READ_ONLY: the client manages metadata, we only read the catalog.
    // READ_WRITE (build only): a build-scoped session materializes into it.
@@ -1266,7 +1330,10 @@ async function federatePostgres(
          });
          attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
       } else {
-         attachString = buildPgConnectionString(pg);
+         attachString = buildPgConnectionString(pg, {
+            name: config.name,
+            applyConnectionOptions: true,
+         });
       }
       logger.info(
          `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
@@ -1427,43 +1494,72 @@ export function buildProxiedPgAttachString(
    if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
    if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
    if (pg.password) parts.push(pgConninfoPair("password", pg.password));
+   parts.push(
+      ...libpqSslmodeParts(
+         `Connection proxy on '${name}'`,
+         pg.sslmode ?? "no-verify",
+         trust,
+      ),
+   );
+   parts.push(...libpqStatementTimeoutParts(name, pg));
+   return parts.join(" ");
+}
+
+/**
+ * The libpq conninfo pairs for an explicit sslmode, shared by the proxied and
+ * the direct DuckDB attach so a mode means the same thing on both. `subject` is
+ * the phrase an error leads with.
+ */
+function libpqSslmodeParts(
+   subject: string,
+   mode: ProxiedSslmode,
+   trust: ProxiedAttachTrust,
+): string[] {
    // Typed against PROXIED_SSLMODES, the one list the config validator and the
    // query path derive from: a mode added there without a case below is a
    // compile error here, not a throw at build time.
-   const mode: ProxiedSslmode = pg.sslmode ?? "no-verify";
    switch (mode) {
       case "disable":
-         parts.push("sslmode=disable");
-         break;
+         return ["sslmode=disable"];
       case "no-verify":
-         parts.push("sslmode=require");
-         break;
+         return ["sslmode=require"];
       case "verify-ca": {
          if (!trust.caBundle) {
             throw new Error(
-               `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+               `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
             );
          }
-         parts.push(
+         return [
             "sslmode=verify-ca",
             pgConninfoPair("sslrootcert", trust.caBundle),
-         );
-         break;
+         ];
       }
       case "verify-full":
-         parts.push(
+         return [
             "sslmode=verify-full",
             pgConninfoPair("sslrootcert", trust.ambientBundle()),
-         );
-         break;
+         ];
       default: {
          const unhandled: never = mode;
          throw new Error(
-            `Connection proxy on '${name}' has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
+            `${subject} has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
          );
       }
    }
-   return parts.join(" ");
+}
+
+/**
+ * The libpq conninfo pair that applies a connection's statement timeout, as a
+ * server option on every session the attach opens. Empty when it sets none.
+ */
+function libpqStatementTimeoutParts(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): string[] {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   return ms === undefined
+      ? []
+      : [pgConninfoPair("options", `-c statement_timeout=${ms}`)];
 }
 
 /**
@@ -2311,10 +2407,12 @@ function buildProxiedPostgresConnection(
    const db = pg.databaseName ? `/${enc(pg.databaseName)}` : "";
    const { query, ssl } = resolveProxiedTls(name, pg.host, pg.sslmode);
    const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${query}`;
+   const setupSQL = statementTimeoutSetupSQL(name, pg);
    return new PooledPostgresConnection({
       name,
       connectionString,
       ...(ssl ? { ssl } : {}),
+      ...(setupSQL ? { setupSQL } : {}),
       // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
       poolMin: 1,
       poolMax: 20,
@@ -2381,27 +2479,43 @@ function buildEnvironmentPostgresConnection(
       );
    }
    // Reuses the registry path's own connectionString builder rather than
-   // re-deriving one here: a direct (non-proxied) connection has no `ssl`
-   // field on the API (sslmode is proxy-only, per PostgresConnection's own
-   // schema doc) and instead picks up TLS from the deployment's PGSSLMODE
-   // env, which buildPostgresConnectionString already applies.
+   // re-deriving one here, so TLS resolves the same way on both: the
+   // connection's own sslmode when set, else the deployment PGSSLMODE.
    //
-   // buildPostgresConnectionString returns undefined when there is neither a
-   // raw connectionString on the config NOR a PGSSLMODE set -- the common
-   // case for a deployment with no forced sslmode. The individual fields are
-   // NOT redundant in that case: they are the only connection info at all.
-   // pg's own resolution prefers a truthy connectionString and falls back to
+   // buildPostgresConnectionString returns undefined when there is no raw
+   // connectionString and no sslmode to apply - the common case for a
+   // deployment with no forced sslmode. The individual fields are NOT
+   // redundant in that case: they are the only connection info at all. pg's
+   // own resolution prefers a truthy connectionString and falls back to
    // host/port/user/password/database when it is undefined, so passing both
    // here is correct rather than one shadowing the other.
+   const setupSQL = statementTimeoutSetupSQL(name, pg);
    return new EnvironmentPooledPostgresConnection({
       name,
-      connectionString: buildPostgresConnectionString(pg),
+      connectionString: buildPostgresConnectionString(pg, {
+         applySslmode: true,
+      }),
       host: pg.host,
       port: pg.port,
       username: pg.userName,
       password: pg.password,
       databaseName: pg.databaseName,
+      ...(setupSQL ? { setupSQL } : {}),
    });
+}
+
+/**
+ * The per-session SQL that applies a connection's statement timeout, or
+ * undefined when it sets none. Run as the driver's setupSQL, so it executes on
+ * every session - each pool acquire and each fresh client - rather than being
+ * sent as a startup parameter, which a connection pooler can refuse.
+ */
+function statementTimeoutSetupSQL(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): string | undefined {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
 function buildDuckLakeConnection(

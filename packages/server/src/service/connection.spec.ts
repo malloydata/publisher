@@ -20,6 +20,7 @@ import {
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
    buildEnvironmentMalloyConfig,
+   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    resolveProxiedTls,
@@ -33,6 +34,7 @@ import {
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
 import { UnsupportedCatalogFormatError } from "../errors";
+import { logger } from "../logger";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -2064,6 +2066,168 @@ describe("connection integration tests", () => {
             { timeout: 30000 },
          );
 
+         const testPostgresFields = () => ({
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+         });
+
+         it(
+            "should apply a direct connection's statementTimeoutMilliseconds on the database",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const config = buildEnvironmentMalloyConfig(
+                  [
+                     {
+                        name: "pg_stmt_timeout",
+                        type: "postgres",
+                        postgresConnection: {
+                           ...testPostgresFields(),
+                           statementTimeoutMilliseconds: 750,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_stmt_timeout",
+                     );
+                  // The server's own view of the session setting, not ours.
+                  const setting = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT current_setting('statement_timeout') AS v) t",
+                  );
+                  expect(setting.rows[0]).toEqual({ v: "750ms" });
+                  // And the server enforces it: a statement that outlives the
+                  // timeout is cancelled rather than left to run.
+                  await expect(
+                     connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                     ),
+                  ).rejects.toThrow(
+                     "canceling statement due to statement timeout",
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should connect a direct connection with the sslmode it sets, not the deployment's",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               // The test server runs without TLS, which makes the mode that
+               // reached pg observable: `disable` connects, `no-verify`
+               // demands TLS and is refused.
+               const lookupAndQuery = async (
+                  sslmode: "disable" | "no-verify",
+               ) => {
+                  const config = buildEnvironmentMalloyConfig(
+                     [
+                        {
+                           name: `pg_ssl_${sslmode.replace("-", "_")}`,
+                           type: "postgres",
+                           postgresConnection: {
+                              ...testPostgresFields(),
+                              sslmode,
+                           },
+                        },
+                     ],
+                     testEnvironmentPath,
+                  );
+                  try {
+                     const connection =
+                        await config.malloyConfig.connections.lookupConnection(
+                           `pg_ssl_${sslmode.replace("-", "_")}`,
+                        );
+                     return await connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                     );
+                  } finally {
+                     await config.releaseConnections();
+                  }
+               };
+               const previous = process.env.PGSSLMODE;
+               // The deployment default says the opposite of each field, so
+               // a pass proves the field won.
+               process.env.PGSSLMODE = "no-verify";
+               try {
+                  const result = await lookupAndQuery("disable");
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  process.env.PGSSLMODE = "disable";
+               }
+               try {
+                  await expect(lookupAndQuery("no-verify")).rejects.toThrow(
+                     "The server does not support SSL connections",
+                  );
+               } finally {
+                  if (previous === undefined) delete process.env.PGSSLMODE;
+                  else process.env.PGSSLMODE = previous;
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should apply an attached database's statementTimeoutMilliseconds through DuckDB",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: "duckdb_pg_stmt_timeout",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name: "pg_stmt_timeout",
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    ...testPostgresFields(),
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  "duckdb_pg_stmt_timeout",
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // postgres_query runs on the attach's own Postgres session, so
+               // this reads the setting the libpq `options` pair gave it.
+               const result = await connection.runSQL(
+                  "SELECT * FROM postgres_query('pg_stmt_timeout', 'SELECT current_setting(''statement_timeout'') AS v')",
+               );
+               expect(Object.values(result.rows[0])[0]).toBe("750ms");
+            },
+            { timeout: 30000 },
+         );
+
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");
             await fs.writeFile(insideCsvPath, "id\n1\n");
@@ -3247,5 +3411,130 @@ describe("redactTestFailure", () => {
    it("leaves a failure carrying no credential untouched", () => {
       const msg = "getaddrinfo ENOTFOUND db.internal";
       expect(redactTestFailure(msg, config)).toBe(msg);
+   });
+});
+
+describe("buildPgConnectionString", () => {
+   const fields = {
+      host: "db.example.com",
+      port: 5432,
+      databaseName: "lake",
+      userName: "u",
+      password: "p",
+   };
+   let previousPgSslMode: string | undefined;
+   beforeEach(() => {
+      previousPgSslMode = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+   });
+   afterEach(() => {
+      if (previousPgSslMode === undefined) delete process.env.PGSSLMODE;
+      else process.env.PGSSLMODE = previousPgSslMode;
+   });
+
+   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
+      const withFields = buildPgConnectionString(
+         {
+            ...fields,
+            sslmode: "verify-full",
+            statementTimeoutMilliseconds: 5000,
+         },
+         { name: "lake", applyConnectionOptions: false },
+      );
+      expect(withFields).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p",
+      );
+      process.env.PGSSLMODE = "require";
+      expect(
+         buildPgConnectionString(
+            {
+               ...fields,
+               sslmode: "disable",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "lake", applyConnectionOptions: false },
+         ),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("gives an attached database its statement timeout and its own sslmode", () => {
+      process.env.PGSSLMODE = "disable";
+      expect(
+         buildPgConnectionString(
+            {
+               ...fields,
+               sslmode: "no-verify",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p options='-c statement_timeout=5000' sslmode=require",
+      );
+   });
+
+   it("falls back to the deployment PGSSLMODE when an attached database sets no sslmode", () => {
+      process.env.PGSSLMODE = "require";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("appends the statement timeout to a URI connectionString as a query parameter", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString:
+                  "postgresql://u:p@db.example.com/lake?sslmode=require",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "postgresql://u:p@db.example.com/lake?sslmode=require&options=-c%20statement_timeout%3D5000",
+      );
+   });
+
+   it("appends the statement timeout to a keyword connectionString as an options pair", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString: "host=db.example.com dbname=lake",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com dbname=lake options='-c statement_timeout=5000'",
+      );
+   });
+
+   it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "postgresql://u:p@db.example.com/lake",
+                  sslmode: "verify-full",
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("postgresql://u:p@db.example.com/lake");
+         expect(warn.calledOnce).toBe(true);
+         expect(warn.firstCall.args[0] as unknown).toBe(
+            "Connection 'pg_att' sets both postgresConnection.sslmode and connectionString; " +
+               "sslmode is ignored and the connectionString's own sslmode applies.",
+         );
+      } finally {
+         warn.restore();
+      }
    });
 });
