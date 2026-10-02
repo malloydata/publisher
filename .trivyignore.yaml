@@ -488,10 +488,8 @@ vulnerabilities:
 misconfigurations:
   # docker/Dockerfile.ci is the CI integration-test runner referenced from
   # docker-compose.yml (profile `ci`). It is never published and not the production
-  # image (see packages/server/README.docker.md). Running as root and installing
-  # recommended packages is what the test container needs: it writes into the
-  # mounted checkout and fetches the JDK repository key over HTTPS, which relies on
-  # ca-certificates arriving as a recommended package.
+  # image (see packages/server/README.docker.md). It runs as root because the test
+  # container writes into the mounted checkout.
   - id: DS-0002
     paths: ["docker/Dockerfile.ci"]
     expired_at: 2026-12-31
@@ -499,12 +497,4 @@ misconfigurations:
       CI test-runner image with no USER instruction: the test container writes into
       the mounted checkout and runs as root by design. Not published and not the
       production image.
-  - id: DS-0029
-    paths: ["docker/Dockerfile.ci"]
-    expired_at: 2026-12-31
-    statement: >
-      apt-get install without --no-install-recommends in the CI test-runner image.
-      The wget and git installs rely on ca-certificates arriving as a recommended
-      package to fetch the Temurin repository key over HTTPS. Not published and not
-      the production image.
 secrets: []
