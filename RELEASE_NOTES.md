@@ -143,6 +143,12 @@ gate can be previewed and saved. The same tag anywhere else, including a line no
 route, a block's opener or closer line, a comment or a string, is refused as before, and text the
 server cannot lex is judged the old way.
 
+## [Unreleased] - A query that reads a given with no default no longer keeps its package from loading
+
+A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload kept serving, so the failure only hit a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
+
+One case still fails to load, with or without a default: a source `view:` whose later `nest:` stage reads a given. That is a Malloy limit, not specific to this change.
+
 ## [0.9.1] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
 
 0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount at boot, whose `loadErrors` entry now carries the errno instead of only `Failed to mount local directory`. An unreadable package directory, which answered 404 `Package manifest … does not exist.`, now names the errno too.

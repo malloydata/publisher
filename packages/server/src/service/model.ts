@@ -12,7 +12,6 @@ import {
    MalloyError,
    Annotations,
    ModelDef,
-   modelDefToModelInfo,
    ModelMaterializer,
    NamedQueryDef,
    QueryData,
@@ -67,6 +66,7 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
@@ -963,7 +963,7 @@ export class Model {
       filterMap?: Map<string, FilterDefinition[]>,
       givens?: ApiGiven[],
       /**
-       * Precomputed `modelDefToModelInfo(modelDef)`. The package-load
+       * Precomputed `modelInfoOf(modelDef)`. The package-load
        * worker emits it as part of `SerializedModel` so we don't
        * re-derive it on every package load. Callers that build a
        * `Model` from a raw `modelDef` (e.g. test fixtures via
@@ -1043,8 +1043,7 @@ export class Model {
          this.authorizeReferencedGivenNames = new Set();
       }
       this.modelInfo =
-         modelInfo ??
-         (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
+         modelInfo ?? (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
 
       // One-time deprecation notice per Model instance. Surfaces only when
       // the model declares `#(filter)` annotations so operators migrating
@@ -9494,8 +9493,7 @@ export class Model {
                                  })
                                  .getModel()
                            )._modelDef;
-                           const importModelInfo =
-                              modelDefToModelInfo(importModel);
+                           const importModelInfo = modelInfoOf(importModel);
                            newSources = importModelInfo.entries
                               .filter((entry) => entry.kind === "source")
                               .filter(
@@ -9505,7 +9503,7 @@ export class Model {
                         }),
                      );
                   }
-                  const currentModelInfo = modelDefToModelInfo(currentModelDef);
+                  const currentModelInfo = modelInfoOf(currentModelDef);
                   newSources = newSources.concat(
                      currentModelInfo.entries
                         .filter((entry) => entry.kind === "source")

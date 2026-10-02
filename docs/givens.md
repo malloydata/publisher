@@ -80,6 +80,8 @@ The `timestamptz` cast is not decoration. A bare `@2024-01-01 00:00:00` literal 
 so using it as a `timestamptz` default fails to compile with a type-mismatch error. Declaring the
 given with no default at all also works.
 
+A query, notebook cell or dashboard tile that reads a given with no default still loads with its package; it is refused only when it runs without a value for that given.
+
 ### Annotations
 
 Givens accept the standard Malloy `#(...)` annotation syntax. Publisher surfaces annotations on introspection and uses the `description="..."` form as helper text in the notebook UI:

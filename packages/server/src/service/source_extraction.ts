@@ -20,7 +20,6 @@
 import {
    isJoined,
    isSourceDef,
-   modelDefToModelInfo,
    ModelDef,
    NamedModelObject,
    NamedQueryDef,
@@ -52,6 +51,7 @@ import {
    ACCESS_FILTER_ROUTE,
    AUTHORIZE_ROUTE,
 } from "./authorize_routes";
+import { modelInfoOf } from "./model_info";
 import { parseFilters, type FilterDefinition } from "./filter";
 import {
    derivedStructsReachable,
@@ -271,7 +271,7 @@ export function collectSourceInfos(modelDef: ModelDef): Malloy.SourceInfo[] {
       isSourceDef(modelDef.contents[name]),
    );
    const exports = [...new Set([...modelDef.exports, ...names])];
-   return modelDefToModelInfo({ ...modelDef, exports }).entries.filter(
+   return modelInfoOf({ ...modelDef, exports }).entries.filter(
       (entry) => entry.kind === "source",
    ) as Malloy.SourceInfo[];
 }
