@@ -10,6 +10,11 @@ import {
    RetryPolicy,
    withRetry,
 } from "./http_retry";
+import type {
+   EmbeddingModel,
+   EmbedOptions,
+   ProviderName,
+} from "../providers/types";
 
 /** Timeout for bulk (index-build) embedding calls. */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
@@ -78,14 +83,39 @@ export function prepareEmbeddingInput(text: string): string {
  * the Authorization header and must never be logged; error messages carry
  * at most a 200-char body excerpt and never echo request headers.
  */
-export class EmbeddingProvider {
+export class EmbeddingProvider implements EmbeddingModel {
    constructor(
       private config: EmbeddingConfig,
       private fetchFn: FetchFn = fetch,
    ) {}
 
+   get provider(): ProviderName {
+      return this.config.provider ?? "openai-compatible";
+   }
+
    get model(): string {
       return this.config.model;
+   }
+
+   get maxBatch(): number {
+      return MAX_EMBED_BATCH_SIZE;
+   }
+
+   get queryPrefix(): string {
+      return this.config.queryPrefix ?? "";
+   }
+
+   get documentPrefix(): string {
+      return this.config.documentPrefix ?? "";
+   }
+
+   /** {@link embedBatch} with the bulk timeout and no retry unless given. */
+   embed(texts: string[], options: EmbedOptions = {}): Promise<number[][]> {
+      return this.embedBatch(
+         texts,
+         options.timeoutMs ?? EMBEDDING_BATCH_TIMEOUT_MS,
+         options.retry,
+      );
    }
 
    /**
