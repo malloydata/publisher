@@ -10,6 +10,8 @@ import { newLocalGiven } from "./controls";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 import { spliceFailed } from "./spliceDocument";
+import { queryTile } from "./testing/fixtures";
+import { tileKey } from "./document";
 
 const EMPTY = `##! experimental.givens
 ## artifact { title="T" tiles=[] } dashboard { columns=12 }
@@ -57,9 +59,7 @@ describe("a dashboard with an explicit, empty tile list", () => {
       });
       expect(out).toContain('tiles=["one_tiles -> vx_tile"]');
       const back = await openDocument(out);
-      expect(back.tiles.map((t) => `${t.source}.${t.name}`)).toEqual([
-         "one_tiles.vx_tile",
-      ]);
+      expect(back.tiles.map(tileKey)).toEqual(["one_tiles.vx_tile"]);
    });
 
    it("refuses to remove the last tile, because an empty file is not served", async () => {
@@ -114,7 +114,7 @@ source: a is one extend {
                source: "a",
             }),
          ];
-         d.tiles[0].filters = [
+         queryTile(d, 0).filters = [
             { field: "products.category", given: "CATEGORY" },
          ];
       });

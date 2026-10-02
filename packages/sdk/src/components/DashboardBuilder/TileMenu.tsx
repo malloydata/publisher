@@ -13,7 +13,7 @@ import { useId } from "react";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
-import type { DashboardTile } from "./document";
+import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
 import { ChartPicker } from "./ChartPicker";
 
 /**
@@ -24,6 +24,9 @@ import { ChartPicker } from "./ChartPicker";
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
  * strip under the header. Edits commit on close (`useDraft`).
+ *
+ * A text tile has only a width (when the grid has more than one column) and
+ * Remove: its words are written on the tile itself.
  */
 export interface TileMenuProps {
    anchor: HTMLElement | null;
@@ -50,6 +53,50 @@ const customChart = (lines: string[] | undefined) =>
 const INHERITED_CHART =
    "This tile's view is declared on its source, so its chart is set in the model.";
 
+/** Width presets, as fractions of this grid. A tile's width is otherwise a drag, and a drag cannot say "a third". */
+function WidthPresets({
+   columns,
+   colspan,
+   onPick,
+}: {
+   columns: number;
+   colspan: number | undefined;
+   onPick: (span: number) => void;
+}) {
+   const { theme } = usePublisherTheme();
+   return (
+      <Stack direction="row" sx={{ gap: 0.5, alignItems: "center" }}>
+         <Typography variant="caption" sx={{ color: theme.tileTitle, mr: 0.5 }}>
+            Width
+         </Typography>
+         {(
+            [
+               ["Full", 1],
+               ["½", 2],
+               ["⅓", 3],
+               ["¼", 4],
+            ] as const
+         ).map(([label, share]) => {
+            const span = Math.max(1, Math.round(columns / share));
+            const active = (colspan ?? 1) === span;
+            return (
+               <Button
+                  key={label}
+                  size="small"
+                  variant={active ? "contained" : "outlined"}
+                  aria-label={`Width ${label}`}
+                  aria-pressed={active}
+                  onClick={() => onPick(span)}
+                  sx={{ minWidth: 40, px: 1 }}
+               >
+                  {label}
+               </Button>
+            );
+         })}
+      </Stack>
+   );
+}
+
 export function TileMenu({
    anchor,
    tile,
@@ -70,8 +117,15 @@ export function TileMenu({
       onClose,
    );
 
+   const query = draft !== undefined && isQueryTile(draft) ? draft : undefined;
    const editable =
-      draft !== undefined && draft.declaration.kind !== "inherited";
+      query !== undefined && query.declaration.kind !== "inherited";
+   // The draft is a query tile whenever the controls that call this are shown.
+   const patchQuery = (change: (t: QueryTile) => void) =>
+      patch((t) => {
+         if (isQueryTile(t)) change(t);
+      });
+   const originalChart = tile && isQueryTile(tile) ? tile.chart : undefined;
 
    return (
       <Popover
@@ -88,19 +142,33 @@ export function TileMenu({
                   variant="overline"
                   sx={{ color: theme.tileTitle, lineHeight: 1.5 }}
                >
-                  {draft.source} → {draft.name}
+                  {query
+                     ? `${query.source} → ${query.name}`
+                     : `Text · ${draft.name}`}
                </Typography>
 
-               {editable ? (
+               {!query && columns > 1 && (
+                  <WidthPresets
+                     columns={columns}
+                     colspan={draft.colspan}
+                     onPick={(span) =>
+                        patch((t) => {
+                           t.colspan = span;
+                        })
+                     }
+                  />
+               )}
+
+               {query && editable && (
                   <>
                      <TextField
                         size="small"
                         label="Title"
-                        value={draft.label ?? ""}
+                        value={query.label ?? ""}
                         autoFocus
                         inputProps={{ "aria-label": "Tile title" }}
                         onChange={(event) =>
-                           patch((t) => {
+                           patchQuery((t) => {
                               const v = event.target.value;
                               if (v === "") delete t.label;
                               else t.label = v;
@@ -110,10 +178,10 @@ export function TileMenu({
                      <TextField
                         size="small"
                         label="Subtitle"
-                        value={draft.subtitle ?? ""}
+                        value={query.subtitle ?? ""}
                         inputProps={{ "aria-label": "Tile subtitle" }}
                         onChange={(event) =>
-                           patch((t) => {
+                           patchQuery((t) => {
                               const v = event.target.value;
                               if (v === "") delete t.subtitle;
                               else t.subtitle = v;
@@ -121,15 +189,15 @@ export function TileMenu({
                         }
                      />
                      <ChartPicker
-                        state={draft.chart ?? "default"}
+                        state={query.chart ?? "default"}
                         view={view}
-                        cellLabel={`${draft.source} ${draft.name}`}
-                        {...(draft.chart === "custom"
-                           ? { disabledReason: customChart(draft.chartLines) }
+                        cellLabel={`${query.source} ${query.name}`}
+                        {...(query.chart === "custom"
+                           ? { disabledReason: customChart(query.chartLines) }
                            : {})}
                         onChange={(next) =>
-                           patch((t) => {
-                              const was = tile?.chart;
+                           patchQuery((t) => {
+                              const was = originalChart;
                               // Back to where it started is no edit, so the draft must not differ from the tile.
                               if (next === (was ?? "default")) {
                                  if (was === undefined) delete t.chart;
@@ -146,53 +214,20 @@ export function TileMenu({
                            })
                         }
                      />
-                     {/* Width presets, as fractions of this grid. A
-                         tile's width is otherwise a drag, and a drag cannot
-                         say "a third". */}
-                     <Stack
-                        direction="row"
-                        sx={{ gap: 0.5, alignItems: "center" }}
-                     >
-                        <Typography
-                           variant="caption"
-                           sx={{ color: theme.tileTitle, mr: 0.5 }}
-                        >
-                           Width
-                        </Typography>
-                        {(
-                           [
-                              ["Full", 1],
-                              ["½", 2],
-                              ["⅓", 3],
-                              ["¼", 4],
-                           ] as const
-                        ).map(([label, share]) => {
-                           const span = Math.max(
-                              1,
-                              Math.round(columns / share),
-                           );
-                           const active = (draft.colspan ?? 1) === span;
-                           return (
-                              <Button
-                                 key={label}
-                                 size="small"
-                                 variant={active ? "contained" : "outlined"}
-                                 aria-label={`Width ${label}`}
-                                 aria-pressed={active}
-                                 onClick={() =>
-                                    patch((t) => {
-                                       t.colspan = span;
-                                    })
-                                 }
-                                 sx={{ minWidth: 40, px: 1 }}
-                              >
-                                 {label}
-                              </Button>
-                           );
-                        })}
-                     </Stack>
+                     {columns > 1 && (
+                        <WidthPresets
+                           columns={columns}
+                           colspan={query.colspan}
+                           onPick={(span) =>
+                              patchQuery((t) => {
+                                 t.colspan = span;
+                              })
+                           }
+                        />
+                     )}
                   </>
-               ) : (
+               )}
+               {query && !editable && (
                   <>
                      <Typography
                         variant="body2"
@@ -204,15 +239,15 @@ export function TileMenu({
                      <ChartPicker
                         state="default"
                         view={view}
-                        cellLabel={`${draft.source} ${draft.name}`}
+                        cellLabel={`${query.source} ${query.name}`}
                         disabledReason={INHERITED_CHART}
                         onChange={() => {}}
                      />
                   </>
                )}
-               {draft?.declaration.kind === "opaque" && (
+               {query?.declaration.kind === "opaque" && (
                   <Typography variant="body2" sx={{ color: theme.tileTitle }}>
-                     Its body is {draft.declaration.why}, so a filter has no
+                     Its body is {query.declaration.why}, so a filter has no
                      single place to go. Everything else here is editable.
                   </Typography>
                )}

@@ -16,7 +16,12 @@ import {
    type ControlKind,
    type MappingRow,
 } from "./controls";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
 
 type Source = { kind: "existing"; name: string } | { kind: "new" };
 
@@ -42,7 +47,7 @@ export function useFilterForm({
    document: DashboardDocument;
    control: BuilderControl | undefined;
    available: readonly BuilderControl[];
-   fieldsFor?: (tile: DashboardTile) => readonly CatalogField[] | undefined;
+   fieldsFor?: (tile: QueryTile) => readonly CatalogField[] | undefined;
    onApply: (given: string, rows: MappingRow[], declare?: LocalGiven) => void;
 }) {
    // What the window SHOWS: the control while open, and the same control while
@@ -70,7 +75,7 @@ export function useFilterForm({
    const [touched, setTouched] = useState(false);
 
    /** The model source a tile's extension is built on, which its fields live on. */
-   const baseOf = (tile: DashboardTile) =>
+   const baseOf = (tile: QueryTile) =>
       document.sources.find((source) => source.name === tile.source)?.base ??
       tile.source;
 
@@ -176,10 +181,15 @@ export function useFilterForm({
    // bindable one while nothing is ticked yet, so the picker has something to
    // offer before the first tick.
    const ticked = document.tiles.filter(
-      (_, i) => (rows[i]?.include ?? false) && bindable[i],
+      (tile, i): tile is QueryTile =>
+         (rows[i]?.include ?? false) && bindable[i] && isQueryTile(tile),
    );
    const pool =
-      ticked.length > 0 ? ticked : document.tiles.filter((_, i) => bindable[i]);
+      ticked.length > 0
+         ? ticked
+         : document.tiles.filter(
+              (tile, i): tile is QueryTile => bindable[i] && isQueryTile(tile),
+           );
    // What the common picker offers: every field any tile in the pool can take,
    // once by name. Undefined when no tile has a list, which is "accept anything".
    const commonFields = useMemo(() => {
@@ -240,7 +250,7 @@ export function useFilterForm({
       acceptsField(target?.type, candidate.type);
    const problemWith = (
       name: string,
-      tile: DashboardTile | undefined,
+      tile: QueryTile | undefined,
    ): string | undefined => {
       if (name.trim() === "") return "Pick the field this filter compares.";
       const list = tile ? fieldsFor?.(tile) : undefined;
@@ -271,9 +281,13 @@ export function useFilterForm({
       if (fieldType && !acceptsField(kindType, fieldType))
          pickKind(kindForFieldType(fieldType));
    };
+   const queryTileAt = (i: number) => {
+      const tile = document.tiles[i];
+      return tile && isQueryTile(tile) ? tile : undefined;
+   };
    const problems = effective.map((row, i) =>
       row.include && bindable[i]
-         ? problemWith(row.field, document.tiles[i])
+         ? problemWith(row.field, queryTileAt(i))
          : undefined,
    );
    const fieldsResolve = problems.every((problem) => problem === undefined);

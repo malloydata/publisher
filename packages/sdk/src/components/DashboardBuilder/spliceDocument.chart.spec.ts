@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { chartLineText } from "./chartLine";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 import { spliceFailed } from "./spliceDocument";
+import { queryTile } from "./testing/fixtures";
 
 const FILE = (tags: string) => `##! experimental.givens
 ## artifact { title="T" tiles=["a -> x", "a -> y"] } dashboard { columns=12 }
@@ -20,36 +21,32 @@ ${tags}  view: x is vx
 const SPARK = "  # bar_chart { size=spark }\n";
 const LABELLED = '  # line_chart label="Revenue"\n';
 
+const chartOf = async (text: string, at: number) =>
+   queryTile(await openDocument(text), at).chart;
+
 describe("a tile's chart line", () => {
    it("reads the tile's chart from the file, with no catalog", async () => {
-      expect((await openDocument(FILE(""))).tiles[0].chart).toBeUndefined();
-      expect((await openDocument(FILE("  # bar_chart\n"))).tiles[0].chart).toBe(
-         "bar_chart",
+      expect(await chartOf(FILE(""), 0)).toBeUndefined();
+      expect(await chartOf(FILE("  # bar_chart\n"), 0)).toBe("bar_chart");
+      expect(await chartOf(FILE(`  ${chartLineText("line_chart")}\n`), 0)).toBe(
+         "line_chart",
       );
-      expect(
-         (await openDocument(FILE(`  ${chartLineText("line_chart")}\n`)))
-            .tiles[0].chart,
-      ).toBe("line_chart");
-      expect(
-         (await openDocument(FILE(`  ${chartLineText("none")}\n`))).tiles[0]
-            .chart,
-      ).toBe("none");
+      expect(await chartOf(FILE(`  ${chartLineText("none")}\n`), 0)).toBe(
+         "none",
+      );
       // A line with properties is not the picker's to model.
-      expect((await openDocument(FILE(SPARK))).tiles[0].chart).toBe("custom");
-      expect((await openDocument(FILE(LABELLED))).tiles[0].chart).toBe(
+      expect(await chartOf(FILE(SPARK), 0)).toBe("custom");
+      expect(await chartOf(FILE(LABELLED), 0)).toBe("custom");
+      expect(await chartOf(FILE("  # bar_chart\n  # line_chart\n"), 0)).toBe(
          "custom",
       );
-      expect(
-         (await openDocument(FILE("  # bar_chart\n  # line_chart\n"))).tiles[0]
-            .chart,
-      ).toBe("custom");
    });
 
    it.each([SPARK, LABELLED])(
       "keeps %p byte for byte through a label and a width edit",
       async (line) => {
          const out = await spliced(FILE(line), (d) => {
-            d.tiles[0].label = "Revenue";
+            queryTile(d, 0).label = "Revenue";
             d.tiles[0].colspan = 4;
          });
          expect(out).toContain(line);
@@ -59,61 +56,61 @@ describe("a tile's chart line", () => {
 
    it("refuses a chart change on a tile with a line it does not model, quoting the line", async () => {
       const reason = await refused(FILE(SPARK), (d) => {
-         d.tiles[0].chart = "line_chart";
+         queryTile(d, 0).chart = "line_chart";
       });
       expect(reason).toContain("# bar_chart { size=spark }");
       const second = await refused(FILE(LABELLED), (d) => {
-         d.tiles[0].chart = "default";
+         queryTile(d, 0).chart = "default";
       });
       expect(second).toContain('# line_chart label="Revenue"');
    });
 
    it("writes a pick above the declaration, and reads it back", async () => {
       const out = await spliced(FILE(""), (d) => {
-         d.tiles[0].chart = "line_chart";
+         queryTile(d, 0).chart = "line_chart";
       });
       expect(out).toContain(
          `  ${chartLineText("line_chart")}\n  view: x is vx`,
       );
-      expect((await openDocument(out)).tiles[0].chart).toBe("line_chart");
+      expect(await chartOf(out, 0)).toBe("line_chart");
    });
 
    it("negates only the tags the view carries when the tile says which, and reads it back", async () => {
       const out = await spliced(FILE(""), (d) => {
-         d.tiles[0].chart = "line_chart";
-         d.tiles[0].chartCarried = ["bar_chart"];
+         queryTile(d, 0).chart = "line_chart";
+         queryTile(d, 0).chartCarried = ["bar_chart"];
       });
       expect(out).toContain("  # -bar_chart -viz line_chart\n  view: x is vx");
-      expect((await openDocument(out)).tiles[0].chart).toBe("line_chart");
+      expect(await chartOf(out, 0)).toBe("line_chart");
       const table = await spliced(FILE(""), (d) => {
-         d.tiles[0].chart = "none";
-         d.tiles[0].chartCarried = [];
+         queryTile(d, 0).chart = "none";
+         queryTile(d, 0).chartCarried = [];
       });
       expect(table).toContain("  # -viz\n  view: x is vx");
-      expect((await openDocument(table)).tiles[0].chart).toBe("none");
+      expect(await chartOf(table, 0)).toBe("none");
    });
 
    it("replaces a recognized line, bare or written, and removes it for Default", async () => {
       const bare = await spliced(FILE("  # bar_chart\n"), (d) => {
-         d.tiles[0].chart = "big_value";
+         queryTile(d, 0).chart = "big_value";
       });
       expect(bare).toContain(`  ${chartLineText("big_value")}\n`);
       expect(bare).not.toContain("  # bar_chart\n");
       const gone = await spliced(bare, (d) => {
-         d.tiles[0].chart = "default";
+         queryTile(d, 0).chart = "default";
       });
       expect(gone).toContain("  view: x is vx");
       expect(gone).not.toContain("big_value");
       const none = await spliced(FILE("  # bar_chart\n"), (d) => {
-         d.tiles[0].chart = "none";
+         queryTile(d, 0).chart = "none";
       });
       expect(none).toContain(`  ${chartLineText("none")}\n`);
-      expect((await openDocument(none)).tiles[0].chart).toBe("none");
+      expect(await chartOf(none, 0)).toBe("none");
    });
 
    it("leaves a recognized bare line alone while its chart is unchanged", async () => {
       const out = await spliced(FILE("  # bar_chart\n"), (d) => {
-         d.tiles[0].label = "L";
+         queryTile(d, 0).label = "L";
       });
       expect(out).toContain("  # bar_chart\n");
       expect(out).not.toContain("-line_chart");
@@ -129,7 +126,7 @@ describe("a tile's chart line", () => {
             chart: "scatter_chart",
          });
       });
-      const z = (await openDocument(out)).tiles[2];
+      const z = queryTile(await openDocument(out), 2);
       expect(z.chart).toBe("scatter_chart");
       expect(out).toContain(chartLineText("scatter_chart"));
    });
@@ -154,7 +151,7 @@ describe("a tile's chart line", () => {
 
    it("leaves an unchanged custom chart alone", async () => {
       const result = await splice(FILE(SPARK), (d) => {
-         d.tiles[1].label = "Other";
+         queryTile(d, 1).label = "Other";
       });
       expect(spliceFailed(result)).toBe(false);
    });
@@ -231,7 +228,9 @@ describe("strings written into annotations", () => {
       ).toContain('The name "BAD NAME" cannot be written');
       expect(
          await refused(FILE(""), (d) => {
-            d.tiles[0].filters = [{ field: "category\n", given: "CATEGORY" }];
+            queryTile(d, 0).filters = [
+               { field: "category\n", given: "CATEGORY" },
+            ];
          }),
       ).toContain("filter field");
    });
@@ -284,13 +283,13 @@ describe("chart lines beside quoted text, omitted charts and custom lines", () =
    const SALES = '  # label="Sales viz"\n';
 
    it("does not read a word inside a quoted value as a chart tag", async () => {
-      expect((await openDocument(FILE(SALES))).tiles[0].chart).toBeUndefined();
+      expect(await chartOf(FILE(SALES), 0)).toBeUndefined();
       const out = await spliced(FILE(""), (d) => {
-         d.tiles[0].label = "Sales viz";
+         queryTile(d, 0).label = "Sales viz";
       });
       expect(out).toContain('# label="Sales viz"');
       const picked = await spliced(FILE(SALES), (d) => {
-         d.tiles[0].chart = "bar_chart";
+         queryTile(d, 0).chart = "bar_chart";
       });
       expect(picked).toContain(`  ${chartLineText("bar_chart")}\n`);
       expect(picked).toContain('# label="Sales viz"');
@@ -299,16 +298,16 @@ describe("chart lines beside quoted text, omitted charts and custom lines", () =
    it("keeps a tile's line when the document leaves `chart` out; only default removes it", async () => {
       const source = FILE("  # big_value\n");
       const kept = await spliced(source, (d) => {
-         delete d.tiles[0].chart;
+         delete queryTile(d, 0).chart;
          d.tiles[0].colspan = 3;
       });
       expect(kept).toContain("  # big_value\n");
       const noop = await splice(source, (d) => {
-         delete d.tiles[0].chart;
+         delete queryTile(d, 0).chart;
       });
       expect(spliceFailed(noop)).toBe(false);
       const removed = await spliced(source, (d) => {
-         d.tiles[0].chart = "default";
+         queryTile(d, 0).chart = "default";
       });
       expect(removed).not.toContain("big_value");
    });
@@ -316,9 +315,9 @@ describe("chart lines beside quoted text, omitted charts and custom lines", () =
    it.each(["  # sparkline\n", "  # -bar_chart\n"])(
       "refuses a chart change on a recognized line the picker cannot show (%p)",
       async (line) => {
-         expect((await openDocument(FILE(line))).tiles[0].chart).toBe("custom");
+         expect(await chartOf(FILE(line), 0)).toBe("custom");
          const reason = await refused(FILE(line), (d) => {
-            d.tiles[0].chart = "line_chart";
+            queryTile(d, 0).chart = "line_chart";
          });
          expect(reason).toContain(line.trim());
       },
@@ -326,7 +325,10 @@ describe("chart lines beside quoted text, omitted charts and custom lines", () =
 
    it("reads the lines behind a custom chart", async () => {
       const doc = await openDocument(FILE("  # bar_chart\n  # line_chart\n"));
-      expect(doc.tiles[0].chartLines).toEqual(["# bar_chart", "# line_chart"]);
+      expect(queryTile(doc, 0).chartLines).toEqual([
+         "# bar_chart",
+         "# line_chart",
+      ]);
    });
 
    it("refuses an authorize-like line in a changed description", async () => {

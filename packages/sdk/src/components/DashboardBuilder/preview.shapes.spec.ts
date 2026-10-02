@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { DashboardTile } from "./document";
+import type { QueryTile } from "./document";
 import { previewTileQuery } from "./preview";
-import { openDocument, spliced } from "./testing/fixtures";
+import { openDocument, queryTile, spliced } from "./testing/fixtures";
 
 const NONE =
    "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
@@ -29,7 +29,7 @@ describe("the Default chart preview, for the shapes a real dashboard reads", () 
             tile.name,
             previewTileQuery(
                document,
-               { ...tile, chart: "default" } as DashboardTile,
+               { ...tile, chart: "default" } as QueryTile,
                new Set(),
             ).annotation,
          ]),
@@ -58,11 +58,13 @@ source: a is one extend {
 
    it("keeps dotted paths and expressions verbatim, and a redundant quote untouched", async () => {
       const document = await openDocument(FILTERS);
-      expect(document.tiles.map((t) => t.filters?.[0]?.field)).toEqual([
-         "created_at.year",
-         "category",
-         "lower(`date`)",
-      ]);
+      expect(
+         document.tiles.map(
+            (t) =>
+               queryTile(document, document.tiles.indexOf(t)).filters?.[0]
+                  ?.field,
+         ),
+      ).toEqual(["created_at.year", "category", "lower(`date`)"]);
       const out = await spliced(FILTERS, (d) => {
          for (const tile of d.tiles) tile.colspan = 4;
       });

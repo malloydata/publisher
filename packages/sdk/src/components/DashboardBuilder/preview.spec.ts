@@ -3,14 +3,15 @@
 
 import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
-import type { DashboardDocument, DashboardTile } from "./document";
+import type { DashboardDocument, QueryTile } from "./document";
+import { queryTile } from "./testing/fixtures";
 import { previewGivens, previewTileQuery } from "./preview";
 
 const tile = (
    name: string,
    from: string,
-   filters?: DashboardTile["filters"],
-): DashboardTile => ({
+   filters?: QueryTile["filters"],
+): QueryTile => ({
    name,
    source: "overview",
    declaration: { kind: "reference", from },
@@ -86,7 +87,7 @@ describe("previewTileQuery", () => {
    const runnable = new Set(["CATEGORY", "SINCE"]);
 
    it("runs the view on the source the extension extends, with the document's bindings", () => {
-      const q = previewTileQuery(document, document.tiles[0], runnable);
+      const q = previewTileQuery(document, queryTile(document, 0), runnable);
       expect(q.expression).toBe(
          "overview -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }",
       );
@@ -94,15 +95,15 @@ describe("previewTileQuery", () => {
    });
 
    it("carries the wrapper's chart line above the run, and nothing for the view's own", () => {
-      const base = document.tiles[2];
-      const withChart = (chart: DashboardTile["chart"]) =>
+      const base = queryTile(document, 2);
+      const withChart = (chart: QueryTile["chart"]) =>
          previewTileQuery(
             document,
             {
                ...base,
                chart,
                chartLines: ["# bar_chart { size=spark }"],
-            } as DashboardTile,
+            } as QueryTile,
             runnable,
          ).annotation;
       expect(withChart("bar_chart")).toBe(
@@ -120,8 +121,8 @@ describe("previewTileQuery", () => {
       const NONE =
          "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
       const annotationOf = (
-         declaration: DashboardTile["declaration"],
-         chart: DashboardTile["chart"],
+         declaration: QueryTile["declaration"],
+         chart: QueryTile["chart"],
       ) =>
          previewTileQuery(
             document,
@@ -152,9 +153,9 @@ describe("previewTileQuery", () => {
    it("sends a tile only the givens it binds", () => {
       // `trend` binds CATEGORY alone: SINCE moving must not re-run it, and
       // unbinding a tile is what takes a control's effect off it.
-      const q = previewTileQuery(document, document.tiles[1], runnable);
+      const q = previewTileQuery(document, queryTile(document, 1), runnable);
       expect(q.givenNames).toEqual(["CATEGORY"]);
-      const bare = previewTileQuery(document, document.tiles[2], runnable);
+      const bare = previewTileQuery(document, queryTile(document, 2), runnable);
       expect(bare.expression).toBe("overview -> by_state");
       expect(bare.givenNames).toEqual([]);
    });
@@ -165,7 +166,7 @@ describe("previewTileQuery", () => {
       // before the file is saved. Only CATEGORY travels with the request.
       const q = previewTileQuery(
          document,
-         document.tiles[0],
+         queryTile(document, 0),
          new Set(["CATEGORY"]),
          new Map<string, GivenValue>([
             ["CATEGORY", "Shoes"],
@@ -179,10 +180,10 @@ describe("previewTileQuery", () => {
    });
 
    it("leaves out an unsent given with no value yet, and one nobody declares", () => {
-      const q = previewTileQuery(document, document.tiles[0], new Set());
+      const q = previewTileQuery(document, queryTile(document, 0), new Set());
       expect(q.expression).toBe("overview -> key_figures");
       expect(q.givenNames).toEqual([]);
-      const stray: DashboardTile = tile("t", "v", [
+      const stray: QueryTile = tile("t", "v", [
          { field: "x", given: "NOBODY" },
       ]);
       expect(
@@ -196,7 +197,7 @@ describe("previewTileQuery", () => {
       // … }` is as much a named view as `view: x is base_view` — so a
       // binding takes the same `source -> x + { where: … }` path a reference
       // tile does, rather than being sent unrefined.
-      const inline: DashboardTile = {
+      const inline: QueryTile = {
          name: "kpis",
          source: "overview",
          declaration: { kind: "inline" },
@@ -210,7 +211,7 @@ describe("previewTileQuery", () => {
    });
 
    it("runs an inherited tile as the model has it, sending the whole row", () => {
-      const inherited: DashboardTile = {
+      const inherited: QueryTile = {
          name: "by_brand",
          source: "orders",
          declaration: { kind: "inherited" },

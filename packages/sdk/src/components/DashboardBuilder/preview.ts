@@ -5,7 +5,12 @@ import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { chartLineText, isChartPick } from "./chartLine";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
 import { malloyPath } from "./malloyText";
 
 /**
@@ -39,7 +44,8 @@ export function previewGivens(
 ): Given[] {
    const bound = new Set<string>();
    for (const tile of document.tiles)
-      for (const filter of tile.filters ?? []) bound.add(filter.given);
+      for (const filter of isQueryTile(tile) ? (tile.filters ?? []) : [])
+         bound.add(filter.given);
 
    const out: Given[] = [];
    const seen = new Set<string>();
@@ -97,7 +103,7 @@ function givenFromLocal(local: LocalGiven): Given {
  * body, a `{ … } + { … }` compound or a `->` pipeline. Any other opaque body starts from a
  * named view and inherits that view's chart, which a preview must not hide.
  */
-function dropsBaseChart(declaration: DashboardTile["declaration"]): boolean {
+function dropsBaseChart(declaration: QueryTile["declaration"]): boolean {
    if (declaration.kind === "inline") return true;
    return (
       declaration.kind === "opaque" &&
@@ -166,7 +172,7 @@ export interface PreviewTileQuery {
  */
 export function previewTileQuery(
    document: DashboardDocument,
-   tile: DashboardTile,
+   tile: QueryTile,
    runnable: ReadonlySet<string>,
    values: ReadonlyMap<string, GivenValue> = new Map(),
 ): PreviewTileQuery {

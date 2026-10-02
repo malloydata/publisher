@@ -8,9 +8,10 @@ import type { PointerEvent, ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import { TileCard, TileHeading } from "../Dashboard/TileCard";
-import { tileKey, type DashboardTile } from "./document";
+import { isTextTile, tileKey, tileLabel, type DashboardTile } from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
+import { TextTileBody } from "./TextTileBody";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the grip,
@@ -25,6 +26,7 @@ export function TileFrame({
    menuOpen,
    resizeSpan,
    columns,
+   resizable = true,
    onSelect,
    onOpenMenu,
    onResizeStart,
@@ -40,6 +42,8 @@ export function TileFrame({
    /** The width being previewed while THIS tile is resized. */
    resizeSpan: number | undefined;
    columns: number;
+   /** Whether the right edge sets the width: not in a one-column document, where every tile is full width. */
+   resizable?: boolean;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
    onResizeStart: (event: PointerEvent<HTMLDivElement>) => void;
@@ -152,7 +156,7 @@ export function TileFrame({
                <Box
                   ref={handleRef}
                   className="builder-affordance"
-                  aria-label={`Move ${tile.label ?? tile.name}`}
+                  aria-label={`Move ${tileLabel(tile)}`}
                   sx={{
                      position: "absolute",
                      top: "2px",
@@ -190,7 +194,7 @@ export function TileFrame({
                   <IconButton
                      className="builder-affordance"
                      size="small"
-                     aria-label={`Settings for ${tile.label ?? tile.name}`}
+                     aria-label={`Settings for ${tileLabel(tile)}`}
                      onClick={(event) => {
                         event.stopPropagation();
                         onOpenMenu(event.currentTarget);
@@ -251,49 +255,52 @@ export function TileFrame({
                 could not be saved. Its own pointer handling
                 stops the press reaching the sortable, and
                 the sensor refuses a separator regardless. */}
-               {tile.declaration.kind !== "inherited" && (
-                  <Box
-                     className="builder-affordance"
-                     role="separator"
-                     aria-orientation="vertical"
-                     aria-label={`Resize ${tile.label ?? tile.name}`}
-                     onPointerDown={onResizeStart}
-                     onPointerMove={onResizeMove}
-                     onPointerUp={onResizeEnd}
-                     onPointerCancel={onResizeEnd}
-                     sx={{
-                        position: "absolute",
-                        top: 0,
-                        bottom: 0,
-                        // Straddles the edge, so the target
-                        // is a usable width without eating
-                        // into the tile's content.
-                        right: "-5px",
-                        width: "10px",
-                        cursor: "col-resize",
-                        touchAction: "none",
-                        zIndex: 1,
-                        // Invisible until wanted: a rule down
-                        // every tile edge would read as a
-                        // table, and the tile already draws
-                        // an edge of its own.
-                        opacity: resizeSpan !== undefined || selected ? 1 : 0,
-                        transition: "opacity 120ms",
-                        "&:hover": { opacity: 1 },
-                        "&::after": {
-                           content: '""',
+               {resizable &&
+                  (isTextTile(tile) ||
+                     tile.declaration.kind !== "inherited") && (
+                     <Box
+                        className="builder-affordance"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`Resize ${tileLabel(tile)}`}
+                        onPointerDown={onResizeStart}
+                        onPointerMove={onResizeMove}
+                        onPointerUp={onResizeEnd}
+                        onPointerCancel={onResizeEnd}
+                        sx={{
                            position: "absolute",
-                           top: "50%",
-                           left: "50%",
-                           transform: "translate(-50%, -50%)",
-                           width: "4px",
-                           height: "28px",
-                           borderRadius: "2px",
-                           bgcolor: theme.drillLink,
-                        },
-                     }}
-                  />
-               )}
+                           top: 0,
+                           bottom: 0,
+                           // Straddles the edge, so the target
+                           // is a usable width without eating
+                           // into the tile's content.
+                           right: "-5px",
+                           width: "10px",
+                           cursor: "col-resize",
+                           touchAction: "none",
+                           zIndex: 1,
+                           // Invisible until wanted: a rule down
+                           // every tile edge would read as a
+                           // table, and the tile already draws
+                           // an edge of its own.
+                           opacity:
+                              resizeSpan !== undefined || selected ? 1 : 0,
+                           transition: "opacity 120ms",
+                           "&:hover": { opacity: 1 },
+                           "&::after": {
+                              content: '""',
+                              position: "absolute",
+                              top: "50%",
+                              left: "50%",
+                              transform: "translate(-50%, -50%)",
+                              width: "4px",
+                              height: "28px",
+                              borderRadius: "2px",
+                              bgcolor: theme.drillLink,
+                           },
+                        }}
+                     />
+                  )}
             </Box>
          )}
       </TileSortable>
@@ -306,6 +313,7 @@ export function TileFrame({
  */
 export function TilePlaceholder({ tile }: { tile: DashboardTile }) {
    const { theme } = usePublisherTheme();
+   if (isTextTile(tile)) return <TextTileBody tile={tile} />;
    return (
       <TileCard sx={{ minHeight: 140 }}>
          <TileHeading

@@ -7,7 +7,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
 import type { SavesTo } from "./documentSession";
-import type { DashboardEventHandler } from "../Dashboard/telemetry";
+import type { BuilderEvent } from "./telemetry";
 import {
    acceptsField,
    applyMapping,
@@ -22,10 +22,12 @@ import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import {
+   isQueryTile,
+   isTextTile,
    tileKey,
    type DashboardDocument,
-   type DashboardTile,
    type LocalGiven,
+   type QueryTile,
 } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
 import { SaveNotice } from "./SaveNotice";
@@ -36,6 +38,7 @@ import { FilterStrip } from "./FilterStrip";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
+import { TextTileBody } from "./TextTileBody";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
@@ -106,7 +109,7 @@ export interface DashboardBuilderProps {
     * Renders a tile, card and heading included — this is where a real
     * `DashboardTile` goes. Without it, tiles show what they will run.
     */
-   renderTile?: (tile: DashboardTile) => ReactNode;
+   renderTile?: (tile: QueryTile) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -147,8 +150,14 @@ export interface DashboardBuilderProps {
     * go. Absent, a drill can only filter this dashboard.
     */
    dashboards?: string[];
-   /** Saves and refusals, for the host to log; see `DashboardEvent`. */
-   onEvent?: DashboardEventHandler;
+   /** Saves and refusals, for the host to log; see `DashboardEvent`. A notebook-kind document reports `NotebookEvent`s instead. */
+   onEvent?: (event: BuilderEvent) => void;
+   /**
+    * The document is a conversion of a cell-format notebook: `from` is the text
+    * on disk, `to` the layout text it converts to. Save writes `to` with the
+    * edits spliced in, and Undo save puts `from` back.
+    */
+   conversion?: { from: string; to: string };
    /**
     * Whether the document differs from what was last saved, on every change
     * and on mount.
@@ -191,15 +200,19 @@ export function DashboardBuilder({
    onExit,
    dashboards,
    onEvent,
+   conversion,
    savesTo = "package",
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),
+      ...(conversion ? { conversion } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
-   const columns = editor.document.columns ?? DEFAULT_COLUMNS;
+   // A notebook is one column whatever the file says, and the builder never writes its width.
+   const notebook = editor.document.kind === "notebook";
+   const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
    const { resize, gridBox, startResize, onResize, endResize } = useTileResize({
       tiles: editor.document.tiles,
       columns,
@@ -277,7 +290,7 @@ export function DashboardBuilder({
       [catalog, editor.document.sources],
    );
    const fieldsFor = useCallback(
-      (tile: DashboardTile) =>
+      (tile: QueryTile) =>
          fieldsBySource.get(tile.source) ??
          // A tile on an imported source with no extension of its own: its
          // source IS a model source, and may be in the catalog directly.
@@ -286,8 +299,9 @@ export function DashboardBuilder({
    );
    // The catalog's view behind the tile whose menu is open, for the charts the
    // picker may offer: a reference tile's base view, else a view of the tile's own name.
-   const menuTile =
+   const menuAt =
       menu === undefined ? undefined : editor.document.tiles[menu.index];
+   const menuTile = menuAt && isQueryTile(menuAt) ? menuAt : undefined;
    const menuView = (() => {
       if (!menuTile || !catalog) return undefined;
       const base =
@@ -310,6 +324,7 @@ export function DashboardBuilder({
    ): string[] => {
       const out: string[] = [];
       for (const tile of editor.document.tiles) {
+         if (!isQueryTile(tile)) continue;
          const known = fieldsFor(tile);
          if (!known) continue;
          const types = new Map(known.map((field) => [field.name, field.type]));
@@ -343,9 +358,13 @@ export function DashboardBuilder({
             if (!menu && !filterDialog) setSelected(undefined);
          },
          nudge: (delta: 1 | -1) => {
-            if (selected === undefined) return;
+            if (selected === undefined || notebook) return;
             const tile = editor.document.tiles[selected];
-            if (!tile || tile.declaration.kind === "inherited") return;
+            if (
+               !tile ||
+               (isQueryTile(tile) && tile.declaration.kind === "inherited")
+            )
+               return;
             const span = Math.min(
                Math.max((tile.colspan ?? 1) + delta, 1),
                columns,
@@ -356,7 +375,7 @@ export function DashboardBuilder({
             });
          },
       }),
-      [editor, menu, filterDialog, selected, columns],
+      [editor, menu, filterDialog, selected, columns, notebook],
    );
    const session = useBuilderSession<DashboardDocument>({
       editor,
@@ -369,26 +388,58 @@ export function DashboardBuilder({
       shortcuts,
       report: {
          size: editor.document.tiles.length,
-         saved: ({ size, structural, durationMs }) =>
-            onEvent?.({
-               type: "dashboard.saved",
-               tiles: size,
-               structural,
-               where: savesTo,
-               durationMs,
-            }),
+         // A notebook-kind document keeps the `notebook.*` names hosts already count.
+         saved: ({ size, structural, durationMs, fromOpen }) =>
+            onEvent?.(
+               notebook
+                  ? {
+                       type: "notebook.saved",
+                       cells: size,
+                       structural,
+                       converted: fromOpen,
+                       where: savesTo,
+                       durationMs,
+                    }
+                  : {
+                       type: "dashboard.saved",
+                       tiles: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    },
+            ),
          refused: (reason) =>
-            onEvent?.({ type: "dashboard.save_refused", reason }),
-         undone: ({ size, structural, durationMs }) =>
             onEvent?.({
-               type: "dashboard.save_undone",
-               tiles: size,
-               structural,
-               where: savesTo,
-               durationMs,
+               type: notebook
+                  ? "notebook.save_refused"
+                  : "dashboard.save_refused",
+               reason,
             }),
+         undone: ({ size, structural, durationMs }) =>
+            onEvent?.(
+               notebook
+                  ? {
+                       type: "notebook.save_undone",
+                       cells: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    }
+                  : {
+                       type: "dashboard.save_undone",
+                       tiles: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    },
+            ),
          undoRefused: (reason) =>
-            onEvent?.({ type: "dashboard.save_undo_refused", reason }),
+            onEvent?.({
+               type: notebook
+                  ? "notebook.save_undo_refused"
+                  : "dashboard.save_undo_refused",
+               reason,
+            }),
       },
    });
 
@@ -412,6 +463,7 @@ export function DashboardBuilder({
          // one under the same name; then kept distinct from its siblings.
          const used = new Set(
             draft.tiles
+               .filter(isQueryTile)
                .filter((t) => t.source === extension!.name)
                .map((t) => t.name),
          );
@@ -421,10 +473,29 @@ export function DashboardBuilder({
             name,
             source: extension.name,
             declaration: { kind: "reference", from: tile.view },
-            colspan: tile.colspan,
+            ...(notebook ? {} : { colspan: tile.colspan }),
             ...(tile.label ? { label: tile.label } : {}),
             ...(tile.chart ? { chart: tile.chart } : {}),
             ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
+         });
+      });
+      setSelected(editor.document.tiles.length);
+   };
+
+   /** An empty text tile at the end, named for the first free `text_N`. */
+   const addText = () => {
+      setAddingTile(false);
+      editor.update((draft) => {
+         const taken = new Set(
+            draft.tiles.filter(isTextTile).map((t) => t.name),
+         );
+         let n = 1;
+         while (taken.has(`text_${n}`)) n++;
+         draft.tiles.push({
+            kind: "text",
+            name: `text_${n}`,
+            markdown: "",
+            ...(notebook ? {} : { colspan: columns }),
          });
       });
       setSelected(editor.document.tiles.length);
@@ -501,9 +572,18 @@ export function DashboardBuilder({
              4px there would put the title 4px further from the bar than the
              reader's is. */}
          <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+            {editor.pendingOpen && (
+               <Alert severity="info">
+                  This notebook is in the cell format. Saving rewrites it as a
+                  layout notebook; Undo save puts it back.
+               </Alert>
+            )}
             <SaveNotice {...session.notice} />
             <DashboardProse
-               title={editor.document.title || "Untitled dashboard"}
+               title={
+                  editor.document.title ||
+                  (notebook ? "Untitled notebook" : "Untitled dashboard")
+               }
                {...(editor.document.description
                   ? { description: editor.document.description }
                   : {})}
@@ -523,7 +603,8 @@ export function DashboardBuilder({
                   }}
                >
                   <Typography variant="body2">
-                     This dashboard is not served until it has a tile.
+                     This {notebook ? "notebook" : "dashboard"} is not served
+                     until it has a tile.
                   </Typography>
                   {catalog && (
                      <Button
@@ -560,7 +641,7 @@ export function DashboardBuilder({
                onDragEnd={onDragEnd}
             >
                <Box ref={gridBox} sx={{ position: "relative" }}>
-                  {(resize !== undefined || dragging) && (
+                  {!notebook && (resize !== undefined || dragging) && (
                      <GridGuides columns={columns} />
                   )}
 
@@ -588,6 +669,7 @@ export function DashboardBuilder({
                                     : undefined
                               }
                               columns={columns}
+                              resizable={!notebook}
                               onSelect={() => setSelected(index)}
                               onOpenMenu={(anchor) => {
                                  setSelected(index);
@@ -599,7 +681,10 @@ export function DashboardBuilder({
                               onResizeMove={onResize}
                               onResizeEnd={endResize}
                            >
-                              {renderTile ? (
+                              {isTextTile(each) ? (
+                                 <TextTileBody tile={each} />
+                              ) : renderTile && !editor.pendingOpen ? (
+                                 // Until the conversion is saved the package has none of its views to run.
                                  renderTile(each)
                               ) : (
                                  <TilePlaceholder tile={each} />
@@ -650,8 +735,7 @@ export function DashboardBuilder({
                columns={columns}
                view={menuView}
                onDrills={() => {
-                  if (menu !== undefined)
-                     setDrillSource(editor.document.tiles[menu.index]?.source);
+                  setDrillSource(menuTile?.source);
                }}
             />
             <DrillDialog
@@ -680,6 +764,8 @@ export function DashboardBuilder({
                onClose={() => setSettingsAnchor(null)}
                onCommit={(next) =>
                   editor.update((draft) => {
+                     if (next.kind === undefined) delete draft.kind;
+                     else draft.kind = next.kind;
                      draft.title = next.title;
                      if (next.description === undefined)
                         delete draft.description;
@@ -698,6 +784,7 @@ export function DashboardBuilder({
                columns={columns}
                onClose={() => setAddingTile(false)}
                onAdd={addTile}
+               onAddText={addText}
             />
             <UnsavedChangesDialog {...session.exitGuard.dialog} />
          </Stack>

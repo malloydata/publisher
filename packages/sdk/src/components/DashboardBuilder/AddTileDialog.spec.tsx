@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { AddTileDialog } from "./AddTileDialog";
 import { openDocument } from "./testing/fixtures";
 
@@ -43,6 +43,7 @@ describe("AddTileDialog", () => {
             columns={12}
             onClose={() => {}}
             onAdd={() => {}}
+            onAddText={() => {}}
          />,
       );
       expect(screen.getByLabelText("View totals")).toBeDefined();
@@ -58,5 +59,30 @@ describe("AddTileDialog", () => {
          o.textContent?.startsWith("stocked"),
       )!;
       expect(stocked.getAttribute("aria-disabled")).not.toBe("true");
+   });
+
+   it("adds a text tile without asking for a view", async () => {
+      const document = await openDocument(SOURCE);
+      const onAdd = mock(() => {});
+      const onAddText = mock(() => {});
+      render(
+         <AddTileDialog
+            open
+            document={document}
+            catalog={catalog}
+            columns={12}
+            onClose={() => {}}
+            onAdd={onAdd}
+            onAddText={onAddText}
+         />,
+      );
+      expect(screen.getByRole("button", { name: "Add tile" })).toHaveProperty(
+         "disabled",
+         true,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      expect(onAddText).toHaveBeenCalledTimes(1);
+      expect(onAdd).not.toHaveBeenCalled();
    });
 });

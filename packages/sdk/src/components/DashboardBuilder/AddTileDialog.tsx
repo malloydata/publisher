@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Button, Stack, TextField, Typography } from "@mui/material";
+import {
+   Button,
+   Stack,
+   TextField,
+   ToggleButton,
+   ToggleButtonGroup,
+   Typography,
+} from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogSource, PackageCatalog } from "./catalog";
@@ -48,6 +55,8 @@ export interface AddTileDialogProps {
    columns: number;
    onClose: () => void;
    onAdd: (tile: NewTile) => void;
+   /** Add an empty text tile, whose markdown is written on the tile itself. */
+   onAddText: () => void;
 }
 
 /** The catalog sources this file can put a tile on; see the note above. */
@@ -71,12 +80,14 @@ export function AddTileDialog({
    columns,
    onClose,
    onAdd,
+   onAddText,
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
    const sources = useMemo(
       () => reachableSources(document, catalog),
       [document, catalog],
    );
+   const [mode, setMode] = useState<"query" | "text">("query");
    const [base, setBase] = useState<string>("");
    const [view, setView] = useState<string>("");
    const [label, setLabel] = useState("");
@@ -87,6 +98,7 @@ export function AddTileDialog({
 
    useEffect(() => {
       if (!open) return;
+      setMode("query");
       // Open on the source the tiles already read, so the common case is one
       // click on a view.
       const withViews = (name: string) =>
@@ -124,35 +136,60 @@ export function AddTileDialog({
                <Button onClick={onClose}>Cancel</Button>
                <Button
                   variant="contained"
-                  disabled={!canAdd || unwritable !== undefined}
+                  disabled={
+                     mode === "query" && (!canAdd || unwritable !== undefined)
+                  }
                   onClick={() =>
-                     onAdd({
-                        base,
-                        view,
-                        ...(label.trim() ? { label: label.trim() } : {}),
-                        ...(chart !== "default"
-                           ? {
-                                chart,
-                                ...(picked
-                                   ? {
-                                        chartCarried: picked.chart
-                                           ? [picked.chart]
-                                           : [],
-                                     }
-                                   : {}),
-                             }
-                           : {}),
-                        colspan,
-                     })
+                     mode === "text"
+                        ? onAddText()
+                        : onAdd({
+                             base,
+                             view,
+                             ...(label.trim() ? { label: label.trim() } : {}),
+                             ...(chart !== "default"
+                                ? {
+                                     chart,
+                                     ...(picked
+                                        ? {
+                                             chartCarried: picked.chart
+                                                ? [picked.chart]
+                                                : [],
+                                          }
+                                        : {}),
+                                  }
+                                : {}),
+                             colspan,
+                          })
                   }
                >
-                  Add tile
+                  {mode === "text" ? "Add text" : "Add tile"}
                </Button>
             </>
          }
       >
          <Stack sx={{ gap: 2, pt: 1 }}>
-            {sources.length === 0 ? (
+            <ToggleButtonGroup
+               size="small"
+               exclusive
+               value={mode}
+               aria-label="Tile type"
+               onChange={(_, next: "query" | "text" | null) => {
+                  if (next !== null) setMode(next);
+               }}
+            >
+               <ToggleButton value="query" sx={{ px: 1.5 }}>
+                  Query
+               </ToggleButton>
+               <ToggleButton value="text" sx={{ px: 1.5 }}>
+                  Text
+               </ToggleButton>
+            </ToggleButtonGroup>
+            {mode === "text" ? (
+               <Typography variant="body2" sx={{ color: theme.tileTitle }}>
+                  A text tile holds markdown: a heading, a paragraph, a list. It
+                  is added empty, and written on the tile itself.
+               </Typography>
+            ) : sources.length === 0 ? (
                <Typography variant="body2" sx={{ color: theme.tileTitle }}>
                   {catalog
                      ? "This dashboard imports no source by name, so there is nothing to put a tile on. Import a source in the file first."
@@ -201,26 +238,31 @@ export function AddTileDialog({
                         inputProps={{ "aria-label": "Tile title" }}
                         sx={{ flex: 1 }}
                      />
-                     <TextField
-                        size="small"
-                        type="number"
-                        label={`Width (of ${columns})`}
-                        value={colspan}
-                        onChange={(event) =>
-                           setColspan(
-                              Math.min(
-                                 Math.max(Number(event.target.value) || 1, 1),
-                                 columns,
-                              ),
-                           )
-                        }
-                        inputProps={{
-                           min: 1,
-                           max: columns,
-                           "aria-label": "Tile width",
-                        }}
-                        sx={{ width: 140 }}
-                     />
+                     {columns > 1 && (
+                        <TextField
+                           size="small"
+                           type="number"
+                           label={`Width (of ${columns})`}
+                           value={colspan}
+                           onChange={(event) =>
+                              setColspan(
+                                 Math.min(
+                                    Math.max(
+                                       Number(event.target.value) || 1,
+                                       1,
+                                    ),
+                                    columns,
+                                 ),
+                              )
+                           }
+                           inputProps={{
+                              min: 1,
+                              max: columns,
+                              "aria-label": "Tile width",
+                           }}
+                           sx={{ width: 140 }}
+                        />
+                     )}
                   </Stack>
                </>
             )}

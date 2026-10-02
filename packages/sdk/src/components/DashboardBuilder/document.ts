@@ -183,16 +183,6 @@ export interface TextTile {
    markdown: string;
    colspan?: number;
    break?: boolean;
-   /** A query tile's fields, declared absent so readers of a `DashboardTile` compile until each narrows with `isQueryTile`. */
-   source?: undefined;
-   declaration?: undefined;
-   filters?: undefined;
-   label?: undefined;
-   subtitle?: undefined;
-   chart?: undefined;
-   chartLines?: undefined;
-   borderless?: undefined;
-   chartCarried?: undefined;
 }
 
 export type DashboardTile = QueryTile | TextTile;
@@ -202,6 +192,10 @@ export const isTextTile = (tile: DashboardTile): tile is TextTile =>
 
 export const isQueryTile = (tile: DashboardTile): tile is QueryTile =>
    tile.kind !== "text";
+
+/** What a tile is called in the builder's own labels: a query tile's title, else its name. */
+export const tileLabel = (tile: DashboardTile) =>
+   isQueryTile(tile) ? (tile.label ?? tile.name) : tile.name;
 
 /**
  * A source extension the dashboard DECLARES, holding tiles that read it.

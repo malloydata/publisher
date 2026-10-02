@@ -7,6 +7,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 import { parseMalloy, parseRefused } from "./malloyTree";
+import { queryTile } from "./testing/fixtures";
+import { tileKey } from "./document";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -361,10 +363,7 @@ source: b is two extend {
   view: y is vy
 }`);
       expect(doc.sources.map((s) => s.name)).toEqual(["a", "b"]);
-      expect(doc.tiles.map((t) => `${t.source}.${t.name}`)).toEqual([
-         "a.x",
-         "b.y",
-      ]);
+      expect(doc.tiles.map(tileKey)).toEqual(["a.x", "b.y"]);
    });
 
    it("reads a filter binding written as a refinement", async () => {
@@ -374,11 +373,11 @@ import "../m.malloy"
 source: a is one extend {
   view: x is vx + { where: products.brand ~ $BRAND }
 }`);
-      expect(doc.tiles[0].declaration).toEqual({
+      expect(queryTile(doc, 0).declaration).toEqual({
          kind: "reference",
          from: "vx",
       });
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "products.brand", given: "BRAND" },
       ]);
    });
@@ -445,7 +444,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is vx + { where: category ~ $CATEGORY, where: created_at >= $SINCE, limit: 5 }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
@@ -467,8 +466,8 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).declaration).toEqual({ kind: "inline" });
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -484,7 +483,7 @@ source: a is one extend {
     where: category ~ $CATEGORY
   }
 }`);
-      expect(last.tiles[0].filters).toEqual([
+      expect(queryTile(last, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
 
@@ -498,7 +497,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(middle.tiles[0].filters).toEqual([
+      expect(queryTile(middle, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -519,7 +518,7 @@ source: a is one extend {
     }
   }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 
    // "Whose ENTIRE text is one or more binding clauses" — `a ~ $A and c = 1`
@@ -535,7 +534,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 
    // `cleanBindingClauses` accepts a following statement keyword as a clean
@@ -557,7 +556,7 @@ source: a is one extend {
     where: a ~ $A, aggregate: n is count(), where: b ~ $B
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "a", given: "A" },
          { field: "b", given: "B" },
       ]);
@@ -575,7 +574,7 @@ source: a is one extend {
     where: a ~ $A, where: b ~ $B
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "a", given: "A" },
          { field: "b", given: "B" },
       ]);
@@ -597,7 +596,7 @@ source: a is one extend {
     select: category, n
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -609,7 +608,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is { aggregate: n is count() where: category ~ $CATEGORY }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -624,7 +623,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is { where: category ~ $CATEGORY, aggregate: n is count() }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -640,7 +639,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(opening.tiles[0].filters).toEqual([
+      expect(queryTile(opening, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
 
@@ -652,7 +651,7 @@ source: a is one extend {
     aggregate: n is count()
     where: category ~ $CATEGORY }
 }`);
-      expect(closing.tiles[0].filters).toEqual([
+      expect(queryTile(closing, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -668,7 +667,7 @@ source: a is one extend {
 
   view: x is { aggregate: n is count() }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 });
 
@@ -772,7 +771,7 @@ describe("readDashboardDocument: what it refuses", () => {
       const doc = await read(
          `## artifact { title="T" tiles=["a -> x"] }\nimport "../m.malloy"\nsource: a is one extend {\n  # colspan=6\n  view: x is { aggregate: n }\n}`,
       );
-      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
+      expect(queryTile(doc, 0).declaration).toEqual({ kind: "inline" });
       expect(doc.tiles[0].colspan).toBe(6);
    });
 });

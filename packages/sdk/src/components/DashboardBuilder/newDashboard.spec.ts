@@ -8,6 +8,7 @@ import {
    slugFor,
 } from "./newDashboard";
 import { openDocument } from "./testing/fixtures";
+import { queryTile } from "./testing/fixtures";
 
 describe("a new dashboard", () => {
    it("names its file after its title", () => {
@@ -35,7 +36,7 @@ describe("a new dashboard", () => {
       expect(document.tiles.map((tile) => tile.name)).toEqual([
          "by_category_tile",
       ]);
-      expect(document.tiles[0].declaration).toEqual({
+      expect(queryTile(document, 0).declaration).toEqual({
          kind: "reference",
          from: "by_category",
       });

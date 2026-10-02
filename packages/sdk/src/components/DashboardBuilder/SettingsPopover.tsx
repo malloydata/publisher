@@ -8,11 +8,13 @@ import {
    Stack,
    Switch,
    TextField,
+   ToggleButton,
+   ToggleButtonGroup,
    Typography,
 } from "@mui/material";
 import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import type { DashboardDocument } from "./document";
+import type { DashboardDocument, DocumentKind } from "./document";
 
 /**
  * The page's own settings, off the edit bar: its title, the markdown
@@ -20,6 +22,8 @@ import type { DashboardDocument } from "./document";
  * change or behind an Apply button. Edits commit on close (`useDraft`).
  */
 export interface PageSettings {
+   /** Absent reads as a dashboard. */
+   kind?: DocumentKind;
    title: string;
    description?: string;
    columns?: number;
@@ -27,6 +31,7 @@ export interface PageSettings {
 }
 
 export const settingsOf = (document: DashboardDocument): PageSettings => ({
+   ...(document.kind === undefined ? {} : { kind: document.kind }),
    title: document.title,
    ...(document.description === undefined
       ? {}
@@ -58,6 +63,7 @@ export function SettingsPopover({
       onClose,
    );
 
+   const notebook = draft?.kind === "notebook";
    const widths =
       draft?.columns !== undefined && !WIDTHS.includes(draft.columns)
          ? [...WIDTHS, draft.columns].sort((a, b) => a - b)
@@ -78,14 +84,49 @@ export function SettingsPopover({
                   variant="overline"
                   sx={{ color: theme.tileTitle, lineHeight: 1.5 }}
                >
-                  Dashboard
+                  {notebook ? "Notebook" : "Dashboard"}
                </Typography>
+               {/* A notebook is the same file with one column, so switching is a tag edit, not a move. */}
+               <Stack
+                  direction="row"
+                  sx={{ gap: 1, alignItems: "center", flexWrap: "wrap" }}
+               >
+                  <Typography variant="caption" sx={{ color: theme.tileTitle }}>
+                     Show as
+                  </Typography>
+                  <ToggleButtonGroup
+                     size="small"
+                     exclusive
+                     value={notebook ? "notebook" : "dashboard"}
+                     aria-label="Show as"
+                     onChange={(_, next: DocumentKind | null) => {
+                        if (next === null) return;
+                        patch((s) => {
+                           if (next === "notebook") {
+                              s.kind = "notebook";
+                              delete s.columns;
+                           } else delete s.kind;
+                        });
+                     }}
+                  >
+                     <ToggleButton value="dashboard" sx={{ px: 1.5 }}>
+                        Dashboard
+                     </ToggleButton>
+                     <ToggleButton value="notebook" sx={{ px: 1.5 }}>
+                        Notebook
+                     </ToggleButton>
+                  </ToggleButtonGroup>
+               </Stack>
                <TextField
                   size="small"
                   label="Title"
                   value={draft.title}
                   autoFocus
-                  inputProps={{ "aria-label": "Dashboard title" }}
+                  inputProps={{
+                     "aria-label": notebook
+                        ? "Notebook title"
+                        : "Dashboard title",
+                  }}
                   onChange={(event) =>
                      patch((s) => {
                         s.title = event.target.value;
@@ -100,7 +141,11 @@ export function SettingsPopover({
                   maxRows={10}
                   value={draft.description ?? ""}
                   helperText="Markdown. A blank line starts a new paragraph."
-                  inputProps={{ "aria-label": "Dashboard description" }}
+                  inputProps={{
+                     "aria-label": notebook
+                        ? "Notebook description"
+                        : "Dashboard description",
+                  }}
                   onChange={(event) =>
                      patch((s) => {
                         const v = event.target.value;
@@ -109,28 +154,30 @@ export function SettingsPopover({
                      })
                   }
                />
-               <TextField
-                  select
-                  size="small"
-                  label="Grid width"
-                  value={draft.columns ?? ""}
-                  helperText="Columns across the page. Tiles are placed in these."
-                  inputProps={{ "aria-label": "Grid width" }}
-                  onChange={(event) =>
-                     patch((s) => {
-                        const v = Number(event.target.value);
-                        if (!v) delete s.columns;
-                        else s.columns = v;
-                     })
-                  }
-               >
-                  <MenuItem value="">Default (2)</MenuItem>
-                  {widths.map((w) => (
-                     <MenuItem key={w} value={w}>
-                        {w}
-                     </MenuItem>
-                  ))}
-               </TextField>
+               {!notebook && (
+                  <TextField
+                     select
+                     size="small"
+                     label="Grid width"
+                     value={draft.columns ?? ""}
+                     helperText="Columns across the page. Tiles are placed in these."
+                     inputProps={{ "aria-label": "Grid width" }}
+                     onChange={(event) =>
+                        patch((s) => {
+                           const v = Number(event.target.value);
+                           if (!v) delete s.columns;
+                           else s.columns = v;
+                        })
+                     }
+                  >
+                     <MenuItem value="">Default (2)</MenuItem>
+                     {widths.map((w) => (
+                        <MenuItem key={w} value={w}>
+                           {w}
+                        </MenuItem>
+                     ))}
+                  </TextField>
+               )}
                <FormControlLabel
                   control={
                      <Switch
