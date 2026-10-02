@@ -24,6 +24,12 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // So a NEW 5xx branch is a decision rather than a default: generalize it here
 // if its message comes from a driver, a worker, or the filesystem.
 //
+// The one filesystem failure that is NOT generalized is a refused access
+// (EACCES, EPERM, EROFS; see filesystemAccessFailure). It is a deployment
+// fault only the operator can fix, and the generic body hides which mount is
+// wrong. Its body is composed here from the errno's code, syscall and path,
+// never copied from the error's message.
+//
 // Neither generic body carries a correlation handle, which is what a user
 // reporting "I got Internal server error." would hand an operator to find the
 // logged detail. That is deliberately unchanged rather than overlooked: no error
@@ -126,9 +132,105 @@ export function logInternalFailure(
  */
 export type ErrorReason = "TABLE_NOT_FOUND";
 
-export function internalErrorToHttpError(error: Error) {
+const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
+   EACCES: "permission denied",
+   EPERM: "operation not permitted",
+   EROFS: "read-only file system",
+};
+
+/**
+ * The refused filesystem access behind `error`, if there is one: the error
+ * itself or anything on its `cause` chain that is a Node errno error with an
+ * access code. Requiring `syscall` keeps a driver error that merely carries a
+ * `code` string from matching.
+ */
+export function filesystemAccessFailure(
+   error: unknown,
+): NodeJS.ErrnoException | undefined {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const errno = current as NodeJS.ErrnoException;
+      if (
+         typeof errno.code === "string" &&
+         errno.code in FILESYSTEM_ACCESS_DESCRIPTIONS &&
+         typeof errno.syscall === "string"
+      ) {
+         return errno;
+      }
+      current = errno.cause;
+   }
+   return undefined;
+}
+
+/**
+ * One line naming a refused filesystem access, in Node's own shape
+ * (`EACCES: permission denied, mkdir '/x'`), built from the errno's fields.
+ */
+export function describeFilesystemAccessFailure(
+   errno: NodeJS.ErrnoException,
+): string {
+   const code = errno.code ?? "";
+   const target = errno.path ? ` '${errno.path}'` : "";
+   return `${code}: ${FILESYSTEM_ACCESS_DESCRIPTIONS[code] ?? code}, ${errno.syscall}${target}`;
+}
+
+/**
+ * `error.message`, followed by the refused filesystem access that caused it
+ * when the message does not already name it. For records that keep only a
+ * message, like a /status loadErrors entry.
+ */
+export function messageWithFilesystemCause(error: unknown): string {
+   const message = error instanceof Error ? error.message : String(error);
+   const access = filesystemAccessFailure(error);
+   if (!access || message.includes(access.code ?? "")) return message;
+   return `${message}: ${describeFilesystemAccessFailure(access)}`;
+}
+
+/** The errno fields of `error`, for a wire shape that keeps only what it names. */
+export function errnoWireFields(
+   error: Error,
+): { code: string; syscall?: string; path?: string } | undefined {
+   const { code, syscall, path } = error as NodeJS.ErrnoException;
+   if (typeof code !== "string") return undefined;
+   return {
+      code,
+      ...(typeof syscall === "string" ? { syscall } : {}),
+      ...(typeof path === "string" ? { path } : {}),
+   };
+}
+
+/**
+ * Map an error to the HTTP response it answers with. `log: false` classifies
+ * without logging, for a caller that only needs the status and leaves the
+ * response, and its log line, to the route handler.
+ */
+export function internalErrorToHttpError(
+   error: Error,
+   { log = true }: { log?: boolean } = {},
+) {
+   const logInternal: typeof logInternalFailure = (...args) => {
+      if (log) logInternalFailure(...args);
+   };
+   const access = filesystemAccessFailure(error);
+   if (access) {
+      // Ahead of the typed branches: a wrap like PackageNotFoundError around
+      // an EACCES would otherwise answer 404, which reads as "does not exist"
+      // and sends the operator looking for a file that is there. That also
+      // means a 4xx class whose cause chain holds a refused access answers 500
+      // with the errno; moving this branch below any typed branch demotes the
+      // errno to that branch's status and message.
+      logInternal("Filesystem access refused", error, "warn");
+      return httpError(
+         500,
+         `The server cannot access a path it needs (${describeFilesystemAccessFailure(access)}). ` +
+            `Give the user the server runs as access to it.`,
+      );
+   }
    if (error instanceof BadRequestError) {
       return httpError(400, error.message);
+   } else if (error instanceof ServerConfigurationError) {
+      logInternal("Server configuration error", error, "warn");
+      return httpError(500, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
    } else if (error instanceof AccessDeniedError) {
@@ -191,7 +293,7 @@ export function internalErrorToHttpError(error: Error) {
       if (error.callerSafe) {
          return httpError(502, error.message);
       }
-      logInternalFailure("Upstream connection error", error, "warn");
+      logInternal("Upstream connection error", error, "warn");
       return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
@@ -202,7 +304,7 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof WriteConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof WriteRolledBackError) {
-      logInternalFailure("Dashboard write rolled back", error, "warn");
+      logInternal("Dashboard write rolled back", error, "warn");
       return httpError(500, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
@@ -220,7 +322,7 @@ export function internalErrorToHttpError(error: Error) {
       // Unrecognized error: a genuine internal failure. Its message may carry a
       // stack fragment, path, or SQL, so log it server-side and return a generic
       // body to the client.
-      logInternalFailure("Unhandled internal error", error);
+      logInternal("Unhandled internal error", error);
       return httpError(500, GENERIC_INTERNAL_MESSAGE);
    }
 }
@@ -288,8 +390,8 @@ export class EnvironmentNotFoundError extends Error {
 }
 
 export class PackageNotFoundError extends Error {
-   constructor(message: string) {
-      super(message);
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
    }
 }
 
@@ -464,6 +566,18 @@ export class PublisherConfigError extends Error {
    }
 }
 
+/**
+ * The server is deployed in a way it cannot work with, such as a credentials
+ * path that names a directory. HTTP 500 with the message, which this server
+ * composes and which tells the operator what to change.
+ */
+export class ServerConfigurationError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "ServerConfigurationError";
+   }
+}
+
 export class FrozenConfigError extends Error {
    constructor(
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
@@ -601,8 +715,8 @@ export class InvalidStateTransitionError extends Error {
  * HTTP 503 so an upstream proxy / client can retry with back-off.
  */
 export class ServiceUnavailableError extends Error {
-   constructor(message: string) {
-      super(message);
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
    }
 }
 
