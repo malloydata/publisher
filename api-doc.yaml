@@ -3952,6 +3952,14 @@ components:
         error:
           type: string
           description: Error message if the dashboard file failed to compile
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: >-
+            What the document is, from the `kind` property of its artifact tag
+            (the folder only decides the default when the tag says nothing). A
+            `notebook` is laid out as one column: `dashboardColumns` is 1
+            whatever the file says.
         query:
           type: string
           description: >-
@@ -4023,12 +4031,32 @@ components:
 
     DashboardTile:
       type: object
-      description: One tile of a dashboard
+      description: >-
+        One tile of a dashboard. A `query` tile (the default) runs a query; a
+        `text` tile shows markdown and runs nothing, so a caller that runs a
+        dashboard's tiles skips the ones with `kind` `text`.
       properties:
+        kind:
+          type: string
+          enum: [query, text]
+          description: >-
+            `query` runs `query` through the model query endpoint; `text` shows
+            `markdown`. Absent means `query`.
+        name:
+          type: string
+          description: >-
+            A text tile's name: the bare word in `tiles=[…]` and on its
+            `##|(markdown) name` block. Absent on a query tile.
+        markdown:
+          type: string
+          description: >-
+            A text tile's body, the text of its `##|(markdown) name` block
+            without the opener. Empty when the file has no such block. Absent on
+            a query tile.
         query:
           type: string
           description: >-
-            The run expression exactly as written in `tiles=[…]`, for example
+            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
             "orders -> by_month". An EXPRESSION rather than a name, so it goes in
             the `query` field of a `POST …/models/{path}/query` body, prefixed
             with `run:`. Sending it in `queryName`, the field
@@ -4063,13 +4091,15 @@ components:
           type: integer
           description: >-
             Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names. Clamped to `dashboardColumns` at render time. Absent
+            query it names, or from `colspan=N` on a text tile's entry in
+            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
             means one column.
         break:
           type: boolean
           description: >-
             Start a new grid row at this tile, from a `# break` on the view or
-            query it names. Named for the tag, so every per-tile field on this
+            query it names, or from `break` on a text tile's entry in
+            `tiles=[…]`. Named for the tag, so every per-tile field on this
             schema is spelled the way an author writes it. A generated client
             escapes the attribute where the word is reserved (the Python client
             exposes `break_`) while the wire key stays `break`.
@@ -4149,6 +4179,16 @@ components:
           description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
+        dashboard:
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            The tile layout of a notebook written as one (`## artifact {
+            kind=notebook tiles=[…] }`), in the shape a dashboard has, with
+            `kind` `notebook` and one column. Absent on a notebook written as
+            cells. Its tiles run through the model query endpoint at
+            `modelPath`; `notebookCells` carries the same content as cells for
+            readers that do not draw a layout.
         annotations:
           type: array
           description:

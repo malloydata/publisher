@@ -40,7 +40,15 @@ import type {
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
-import { dashboardDescriptionNotes, isMarkdownNote } from "./notebook";
+import {
+   DASHBOARDS_DIR,
+   dashboardDescriptionNotes,
+   documentKind,
+   isDocumentModelPath,
+   isMarkdownNote,
+   parseMarkdownOpener,
+   type DocumentKind,
+} from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -77,8 +85,7 @@ export {
    unwrapFilterLiteral,
 };
 
-/** The package-relative directory a dashboard file must live in. */
-export const DASHBOARDS_DIR = "dashboards";
+export { DASHBOARDS_DIR };
 
 /**
  * Suffixes Malloyyo treats as a dashboard's custom component. Publisher does
@@ -110,8 +117,9 @@ export type DashboardSuggestSpec = GivenSuggestSpec;
  */
 export type DashboardGivenSpec = MalloyGivenApi;
 
-/** One tile of a dashboard: what to run, and how to present it. */
-export interface DashboardTileSpec extends DashboardTileLayout {
+/** A tile that runs a query: what to run, and how to present it. */
+export interface DashboardQueryTileSpec extends DashboardTileLayout {
+   kind: "query";
    /** The run expression exactly as written in `tiles=[…]` (`"orders -> by_month"`). */
    query: string;
    /**
@@ -122,6 +130,27 @@ export interface DashboardTileSpec extends DashboardTileLayout {
     * for scoping: which tiles a changed control actually needs to re-run.
     */
    givenNames?: string[];
+}
+
+/** A tile that shows markdown: its `##|(markdown) name` block, laid out by its own `tiles=[…]` entry. */
+export interface DashboardTextTileSpec {
+   kind: "text";
+   name: string;
+   /** The block's body; empty when the file has no block of that name. */
+   markdown: string;
+   colspan?: number;
+   break?: boolean;
+}
+
+export type DashboardTileSpec = DashboardQueryTileSpec | DashboardTextTileSpec;
+
+/** The tiles that run a query, for every reader that has no use for prose. */
+export function queryTiles(
+   tiles: readonly DashboardTileSpec[] | undefined,
+): DashboardQueryTileSpec[] {
+   return (tiles ?? []).filter(
+      (tile): tile is DashboardQueryTileSpec => tile.kind === "query",
+   );
 }
 
 /**
@@ -157,6 +186,8 @@ export interface DashboardTileLayout {
 export interface DashboardManifest {
    /** The filename basename — the slug, the `# drill` target, the URL segment. */
    name: string;
+   /** From the artifact tag's `kind`, the folder being only the default; a notebook lays out as one column. */
+   kind: DocumentKind;
    title: string;
    description?: string;
    /** The tagged query's name. Set for the single-query form only. */
@@ -238,7 +269,7 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
     * silently widen the suppression back to every query. */
    modelPath: string,
 ): T[] {
-   const couldBeATile = isDashboardModelPath(modelPath);
+   const couldBeATile = isDocumentModelPath(modelPath);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
@@ -332,13 +363,37 @@ const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
 };
 
+/** One entry of `tiles=[…]`: a run expression, or a named text block with its own layout. */
+type ArtifactTileEntry =
+   | { kind: "query"; expression: string }
+   | { kind: "text"; name: string; colspan?: number; break?: boolean };
+
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
 interface ArtifactTagData {
    title?: string;
-   tiles?: string[];
+   kind?: string;
+   tiles?: ArtifactTileEntry[];
    dashboardColumns?: number;
    givens?: Record<string, string>;
    autorun: boolean;
+}
+
+function readTileEntries(artifact: Tag): ArtifactTileEntry[] | undefined {
+   return artifact.array("tiles")?.flatMap((entry): ArtifactTileEntry[] => {
+      const text = tagText(entry);
+      if (text === undefined) return [];
+      if (tagText(entry, "kind") !== "text")
+         return [{ kind: "query", expression: text }];
+      const colspan = positiveInteger(tagNumeric(entry, "colspan"));
+      return [
+         {
+            kind: "text",
+            name: text,
+            ...(colspan !== undefined && { colspan }),
+            ...(entry.has("break") && { break: true }),
+         },
+      ];
+   });
 }
 
 function readArtifactTag(
@@ -353,13 +408,8 @@ function readArtifactTag(
 
    return {
       title: tagText(artifact, "title"),
-      // A `kind=text` entry is not a run expression and text tiles do not render
-      // yet, so it is left out here and the lint says so.
-      tiles: artifact
-         .array("tiles")
-         ?.filter((tile) => tagText(tile, "kind") !== "text")
-         .map((tile) => tagText(tile))
-         .filter((tile): tile is string => tile !== undefined),
+      kind: tagText(artifact, "kind"),
+      tiles: readTileEntries(artifact),
       // One spelling for both forms: the `# dashboard { columns=N }` render tag
       // sitting beside the artifact tag, which is also what the renderer reads
       // on a single query. Publisher lays out the composite grid itself, so on
@@ -380,6 +430,21 @@ function readArtifactTag(
       givens,
       autorun,
    };
+}
+
+/** The `##|(markdown) name` blocks among a file's own model notes, in file order. */
+export function readTextBlocks(
+   notes: readonly string[],
+): { name: string; body: string }[] {
+   return notes.flatMap((note) => {
+      const newline = note.indexOf("\n");
+      const opener = parseMarkdownOpener(
+         newline === -1 ? note : note.slice(0, newline),
+      );
+      if (opener?.level !== 2 || !opener.name) return [];
+      const body = newline === -1 ? "" : note.slice(newline + 1);
+      return [{ name: opener.name, body: body.replace(/\r\n?/g, "\n") }];
+   });
 }
 
 /**
@@ -916,26 +981,46 @@ export function buildDashboardManifest(
    const composite = modelTag
       ? readArtifactTag(modelTag, declaredType)
       : undefined;
-   if (composite?.tiles?.length) {
-      const tiles = composite.tiles.map((query) => {
+   const kind = documentKind(facts.modelPath, composite?.kind);
+   // A notebook with no tiles yet is still a layout, so the editor can open it.
+   if (
+      composite?.tiles &&
+      (composite.tiles.length > 0 || kind === "notebook")
+   ) {
+      const blocks = readTextBlocks(facts.modelAnnotations);
+      const tiles = composite.tiles.map((entry): DashboardTileSpec => {
+         if (entry.kind === "text") {
+            return {
+               kind: "text",
+               name: entry.name,
+               markdown:
+                  blocks.find((block) => block.name === entry.name)?.body ?? "",
+               ...(entry.colspan !== undefined && { colspan: entry.colspan }),
+               ...(entry.break && { break: true }),
+            };
+         }
+         const query = entry.expression;
          const givenNames = resolveTileGivens(query, facts);
          const layout = resolveTileLayout(query, facts);
          return {
+            kind: "query",
             query,
             ...(givenNames ? { givenNames } : {}),
             ...layout,
          };
       });
+      const queries = queryTiles(tiles);
       const doc = docCommentTitleAndDescription(
          facts.descriptionNotes ?? facts.modelAnnotations,
          composite.title,
       );
       return {
          ...base,
+         kind,
          title: doc.title ?? name,
          description: doc.description,
          tiles,
-         dashboardColumns: composite.dashboardColumns,
+         dashboardColumns: kind === "notebook" ? 1 : composite.dashboardColumns,
          startingGivens: composite.givens,
          autorun: composite.autorun,
          // A composite's control row is the union across its tiles: each tile
@@ -956,10 +1041,11 @@ export function buildDashboardManifest(
          // `lintDashboard` walks `manifest.givens`, so a widened row also widens
          // the suggest lint. A composite with one unresolvable tile can emit a
          // suggest finding for a given no tile references.
+         // Text tiles read no givens, so they never widen the row.
          givens: buildGivenSpecs(
-            tiles.some((tile) => tile.givenNames === undefined)
+            queries.some((tile) => tile.givenNames === undefined)
                ? Array.from(facts.givens.keys())
-               : tiles.flatMap((tile) => tile.givenNames ?? []),
+               : queries.flatMap((tile) => tile.givenNames ?? []),
             facts,
          ),
       };
@@ -975,6 +1061,7 @@ export function buildDashboardManifest(
       );
       return {
          ...base,
+         kind: "dashboard",
          title: doc.title ?? name,
          description: doc.description,
          query: query.name,
@@ -1141,41 +1228,55 @@ export function lintDashboard(
       );
    }
 
-   // A tile entry is the run expression and NOTHING else. `readArtifactTag`
-   // reads each element with `tagText`, which takes its text and drops anything
-   // hung off it, so `tiles=[intro { kind=text }]` compiles, the package loads
-   // clean, and the entry silently becomes the tile `intro` — a run expression
-   // that does not resolve, reported as a query error with no hint that the tag
-   // was the problem. Measured against a running server.
-   //
-   // Worth a finding now rather than when tile kinds arrive: the shape parses
-   // today, so an author reading about them anywhere (Malloyyo's format, a
-   // proposal, another Publisher) can write one and be told nothing. Same
-   // failure as an `# artifact` on a view, which is silently a shared include
-   // and got its own finding for the same reason.
+   // A query entry is the run expression and nothing else: `readArtifactTag`
+   // takes its text and drops anything hung off it, so a property there is
+   // silently inert. A text entry reads only its layout.
+   const textBlocks = readTextBlocks(facts.modelAnnotations);
    for (const entry of artifactTag?.array("tiles") ?? []) {
       const kind = tagText(entry, "kind");
-      if (kind === "text") {
-         add(
-            `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` is a text tile, ` +
-               `but Publisher does not render text tiles yet, so it is left out ` +
-               `of the page.`,
-         );
-         continue;
-      }
-      // `kind=query` says nothing new.
+      const label = tagText(entry) ?? "a tile";
+      const read = kind === "text" ? ["kind", "colspan", "break"] : [];
       const carried = Object.keys(entry.dict ?? {}).filter(
-         (property) => !(property === "kind" && kind === "query"),
+         (property) =>
+            !read.includes(property) &&
+            !(property === "kind" && kind === "query"),
       );
-      if (carried.length === 0) continue;
-      const named = carried.map((property) => `\`${property}\``).join(", ");
-      add(
-         `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` carries ${named}, ` +
-            `which Publisher does not read: a tile entry is the run expression ` +
-            `alone. Per-tile presentation goes on the view the tile names ` +
-            `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
-            `\`# borderless\`).`,
-      );
+      if (carried.length > 0) {
+         const named = carried.map((property) => `\`${property}\``).join(", ");
+         add(
+            kind === "text"
+               ? `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: a text tile's entry reads only \`colspan\` and \`break\`.`
+               : `\`${label}\` in \`tiles=[…]\` carries ${named}, ` +
+                    `which Publisher does not read: a tile entry is the run expression ` +
+                    `alone. Per-tile presentation goes on the view the tile names ` +
+                    `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
+                    `\`# borderless\`).`,
+         );
+      }
+      if (kind !== "text") continue;
+      if (!textBlocks.some((block) => block.name === label)) {
+         add(
+            `text tile \`${label}\` has no \`##|(markdown) ${label}\` block, so it shows nothing. ` +
+               `Fix: write that block, with the text on the lines below its opener and \`|##\` after.`,
+         );
+      }
+      if (
+         entry.has("colspan") &&
+         positiveInteger(tagNumeric(entry, "colspan")) === undefined
+      ) {
+         add(
+            `colspan on text tile \`${label}\` must be a positive integer. The tile spans one column.`,
+         );
+      }
+   }
+   const seenBlocks = new Set<string>();
+   for (const { name } of textBlocks) {
+      if (seenBlocks.has(name)) {
+         add(
+            `the \`##|(markdown) ${name}\` block is written twice, and only the first is shown. Fix: rename or delete the second.`,
+         );
+      }
+      seenBlocks.add(name);
    }
 
    // Per-tile layout, from the tag on the view a tile names rather than from the
@@ -1184,7 +1285,10 @@ export function lintDashboard(
    // the SDK default), so unlike the renderer there is no "colspan outside
    // columns mode" case to report — only a value the reader dropped, and one
    // wider than the grid, which renders clamped.
-   for (const { query: tile } of manifest.tiles ?? []) {
+   // A notebook is one column, so no span means anything on it.
+   for (const { query: tile } of manifest.kind === "notebook"
+      ? []
+      : queryTiles(manifest.tiles)) {
       const tag = motlyTag(tileAnnotations(tile, facts) ?? []);
       if (!tag?.has("colspan")) continue;
       const colspan = positiveInteger(tagNumeric(tag, "colspan"));
@@ -1237,7 +1341,7 @@ export function lintDashboard(
       }
    }
 
-   for (const { query: tile } of manifest.tiles ?? []) {
+   for (const { query: tile } of queryTiles(manifest.tiles)) {
       const parts = plainTileParts(tile);
       if (!parts) continue;
       const resolved =

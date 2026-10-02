@@ -123,8 +123,14 @@ import {
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
+   buildDashboardManifest,
+   readDashboardModelFacts,
+   type DashboardManifest,
+   type DashboardModelFacts,
+} from "./dashboard";
+import {
+   artifactKindOfNotes,
    docNotesAboveArtifact,
    isArtifactNoteText,
    isNotebookReaderError,
@@ -713,6 +719,8 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
+   /** The tile layout of a served notebook written as one; undefined for one written as cells. */
+   private notebookLayout: DashboardManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -5521,6 +5529,14 @@ export class Model {
       );
    }
 
+   /** The `kind` the model's own `## artifact` note declares, if any. */
+   public artifactKind(): string | undefined {
+      return (
+         this.modelDef &&
+         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
+      );
+   }
+
    private isDashboard(): boolean {
       return this.queryBoundary.dashboard === true;
    }
@@ -5969,6 +5985,7 @@ export class Model {
    public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
+      this.notebookLayout = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -5986,8 +6003,14 @@ export class Model {
       if (read.error) return refuse(read.error);
       const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
       this.notebookAnnotations = read.annotations;
-      this.setNotebookCells(
-         read.cells.map((cell): RunnableNotebookCell => {
+      const layout = this.readNotebookLayout();
+      this.notebookLayout = layout;
+      // A layout's prose and queries are its tiles, in tile order; the file's own cells are only its definitions.
+      const fileCells = layout
+         ? read.cells.filter((cell) => cell.kind === "definition")
+         : read.cells;
+      const cells: RunnableNotebookCell[] = fileCells.map(
+         (cell): RunnableNotebookCell => {
             if (cell.kind === "markdown") {
                return { type: "markdown", kind: "markdown", text: cell.text };
             }
@@ -6024,9 +6047,40 @@ export class Model {
                   name: compiled?.as || compiled?.name || "",
                },
             };
-         }),
+         },
       );
+      if (layout) {
+         for (const tile of layout.tiles ?? []) {
+            if (tile.kind === "text") {
+               cells.push({
+                  type: "markdown",
+                  kind: "markdown",
+                  text: tile.markdown,
+               });
+               continue;
+            }
+            const text = `run: ${tile.query}`;
+            cells.push({
+               type: "code",
+               kind: "query",
+               text,
+               runnable: materializer.loadQuery(text),
+               modelMaterializer: materializer,
+               modelDef,
+            });
+         }
+      }
+      this.setNotebookCells(cells);
       return "ok";
+   }
+
+   /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
+   private readNotebookLayout(): DashboardManifest | undefined {
+      const facts = this.getDashboardModelFacts();
+      const manifest = facts && buildDashboardManifest(facts);
+      return manifest?.kind === "notebook" && manifest.tiles
+         ? manifest
+         : undefined;
    }
 
    /** Why the reader refused this served notebook's cells, if it did. */
@@ -8631,6 +8685,21 @@ export class Model {
             (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
          ),
          notebookCells,
+         ...(this.notebookLayout && {
+            dashboard: {
+               packageName: this.packageName,
+               name: this.notebookLayout.name,
+               path: this.modelPath,
+               kind: this.notebookLayout.kind,
+               title: this.notebookLayout.title,
+               description: this.notebookLayout.description,
+               tiles: this.notebookLayout.tiles,
+               dashboardColumns: this.notebookLayout.dashboardColumns,
+               startingGivens: this.notebookLayout.startingGivens,
+               autorun: this.notebookLayout.autorun,
+               givens: this.notebookLayout.givens,
+            },
+         }),
       };
       return notebook;
    }

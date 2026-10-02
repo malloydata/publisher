@@ -11,7 +11,7 @@ import {
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
 import { closesBlock } from "./query_text";
-import { docCommentText } from "./motly";
+import { docCommentText, motlyTag, tagText } from "./motly";
 
 /** The package-relative directory a served notebook must live in. */
 export const NOTEBOOKS_DIR = "notebooks";
@@ -26,6 +26,30 @@ export function isNotebookModelPath(modelPath: string): boolean {
    if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
    const segments = modelPath.split("/");
    return segments.length === 2 && segments[0] === NOTEBOOKS_DIR;
+}
+
+/** The package-relative directory a dashboard is created in. */
+export const DASHBOARDS_DIR = "dashboards";
+
+/** True for a `.malloy` directly inside `dashboards/` or `notebooks/`: where a document may live. */
+export function isDocumentModelPath(modelPath: string): boolean {
+   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+   const segments = modelPath.split("/");
+   return (
+      segments.length === 2 &&
+      (segments[0] === NOTEBOOKS_DIR || segments[0] === DASHBOARDS_DIR)
+   );
+}
+
+export type DocumentKind = "dashboard" | "notebook";
+
+/** The kind an artifact tag declares; the folder decides only when the tag names none. */
+export function documentKind(
+   modelPath: string,
+   tagKind: string | undefined,
+): DocumentKind {
+   if (tagKind === "notebook" || tagKind === "dashboard") return tagKind;
+   return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
 }
 
 const ARTIFACT_NOTE = /^##[ \t]*artifact\b/;
@@ -105,6 +129,13 @@ export function hasArtifactLineOutsideBlocks(
    source: string,
    artifactLine: RegExp,
 ): boolean {
+   return findArtifactLineOutsideBlocks(source, artifactLine) !== undefined;
+}
+
+function findArtifactLineOutsideBlocks(
+   source: string,
+   artifactLine: RegExp,
+): string | undefined {
    const lines = source.split(/\r\n|\r|\n/);
    for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trimStart();
@@ -125,13 +156,31 @@ export function hasArtifactLineOutsideBlocks(
             continue;
          }
       }
-      if (artifactLine.test(trimmed)) return true;
+      if (artifactLine.test(trimmed)) return trimmed;
    }
-   return false;
+   return undefined;
+}
+
+/** The `kind` of the artifact tag among a file's own notes. */
+export function artifactKindOfNotes(
+   notes: readonly AnnotationNote[],
+): string | undefined {
+   const tag = motlyTag(
+      notes.map((note) => note.text).filter(isArtifactNoteText),
+   );
+   return tagText(tag?.tag("artifact"), "kind");
 }
 
 export function claimsToBeANotebook(source: string): boolean {
    return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+}
+
+/** The `kind` of a file's `## artifact` line, read off its text for a file that did not compile. */
+export function artifactKindInText(source: string): string | undefined {
+   const line = findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+   return line === undefined
+      ? undefined
+      : tagText(motlyTag([`${line}\n`])?.tag("artifact"), "kind");
 }
 
 /* ------------------------------------------------------------------ */
@@ -878,8 +927,10 @@ export function notebookReaderProblem(
    modelDef: ModelDef,
    url: string,
 ): LogMessage | undefined {
-   if (!isNotebookModelPath(modelPath)) return undefined;
-   if (artifactNoteLine(ownModelNoteObjects(modelDef)) === undefined)
+   if (!isDocumentModelPath(modelPath)) return undefined;
+   const notes = ownModelNoteObjects(modelDef);
+   if (artifactNoteLine(notes) === undefined) return undefined;
+   if (documentKind(modelPath, artifactKindOfNotes(notes)) !== "notebook")
       return undefined;
    const parse = parseNotebookText(text);
    const error = isNotebookReaderError(parse)

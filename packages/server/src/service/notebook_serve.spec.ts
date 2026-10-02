@@ -25,10 +25,13 @@ import {
 import { Model } from "./model";
 import { Package } from "./package";
 import {
+   artifactKindInText,
    artifactNoteLine,
    claimsToBeANotebook,
    docNotesAboveArtifact,
+   documentKind,
    hasArtifactLineOutsideBlocks,
+   isDocumentModelPath,
    isNotebookModelPath,
 } from "./notebook";
 
@@ -52,6 +55,33 @@ describe("notebook predicates", () => {
       expect(isNotebookModelPath("notebooks/sub/a.malloy")).toBe(false);
       expect(isNotebookModelPath("a/notebooks/a.malloy")).toBe(false);
       expect(isNotebookModelPath("dashboards/a.malloy")).toBe(false);
+   });
+
+   it("takes the kind from the tag and falls back to the folder", () => {
+      expect(documentKind("dashboards/a.malloy", "notebook")).toBe("notebook");
+      expect(documentKind("notebooks/a.malloy", "dashboard")).toBe("dashboard");
+      expect(documentKind("notebooks/a.malloy", undefined)).toBe("notebook");
+      expect(documentKind("dashboards/a.malloy", "text")).toBe("dashboard");
+      expect(isDocumentModelPath("dashboards/a.malloy")).toBe(true);
+      expect(isDocumentModelPath("notebooks/a.malloy")).toBe(true);
+      expect(isDocumentModelPath("models/a.malloy")).toBe(false);
+      expect(isDocumentModelPath("notebooks/sub/a.malloy")).toBe(false);
+   });
+
+   it("reads the top-level kind off the artifact line, not a tile entry's", () => {
+      const text = (tag: string) => `${tag}\nrun: x`;
+      expect(
+         artifactKindInText(
+            text("## artifact { kind=notebook tiles=[a { kind=text }] }"),
+         ),
+      ).toBe("notebook");
+      expect(
+         artifactKindInText(text("## artifact { tiles=[a { kind=text }] }")),
+      ).toBeUndefined();
+      expect(artifactKindInText("run: x")).toBeUndefined();
+      expect(
+         artifactKindInText('##|"\n## artifact { kind=notebook }\n|##\nrun: x'),
+      ).toBeUndefined();
    });
 
    it("locates the artifact note by its line, and only the ## form", () => {
