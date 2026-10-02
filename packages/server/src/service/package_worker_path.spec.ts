@@ -888,8 +888,24 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       ],
       [
          "an unknown retrieval key",
-         JSON.stringify({ name: "pkg", retrieval: { refine: true } }),
-         /retrieval: unknown key 'refine'\. Valid keys: representation, keyphrases, prompts\./,
+         JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
+         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, prompts\./,
+      ],
+      [
+         "an invalid retrieval.refine.minLevel",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { refine: { minLevel: "NONE" } },
+         }),
+         /retrieval\.refine\.minLevel: expected one of LOW, MEDIUM, HIGH/,
+      ],
+      [
+         "an invalid retrieval.rerank.topSources",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { rerank: { topSources: 0 } },
+         }),
+         /retrieval\.rerank\.topSources: expected a positive integer/,
       ],
       [
          "an invalid retrieval.representation",
