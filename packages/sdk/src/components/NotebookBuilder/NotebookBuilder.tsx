@@ -286,9 +286,12 @@ export function NotebookBuilder({
    useEffect(() => {
       onChange?.(doc);
    }, [doc, onChange]);
+   // An open text draft is an unsaved edit too, and leaving would drop it.
+   const [draftDirty, setDraftDirty] = useState(false);
+   const unsaved = editor.dirty || draftDirty;
    useEffect(() => {
-      onDirtyChange?.(editor.dirty);
-   }, [editor.dirty, onDirtyChange]);
+      onDirtyChange?.(unsaved);
+   }, [unsaved, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
@@ -523,7 +526,7 @@ export function NotebookBuilder({
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            // The open text field handles its own Escape, committing; dropping it here would lose the draft.
+            // The open text field commits on its own Escape; handling it here too would drop the draft.
             escape: () => {},
          }),
          [editor, onSave, save],
@@ -592,6 +595,7 @@ export function NotebookBuilder({
                editing={editing === cell.id}
                links={links}
                onEdit={() => setEditing(cell.id)}
+               onDraftDirtyChange={setDraftDirty}
                onCommit={(next) =>
                   update((draft) => {
                      const target = draft.cells.find((c) => c.id === cell.id);

@@ -12,6 +12,7 @@ import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { logDashboardEvent } from "../../../utils/consoleTelemetry";
+import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
@@ -42,6 +43,7 @@ export default function DashboardEditPage({
    dashboardName,
 }: DashboardEditPageProps) {
    const navigate = useNavigate();
+   const guard = useLeaveGuard();
    const { pathname } = useLocation();
    const dashboardPath = pathname.replace(/\/edit\/?$/, "");
    const onEvent = useMemo(
@@ -51,9 +53,7 @@ export default function DashboardEditPage({
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          {/* The same way up the reader's view has, in the same place, so the
-             bar below it sits at the same height in both modes. Leaving by it
-             is leaving without saving, exactly as the browser's own Back is;
-             Done is the way out that keeps the page you were on. */}
+             bar below it sits at the same height in both modes. */}
          <BackLink
             label={packageName}
             href={`/${environmentName}/${packageName}`}
@@ -71,16 +71,23 @@ export default function DashboardEditPage({
                }
             >
                <DashboardEditor
+                  // Remounts on a route change so another dashboard starts from a fresh read.
+                  key={`${environmentName}/${packageName}/${dashboardName}`}
                   resourceUri={encodeResourceUri({
                      environmentName,
                      packageName,
                   })}
                   dashboard={dashboardName}
-                  onExit={() => navigate(dashboardPath)}
+                  onExit={() => {
+                     guard.leaving();
+                     navigate(dashboardPath);
+                  }}
+                  onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />
             </Suspense>
          </NarrowEditGate>
+         {guard.dialog}
       </Box>
    );
 }

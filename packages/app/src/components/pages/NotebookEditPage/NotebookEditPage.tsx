@@ -11,6 +11,7 @@ import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { logNotebookEvent } from "../../../utils/consoleTelemetry";
+import { useLeaveGuard } from "../useLeaveGuard";
 
 /** Lazy: the builder entry carries the Malloy parser, which no other page should pay for. */
 const NotebookEditor = React.lazy(() =>
@@ -36,6 +37,7 @@ export default function NotebookEditPage({
    notebookName,
 }: NotebookEditPageProps) {
    const navigate = useNavigate();
+   const guard = useLeaveGuard();
    const { pathname } = useLocation();
    const notebookPath = pathname.replace(/\/edit\/?$/, "");
    const onEvent = useMemo(
@@ -59,11 +61,16 @@ export default function NotebookEditPage({
                      packageName,
                   })}
                   notebook={notebookName}
-                  onExit={() => navigate(notebookPath)}
+                  onExit={() => {
+                     guard.leaving();
+                     navigate(notebookPath);
+                  }}
+                  onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />
             </Suspense>
          </NarrowEditGate>
+         {guard.dialog}
       </Box>
    );
 }

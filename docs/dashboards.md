@@ -750,19 +750,16 @@ complete embedding story.
 
 ## Editing one in your own React app
 
-`<DashboardEditor>` is the other public export of `@malloy-publisher/sdk` for this component: the
-same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
+`<DashboardEditor>` is the other public export for this component, from `@malloy-publisher/sdk/builder`
+(the main entry stays free of the Malloy parser): the same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
 as `<Dashboard>`, plus `onExit`, `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
 and a `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the
 package cannot be written (see the SDK README's
 [Document Storage](../packages/sdk/README.md#document-storage) section).
 
 ```tsx
-import {
-  DashboardEditor,
-  encodeResourceUri,
-  ServerProvider,
-} from "@malloy-publisher/sdk";
+import { encodeResourceUri, ServerProvider } from "@malloy-publisher/sdk";
+import { DashboardEditor } from "@malloy-publisher/sdk/builder";
 
 <ServerProvider baseURL="https://publisher.example.com/api/v0">
   <DashboardEditor
@@ -775,6 +772,14 @@ import {
   />
 </ServerProvider>;
 ```
+
+The editor's **Done editing** button asks about unsaved edits itself (Keep editing, Discard changes, or
+Save and exit), and calls `onExit` only once the person has chosen to leave. An `onExit` that also
+prompts would ask twice, so have it navigate and nothing more. Done is the only exit the editor owns:
+to guard the host's other ways out (a nav link, the browser's Back, closing the tab), track
+`onDirtyChange`, which reports whether anything is unsaved (an open text edit counts, and it reports
+`false` when the editor unmounts), and block navigation while it is `true`. The Console's
+`DashboardEditPage` does this with a router blocker and a `beforeunload` listener.
 
 Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is the
 notebook counterpart of `DashboardEditor`. `createRoute` says whether a host can create documents

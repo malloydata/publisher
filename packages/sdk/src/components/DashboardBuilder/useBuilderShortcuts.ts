@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * The keyboard an editor is expected to have.
@@ -11,8 +11,9 @@ import { useEffect, useRef } from "react";
  * keys to nudge the selected tile's width a column at a time — the one layout
  * edit that is otherwise drag-only.
  *
- * Nothing but Escape fires while a text field has focus, so typing into a
- * title never undoes a layout.
+ * Nothing but Escape and save fires while a text field has focus, so typing
+ * into a title never undoes a layout. Save leaves the field first, so its
+ * blur commits the draft, and runs once that edit has rendered.
  */
 export interface BuilderShortcutHandlers {
    undo: () => void;
@@ -46,6 +47,14 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
       latest.current = handlers;
    });
 
+   const [saveRequested, setSaveRequested] = useState(false);
+   // After the render, because save reads the document of the render it was made in.
+   useEffect(() => {
+      if (!saveRequested) return;
+      setSaveRequested(false);
+      latest.current.save?.();
+   }, [saveRequested]);
+
    useEffect(() => {
       const onKey = (event: KeyboardEvent) => {
          const current = latest.current;
@@ -55,7 +64,15 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
             current.escape();
             return;
          }
-         if (inTextEntry(event.target)) return;
+         if (inTextEntry(event.target)) {
+            if (mod && key === "s") {
+               event.preventDefault();
+               if (!current.save) return;
+               (event.target as HTMLElement).blur();
+               setSaveRequested(true);
+            }
+            return;
+         }
          if (mod && key === "z") {
             event.preventDefault();
             if (event.shiftKey) current.redo();
