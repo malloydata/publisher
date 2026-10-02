@@ -9,7 +9,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 
 async function sourceOf(text: string): Promise<NotebookSource> {
    const result = await readNotebookSource(text);

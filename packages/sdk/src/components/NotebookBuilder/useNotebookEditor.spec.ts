@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import { notebookDocumentOf, type NotebookDocument } from "./spliceNotebook";
 import type { SaveContext } from "../DashboardBuilder/useDocumentEditor";
 import { takePlacement, useNotebookEditor } from "./useNotebookEditor";

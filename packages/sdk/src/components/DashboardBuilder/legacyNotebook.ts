@@ -10,21 +10,24 @@
  * needs, a span per cell, so everything between the spans can be kept byte for
  * byte. Like the server it is all-or-nothing: anything it cannot place refuses
  * the whole notebook rather than yielding a partial read to edit.
+ *
+ * {@link convertLegacyNotebook} builds on that read to rewrite such a notebook
+ * as the layout notebook the dashboard builder edits.
  */
 
 import {
    commentIndex,
    isRule,
    Reader,
+   readTileList,
    translate,
    type Ctx,
    type Span,
    type TokenStream,
-} from "../DashboardBuilder/malloyTree";
-import {
-   mentionsChartTag,
-   parseChartLine,
-} from "../DashboardBuilder/chartLine";
+} from "./malloyTree";
+import { mentionsChartTag, parseChartLine } from "./chartLine";
+import { annotationTextProblem } from "./annotationText";
+import { artifactLine } from "./malloyText";
 
 export type { Span };
 
@@ -566,4 +569,480 @@ export async function readNotebookSource(
          );
    }
    return { ok: true, source: { text, header, cells } };
+}
+
+/* ------------------------------------------------------------------ */
+/* Converting the cell format to the layout format                     */
+/* ------------------------------------------------------------------ */
+
+export type LegacyConversion =
+   | { ok: true; text: string; tiles: number }
+   | { ok: false; refused: string; line?: number };
+
+export const conversionRefused = (
+   r: LegacyConversion,
+): r is Extract<LegacyConversion, { ok: false }> => r.ok === false;
+
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const QUERY_DEFINITION = /^query\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+/;
+
+/** A tag string value, with the characters the tag parser unescapes escaped. */
+const tagString = (text: string) =>
+   `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/** `text` with comments and string contents blanked to spaces, newlines kept, so a scan for syntax lands only on code. */
+function blankNonCode(text: string): string {
+   let out = "";
+   let i = 0;
+   while (i < text.length) {
+      const two = text.slice(i, i + 2);
+      if (two === "//" || two === "--") {
+         const end = text.indexOf("\n", i);
+         const stop = end < 0 ? text.length : end;
+         out += " ".repeat(stop - i);
+         i = stop;
+      } else if (two === "/*") {
+         const end = text.indexOf("*/", i + 2);
+         const stop = end < 0 ? text.length : end + 2;
+         out += text.slice(i, stop).replace(/[^\n]/g, " ");
+         i = stop;
+      } else if (text[i] === "'" || text[i] === '"' || text[i] === "`") {
+         const quote = text[i];
+         let j = i + 1;
+         while (j < text.length && text[j] !== quote)
+            j += text[j] === "\\" ? 2 : 1;
+         const stop = Math.min(j, text.length);
+         out += quote + text.slice(i + 1, stop).replace(/[^\n]/g, " ");
+         if (stop < text.length) out += quote;
+         i = stop + 1;
+      } else {
+         out += text[i];
+         i++;
+      }
+   }
+   return out;
+}
+
+/** Every `->` outside brackets in already-blanked code. */
+function topLevelArrows(blank: string): number[] {
+   const at: number[] = [];
+   let depth = 0;
+   for (let i = 0; i < blank.length; i++) {
+      const c = blank[i];
+      if (c === "{" || c === "(" || c === "[") depth++;
+      else if (c === "}" || c === ")" || c === "]") depth--;
+      else if (depth === 0 && c === "-" && blank[i + 1] === ">") at.push(i);
+   }
+   return at;
+}
+
+/** Removals applied last-first to `text`, which starts at `base` in the file the spans address. */
+function withoutSpans(text: string, base: number, spans: Span[]): string {
+   let out = text;
+   for (const span of [...spans].sort((a, b) => b.start - a.start))
+      out = out.slice(0, span.start - base) + out.slice(span.end - base);
+   return out;
+}
+
+/** The `##|(markdown) name` block for a text tile; a body line that would close it early gets one space of indent. */
+function textBlock(name: string, markdown: string): string {
+   const body = markdown
+      .split("\n")
+      .map((line) => (line.startsWith("|##") ? ` ${line}` : line))
+      .join("\n");
+   return `##|(markdown) ${name}\n${body === "" ? "" : `${body}\n`}|##\n`;
+}
+
+/** An extension-body line: tags and comments lose their old indent, other lines (inside a block comment) keep theirs. */
+function indented(line: string): string {
+   if (line.trim() === "") return "";
+   return /^\s*(#|\/\/|--|\/\*)/.test(line)
+      ? `  ${line.trimStart()}`
+      : `  ${line}`;
+}
+
+interface LegacyStatement {
+   cell: NotebookSourceCell;
+   /** Text of the lines above the statement, less the prose that becomes text tiles. */
+   above: string;
+   /** From the statement's keyword to the end of the cell. */
+   statement: string;
+   /** The cell's whole text with only attached markdown removed: a definition is kept as it was. */
+   kept: string;
+   /** `"` notes above a `run:`. */
+   caption?: string;
+   line: number;
+}
+
+/**
+ * Rewrite a cell-format notebook (`run:` cells and prose cells) as a layout
+ * notebook: the same file with a `tiles=[…]` list, each prose cell a
+ * `##|(markdown)` block, and each `run:` a view in a `<source>_tiles`
+ * extension. Text outside the cells is carried over as written.
+ *
+ * PURE: text in, text out. The caller keeps the original to hand back on Undo.
+ */
+export async function convertLegacyNotebook(
+   text: string,
+): Promise<LegacyConversion> {
+   const read = await readNotebookSource(text);
+   if (notebookSourceRefused(read))
+      return { ok: false, refused: read.refused, line: read.line };
+   const { header, cells } = read.source;
+   const refuse = (line: number, why: string): LegacyConversion => ({
+      ok: false,
+      refused: `Line ${line + 1}: ${why}`,
+      line: line + 1,
+   });
+
+   const headerLines = text.slice(header.start, header.end).split("\n");
+   const artifactAt = artifactLine(headerLines);
+   if (artifactAt < 0 || readTileList(headerLines[artifactAt]))
+      return refuse(
+         Math.max(artifactAt, 0),
+         "this notebook already lists its tiles, so there is nothing to convert.",
+      );
+
+   const translation = await translate(
+      text,
+      "file:///publisher-notebook-builder/convert.malloy",
+   );
+   const stream = translation.parse?.tokenStream as TokenStream | undefined;
+   const vocabulary = stream?.tokenSource?.vocabulary;
+   const tokens = (stream?.getTokens?.() ?? []) as Token[];
+   if (typeof vocabulary?.getSymbolicName !== "function")
+      return refuse(0, "Malloy's token stream is not available.");
+   const malloy = await import("@malloydata/malloy");
+   const { parseAnnotation } = await import("@malloydata/malloy-tag");
+   const symbolOf = (token: Token) => vocabulary.getSymbolicName(token.type);
+   const r = new Reader(text);
+   const comments = commentIndex(r, stream as TokenStream);
+   const tokenText = (token: Token) =>
+      text.slice(r.utf16(token.startIndex), r.utf16(token.stopIndex + 1));
+   const routeOf = (note: string) =>
+      malloy.routeOf({ value: note.trimStart() } as Parameters<
+         typeof malloy.routeOf
+      >[0]);
+   const payloadOf = (note: string) =>
+      malloy.payloadOf({ value: note } as Parameters<
+         typeof malloy.payloadOf
+      >[0]);
+   const lf = (value: string) => value.replace(/\r\n?/g, "\n");
+
+   // Names the new text and views must not take.
+   const taken = new Set(text.match(/[A-Za-z_][A-Za-z0-9_]*/g));
+   const unique = (base: string) => {
+      let name = base;
+      for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
+      taken.add(name);
+      return name;
+   };
+
+   const analyse = (cell: NotebookSourceCell): LegacyStatement | undefined => {
+      const inside = tokens.filter(
+         (t) =>
+            t.channel === 0 &&
+            r.utf16(t.startIndex) >= cell.span.start &&
+            r.utf16(t.stopIndex + 1) <= cell.span.end,
+      );
+      const markdownRemovals: Span[] = [];
+      const captionRemovals: Span[] = [];
+      const captions: string[] = [];
+      let statement: Token | undefined;
+      for (let i = 0; i < inside.length; i++) {
+         const name = symbolOf(inside[i]);
+         if (name !== "ANNOTATION" && name !== "BLOCK_ANNOTATION_BEGIN") {
+            statement = inside[i];
+            break;
+         }
+         let last = i;
+         const bodies: string[] = [];
+         if (name === "BLOCK_ANNOTATION_BEGIN") {
+            while (
+               symbolOf(inside[last + 1] ?? inside[i]) ===
+               "BLOCK_ANNOTATION_TEXT"
+            )
+               bodies.push(tokenText(inside[++last]));
+            if (
+               symbolOf(inside[last + 1] ?? inside[i]) ===
+               "BLOCK_ANNOTATION_END"
+            )
+               last++;
+         }
+         const note = lf(tokenText(inside[i]));
+         const route = routeOf(note);
+         const from = r.utf16(inside[i].startIndex);
+         const lineStart = r.lineStarts[r.line(from)];
+         const span = {
+            start: /^[ \t]*$/.test(text.slice(lineStart, from))
+               ? lineStart
+               : from,
+            end: r.utf16(inside[last].stopIndex + 1),
+         };
+         if (route === "markdown") markdownRemovals.push(span);
+         else if (route === '"') {
+            captionRemovals.push(span);
+            captions.push(
+               name === "ANNOTATION"
+                  ? lf(payloadOf(note)).replace(/\n$/, "").trim()
+                  : [lf(payloadOf(note.split("\n", 1)[0])), ...bodies.map(lf)]
+                       .map((l) => l.trim())
+                       .filter(Boolean)
+                       .join(" "),
+            );
+         }
+         i = last;
+      }
+      if (!statement) return undefined;
+      const statementAt = r.utf16(statement.startIndex);
+      const cellText = text.slice(cell.span.start, cell.span.end);
+      return {
+         cell,
+         above: withoutSpans(
+            text.slice(cell.span.start, statementAt),
+            cell.span.start,
+            (cell.kind === "query"
+               ? [...markdownRemovals, ...captionRemovals]
+               : markdownRemovals
+            ).filter((s) => s.end <= statementAt),
+         ),
+         statement: text.slice(statementAt, cell.span.end).replace(/\s+$/, ""),
+         kept: withoutSpans(cellText, cell.span.start, markdownRemovals),
+         ...(cell.kind === "query" &&
+            captions.length > 0 && { caption: captions.join(" ") }),
+         line: r.line(statementAt),
+      };
+   };
+
+   // Pass one: what each cell is, and the named queries a `run:` can name.
+   const named = new Map<string, { expression: string; cell: number }>();
+   const analysed = new Map<number, LegacyStatement>();
+   for (const [index, cell] of cells.entries()) {
+      if (cell.kind === "markdown") continue;
+      const found = analyse(cell);
+      if (!found)
+         return refuse(
+            r.line(cell.span.start),
+            "a cell with no statement the converter can place.",
+         );
+      analysed.set(index, found);
+      const query = QUERY_DEFINITION.exec(found.statement);
+      if (cell.kind === "definition" && query)
+         named.set(query[1], {
+            expression: found.statement.slice(query[0].length).trim(),
+            cell: index,
+         });
+   }
+
+   interface Resolved {
+      source: string;
+      body: string;
+      used: string[];
+   }
+   const resolve = (
+      statement: LegacyStatement,
+   ): Resolved | LegacyConversion => {
+      const keyword = /^run\s*:\s*/.exec(statement.statement);
+      if (!keyword)
+         return refuse(statement.line, "a run that is not `run: <query>`.");
+      let expression = statement.statement.slice(keyword[0].length).trim();
+      const used: string[] = [];
+      for (let hops = 0; hops < 10; hops++) {
+         const blank = blankNonCode(expression);
+         const lead = /^[A-Za-z_][A-Za-z0-9_]*/.exec(blank)?.[0];
+         const definition = lead ? named.get(lead) : undefined;
+         if (!lead || !definition) break;
+         const rest = expression.slice(lead.length).trim();
+         const restBlank = blank.slice(lead.length).trim();
+         if (
+            restBlank !== "" &&
+            !restBlank.startsWith("->") &&
+            !restBlank.startsWith("+")
+         )
+            break;
+         if (restBlank.startsWith("+")) {
+            const arrows = topLevelArrows(blankNonCode(definition.expression));
+            if (arrows.length !== 1)
+               return refuse(
+                  statement.line,
+                  `\`${lead} + { … }\` refines a query with more than one stage, which cannot become one view.`,
+               );
+         }
+         used.push(lead);
+         expression = `${definition.expression}${rest === "" ? "" : ` ${rest}`}`;
+      }
+      const blank = blankNonCode(expression);
+      const arrows = topLevelArrows(blank);
+      if (arrows.length === 0)
+         return refuse(
+            statement.line,
+            "this run is not `source -> view`, so it cannot become a tile. Fix: write it as `run: <source> -> <view>`.",
+         );
+      const head = expression.slice(0, arrows[0]).trim();
+      if (/\bextend\b/.test(blank.slice(0, arrows[0])))
+         return refuse(
+            statement.line,
+            "this run extends its source inline before `->`, so it cannot become a tile. Fix: declare the extension with a `source:` statement and run that.",
+         );
+      if (!IDENTIFIER.test(head) && !/^`[^`]+`$/.test(head))
+         return refuse(
+            statement.line,
+            "the source of this run is not a name, so it cannot become a tile. Fix: name it with a `source:` statement and run that.",
+         );
+      const body = expression.slice(arrows[0] + 2).trim();
+      if (body === "")
+         return refuse(statement.line, "this run has nothing after `->`.");
+      return { source: head, body, used };
+   };
+
+   // Pass two, in order: tiles, the views they run, and the cells left in place.
+   interface Extension {
+      name: string;
+      base: string;
+      views: string[];
+   }
+   const extensions = new Map<string, Extension>();
+   const entries: string[] = [];
+   const dropped = new Set<number>();
+   const placed = new Map<number, string>();
+   let counter = 0;
+
+   const consumers = new Map<string, number>();
+   for (const statement of analysed.values()) {
+      if (statement.cell.kind !== "query") continue;
+      const resolved = resolve(statement);
+      if ("ok" in resolved) return resolved;
+      for (const name of resolved.used)
+         consumers.set(name, (consumers.get(name) ?? 0) + 1);
+   }
+   // A named query used by exactly one run, and by nothing else, is that run's view.
+   const consumable = (name: string) =>
+      consumers.get(name) === 1 &&
+      (text.match(new RegExp(`\\b${name}\\b`, "g")) ?? []).length === 2;
+   const carried = new Map<string, string[]>();
+
+   for (const [index, cell] of cells.entries()) {
+      if (cell.kind === "markdown") {
+         const name = unique(`cell_${++counter}`);
+         entries.push(`${name} { kind=text }`);
+         const aside = comments.all
+            .filter((c) => c.start >= cell.span.start && c.end <= cell.span.end)
+            .map((c) => `${text.slice(c.start, c.end)}\n`)
+            .join("");
+         placed.set(index, aside + textBlock(name, cell.markdown ?? ""));
+         continue;
+      }
+      const statement = analysed.get(index) as LegacyStatement;
+      let lead = "";
+      if (cell.markdown !== undefined) {
+         const name = unique(`cell_${++counter}`);
+         entries.push(`${name} { kind=text }`);
+         lead = `${textBlock(name, cell.markdown)}\n`;
+      }
+      if (cell.kind === "definition") {
+         const query = QUERY_DEFINITION.exec(statement.statement)?.[1];
+         if (query && consumable(query)) {
+            dropped.add(index);
+            carried.set(
+               query,
+               statement.above.split("\n").filter((l) => l.trim() !== ""),
+            );
+            if (lead) placed.set(index, lead.replace(/\n$/, ""));
+            continue;
+         }
+         placed.set(index, `${lead}${statement.kept}`);
+         continue;
+      }
+
+      const resolved = resolve(statement) as Resolved;
+      const view = unique(`cell_${++counter}`);
+      const base = resolved.source.replace(/`/g, "");
+      let extension = extensions.get(resolved.source);
+      if (!extension) {
+         extension = {
+            name: unique(`${base}_tiles`),
+            base: resolved.source,
+            views: [],
+         };
+         extensions.set(resolved.source, extension);
+      }
+      entries.push(`"${extension.name} -> ${view}"`);
+
+      const above = [
+         ...resolved.used.flatMap((name) => carried.get(name) ?? []),
+         ...statement.above.split("\n"),
+      ].filter((l) => l.trim() !== "");
+      const tagLines = above.filter((l) => /^\s*#(?!["(|])/.test(l));
+      const tag =
+         tagLines.length > 0 ? parseAnnotation(tagLines).tag : undefined;
+      const lines = above.map(indented);
+      if (statement.caption !== undefined) {
+         const tagged =
+            annotationTextProblem("caption", statement.caption) === undefined;
+         if (tagged && !tag?.has("label"))
+            lines.push(`  # label=${tagString(statement.caption)}`);
+         else if (tagged && !tag?.has("subtitle"))
+            lines.push(`  # subtitle=${tagString(statement.caption)}`);
+         else lines.push(`  #" ${statement.caption}`);
+      }
+      const body = resolved.body
+         .split("\n")
+         .map((l, i) => (i === 0 || l.trim() === "" ? l : `  ${l}`))
+         .join("\n");
+      extension.views.push([...lines, `  view: ${view} is ${body}`].join("\n"));
+      dropped.add(index);
+      if (lead) placed.set(index, lead.replace(/\n$/, ""));
+   }
+
+   // Stitch: the header with its list, each cell's replacement, and the bytes between them as found.
+   const entryList = `tiles=[${entries.join(", ")}]`;
+   const artifact = headerLines[artifactAt];
+   const close = (() => {
+      let depth = 0;
+      for (let i = artifact.indexOf("{"); i < artifact.length; i++) {
+         if (artifact[i] === '"') {
+            for (i++; i < artifact.length && artifact[i] !== '"'; i++)
+               if (artifact[i] === "\\") i++;
+         } else if (artifact[i] === "{") depth++;
+         else if (artifact[i] === "}" && --depth === 0) return i;
+      }
+      return -1;
+   })();
+   if (close < 0)
+      return refuse(artifactAt, "the `## artifact { … }` tag never closes.");
+   headerLines[artifactAt] =
+      `${artifact.slice(0, close).trimEnd()} ${entryList} ${artifact.slice(close)}`;
+
+   // Cells that left their place leave their gaps side by side; a run of blank lines is one.
+   const squeeze = (gap: string) => {
+      const lines = gap.split("\n");
+      const tail = lines.pop();
+      const kept: string[] = [];
+      for (const line of lines)
+         if (line.trim() !== "" || kept.at(-1)?.trim() !== "") kept.push(line);
+      return kept.map((line) => `${line}\n`).join("") + tail;
+   };
+   let out = headerLines.join("\n");
+   let gap = "";
+   let cursor = header.end;
+   for (const [index, cell] of cells.entries()) {
+      gap += text.slice(cursor, cell.span.start);
+      cursor = cell.span.end;
+      const replacement = placed.get(index);
+      if (replacement === undefined) continue;
+      out +=
+         squeeze(gap) +
+         (replacement.endsWith("\n") ? replacement : `${replacement}\n`);
+      gap = "";
+   }
+   gap += text.slice(cursor);
+   out = out.replace(/\s+$/, "\n") + (gap.trim() === "" ? "" : squeeze(gap));
+   out = out.replace(/\s+$/, "\n");
+
+   const blocks = [...extensions.values()].map(
+      (extension) =>
+         `source: ${extension.name} is ${extension.base} extend {\n${extension.views.join("\n\n")}\n}\n`,
+   );
+   if (blocks.length > 0) out += `\n${blocks.join("\n")}`;
+   return { ok: true, text: out, tiles: entries.length };
 }

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import type { DashboardDocument } from "./document";
+import { isQueryTile, type DashboardDocument } from "./document";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import {
    spliceDashboardDocument,
@@ -1145,7 +1145,7 @@ describe("spliceDashboardDocument: the page's own settings", () => {
       });
    });
 
-   it("refuses to reorder, add or remove tiles when tiles holds a text tile, and leaves the file alone", async () => {
+   it("reorders a list holding a text tile, keeping its entry as written", async () => {
       const source = fs.readFileSync(
          path.join(
             REPO,
@@ -1153,17 +1153,21 @@ describe("spliceDashboardDocument: the page's own settings", () => {
          ),
          "utf8",
       );
-      // The file has one quoted tile beside the text tile, so removal is the edit that reaches the list.
-      const reason = await refused(source, (d) => {
-         d.tiles.pop();
-      });
-      expect(reason).toContain("text tile");
-      // A settings edit that does not touch the tile list still works.
       const out = await spliced(source, (d) => {
+         d.tiles.reverse();
+      });
+      expect(out).toContain(
+         'tiles=["orders -> kpis", intro { kind=text colspan=12 }]',
+      );
+      expect(out).toContain(
+         "##|(markdown) intro\n## How to read this page\n|##",
+      );
+      // A settings edit that does not touch the tile list leaves the entry alone too.
+      const renamed = await spliced(source, (d) => {
          d.title = "Renamed";
       });
-      expect(out).toContain("intro { kind=text colspan=12 }");
-      expect(out).toContain('title="Renamed"');
+      expect(renamed).toContain("intro { kind=text colspan=12 }");
+      expect(renamed).toContain('title="Renamed"');
    });
 
    it("changes the width of a file whose title holds dashboard { }", async () => {
@@ -1599,7 +1603,7 @@ describe("every composite dashboard survives an edit", () => {
          const doc = await readDashboardDocument(source);
          if (readFailed(doc)) throw new Error(doc.reason);
          const target = doc.document.tiles.findIndex(
-            (t) => t.declaration.kind !== "inherited",
+            (t) => isQueryTile(t) && t.declaration.kind !== "inherited",
          );
          // A file whose tiles are all declared on their sources has nothing
          // here to patch, which is a real shape rather than a gap.
@@ -1633,7 +1637,7 @@ describe("every composite dashboard survives an edit", () => {
          const doc = await readDashboardDocument(source);
          if (readFailed(doc)) throw new Error(doc.reason);
          const target = doc.document.tiles.findIndex(
-            (t) => t.declaration.kind !== "inherited",
+            (t) => isQueryTile(t) && t.declaration.kind !== "inherited",
          );
          // No tile declared here: a real shape, not a gap in the sweep.
          if (target < 0) return;
@@ -1701,7 +1705,7 @@ describe("every composite dashboard survives an edit", () => {
          const doc = await readDashboardDocument(source);
          if (readFailed(doc)) throw new Error(doc.reason);
          const target = doc.document.tiles.findIndex(
-            (t) => t.declaration.kind !== "inherited",
+            (t) => isQueryTile(t) && t.declaration.kind !== "inherited",
          );
          // One tile left, or every tile declared on its source: nothing here
          // reaches the declaration-deletion path.
@@ -2359,11 +2363,15 @@ source: a is one extend {
       expect(result.source).toBe(TEXT_TILE);
    });
 
-   it("still refuses a tile-list edit over the text tile", async () => {
-      const reason = await refused(TEXT_TILE, (d) => {
+   it("removes a query tile beside a text tile without touching the text tile", async () => {
+      const out = await spliced(TEXT_TILE, (d) => {
          d.tiles.pop();
       });
-      expect(reason).toContain("text tile");
+      expect(out).toContain("tiles=[intro { kind=text colspan=12 }]");
+      expect(out).toContain(
+         "##|(markdown) intro\n## How to read this page\n|##\n",
+      );
+      expect(out).not.toContain("view: x");
    });
 
    it("rewrites a description and a tile's colspan without touching the markdown around them", async () => {

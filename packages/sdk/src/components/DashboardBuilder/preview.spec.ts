@@ -98,7 +98,11 @@ describe("previewTileQuery", () => {
       const withChart = (chart: DashboardTile["chart"]) =>
          previewTileQuery(
             document,
-            { ...base, chart, chartLines: ["# bar_chart { size=spark }"] },
+            {
+               ...base,
+               chart,
+               chartLines: ["# bar_chart { size=spark }"],
+            } as DashboardTile,
             runnable,
          ).annotation;
       expect(withChart("bar_chart")).toBe(

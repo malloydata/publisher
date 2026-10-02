@@ -14,7 +14,7 @@ import {
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import {
    canMove,
    leadingComments,

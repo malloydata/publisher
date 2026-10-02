@@ -4,7 +4,7 @@
 import type { CompiledModel } from "../../client";
 import { buildCatalog, type CatalogSource } from "../DashboardBuilder/catalog";
 import { exportedSources } from "../DocumentCreate/exportedSources";
-import type { NotebookSource } from "./readNotebookSource";
+import type { NotebookSource } from "../DashboardBuilder/legacyNotebook";
 
 /** One name an import brings in: the source as its file calls it, and as this notebook does. */
 export interface ImportedName {

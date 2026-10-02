@@ -61,7 +61,7 @@ import {
 } from "./EditorCells";
 import { queryCellText, type QueryRun } from "./queryCell";
 import { QueryCaptionField } from "./QueryCaptionField";
-import type { NotebookSource } from "./readNotebookSource";
+import type { NotebookSource } from "../DashboardBuilder/legacyNotebook";
 import {
    canInsertQuery,
    notebookDocumentOf,

@@ -18,7 +18,7 @@ import { isMac } from "../DashboardBuilder/useBuilderShortcuts";
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 
 mockServerProvider({
    models: { executeQueryModel: mock(async () => ({ data: {} })) },

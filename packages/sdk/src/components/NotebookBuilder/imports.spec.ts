@@ -8,7 +8,7 @@ import { importedCatalog, mergeSources, notebookImports } from "./imports";
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 
 const importsOf = async (body: string, modelPath = "notebooks/n.malloy") => {
    const read = await readNotebookSource(

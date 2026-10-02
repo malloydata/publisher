@@ -3,7 +3,7 @@
 
 import { chartLineText, type ChartState } from "../DashboardBuilder/chartLine";
 import { closesBlock } from "../DashboardBuilder/malloyText";
-import type { NotebookSource } from "./readNotebookSource";
+import type { NotebookSource } from "../DashboardBuilder/legacyNotebook";
 
 /** Each read cell's exact text by id: what a query cell sends to run, byte for byte. */
 export function cellSlices(source: NotebookSource): Map<string, string> {

@@ -4,14 +4,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
-import { tileKey, type DashboardTile } from "./document";
+import { tileKey, type DashboardTile, type QueryTile } from "./document";
 import { GAP_TYPE } from "./sortable";
 import { useTileReorder } from "./useTileReorder";
 
-const tile = (
-   name: string,
-   extra: Partial<DashboardTile> = {},
-): DashboardTile => ({
+const tile = (name: string, extra: Partial<QueryTile> = {}): QueryTile => ({
    name,
    source: "s",
    declaration: { kind: "reference", from: name },

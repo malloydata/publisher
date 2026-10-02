@@ -19,7 +19,7 @@ import {
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 
 mockServerProvider({
    models: { executeQueryModel: mock(async () => ({ data: {} })) },

@@ -22,7 +22,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import type { NotebookEvent } from "./telemetry";
 
 const executeQueryModel = mock(

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import type { DashboardTile } from "./document";
 import { previewTileQuery } from "./preview";
 import { openDocument, spliced } from "./testing/fixtures";
 
@@ -26,8 +27,11 @@ describe("the Default chart preview, for the shapes a real dashboard reads", () 
       const annotations = Object.fromEntries(
          document.tiles.map((tile) => [
             tile.name,
-            previewTileQuery(document, { ...tile, chart: "default" }, new Set())
-               .annotation,
+            previewTileQuery(
+               document,
+               { ...tile, chart: "default" } as DashboardTile,
+               new Set(),
+            ).annotation,
          ]),
       );
       expect(annotations).toEqual({

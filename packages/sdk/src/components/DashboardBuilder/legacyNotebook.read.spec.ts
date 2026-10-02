@@ -8,7 +8,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "./legacyNotebook";
 import {
    callAccessor,
    isNotebookReaderError,

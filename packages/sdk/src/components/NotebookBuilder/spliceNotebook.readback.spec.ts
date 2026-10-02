@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import * as splicer from "../DashboardBuilder/spliceDocument";
-import * as locator from "./readNotebookSource";
+import * as locator from "../DashboardBuilder/legacyNotebook";
 
 // No edit the writer accepts reaches these gates, so the checks are made to disagree; disarmed, both wrappers are the real thing.
 const realLocator = { ...locator };
@@ -13,7 +13,7 @@ let tamperReadBack:
    | undefined;
 let breakSyntax = false;
 let reads = 0;
-mock.module("./readNotebookSource", () => ({
+mock.module("../DashboardBuilder/legacyNotebook", () => ({
    ...realLocator,
    readNotebookSource: async (text: string) => {
       const result = await realLocator.readNotebookSource(text);

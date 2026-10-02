@@ -8,7 +8,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import { notebookDocumentOf, spliceNotebookDocument } from "./spliceNotebook";
 
 const DEF = 'source: a is duckdb.sql("select 1 as x")';

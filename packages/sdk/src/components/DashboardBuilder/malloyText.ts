@@ -197,19 +197,29 @@ export function descriptionNotes(lines: string[]): {
    };
 }
 
-/** Whether `tiles=[…]` holds an entry that is not a quoted run expression, such as a `kind=text` tile. */
-export function hasNonQuotedTiles(artifactText: string): boolean {
-   const key = artifactText.search(/tiles\s*=\s*\[/);
-   if (key < 0) return false;
-   const open = artifactText.indexOf("[", key);
-   const close = artifactText.indexOf("]", open);
-   if (close < 0) return false;
-   return (
-      artifactText
-         .slice(open + 1, close)
-         .replace(/"[^"]*"/g, "")
-         .replace(/[\s,]/g, "").length > 0
-   );
+/** A text tile's name: a bare word, as the server reads a `tiles=[…]` entry. */
+export const TEXT_TILE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A floating `##|(markdown)` / `##|(text)` opener line: its route, and what follows the route.
+ * `name` is that text when it is a lone bare word; any other text on the opener is body.
+ */
+export function textBlockOpener(
+   line: string,
+): { route: "markdown" | "text"; rest: string; name?: string } | undefined {
+   const trimmed = line.trim();
+   const token = trimmed.split(/[ \t\r]/, 1)[0];
+   const m =
+      /^##\|(?:\((markdown|text)\)|<(markdown|text)>|\[(markdown|text)\]|\{(markdown|text)\})$/.exec(
+         token,
+      );
+   if (!m) return undefined;
+   const rest = trimmed.slice(token.length).trim();
+   return {
+      route: (m[1] ?? m[2] ?? m[3] ?? m[4]) as "markdown" | "text",
+      rest,
+      ...(TEXT_TILE_NAME.test(rest) ? { name: rest } : {}),
+   };
 }
 
 /** A tile expression's steps: `orders -> by_brand + { limit: 2 }`. */

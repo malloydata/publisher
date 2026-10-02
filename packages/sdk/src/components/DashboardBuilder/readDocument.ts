@@ -14,9 +14,11 @@ import type {
    DashboardTile,
    LocalGiven,
 } from "./document";
+import { isTextTile } from "./document";
 import {
    parseMalloy,
    parseRefused,
+   readTileList,
    type ParsedMalloy,
    type TreeStage,
    type TreeView,
@@ -60,6 +62,8 @@ export interface ReadFailure {
    reason: string;
    /** 1-based, for a message that can point at the line. */
    line?: number;
+   /** The file is a `kind=notebook` in the run-cell format, which `convertLegacyNotebook` turns into a layout notebook. */
+   legacyNotebook?: true;
 }
 
 export type ReadResult =
@@ -289,21 +293,8 @@ function gridWidth(
    return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-/**
- * The `tiles=[…]` entries, in order, as written. An absent or unclosed list,
- * and one holding only entries that are not quoted (a text tile), are
- * `undefined`: only an explicit, blank `tiles=[]` is a dashboard with no tiles.
- */
-function tileEntries(artifactLine: string): string[] | undefined {
-   const key = artifactLine.search(/tiles\s*=\s*\[/);
-   if (key < 0) return undefined;
-   const open = artifactLine.indexOf("[", key);
-   const close = artifactLine.indexOf("]", open);
-   if (close < 0) return undefined;
-   const list = artifactLine.slice(open + 1, close);
-   const entries = [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-   return entries.length === 0 && list.trim() !== "" ? undefined : entries;
-}
+const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
+const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 
 export async function readDashboardDocument(
    sourceText: string,
@@ -332,8 +323,20 @@ export async function readDashboardDocument(
 
    const tag = parseAnnotation([artifactLine.replace(/^##\s*/, "# ")]).tag;
    const artifactTag = tag?.tag("artifact");
-   const entries = tileEntries(artifactLine);
-   if (entries === undefined) {
+   const kind =
+      artifactTag?.text("kind") === "notebook"
+         ? ("notebook" as const)
+         : undefined;
+   const list = readTileList(artifactLine);
+   if (list === undefined) {
+      // A notebook is told from a layout one by whether it lists tiles at all.
+      if (kind === "notebook")
+         return {
+            ok: false,
+            legacyNotebook: true,
+            reason:
+               "This notebook is in the cell format, with no `tiles=[…]` list.",
+         };
       return {
          ok: false,
          reason:
@@ -385,8 +388,40 @@ export async function readDashboardDocument(
    }
 
    const tiles: DashboardTile[] = [];
-   for (const entry of entries) {
-      const steps = tileSteps(entry);
+   for (const { text: entryText } of list.entries) {
+      const quoted = QUOTED_ENTRY.exec(entryText);
+      const textName = quoted ? undefined : TEXT_ENTRY.exec(entryText)?.[1];
+      if (textName !== undefined) {
+         const textTag = parseAnnotation([`# ${entryText}`]).tag?.tag(textName);
+         if (textTag?.text("kind") !== "text") {
+            return {
+               ok: false,
+               reason:
+                  `The tile \`${entryText}\` is neither a quoted \`source -> view\` ` +
+                  `expression nor a \`${textName} { kind=text }\` entry, which are ` +
+                  `the only forms the builder can lay out.`,
+            };
+         }
+         if (tiles.some((tile) => isTextTile(tile) && tile.name === textName)) {
+            return {
+               ok: false,
+               reason: `Two text tiles are named \`${textName}\`, so the builder cannot tell them apart.`,
+            };
+         }
+         const colspan = gridWidth(textTag, "colspan");
+         tiles.push({
+            kind: "text",
+            name: textName,
+            markdown:
+               parsed.textBlocks.find((block) => block.name === textName)
+                  ?.body ?? "",
+            ...(colspan === undefined ? {} : { colspan }),
+            ...(textTag.has("break") ? { break: true } : {}),
+         });
+         continue;
+      }
+      const entry = quoted?.[1] ?? entryText;
+      const steps = quoted ? tileSteps(entry) : undefined;
       if (!steps) {
          return {
             ok: false,
@@ -497,6 +532,7 @@ export async function readDashboardDocument(
    return {
       ok: true,
       document: {
+         ...(kind ? { kind } : {}),
          title: artifactTag?.text("title") ?? "",
          ...(description ? { description } : {}),
          ...(columnsTag === undefined ? {} : { columns: columnsTag }),

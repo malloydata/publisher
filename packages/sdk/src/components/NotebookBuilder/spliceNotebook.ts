@@ -19,7 +19,7 @@ import {
    readNotebookSource,
    type NotebookSource,
    type NotebookSourceCell,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 
 export type NotebookCellKind = NotebookSourceCell["kind"];
 

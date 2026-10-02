@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { chartStateOf, type ChartState } from "../DashboardBuilder/chartLine";
-import type { QueryChart } from "./readNotebookSource";
+import type { QueryChart } from "../DashboardBuilder/legacyNotebook";
 
 /** Why a read cell's chart cannot be changed here, or undefined when it can. */
 export function chartLocked(chart: QueryChart | undefined): string | undefined {

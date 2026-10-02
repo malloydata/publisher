@@ -6,7 +6,7 @@ import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
 import {
    notebookSourceRefused,
    readNotebookSource,
-} from "../NotebookBuilder/readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource } from "./newNotebook";

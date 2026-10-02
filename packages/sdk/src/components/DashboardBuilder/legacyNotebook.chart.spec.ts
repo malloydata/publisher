@@ -6,7 +6,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "./legacyNotebook";
 
 const HEAD =
    '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n\n';

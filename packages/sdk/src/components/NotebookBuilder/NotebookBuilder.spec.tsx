@@ -20,7 +20,7 @@ import {
    notebookSourceRefused,
    readNotebookSource,
    type NotebookSource,
-} from "./readNotebookSource";
+} from "../DashboardBuilder/legacyNotebook";
 import type { NotebookEvent } from "./telemetry";
 
 /** The route's real answer to a restricted construct: a 400 whose problems carry Malloy's code. */

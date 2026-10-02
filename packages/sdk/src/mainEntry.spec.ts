@@ -140,7 +140,7 @@ describe("the main entry", () => {
             (file) =>
                file === "builder-entry.ts" ||
                file.startsWith("components/NotebookBuilder/") ||
-               /(DashboardEditor|NotebookEditor|readDocument|readNotebookSource|malloyTree)\./.test(
+               /(DashboardEditor|NotebookEditor|readDocument|legacyNotebook|malloyTree)\./.test(
                   file,
                ),
          );

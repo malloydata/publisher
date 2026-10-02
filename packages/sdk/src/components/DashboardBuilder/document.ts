@@ -124,8 +124,10 @@ export type TileDeclaration =
    | { kind: "opaque"; why: string }
    | { kind: "inherited" };
 
-/** One tile: a view shown on the page, plus how it is presented. */
-export interface DashboardTile {
+/** A tile that runs a view: a view shown on the page, plus how it is presented. */
+export interface QueryTile {
+   /** Absent means a query tile, the API's default. */
+   kind?: "query";
    /**
     * The view name. For a tile declared in this file, assigned ONCE when the
     * tile is added and never recomputed — deriving it from position would
@@ -170,6 +172,37 @@ export interface DashboardTile {
 }
 
 /**
+ * A markdown tile: prose between the query tiles, written as a `##|(markdown) <name>` block
+ * and listed in `tiles=[…]` as `<name> { kind=text }`. Its width and row break live on that
+ * list entry, since a block has no tags.
+ */
+export interface TextTile {
+   kind: "text";
+   /** The block's name and the list entry's: a bare identifier, unique among the text tiles. */
+   name: string;
+   markdown: string;
+   colspan?: number;
+   break?: boolean;
+   /** A query tile's fields, declared absent so readers of a `DashboardTile` compile until each narrows with `isQueryTile`. */
+   source?: undefined;
+   declaration?: undefined;
+   filters?: undefined;
+   label?: undefined;
+   subtitle?: undefined;
+   chart?: undefined;
+   chartLines?: undefined;
+   borderless?: undefined;
+}
+
+export type DashboardTile = QueryTile | TextTile;
+
+export const isTextTile = (tile: DashboardTile): tile is TextTile =>
+   tile.kind === "text";
+
+export const isQueryTile = (tile: DashboardTile): tile is QueryTile =>
+   tile.kind !== "text";
+
+/**
  * A source extension the dashboard DECLARES, holding tiles that read it.
  *
  * A LIST, not one source, because a composite dashboard exists precisely to
@@ -198,8 +231,8 @@ export interface DashboardSource {
 }
 
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
-export const tileKey = (tile: { source: string; name: string }) =>
-   `${tile.source}.${tile.name}`;
+export const tileKey = (tile: DashboardTile) =>
+   isTextTile(tile) ? `text.${tile.name}` : `${tile.source}.${tile.name}`;
 
 /** `dimension: <name> is <expression>` in the dashboard's own extension. */
 export interface DashboardDimension {
@@ -207,11 +240,16 @@ export interface DashboardDimension {
    expression: string;
 }
 
+/** Which surface the file is: a notebook is the same file with one column. */
+export type DocumentKind = "dashboard" | "notebook";
+
 export interface DashboardDocument {
+   /** `## artifact { kind=… }`; the reader leaves it out for a dashboard. */
+   kind?: DocumentKind;
    title: string;
    /** The narrative header, as markdown. Emitted as `##"` lines. */
    description?: string;
-   /** `# dashboard { columns=N }`. */
+   /** `# dashboard { columns=N }` as the file has it; a notebook's grid is one column whatever it says. */
    columns?: number;
    /** `## artifact { autorun=false }`. Absent means autorun. */
    autorun?: boolean;
