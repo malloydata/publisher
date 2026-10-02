@@ -245,7 +245,7 @@ describe("spliceNotebookDocument", () => {
          doc.cells[1].markdown = "Two\nlines.";
       };
       // Six LF lines, one of them CRLF: the edit writes LF.
-      const mostlyLf = base.replace("\n", "\r\n");
+      const mostlyLf = base.replace(/\n/, "\r\n");
       expect(await written(mostlyLf, edit)).toContain(
          "##|(markdown)\nTwo\nlines.\n|##\n",
       );
