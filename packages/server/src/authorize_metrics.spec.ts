@@ -12,7 +12,11 @@ import {
    recordRowLevelGateRejected,
    resetAuthorizeGuardTelemetryForTesting,
 } from "./authorize_metrics";
-import { hasCallerAuthorizeAnnotation } from "./service/authorize";
+import {
+   hasCallerAuthorizeAnnotation,
+   lastCallerGuardRefusalKind,
+   setMalloyParserLoaderForTest,
+} from "./service/authorize";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -75,6 +79,28 @@ describe("authorize_metrics", () => {
          });
       expect(await count("lexed")).toBe(1);
       expect(await count("whole_text")).toBe(2);
+   });
+
+   it("publisher_authorize_guard_rejected_total labels a refusal 'no_lexer' when the Malloy lexer did not load", async () => {
+      setMalloyParserLoaderForTest(() => null);
+      const warn = console.warn;
+      console.warn = () => {};
+      try {
+         expect(
+            hasCallerAuthorizeAnnotation("#|(markdown)\n#(authorize) true\n"),
+         ).toBe(true);
+      } finally {
+         console.warn = warn;
+         setMalloyParserLoaderForTest();
+      }
+      expect(lastCallerGuardRefusalKind()).toBe("no_lexer");
+      recordAuthorizeGuardRejection("query");
+      expect(
+         await harness.collectCounter(
+            "publisher_authorize_guard_rejected_total",
+            { field: "query", match: "no_lexer" },
+         ),
+      ).toBe(1);
    });
 
    it("publisher_authorize_bypass_total ticks per call, labeled by entry_point", async () => {

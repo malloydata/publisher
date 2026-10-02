@@ -328,6 +328,8 @@ export function setMalloyParserLoaderForTest(
    parserLoader = loader ?? loadMalloyParser;
    makeMalloyParser = undefined;
    warnedNoParser = false;
+   lexerMissing = false;
+   lastLexed = { text: "", prose: [] };
 }
 
 /** Malloy's lexer and parser as the translator builds them, with our listeners, so errors are counted and caller text never reaches stderr. */
@@ -342,11 +344,15 @@ let lastLexed: { text: string; prose: [number, number][] | undefined } = {
    prose: [],
 };
 
-let lastRefusalWasWholeText = false;
+/** `no_lexer` is the Malloy parser failing to load, which is ours to fix; `whole_text` is text that would not lex, or a name. */
+export type CallerGuardRefusalKind = "lexed" | "whole_text" | "no_lexer";
 
-/** Whether the guard's last refusal came from the whole-text match rather than a clean lex; read it synchronously after the guard call. */
-export function lastCallerGuardRefusalWasWholeText(): boolean {
-   return lastRefusalWasWholeText;
+let lastRefusalKind: CallerGuardRefusalKind = "lexed";
+let lexerMissing = false;
+
+/** How the guard's last refusal was reached; read it synchronously after the guard call. */
+export function lastCallerGuardRefusalKind(): CallerGuardRefusalKind {
+   return lastRefusalKind;
 }
 
 function proseRanges(text: string): [number, number][] | undefined {
@@ -363,6 +369,7 @@ function proseRanges(text: string): [number, number][] | undefined {
  */
 function lexProseRanges(text: string): [number, number][] | undefined {
    const factory = malloyParserFactory();
+   lexerMissing = !factory;
    if (!factory) {
       // Without the lexer every prose-bearing notebook save and query answers 400, so say why once.
       if (!warnedNoParser) {
@@ -469,7 +476,8 @@ export function hasCallerAuthorizeAnnotation(
    if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return false;
    const text = precedingText + callerText;
    const bodies = proseRanges(text);
-   lastRefusalWasWholeText = bodies === undefined;
+   lastRefusalKind =
+      bodies !== undefined ? "lexed" : lexerMissing ? "no_lexer" : "whole_text";
    if (bodies === undefined) return true;
    const sticky = new RegExp(AUTHORIZE_TAG_LIKE, "iuy");
    const callerStart = precedingText.length;
@@ -548,7 +556,7 @@ export function assertNoCallerAuthorizeAnnotation(
 /** The whole-text form, for a caller NAME that is interpolated mid-line and never lexed on its own. */
 export function assertNoAuthorizeTagLike(callerText: string): void {
    if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return;
-   lastRefusalWasWholeText = true;
+   lastRefusalKind = "whole_text";
    refuseCallerAuthorizeAnnotation();
 }
 

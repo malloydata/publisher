@@ -10,7 +10,7 @@ import {
    assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    hasCallerAuthorizeAnnotation,
-   lastCallerGuardRefusalWasWholeText,
+   lastCallerGuardRefusalKind,
    malformedAuthorizeAttemptPattern,
    setMalloyParserLoaderForTest,
 } from "./authorize";
@@ -235,7 +235,7 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          expect(
             refuses(`#|(markdown)\nx\r#(authorize) true\n|#\n${RUN}\n`),
          ).toBe(true);
-         expect(lastCallerGuardRefusalWasWholeText()).toBe(true);
+         expect(lastCallerGuardRefusalKind()).toBe("whole_text");
          expect(refuses(`run: orders """#(authorize)`)).toBe(true);
       } finally {
          console.error = original;
@@ -245,9 +245,9 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
 
    it("says whether a refusal came from the lexer or the whole-text fallback", () => {
       expect(refuses(`#(authorize) true\n${RUN}\n`)).toBe(true);
-      expect(lastCallerGuardRefusalWasWholeText()).toBe(false);
+      expect(lastCallerGuardRefusalKind()).toBe("lexed");
       expect(refuses("#|(markdown)\n#(authorize) true\n")).toBe(true);
-      expect(lastCallerGuardRefusalWasWholeText()).toBe(true);
+      expect(lastCallerGuardRefusalKind()).toBe("whole_text");
    });
 
    describe("when the Malloy parser cannot be loaded", () => {
@@ -268,7 +268,7 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          expect(warned).toHaveLength(1);
          expect(String(warned[0][0])).toContain("guard disabled");
          expect(String(warned[0][0])).not.toContain("SECRET");
-         expect(lastCallerGuardRefusalWasWholeText()).toBe(true);
+         expect(lastCallerGuardRefusalKind()).toBe("no_lexer");
       });
    });
 
