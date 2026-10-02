@@ -1093,7 +1093,7 @@ describe("NotebookEditor, when a save fails", () => {
       ).toBe(false);
    });
 
-   it("refetches the file after a refused package write, as the dashboard does", async () => {
+   it("refetches the model after a refused package write", async () => {
       mount(undefined);
       await screen.findByRole("group", { name: "Cell 1, text", hidden: true });
       await waitFor(() => expect(getModel).toHaveBeenCalled());

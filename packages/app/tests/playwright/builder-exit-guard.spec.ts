@@ -130,6 +130,25 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
    });
 
+   test("Tab to a text cell's Done, then Done editing, still asks and Save and exit keeps the draft", async ({
+      page,
+   }) => {
+      await openEditor(page);
+      await page.getByRole("button", { name: "Edit text" }).first().click();
+      await markdownField(page).fill("Tabbed draft");
+      await markdownField(page).press("Tab");
+      await expect(
+         page.getByRole("button", { name: "Done", exact: true }),
+      ).toBeFocused();
+
+      await page.getByRole("button", { name: "Done editing" }).click();
+      await expect(prompt(page)).toBeVisible();
+      await prompt(page).getByRole("button", { name: "Save and exit" }).click();
+
+      await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      expect(await pe.readSource(TOUR)).toContain("Tabbed draft");
+   });
+
    test("Done editing then Save and exit writes the file and leaves with no prompt after", async ({
       page,
    }) => {

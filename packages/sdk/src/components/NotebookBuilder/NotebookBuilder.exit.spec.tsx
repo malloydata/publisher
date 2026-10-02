@@ -242,3 +242,33 @@ describe("NotebookBuilder: leaving with a structural edit", () => {
       expect(onSave).toHaveBeenCalledTimes(1);
    });
 });
+
+describe("NotebookBuilder: leaving with a text draft still open", () => {
+   const typeThenTabToDone = () => {
+      fireEvent.click(button("Edit text"));
+      const field = screen.getByLabelText("Markdown");
+      fireEvent.change(field, { target: { value: "Changed." } });
+      fireEvent.blur(field, { relatedTarget: button("Done") });
+   };
+
+   it("asks before Done editing exits, since the draft is unsaved", async () => {
+      const onExit = mock(() => {});
+      await mount({ onExit, onSave: async () => {} });
+      typeThenTabToDone();
+      fireEvent.click(button("Done editing"));
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(onExit).not.toHaveBeenCalled();
+   });
+
+   it("Save and exit commits the draft, saves it, then exits", async () => {
+      const onExit = mock(() => {});
+      const onSave = mock(async (_source: string) => {});
+      await mount({ onExit, onSave });
+      typeThenTabToDone();
+      fireEvent.click(button("Done editing"));
+      fireEvent.click(button("Save and exit"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(onSave.mock.calls[0][0]).toContain("Changed.");
+      await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
+   });
+});

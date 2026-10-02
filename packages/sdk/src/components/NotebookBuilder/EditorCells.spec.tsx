@@ -148,7 +148,7 @@ describe("MarkdownCell", () => {
    it("reports an open draft that differs from the text, and clears when it closes", () => {
       const onDirty = mock((_dirty: boolean) => {});
       open("Hello", { onDirty });
-      expect(onDirty.mock.calls.at(-1)?.[0]).toBe(false);
+      expect(onDirty.mock.calls.at(-1)?.[0]).not.toBe(true);
       type("Hello!");
       expect(onDirty.mock.calls.at(-1)?.[0]).toBe(true);
       type("Hello");
@@ -164,5 +164,15 @@ describe("MarkdownCell", () => {
       type("Hello!");
       view.unmount();
       expect(onDirty.mock.calls.at(-1)?.[0]).toBe(false);
+   });
+
+   it("stays silent when it mounts clean, so it cannot clear another cell's dirty draft", () => {
+      const onDirty = mock((_dirty: boolean) => {});
+      const view = render(<Host initial="Hello" onDirty={onDirty} />, {
+         wrapper: serverWrapper,
+      });
+      expect(onDirty).not.toHaveBeenCalled();
+      view.unmount();
+      expect(onDirty).not.toHaveBeenCalled();
    });
 });
