@@ -348,6 +348,21 @@ The goal is simple and predictable, not clever.
 Consequence: this pull request is not a pure refactor plus faster indexing. The behaviour change (indexing and
 error states instead of a lexical fallback) goes in its own commit, with only the affected golden entries updated.
 
+### 2.9 Providers, settings and keyphrases (built in the next step)
+
+This step builds the provider layer of 2.6 and the first LLM use. `providers/` holds a `ChatModel` and an
+`EmbeddingModel` interface with direct-`fetch` adapters for OpenAI-compatible servers (OpenAI, Ollama, anything that
+copies the shape), Anthropic, Google (Gemini API) and Vertex AI, and a shared HTTP retry, JSON-from-text with one
+repair, a per-provider cooldown and `publisher_llm_*` metrics. The two config files get their `retrieval` blocks
+(`llm`, `embedding`, `egress`, and the package's `representation`, `keyphrases` and `prompts.keyphrase`); only keys
+whose code exists are accepted. `single` becomes the default representation (one row per entity: the keyphrase, else
+the doc, else the name) and `facets` stays available. Index-time keyphrases are the first LLM use: an entity whose
+description is 1 to 8 words (1 to 12 for a view) uses it as its keyphrase, and an empty or longer one gets an
+LLM-written phrase, ten entities per call, stored in `entity_keyphrases` and regenerated only when the entity's
+inputs, the prompt text or the model change. The keyphrase step runs before embedding in the sync, reports
+`keyphraseProgress`, and an LLM failure puts the sync in `error` with the stage `keyphrase`. The settings, their
+precedence and the provider requirements are documented in [configuration.md](configuration.md).
+
 ## 3. Pull request sequence
 
 1. **This pull request.** The pipeline, the sync, the configurable cap, and the indexing and error results.

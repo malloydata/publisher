@@ -126,9 +126,10 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |
 | `PERSIST_STORAGE_MODE` | — | `off` | Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there — a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: the `storage=` annotation is inert — sources build and serve from their own warehouse exactly as without it. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package — a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md). |
 | `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below. |
-| `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
-| `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
-| `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
+| `LLM_API_KEY` | — | _unset_ | API key for the chat model named by `retrieval.llm` in `publisher.config.json` (OpenAI, an OpenAI-compatible server, Anthropic or Google; not needed for `ollama` or `vertex`). Used for index-time keyphrases. Unset with a keyed provider: every LLM feature is off and nothing errors. Never read from a file, never logged. See "Providers and the retrieval settings" below. |
+| `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. A `retrieval.embedding.model` in `publisher.config.json` wins over it. |
+| `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). A `retrieval.embedding.baseUrl` wins over it. |
+| `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. A `retrieval.embedding.dimensions` wins over it. |
 | `EMBEDDING_MIN_SIMILARITY` | — | `0.2` | Cosine-similarity floor a match must clear to be returned at all, for both `get_context` and `search_database_schema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below. |
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `search_database_schema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for search_database_schema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
@@ -230,12 +231,20 @@ each package's entities (source, view, named query, join, dimension, and measure
 annotation text) are embedded and searched by cosine similarity, so synonyms and `snake_case`
 names match by meaning.
 
-An entity's name and its documentation are embedded **separately**, a long doc is split into
-several parts, and an entity scores as its best-matching part. That is deliberate: with one vector
-per entity, a long `#(doc)` dominated the average, so the entity stopped matching the plain name of
+By default (`retrieval.representation: "single"`) each entity is embedded as **one** row whose text
+is its keyphrase if it has one, else its `#(doc)` text (cut to 1,024 characters), else its
+humanized name; see "Keyphrases" below. A package can ask for `"facets"` instead, in publisher.json:
+an entity's name and its documentation are embedded **separately**, a long doc is split into
+several parts, and an entity scores as its best-matching part. Facets exist because a single
+vector for a long `#(doc)` is dominated by the doc, so the entity stops matching the plain name of
 the concept it described and individual facts inside the doc — the grain caveats and population
 rules modellers write there — could not be found by their own wording either. Scoring on the best
 part means more documentation can add recall but never costs an entity precision on its own name.
+`single` costs about one embedding per entity, which is the cheapest first index; it is the default
+because most descriptions are short and a keyphrase puts the meaning, not the identifier, into the
+vector. Changing the representation re-embeds the package (the old rows are deleted and the new
+ones built); the status reads `indexing` until it is done. See "Providers and the retrieval
+settings" and "Package settings" below.
 
 What to know before turning it on:
 
@@ -295,7 +304,8 @@ What to know before turning it on:
   loop is cheap.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, a search returns an
   error that names the cause (and the server log has the full text) until the cool-down ends, then
-  the next search tries again.
+  the next search tries again. With keyphrases on, the same holds when the LLM fails, and the
+  package's status names the `keyphrase` stage.
 - Entity cap (`retrieval.indexing.maxEntities`, default `5000`): a package with more entities than
   this is not embedded, because its first index would take minutes of provider calls. Raise it in
   `publisher.config.json` and restart the server:
@@ -326,6 +336,151 @@ What to know before turning it on:
   the floor is applied at query time, not at index time.
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
+
+### Providers and the retrieval settings
+
+Retrieval settings live in two files with two owners, and the only environment variables are the
+two API keys (plus the older `EMBEDDING_*` ones, which keep working as a fallback). The
+**server operator** owns `publisher.config.json`; a **package author** owns the package's
+`publisher.json`. A package can switch a feature on but never past what the operator allows: the
+credentials, what may leave the machine and the spend ceilings are all in the operator's file.
+
+`publisher.config.json`, the `retrieval` block (every key is optional):
+
+```json
+{
+  "retrieval": {
+    "llm": {
+      "provider": "anthropic",
+      "model": "<a model your provider serves>",
+      "timeoutMs": 30000,
+      "concurrency": 4,
+      "maxCallsPerSync": 300,
+      "maxCallsPerRequest": 20
+    },
+    "embedding": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "dimensions": 512,
+      "queryPrefix": "",
+      "documentPrefix": ""
+    },
+    "egress": { "preset": "default" },
+    "indexing": { "maxEntities": 5000 }
+  }
+}
+```
+
+| Key                                                                 | Meaning                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.provider`                                                      | One of `openai`, `openai-compatible`, `ollama`, `anthropic`, `google`, `vertex`. Setting it is what turns LLM features on (see below). Required with `llm.model`.                                                         |
+| `llm.model`                                                         | The chat model name your provider serves. Required.                                                                                                                                                                       |
+| `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.    |
+| `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                           |
+| `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                       |
+| `llm.maxCallsPerSync` / `maxCallsPerRequest`                        | Spend ceilings. At most this many chat calls in one index sync (default `300`) or one `get_context` request (default `20`). A package cannot raise them.                                                                  |
+| `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                             |
+| `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                        |
+| `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.            |
+| `egress.preset`                                                     | `default`: entity names, `#(doc)` text and schema context may be sent to the LLM. `full`: also the field's code. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
+| `indexing.maxEntities`                                              | See "Entity cap" above.                                                                                                                                                                                                   |
+
+**Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
+model and `EMBEDDING_API_KEY` for the embedding model (they are separate because the two are often
+from different vendors with separate budgets). `ollama` needs no key. `vertex` needs none either: it
+signs requests with Application Default Credentials (`gcloud auth application-default login`, or
+the service account the process runs as) and the `cloud-platform` scope. A key is never logged, and
+an ambient `OPENAI_API_KEY` is never read.
+
+**Precedence.** When a key is set in the file and the matching `EMBEDDING_*` variable
+(`EMBEDDING_MODEL`, `EMBEDDING_API_BASE`, `EMBEDDING_DIMENSIONS`) is also set, the file wins; the
+variable fills in anything the file leaves out. `EMBEDDING_MIN_SIMILARITY` stays a variable.
+
+**When the LLM is on.** LLM features are on if and only if `retrieval.llm.provider` is set and
+either `LLM_API_KEY` is set or the provider is `ollama` or `vertex`. Otherwise they are all off and
+nothing errors: the server logs a warning if a provider is named without a key, and `get_context`
+behaves as it did before.
+
+**Validation.** A bad value stops the server at startup with a message that names the key, what
+was expected and a fix, for example `Invalid retrieval.llm.provider: expected one of openai,
+openai-compatible, ollama, anthropic, google, vertex, got "cohere". Fix: ...`. Inside `llm`,
+`embedding` and `egress` an unknown key is an error that lists the valid ones.
+
+**Providers.** Each provider is called directly over HTTPS, with no vendor SDK. Failed calls retry
+the same way for every provider: a 429, 408, 5xx or timeout is retried up to five times with
+jittered exponential backoff and `Retry-After` honoured; a 401, 403 or other 4xx fails at once.
+After three failed calls in a row a provider is refused for a minute so a dead endpoint costs a few
+timeouts, not one per entity. JSON replies are read out of code fences, checked, and re-asked once
+with the validation error if wrong. Calls, failures, retries, tokens and latency are exported as
+`publisher_llm_*` metrics.
+
+| Provider                      | Chat                                                                     | Embeddings                                                   | Auth                                                         |
+| ----------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `openai`, `openai-compatible` | `POST <baseUrl>/chat/completions`                                        | `POST <baseUrl>/embeddings`, up to 512 texts per request     | `Authorization: Bearer`                                      |
+| `ollama`                      | same, against the local compatibility API                                | same                                                         | none                                                         |
+| `anthropic`                   | `POST /v1/messages`, `anthropic-version: 2023-06-01`                     | none                                                         | `x-api-key`                                                  |
+| `google`                      | `models/<model>:generateContent`                                         | `models/<model>:batchEmbedContents`, up to 100 per request\* | `x-goog-api-key`                                             |
+| `vertex`                      | the same model path under `projects/<p>/locations/<l>/publishers/google` | `:predict`, up to 250 instances per request\*                | `Authorization: Bearer` from Application Default Credentials |
+
+\* Batch limits are constants in the adapters, to be verified against the vendor's current
+documentation; a vendor that lowers its limit fails the request with a 400 that names it.
+
+### Package settings (`retrieval` in publisher.json)
+
+How one package is searched and indexed. It is read when the package loads, so a change takes effect
+on reload (and a reload that changes nothing keeps the warm index):
+
+```json
+{
+  "name": "storefront",
+  "retrieval": {
+    "representation": "single",
+    "keyphrases": "auto",
+    "prompts": { "keyphrase": "prompts/keyphrase.md" }
+  }
+}
+```
+
+| Key                 | Values                    | Default  | Meaning                                                                                                                                                                                     |
+| ------------------- | ------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `representation`    | `single`, `facets`        | `single` | One row per entity, or a name row plus doc chunks (plus a keyphrase row).                                                                                                                   |
+| `keyphrases`        | `auto`, `never`, `always` | `auto`   | See "Keyphrases". Without an operator LLM, `auto` and `always` behave as `never`.                                                                                                           |
+| `prompts.keyphrase` | a path inside the package | built in | A file holding the instructions the LLM gets when it writes keyphrases. Absolute paths and anything that resolves outside the package directory (including through a symlink) are rejected. |
+
+An unknown key is an error that names the valid keys, and the package is not served until it is
+fixed (HTTP 424, like any unusable publisher.json).
+
+### Keyphrases
+
+A keyphrase is a short search phrase for an entity (at most about twelve words), the way a person
+would ask for it. It is written at index time, once, and stored in the `entity_keyphrases` table of
+`publisher.db`. With `keyphrases: "auto"` and an LLM configured:
+
+- a description (`#(doc)` text) of 1 to 8 words (1 to 12 for a view) **is** the keyphrase, with no
+  LLM call;
+- an entity with no description, or a longer one, gets an LLM-written keyphrase, ten entities per
+  call.
+
+`always` sends every entity to the LLM; `never` sends none. The keyphrase step runs before
+embedding, saves each batch as it returns and stops at `retrieval.llm.maxCallsPerSync` calls (the
+rest wait for the next sync; the package's status shows `keyphraseProgress.capped`).
+
+A stored keyphrase is reused until the entity's inputs (name, kind, source, data type, doc text; plus
+code under `egress.preset: "full"`), the prompt text or the model change, so a restart, reload or
+republish of an unchanged package makes no LLM calls. Editing the package's prompt file regenerates
+the keyphrases the LLM wrote and leaves description keyphrases alone; the entities whose keyphrase
+text comes back different are then re-embedded and no others. A prompt file replaces the
+**instructions** only: the entity list and the reply format are always added by the server.
+
+What is sent to the LLM: name, kind, source, data type and `#(doc)` text, with every annotation line
+other than the doc removed. Access predicates never leave the process. The entity text is fenced as
+data and the instructions tell the model to ignore anything in it.
+
+If the LLM fails after its retries, the sync stops with the stage named: `GET .../packages/{pkg}`
+shows `embeddingIndex.status: "error"`, `stage: "keyphrase"` and the reason in `lastError`, nothing
+is embedded, and the next question after the cool-down retries from where the saved batches left
+off. There is no quiet fallback to embedding the doc or the name. `embeddingIndex.keyphraseProgress`
+(`done`, `total`) counts the entities that need an LLM keyphrase while the step runs.
 
 ## Semantic ranking for `search_database_schema`
 
