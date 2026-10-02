@@ -43,6 +43,7 @@ import {
    type Retriever,
    type Unavailable,
 } from "./get_context_pipeline";
+import { LlmMeter } from "./get_context_llm";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
 /**
@@ -2455,6 +2456,7 @@ async function runContextQuery(
    resolved: ResolvedRequest,
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
+   traceSummary = false,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.info("[MCP Tool getContext] Retrieving context", {
@@ -2509,8 +2511,28 @@ async function runContextQuery(
       ),
       embeddingConfigured: embeddingConfigured(),
       settings: PIPELINE_SETTINGS,
+      trace: [],
+      meter: new LlmMeter(),
    };
    const warningsFor = makeWarningsFor(ctx);
+   // Spread into a ranked payload. Without the request header it is {}, so
+   // the payload is the one every caller already gets.
+   const traceFields = () =>
+      traceSummary
+         ? {
+              retrieval_trace: {
+                 stages: (ctx.trace ?? []).map((t) => ({
+                    name: t.name,
+                    status: t.status,
+                    ms: t.ms,
+                    in: t.in,
+                    out: t.out,
+                    llm_calls: t.llmCalls,
+                    tokens: t.tokens,
+                 })),
+              },
+           }
+         : {};
 
    // Query stages may rewrite what is searched for; none is registered yet.
    ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
@@ -2583,6 +2605,7 @@ async function runContextQuery(
             budgetWarning,
             entityCutWarning(entitiesDropped),
          ),
+         ...traceFields(),
       });
    }
    // Lexical, which is only reached with no embedding provider: no
@@ -2597,6 +2620,7 @@ async function runContextQuery(
          budgetWarning,
          entityCutWarning(entitiesDropped),
       ),
+      ...traceFields(),
    });
 }
 
@@ -2810,6 +2834,25 @@ export function registerListPackagesTool(
    );
 }
 
+/** The part of the MCP request context this tool reads: the HTTP headers. */
+interface RequestExtra {
+   requestInfo?: { headers?: Record<string, string | string[] | undefined> };
+}
+
+/**
+ * Diagnostic only: `X-Publisher-Retrieval-Trace: summary` adds a
+ * `retrieval_trace` block to a ranked response and changes no result. It is a
+ * header and not a tool argument so an agent never sees it and a tuning run
+ * can set it from the client.
+ */
+export const TRACE_HEADER = "x-publisher-retrieval-trace";
+
+function wantsTrace(extra: RequestExtra | undefined): boolean {
+   const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
+   const value = Array.isArray(raw) ? raw[0] : raw;
+   return value?.trim().toLowerCase() === "summary";
+}
+
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
@@ -2818,7 +2861,7 @@ export function registerGetContextTool(
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
-      async (params: GetContextParams) => {
+      async (params: GetContextParams, extra?: RequestExtra) => {
          const request = resolveRequest(params);
          if (request.offset > 0 && !request.pureSourceListing) {
             // Refused rather than ignored. A ranked response has no
@@ -2850,6 +2893,7 @@ export function registerGetContextTool(
             request,
             environmentStore,
             unsupportedTargetWarnings(request),
+            wantsTrace(extra),
          );
       },
    );
