@@ -17,7 +17,9 @@ import {
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
+import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { indexSettingsOf, type IndexSettings } from "./index_settings";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -85,6 +87,8 @@ export interface EmbeddableEntity {
    // the response `doc`, which can fall back to raw annotation lines and
    // would leak #(authorize) predicates to the embedding provider.
    embedDoc: string;
+   /** Malloy type of a dimension or measure; absent on other kinds. */
+   dataType?: string;
 }
 
 export interface SemanticHit {
@@ -339,6 +343,42 @@ export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    return facets;
 }
 
+/** The only row an entity has under the `single` representation. */
+export const SINGLE_FACET = "single";
+/** An LLM-written (or short-description) search phrase, as an extra `facets` row. */
+export const KEYPHRASE_FACET = "keyphrase";
+
+/**
+ * The rows one entity is embedded as, by representation.
+ *
+ * `facets`: today's rows (the name, then the doc chunks), plus one `keyphrase`
+ * row when the entity has a keyphrase.
+ *
+ * `single`: ONE row whose text is the keyphrase if there is one, else the doc
+ * text, else the humanized name. The name is left out when there is a doc or a
+ * keyphrase: the text stands for what the entity means, and mixing the
+ * identifier into it dilutes that. A doc is capped at the provider's input
+ * limit (1,024 characters) when the row is prepared, so a long doc is cut, not
+ * chunked. Rows are keyed by the facet name, so switching representation
+ * deletes one set of rows and adds the other, and changing only a keyphrase
+ * changes only that entity's `single` text, which the content-hash diff
+ * re-embeds alone.
+ */
+export function entityRows(
+   entity: EmbeddableEntity,
+   representation: PackageRepresentation,
+   keyphrase?: string,
+): EntityFacet[] {
+   if (representation === "facets") {
+      const rows = entityFacets(entity);
+      if (keyphrase) rows.push({ facet: KEYPHRASE_FACET, text: keyphrase });
+      return rows;
+   }
+   const doc = entity.embedDoc.replace(/\s+/g, " ").trim();
+   const text = keyphrase || doc || humanizeName(entity.name) || entity.name;
+   return [{ facet: SINGLE_FACET, text }];
+}
+
 /**
  * Break text into pieces of at most `max` characters, on word boundaries
  * where one is available. `max` at or below zero yields one piece, leaving
@@ -449,6 +489,17 @@ export function facetRowKey(
    return entityRowKey(kind, source, name) + KEY_SEPARATOR + facet;
 }
 
+/**
+ * What decides an entity's rows: the package's representation and, once they
+ * exist, its keyphrases by entity key. The readiness fingerprint is computed
+ * with no keyphrases (they come from a store and a model, and the search path
+ * must not wait on either); {@link IndexSettings.key} stands in for them.
+ */
+interface RowPlan {
+   representation: PackageRepresentation;
+   keyphrases?: ReadonlyMap<string, string>;
+}
+
 /** One desired embedding row: an entity's facet, its text, and that text's hash. */
 interface DesiredFacet {
    entity: EmbeddableEntity;
@@ -470,9 +521,18 @@ interface DesiredFacet {
  * Hashing per facet is what keeps the diff cheap under faceting: editing a
  * doc re-embeds that entity's doc rows and leaves its name row alone.
  */
-function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
+function desiredFacets(
+   entities: EmbeddableEntity[],
+   plan: RowPlan,
+): DesiredFacet[] {
    return entities.flatMap((entity) =>
-      entityFacets(entity).map(({ facet, text: raw }) => {
+      entityRows(
+         entity,
+         plan.representation,
+         plan.keyphrases?.get(
+            entityRowKey(entity.kind, sourceColumn(entity.source), entity.name),
+         ),
+      ).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
       }),
@@ -665,7 +725,7 @@ interface DesiredSummary {
  */
 const fingerprintCache = new WeakMap<
    readonly EmbeddableEntity[],
-   Promise<DesiredSummary>
+   Map<string, Promise<DesiredSummary>>
 >();
 
 /** Entities hashed between two yields to the event loop. */
@@ -696,39 +756,58 @@ const FINGERPRINT_CHUNK_ENTITIES = 250;
  */
 function desiredSummaryFor(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<DesiredSummary> {
    const frozen = Object.isFrozen(entities);
-   const cached = frozen ? fingerprintCache.get(entities) : undefined;
+   let byKey = frozen ? fingerprintCache.get(entities) : undefined;
+   const cached = byKey?.get(settings.key);
    if (cached !== undefined) return cached;
-   const computed = computeDesiredSummary(entities);
+   const computed = computeDesiredSummary(entities, settings);
    if (frozen) {
-      fingerprintCache.set(entities, computed);
+      if (!byKey) {
+         byKey = new Map();
+         fingerprintCache.set(entities, byKey);
+      }
+      byKey.set(settings.key, computed);
       // A failure must not be cached for the life of the array.
-      computed.catch(() => fingerprintCache.delete(entities));
+      const slot = byKey;
+      computed.catch(() => slot.delete(settings.key));
    }
    return computed;
 }
 
 async function computeDesiredSummary(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<DesiredSummary> {
    const unique = uniqueByEntityKey(entities);
    const desired: DesiredFacet[] = [];
+   // No keyphrases here: see RowPlan.
+   const plan: RowPlan = { representation: settings.representation };
    for (let i = 0; i < unique.length; i += FINGERPRINT_CHUNK_ENTITIES) {
       desired.push(
-         ...desiredFacets(unique.slice(i, i + FINGERPRINT_CHUNK_ENTITIES)),
+         ...desiredFacets(
+            unique.slice(i, i + FINGERPRINT_CHUNK_ENTITIES),
+            plan,
+         ),
       );
       if (i + FINGERPRINT_CHUNK_ENTITIES < unique.length) {
          await new Promise<void>((resolve) => setImmediate(resolve));
       }
    }
-   return { fingerprint: desiredFingerprint(desired), rows: desired.length };
+   return {
+      fingerprint: contentHash(
+         settings.key + "\n" + desiredFingerprint(desired),
+      ),
+      rows: desired.length,
+   };
 }
 
 async function fingerprintFor(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<string> {
-   return (await desiredSummaryFor(entities)).fingerprint;
+   return (await desiredSummaryFor(entities, settings)).fingerprint;
 }
 
 /**
@@ -961,6 +1040,7 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   settings: IndexSettings,
    meta: PackageSyncMeta,
 ): Promise<void> {
    return meta.mutex.runExclusive(async () => {
@@ -1024,8 +1104,10 @@ async function syncPackageEmbeddings(
       // A row's hash covers the text actually sent, prefix included, so a
       // changed documentPrefix re-embeds every row through the ordinary diff.
       const documentPrefix = provider.documentPrefix ?? "";
-      const desiredUnprefixed = desiredFacets(entities);
-      const desired = withDocumentPrefix(desiredUnprefixed, documentPrefix);
+      const desired = withDocumentPrefix(
+         desiredFacets(entities, { representation: settings.representation }),
+         documentPrefix,
+      );
       const desiredKeys = new Set(
          desired.map((d) =>
             facetRowKey(
@@ -1126,9 +1208,11 @@ async function syncPackageEmbeddings(
       // purpose: a sync that aborted as orphaned wrote no rows, so the next
       // call must re-sync under the fresh meta.
       meta.synced = {
-         // Over the unprefixed rows, as the readiness check computes it: the
-         // prefix is part of providerKey, not of the content fingerprint.
-         fingerprint: desiredFingerprint(desiredUnprefixed),
+         // Computed exactly as the readiness check computes it: over the
+         // unprefixed, keyphrase-free rows plus the settings key. The prefix
+         // is part of providerKey, and keyphrases are inputs to the sync that
+         // the settings key stands in for.
+         fingerprint: await fingerprintFor(entities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
@@ -1217,6 +1301,7 @@ async function runTrackedSync(
          environmentName,
          packageName,
          entities,
+         indexSettingsOf(pkg),
          meta,
       );
       meta.lastError = undefined;
@@ -1278,7 +1363,10 @@ export function enqueuePackageSync(args: {
       if (entities.length > maxEmbeddedEntities) return;
       const meta = metaFor(environmentName, packageName);
       const providerKey = providerKeyFor(provider);
-      const fingerprint = await fingerprintFor(prepared.entities);
+      const fingerprint = await fingerprintFor(
+         prepared.entities,
+         indexSettingsOf(pkg),
+      );
       // Already current (a restart over rows that still match), cooling down
       // from a recent failure, or already queued by a search: nothing to do.
       if (isSynced(meta, fingerprint, providerKey) || inCooldown(meta)) return;
@@ -1422,7 +1510,10 @@ export async function trySemanticSearch(args: {
    const entryGeneration = meta.generation;
    // The caller's array, not the deduped copy: the copy is new every call,
    // so only the caller's array can hit the cache.
-   const fingerprint = await fingerprintFor(args.entities);
+   const fingerprint = await fingerprintFor(
+      args.entities,
+      indexSettingsOf(pkg),
+   );
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1977,6 +2068,7 @@ export async function getEmbeddingIndexStatus(
    environmentName: string,
    packageName: string,
    allEntities: readonly EmbeddableEntity[],
+   pkg?: Package,
 ): Promise<EmbeddingIndexStatus> {
    // Counted per cached entity, not per card: the same reason the search
    // path dedupes. See uniqueByEntityKey.
@@ -2021,7 +2113,7 @@ export async function getEmbeddingIndexStatus(
    ).length;
 
    const meta = syncMeta.get(metaKey(environmentName, packageName));
-   const summary = await desiredSummaryFor(allEntities);
+   const summary = await desiredSummaryFor(allEntities, indexSettingsOf(pkg));
 
    let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
    if (entityCount > maxEmbeddedEntities) {

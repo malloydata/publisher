@@ -55,6 +55,7 @@ async function indexStatusFor(
          request.environmentName,
          request.packageName,
          embeddedEntitiesOf(pkgIndex, ctx.settings),
+         pkgIndex.pkg,
       );
    } catch (error) {
       logger.warn("[MCP Tool getContext] Could not read the index state", {

@@ -51,10 +51,10 @@
       "retrieval": "indexing",
       "retrieval_progress": {
          "embedded": 0,
-         "total": 23
+         "total": 13
       },
       "warnings": [
-         "This package's semantic index is still being built (0 of 23 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
+         "This package's semantic index is still being built (0 of 13 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
       ]
    },
    "fallback/indexing with stale note": {
@@ -65,11 +65,11 @@
       "retrieval": "indexing",
       "retrieval_progress": {
          "embedded": 0,
-         "total": 23
+         "total": 13
       },
       "warnings": [
          "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error.",
-         "This package's semantic index is still being built (0 of 23 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
+         "This package's semantic index is still being built (0 of 13 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
       ]
    },
    "fallback/provider-error": {
@@ -129,6 +129,35 @@
                "resource_id": {
                   "environment": "pin",
                   "package": "sem-multiple targets of different kinds",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "relevance": 1,
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-multiple targets of different kinds",
                   "model_path": "orders.malloy",
                   "source": "orders"
                },
@@ -141,12 +170,12 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
                      }
                   ]
                },
@@ -154,12 +183,12 @@
                   "name": "total_revenue",
                   "entity_type": "measure",
                   "entity_id": "measure:orders:total_revenue",
-                  "relevance": 0.9037,
+                  "relevance": 1,
                   "description": "Sum of order revenue.",
                   "matched_targets": [
                      {
                         "search_text": "sum of order revenue",
-                        "relevance": 0.9037
+                        "relevance": 1
                      }
                   ]
                },
@@ -174,45 +203,29 @@
                         "relevance": 0.2887
                      }
                   ]
-               }
-            ],
-            "relevance": 0.8165
-         },
-         {
-            "source_info": {
-               "resource_id": {
-                  "environment": "pin",
-                  "package": "sem-multiple targets of different kinds",
-                  "model_path": "customers.malloy",
-                  "source": "customers"
                },
-               "one_line_summary": "One row per customer.",
-               "docs": "One row per customer.",
-               "joins": []
-            },
-            "relevance": 0.8944,
-            "entities": [
                {
-                  "name": "state",
+                  "name": "status",
                   "entity_type": "dimension",
-                  "entity_id": "dimension:customers:state",
-                  "relevance": 0.4009,
-                  "description": "State the customer lives in.",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.4009
+                        "relevance": 0.2182
                      }
                   ]
                }
-            ]
+            ],
+            "relevance": 0.8944
          }
       ],
       "ranking": "relevance",
       "total_available": 2,
       "returned": 2,
       "retrieval": "semantic",
-      "below_cutoff_count": 4,
+      "below_cutoff_count": 3,
       "total_entities": 10
    },
    "semantic/per-source entity cut warning": {
@@ -234,12 +247,12 @@
                   "name": "metric_00",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_00",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -247,12 +260,12 @@
                   "name": "metric_01",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_01",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -260,12 +273,12 @@
                   "name": "metric_02",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_02",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -273,12 +286,25 @@
                   "name": "metric_03",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_03",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_04",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_04",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
                      }
                   ]
                },
@@ -286,12 +312,12 @@
                   "name": "metric_05",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_05",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -299,12 +325,12 @@
                   "name": "metric_06",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_06",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -312,12 +338,12 @@
                   "name": "metric_07",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_07",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -325,12 +351,12 @@
                   "name": "metric_08",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_08",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                },
@@ -338,30 +364,17 @@
                   "name": "metric_09",
                   "entity_type": "dimension",
                   "entity_id": "dimension:telemetry:metric_09",
-                  "relevance": 0.8729,
+                  "relevance": 1,
                   "description": "A metric reading.",
                   "matched_targets": [
                      {
                         "search_text": "a metric reading",
-                        "relevance": 0.8729
-                     }
-                  ]
-               },
-               {
-                  "name": "metric_10",
-                  "entity_type": "dimension",
-                  "entity_id": "dimension:telemetry:metric_10",
-                  "relevance": 0.8729,
-                  "description": "A metric reading.",
-                  "matched_targets": [
-                     {
-                        "search_text": "a metric reading",
-                        "relevance": 0.8729
+                        "relevance": 1
                      }
                   ]
                }
             ],
-            "relevance": 0.8729
+            "relevance": 1
          }
       ],
       "ranking": "relevance",
@@ -393,17 +406,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.25,
+                  "relevance": 0.3162,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "zzqx wwvk",
-                        "relevance": 0.25
+                        "relevance": 0.3162
                      }
                   ]
                }
             ],
-            "relevance": 0.25
+            "relevance": 0.3162
          },
          {
             "source_info": {
@@ -422,17 +435,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.2236,
+                  "relevance": 0.2673,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "zzqx wwvk",
-                        "relevance": 0.2236
+                        "relevance": 0.2673
                      }
                   ]
                }
             ],
-            "relevance": 0.2236
+            "relevance": 0.2673
          }
       ],
       "ranking": "relevance",
@@ -461,24 +474,37 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
                      }
                   ]
                }
             ],
-            "relevance": 0.9562
+            "relevance": 1
          }
       ],
       "ranking": "relevance",
       "total_available": 1,
       "returned": 1,
       "retrieval": "semantic",
-      "below_cutoff_count": 2,
+      "below_cutoff_count": 1,
       "total_entities": 3
    },
    "semantic/scoped to a source": {
@@ -500,17 +526,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.4009,
+                  "relevance": 0.3381,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.4009
+                        "relevance": 0.3381
                      }
                   ]
                }
             ],
-            "relevance": 0.4009
+            "relevance": 0.3381
          }
       ],
       "ranking": "relevance",
@@ -539,17 +565,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
                      }
                   ]
                }
             ],
-            "relevance": 0.9562
+            "relevance": 1
          },
          {
             "source_info": {
@@ -568,17 +594,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.4009,
+                  "relevance": 0.3381,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.4009
+                        "relevance": 0.3381
                      }
                   ]
                }
             ],
-            "relevance": 0.4009
+            "relevance": 0.3381
          }
       ],
       "ranking": "relevance",
@@ -607,17 +633,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.9487,
+                  "relevance": 1,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "state the customer lives in",
-                        "relevance": 0.9487
+                        "relevance": 1
                      }
                   ]
                }
             ],
-            "relevance": 0.9487
+            "relevance": 1
          },
          {
             "source_info": {
@@ -636,17 +662,17 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.4472,
+                  "relevance": 0.3381,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the customer lives in",
-                        "relevance": 0.4472
+                        "relevance": 0.3381
                      }
                   ]
                }
             ],
-            "relevance": 0.4472
+            "relevance": 0.3381
          }
       ],
       "ranking": "relevance",
@@ -675,24 +701,37 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
                      }
                   ]
                }
             ],
-            "relevance": 0.9562
+            "relevance": 1
          }
       ],
       "ranking": "relevance",
       "total_available": 2,
       "returned": 1,
       "retrieval": "semantic",
-      "below_cutoff_count": 3,
+      "below_cutoff_count": 2,
       "total_entities": 5,
       "warnings": [
          "Returned 1 of 2 matching sources. Raise limit (max 150) or narrow with scopes to see the rest."
@@ -717,17 +756,30 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
                      }
                   ]
                }
             ],
-            "relevance": 0.9562
+            "relevance": 1
          },
          {
             "source_info": {
@@ -746,24 +798,24 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.4009,
+                  "relevance": 0.3381,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.4009
+                        "relevance": 0.3381
                      }
                   ]
                }
             ],
-            "relevance": 0.4009
+            "relevance": 0.3381
          }
       ],
       "ranking": "relevance",
       "total_available": 2,
       "returned": 2,
       "retrieval": "semantic",
-      "below_cutoff_count": 3,
+      "below_cutoff_count": 2,
       "total_entities": 5,
       "warnings": [
          "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error."
@@ -788,17 +840,30 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:orders:state",
-                  "relevance": 0.9562,
+                  "relevance": 1,
                   "description": "State the order ships to.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.9562
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
                      }
                   ]
                }
             ],
-            "relevance": 0.9562
+            "relevance": 1
          },
          {
             "source_info": {
@@ -817,24 +882,24 @@
                   "name": "state",
                   "entity_type": "dimension",
                   "entity_id": "dimension:customers:state",
-                  "relevance": 0.4009,
+                  "relevance": 0.3381,
                   "description": "State the customer lives in.",
                   "matched_targets": [
                      {
                         "search_text": "state the order ships to",
-                        "relevance": 0.4009
+                        "relevance": 0.3381
                      }
                   ]
                }
             ],
-            "relevance": 0.4009
+            "relevance": 0.3381
          }
       ],
       "ranking": "relevance",
       "total_available": 2,
       "returned": 2,
       "retrieval": "semantic",
-      "below_cutoff_count": 3,
+      "below_cutoff_count": 2,
       "total_entities": 5,
       "warnings": [
          "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
