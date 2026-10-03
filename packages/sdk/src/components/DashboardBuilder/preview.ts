@@ -136,15 +136,16 @@ export interface PreviewTileQuery {
     */
    annotation?: string;
    /**
-    * The givens this tile binds or its extension reads that the server can
-    * take, for narrowing the request. Undefined for a tile whose bindings live in the model, where the
+    * The givens this tile binds, its extension reads, or its served tile
+    * reads that the server can take, for narrowing the request. Undefined for a tile whose bindings live in the model, where the
     * document cannot know them: send the whole row, as the reader does.
     */
    givenNames: string[] | undefined;
    /**
     * Every given this tile's preview answers to, runnable or not, for saying
-    * which controls it ignores. Undefined when nothing can say: an inherited
-    * tile the served file did not resolve.
+    * which controls it ignores. Undefined when nothing can say: a tile the
+    * served file did not resolve (inherited, or not saved yet) whose document
+    * side reads no given either.
     */
    reads: string[] | undefined;
 }
@@ -218,8 +219,11 @@ export function previewTileQuery(
    // The extension's own `where:` filters every tile on it, as the served manifest counts.
    const scopedBy =
       document.sources.find((source) => source.name === on)?.scopedBy ?? [];
-   const sent = new Set(scopedBy.filter((name) => runnable.has(name)));
-   // A binding removed but not yet saved still counts here until the save; it errs toward no warning.
+   // What the served tile reads moves it in the reader, so the preview sends it too.
+   const sent = new Set(
+      [...scopedBy, ...(served ?? [])].filter((name) => runnable.has(name)),
+   );
+   // A binding removed but not yet saved still counts here until the save.
    const reads = new Set<string>([...scopedBy, ...(served ?? [])]);
    const clauses: string[] = [];
    for (const filter of tile.filters ?? []) {
@@ -254,6 +258,7 @@ export function previewTileQuery(
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
       givenNames: Array.from(sent),
-      reads: Array.from(reads),
+      // No served entry and nothing from the document: the model may still scope it, so say nothing.
+      reads: served || reads.size > 0 ? Array.from(reads) : undefined,
    };
 }

@@ -435,7 +435,9 @@ control shows nothing, as does a tile that could not be resolved, which runs wit
 "Reads" is what Malloy compiles the tile to, not just its view's `where:`: a given read through the
 source's own `where:`, a joined source's `where:`, a dimension or measure the tile uses, or the
 source's `#(authorize)`/`#(access_filter)` gate all count. The builder shows the same chip, and
-counts a filter you have just added before it is saved. The single-query form has no chip.
+counts a filter you have just added before it is saved. A tile the saved file does not have yet
+shows no chip until it is saved, unless you bind it a filter or its source scopes it, because only
+the saved file's compile knows what the model's own sources read. The single-query form has no chip.
 
 Three things it costs, none of them fixable by tagging differently:
 

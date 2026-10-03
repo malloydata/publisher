@@ -246,15 +246,30 @@ describe("previewTileQuery reads", () => {
       expect(q.reads).toEqual(["REGION"]);
    });
 
-   it("adds what the served tile reads, which the document cannot see", () => {
+   it("adds what the served tile reads, which the document cannot see, and sends the runnable part", () => {
+      // A model source's own `where: region ~ $REGION`: the reader moves the
+      // tile with REGION, so the builder must send it too.
       const q = previewTileQuery(
          document,
          queryTile(document, 2),
          runnable,
          new Map(),
-         ["BRAND"],
+         ["REGION", "BRAND"],
       );
-      expect(q.reads).toEqual(["BRAND"]);
+      expect(q.reads).toEqual(["REGION", "BRAND"]);
+      expect(q.givenNames).toEqual(["REGION"]);
+   });
+
+   it("says nothing for a tile the served file lacks and the document scopes by nothing", () => {
+      // A tile not saved yet over a model-scoped source: no served entry, so
+      // an empty reads would chip every control the model reads.
+      expect(
+         previewTileQuery(document, queryTile(document, 2), runnable).reads,
+      ).toBeUndefined();
+      expect(
+         previewTileQuery(document, queryTile(document, 2), runnable, new Map(), [])
+            .reads,
+      ).toEqual([]);
    });
 
    it("takes an inherited tile's reads from the served file alone", () => {
