@@ -154,6 +154,7 @@ describe("get_context with maxCallsPerRequest", () => {
          getRetrievalSettings: () => ({
             representation: "single",
             keyphrases: "never",
+            sourceSummary: { enabled: false },
             prompts: {},
          }),
       };

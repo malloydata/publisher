@@ -44,13 +44,21 @@ const RETRIEVAL_KEYS = [
    "refine",
    "rerank",
    "sourceMatch",
+   "sourceSummary",
    "prompts",
 ] as const;
-const PROMPT_KEYS = ["keyphrase", "refine", "rerank", "sourceMatch"] as const;
+const PROMPT_KEYS = [
+   "keyphrase",
+   "refine",
+   "rerank",
+   "sourceMatch",
+   "sourceSummary",
+] as const;
 export type PromptKey = (typeof PROMPT_KEYS)[number];
 const REFINE_KEYS = ["enabled", "minLevel"] as const;
 const RERANK_KEYS = ["enabled", "topSources"] as const;
 const SOURCE_MATCH_KEYS = ["enabled"] as const;
+const SOURCE_SUMMARY_KEYS = ["enabled"] as const;
 
 /** A prompt a package overrides: the text, read at package load. */
 export interface PackagePrompt {
@@ -77,6 +85,10 @@ export interface SourceMatchSettings {
    enabled: StageEnabled;
 }
 
+export interface SourceSummarySettings {
+   enabled: StageEnabled;
+}
+
 export interface PackageRetrievalSettings {
    /** `single`: one row per entity. `facets`: a name row plus doc chunks. */
    representation: PackageRepresentation;
@@ -92,6 +104,12 @@ export interface PackageRetrievalSettings {
    rerank?: RerankSettings;
    /** Absent means the default: `{ enabled: "auto" }`. */
    sourceMatch?: SourceMatchSettings;
+   /**
+    * Absent means the default: `{ enabled: "auto" }`. An index-time stage: the
+    * embedding sync writes each source's summary, so it runs only on a server
+    * that has both an LLM and an embedding provider.
+    */
+   sourceSummary?: SourceSummarySettings;
    prompts: { [K in PromptKey]?: PackagePrompt };
 }
 
@@ -130,6 +148,13 @@ export function sourceMatchSettingsOf(
    retrieval: PackageRetrievalSettings,
 ): SourceMatchSettings {
    return retrieval.sourceMatch ?? { enabled: "auto" };
+}
+
+/** The source-summary settings in force: the package's, or the defaults. */
+export function sourceSummarySettingsOf(
+   retrieval: PackageRetrievalSettings,
+): SourceSummarySettings {
+   return retrieval.sourceSummary ?? { enabled: "auto" };
 }
 
 function fail(message: string): never {
@@ -260,6 +285,18 @@ function parseSourceMatch(raw: unknown): SourceMatchSettings {
    };
 }
 
+function parseSourceSummary(raw: unknown): SourceSummarySettings {
+   const obj = objectBlock(
+      raw,
+      "retrieval.sourceSummary",
+      SOURCE_SUMMARY_KEYS,
+      `"sourceSummary": { "enabled": "auto" }`,
+   );
+   return {
+      enabled: parseEnabled(obj.enabled, "retrieval.sourceSummary.enabled"),
+   };
+}
+
 /**
  * Validate the block's shape and return what it says, with the prompt path
  * still unread. Throws a PackageManifestError (424: the package is not served
@@ -271,6 +308,7 @@ export function parsePackageRetrieval(raw: unknown): {
    refine?: RefineSettings;
    rerank?: RerankSettings;
    sourceMatch?: SourceMatchSettings;
+   sourceSummary?: SourceSummarySettings;
    promptPaths: { [K in PromptKey]?: string };
 } {
    if (raw === undefined || raw === null) {
@@ -329,6 +367,10 @@ export function parsePackageRetrieval(raw: unknown): {
       obj.sourceMatch === undefined || obj.sourceMatch === null
          ? undefined
          : parseSourceMatch(obj.sourceMatch);
+   const sourceSummary =
+      obj.sourceSummary === undefined || obj.sourceSummary === null
+         ? undefined
+         : parseSourceSummary(obj.sourceSummary);
 
    const promptPaths: { [K in PromptKey]?: string } = {};
    if (obj.prompts !== undefined && obj.prompts !== null) {
@@ -366,6 +408,7 @@ export function parsePackageRetrieval(raw: unknown): {
       ...(refine ? { refine } : {}),
       ...(rerank ? { rerank } : {}),
       ...(sourceMatch ? { sourceMatch } : {}),
+      ...(sourceSummary ? { sourceSummary } : {}),
       promptPaths,
    };
 }
@@ -436,6 +479,7 @@ export async function readPackageRetrieval(
       ...(parsed.refine ? { refine: parsed.refine } : {}),
       ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
       ...(parsed.sourceMatch ? { sourceMatch: parsed.sourceMatch } : {}),
+      ...(parsed.sourceSummary ? { sourceSummary: parsed.sourceSummary } : {}),
       prompts,
    };
 }
@@ -455,6 +499,7 @@ export function assertRequiredStagesAvailable(
       ["refine", retrieval.refine],
       ["rerank", retrieval.rerank],
       ["sourceMatch", retrieval.sourceMatch],
+      ["sourceSummary", retrieval.sourceSummary],
    ] as const) {
       if (stage?.enabled === true) {
          fail(

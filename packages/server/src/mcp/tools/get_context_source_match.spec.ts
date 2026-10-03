@@ -69,6 +69,8 @@ interface CtxOptions {
    dropped?: string[];
    topology?: Map<string, Array<{ targetSource: string }>>;
    joins?: Record<string, string[]>;
+   /** Stored LLM summaries by source name. */
+   summaries?: Record<string, string>;
    meter?: LlmMeter;
 }
 
@@ -99,6 +101,16 @@ function ctxFor(o: CtxOptions): PipelineContext {
             ]),
          ),
       },
+      ...(o.summaries
+         ? {
+              sourceSummaries: new Map(
+                 Object.entries(o.summaries).map(([name, summary]) => [
+                    name,
+                    { summary, oneLineSummary: "one line" },
+                 ]),
+              ),
+           }
+         : {}),
       llmStages: {
          concurrency: o.concurrency ?? 4,
          sourceMatch: { chat, instructions: DEFAULT_SOURCE_MATCH_INSTRUCTIONS },
@@ -156,6 +168,70 @@ describe("source match stage", () => {
       for (const p of chat.prompts) {
          expect(p).toContain("customers. shipments");
       }
+   });
+
+   it("shows a stored summary after the documentation, whole and on one line", async () => {
+      const longDoc = `${"Doc words. ".repeat(80)}DOC-TAIL`;
+      const summary = `First paragraph of the summary.\n\nSecond paragraph. ${"More detail. ".repeat(100)}SUMMARY-TAIL`;
+      const chat = scriptedChat(() => "[]");
+      const ctx = ctxFor({
+         entities: [source("orders", longDoc), source("bare", "")],
+         chat,
+         summaries: { orders: summary },
+      });
+      await sourceMatchStage.run(empty, ctx);
+      const prompt = chat.prompts[0];
+      // The documentation is cut; the summary is not, and a blank line inside
+      // it does not split the candidate.
+      expect(prompt).not.toContain("DOC-TAIL");
+      expect(prompt).toContain("SUMMARY-TAIL");
+      expect(prompt).toMatch(
+         /Documentation: [^\n]{500}\.\.\.\nSummary: First paragraph of the summary\. Second paragraph\./,
+      );
+      const blocks = prompt
+         .split("<candidates>\n")[1]
+         .split("\n</candidates>")[0]
+         .split("\n\n");
+      expect(blocks).toHaveLength(2);
+   });
+
+   it("leaves a source with no stored summary exactly as it was", async () => {
+      const entities = [source("orders", "One row per order."), source("bare")];
+      const without = scriptedChat(() => "[]");
+      await sourceMatchStage.run(empty, ctxFor({ entities, chat: without }));
+      const withSome = scriptedChat(() => "[]");
+      await sourceMatchStage.run(
+         empty,
+         ctxFor({
+            entities,
+            chat: withSome,
+            summaries: { orders: "About orders." },
+         }),
+      );
+      expect(without.prompts[0]).not.toContain("Summary:");
+      // Only the one source with a summary gained a line.
+      const gained = withSome.prompts[0].replace(
+         "Documentation: One row per order.\nSummary: About orders.",
+         "Documentation: One row per order.",
+      );
+      expect(gained).toBe(without.prompts[0]);
+      expect(
+         withSome.prompts[0].match(/^Summary: /gm) as RegExpMatchArray,
+      ).toHaveLength(1);
+   });
+
+   it("scrubs a summary before it is sent, like the documentation", async () => {
+      const chat = scriptedChat(() => "[]");
+      await sourceMatchStage.run(
+         empty,
+         ctxFor({
+            entities: [source("orders", "Docs.")],
+            chat,
+            summaries: { orders: "Orders. #(access_filter) tenant = 'SECRET'" },
+         }),
+      );
+      expect(chat.prompts[0]).toContain("Summary: Orders.");
+      expect(chat.prompts[0]).not.toContain("SECRET");
    });
 
    it("does not offer a source that is out of scope or not queryable", () => {

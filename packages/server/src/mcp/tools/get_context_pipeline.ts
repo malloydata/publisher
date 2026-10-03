@@ -20,6 +20,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import type { EmbeddingIndexStatus } from "./embedding_index";
 import type { LlmMeter } from "./get_context_llm";
 import type { LlmStageSettings } from "./get_context_stage_settings";
+import type { StoredSourceSummary } from "./source_summaries";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -87,6 +88,12 @@ export interface PipelineContext {
    meter?: LlmMeter;
    /** Refine and rerank settings, resolved once per request. Absent: no LLM is configured. */
    llmStages?: LlmStageSettings;
+   /**
+    * Stored LLM source summaries by source name, read once per ranked request.
+    * Absent when summaries are off for the package or none is stored; then no
+    * card or prompt carries one.
+    */
+   sourceSummaries?: ReadonlyMap<string, StoredSourceSummary>;
 }
 
 /** One row of the stage trace. `in` and `out` count what the stage's phase works on. */

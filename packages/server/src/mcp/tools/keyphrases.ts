@@ -323,6 +323,8 @@ export interface KeyphraseOutcome {
    /** Keyphrase by {@link keyphraseKey}, for every entity that has one. */
    keyphrases: Map<string, string>;
    progress: KeyphraseProgress;
+   /** Chat calls made, counted against the sync's `maxCallsPerSync`. */
+   calls: number;
 }
 
 function cleanKeyphrase(raw: string): string {
@@ -446,7 +448,7 @@ export async function resolveKeyphrases(args: {
       capped: false,
    };
    onProgress?.({ ...progress });
-   if (pending.length === 0) return { keyphrases, progress };
+   if (pending.length === 0) return { keyphrases, progress, calls: 0 };
 
    const allBatches: (typeof pending)[] = [];
    for (let i = 0; i < pending.length; i += KEYPHRASE_BATCH_SIZE) {
@@ -525,5 +527,5 @@ export async function resolveKeyphrases(args: {
          failure,
       );
    }
-   return { keyphrases, progress };
+   return { keyphrases, progress, calls: batches.length };
 }

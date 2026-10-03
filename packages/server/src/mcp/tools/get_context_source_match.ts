@@ -26,7 +26,8 @@
  *
  * What is sent: the package, model path and source name, and the source's
  * `#(doc)` text (scrubbed by scrubForEgress, so no access predicate can ride
- * along), or a line built from the source's joins when it has no doc.
+ * along), or a line built from the source's joins when it has no doc. A source
+ * with a stored LLM summary also sends it, in full, after the documentation.
  */
 
 import {
@@ -118,6 +119,17 @@ export function sourceDescription(ctx: PipelineContext, e: Entity): string {
 }
 
 /**
+ * The source's stored summary as the prompt shows it: whole, on one line (a
+ * blank line would split the candidate), or nothing when none is stored. The
+ * documentation above it is cut to SOURCE_MATCH_DOC_MAX_CHARS; this is not.
+ */
+function summaryOf(ctx: PipelineContext, e: Entity): { summary?: string } {
+   const stored = ctx.sourceSummaries?.get(e.name);
+   const text = scrubForEgress(stored?.summary ?? "");
+   return text === "" ? {} : { summary: text };
+}
+
+/**
  * Validate a batch reply: an array of {index, score}. A wrong shape or a score
  * other than HIGH or MEDIUM is an error (the provider layer re-asks once with
  * this message); an index outside the batch or one already seen is ignored.
@@ -174,6 +186,7 @@ export const sourceMatchStage: RankStage = {
          modelPath: e.modelPath,
          source: e.name,
          description: sourceDescription(ctx, e),
+         ...summaryOf(ctx, e),
       }));
       const jobs = searches.flatMap((search) => {
          const batches: number[][] = [];

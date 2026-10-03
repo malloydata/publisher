@@ -109,18 +109,18 @@ result.
 
 **Package settings (`publisher.json`):**
 
-| Key                                                                       | Values                                                                                                                    | Default                   |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `retrieval.representation`                                                | `single`, `facets`                                                                                                        | `single`                  |
-| `retrieval.keyphrases`                                                    | `auto`, `never`, `always`                                                                                                 | `auto`                    |
-| `retrieval.sourceSummary`                                                 | on/off                                                                                                                    | off                       |
-| `retrieval.refine`                                                        | `enabled`, `minLevel`                                                                                                     | off, `MEDIUM`             |
-| `retrieval.rerank`                                                        | `enabled`, `topSources`                                                                                                   | off, 8                    |
-| `retrieval.sourceMatch`                                                   | `enabled`                                                                                                                 | `auto`                    |
-| `retrieval.rephrase`                                                      | `enabled`                                                                                                                 | off (stage not built yet) |
-| `retrieval.minSimilarity`, `perTargetLimit`, `maxEntitiesPerSourceTarget` | numbers                                                                                                                   | today's behaviour         |
-| `retrieval.prompts`                                                       | `refine`, `rerank`, `sourceMatch`, `rephrase`, `keyphrase`, `summary`: a file path inside the package (no inline strings) | built-in prompts          |
-| `retrieval.values`                                                        | `mode`, `include`, `exclude`                                                                                              | off (feature deferred)    |
+| Key                                                                       | Values                                                                                                                          | Default                   |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `retrieval.representation`                                                | `single`, `facets`                                                                                                              | `single`                  |
+| `retrieval.keyphrases`                                                    | `auto`, `never`, `always`                                                                                                       | `auto`                    |
+| `retrieval.sourceSummary`                                                 | `enabled` (`auto`, `true`, `false`)                                                                                             | `auto`                    |
+| `retrieval.refine`                                                        | `enabled`, `minLevel`                                                                                                           | off, `MEDIUM`             |
+| `retrieval.rerank`                                                        | `enabled`, `topSources`                                                                                                         | off, 8                    |
+| `retrieval.sourceMatch`                                                   | `enabled`                                                                                                                       | `auto`                    |
+| `retrieval.rephrase`                                                      | `enabled`                                                                                                                       | off (stage not built yet) |
+| `retrieval.minSimilarity`, `perTargetLimit`, `maxEntitiesPerSourceTarget` | numbers                                                                                                                         | today's behaviour         |
+| `retrieval.prompts`                                                       | `refine`, `rerank`, `sourceMatch`, `rephrase`, `keyphrase`, `sourceSummary`: a file path inside the package (no inline strings) | built-in prompts          |
+| `retrieval.values`                                                        | `mode`, `include`, `exclude`                                                                                                    | off (feature deferred)    |
 
 **Server settings (`publisher.config.json`):**
 
@@ -286,6 +286,7 @@ The hosted endpoint itself was not called.
 | Source relevance     | best entity score                                                                                  | rank of the best entity                                         | same                                                   |
 | Source rerank        | LLM 0 to 3, top 8 sources only, the rest discarded, drops below 2 unless the scope pins the source | absent                                                          | built (2.10)                                           |
 | Source-target search | separate LLM match over all sources, batches of 10; if more than 8 rate HIGH, MEDIUM is dropped    | embedding or lexical path                                       | built (2.11)                                           |
+| Source summaries     | an LLM writes a summary and a one-line summary per source at index time                            | absent                                                          | built (2.12)                                           |
 | Dimension values     | every distinct value of `#(index)` dimensions, then LLM refine                                     | not indexed                                                     | later step                                             |
 | Access-gated sources | values withheld; the card names the unsearched dimensions                                          | absent                                                          | later step                                             |
 | Join topology depth  | 10 levels                                                                                          | 2                                                               | 10, at assembly only                                   |
@@ -400,6 +401,31 @@ for the embedding index. The stage is `auto` (`retrieval.sourceMatch.enabled`), 
 `retrieval.prompts.sourceMatch`, counts against `retrieval.llm.maxCallsPerRequest`, and shows in the trace as
 `source_match`. A failure returns an error result naming `source_match`; there is no embedding fallback. With no
 LLM configured, source targets rank as before. Settings: [configuration.md](configuration.md).
+
+### 2.12 Source summaries
+
+This step adds the second index-time stage (the first is keyphrases). For each source the embedding sync makes
+one LLM call, after the keyphrases and before any vector is written, and stores a summary (dense prose that names
+fields in backticks) and a one-line summary (one sentence, at most 120 characters) in a new `source_summaries` table,
+keyed by environment, package and source. The model sees the source name, its `#(doc)` text (or "No source docs."), and
+a list of its fields grouped as Dimensions, Measures, Views and Joins, each as `name (type): doc`, with each joined
+source nested under it with its own fields. The list is bounded: at most 200 fields per source, 20 joined sources and
+3 joins deep, and the prompt says when it was cut. A source with no documentation must get the one-liner "The `<name>`
+source."; the validator enforces it and the single re-ask from the provider layer carries the reason.
+
+A stored row is reused while its input hash (the exact message sent, the prompt text and the model) is unchanged, so
+a restart, reload or republish of an unchanged package makes no call, and a change rewrites exactly the sources it
+touches. The inputs are also folded into the readiness fingerprint, so a change only the model sees (a field's type) moves the
+package back to `indexing` until the summary is rewritten. The step shares `retrieval.llm.maxCallsPerSync` with the
+keyphrases, runs `retrieval.llm.concurrency` calls at a time, and a failure after the provider's retries puts the sync
+in `error` with the stage `source_summary`. There is no silent downgrade.
+
+At query time a ranked answer reads the package's stored summaries once. `source_info.one_line_summary` carries the
+model's one-liner (instead of the first line of the doc) on every source card that has one. `source_info.summary` is
+added only when the request pins the source in `scopes`, or a source search matched at most one source. The source match
+prompt adds `Summary: <summary>` (whole, on one line) after each candidate's `Documentation:` line. Rerank is unchanged.
+With no stored summary, nothing changes, so the payloads of a server with no LLM are byte for byte what they were.
+Settings and the status fields (`sourceSummaryProgress`, `stage: "source_summary"`): [configuration.md](configuration.md).
 
 ## 3. Pull request sequence
 

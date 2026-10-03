@@ -22,7 +22,10 @@ import {
 import type { EnvironmentStore } from "../service/environment_store";
 import type { RetryPolicy } from "../service/http_retry";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../storage/duckdb/schema";
+import {
+   createEntityEmbeddingsTable,
+   createSourceSummariesTable,
+} from "../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { registerGetContextTool } from "../mcp/tools/get_context_tool";
 
@@ -124,6 +127,9 @@ const overlap = (a: Set<string>, b: Set<string>) =>
  * the question is 3, then 2, 1, 0 by overlap; listed best first.
  */
 export function keywordReply(prompt: string): string {
+   if (prompt.includes("Source name: ") && prompt.includes("<fields>")) {
+      return summaryReply(prompt);
+   }
    if (prompt.includes("Source search phrase:")) {
       // Source match: 2 or more shared words is HIGH, one is MEDIUM, none is
       // left out. Each candidate is two lines, so group them by blank line.
@@ -179,6 +185,25 @@ export function keywordReply(prompt: string): string {
    });
    scored.sort((a, b) => b.score - a.score || a.index - b.index);
    return JSON.stringify(scored);
+}
+
+/**
+ * A deterministic stand-in for the source summary stage: the summary lists the
+ * field names it was shown in backticks, and the one-liner is the first
+ * sentence of the documentation, or the exact undocumented line.
+ */
+export function summaryReply(prompt: string): string {
+   const source = /^Source name: (.*)$/m.exec(prompt)![1];
+   const doc = /^Source documentation:\n(.*)$/m.exec(prompt)![1];
+   const fields = [...prompt.matchAll(/^\s*- ([^ :(]+)/gm)].map((m) => m[1]);
+   const oneLine =
+      doc === "No source docs."
+         ? `The \`${source}\` source.`
+         : (doc.split(". ")[0].replace(/\.$/, "") + ".").slice(0, 120);
+   return JSON.stringify({
+      summary: `${doc} Fields: ${fields.map((f) => `\`${f}\``).join(", ")}.`,
+      one_line_summary: oneLine,
+   });
 }
 
 /** Install `chat` as the process-wide chat model, with settings overrides. */
@@ -249,6 +274,7 @@ export async function semanticHarness(): Promise<SemanticHarness> {
    const db = new DuckDBConnection(path.join(dir, "llm.db"));
    await db.initialize();
    await createEntityEmbeddingsTable(db);
+   await createSourceSummariesTable(db);
    return {
       db,
       reset() {

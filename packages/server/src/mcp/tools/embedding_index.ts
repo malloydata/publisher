@@ -30,6 +30,15 @@ import {
    resolveKeyphrases,
    type KeyphraseProgress,
 } from "./keyphrases";
+import {
+   SourceSummaryStageError,
+   countSummarizableSources,
+   deleteEnvironmentSourceSummaries,
+   deletePackageSourceSummaries,
+   resolveSourceSummaries,
+   sourceSummaryInputsDigest,
+   type SourceSummaryProgress,
+} from "./source_summaries";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -101,6 +110,13 @@ export interface EmbeddableEntity {
    dataType?: string;
    /** Authored expression text; sent to the LLM only under the `full` egress preset. */
    code?: string;
+   /** Join cardinality, on `kind: "join"` entities only. */
+   relationship?: string;
+   /**
+    * On a `join`: the source it joins to, when the compiled model names one.
+    * Read by the source summary to nest a joined source's fields.
+    */
+   joinTarget?: string;
 }
 
 export interface SemanticHit {
@@ -635,6 +651,9 @@ interface SyncedFact {
     */
    generation: number;
 }
+/** The sync stages that can fail on their own, named in the status and the log. */
+export type SyncStage = "keyphrase" | "source_summary";
+
 interface PackageSyncMeta {
    mutex: Mutex;
    generation: number;
@@ -643,9 +662,11 @@ interface PackageSyncMeta {
    /** Why the provider last failed for this package. Read by the status. */
    lastError?: string;
    /** The sync stage `lastError` came from, when it was not the embedding call. */
-   lastErrorStage?: "keyphrase";
+   lastErrorStage?: SyncStage;
    /** Where the keyphrase step is, from the latest sync that ran it. */
    keyphraseProgress?: KeyphraseProgress;
+   /** Where the source summary step is, from the latest sync that ran it. */
+   sourceSummaryProgress?: SourceSummaryProgress;
    /** When the sync now running began, absent while none is running. */
    syncStartedAtMs?: number;
    synced?: SyncedFact;
@@ -704,7 +725,7 @@ function metaFor(
 function markProviderFailure(
    meta: PackageSyncMeta,
    message: string,
-   stage?: "keyphrase",
+   stage?: SyncStage,
 ): void {
    meta.failureAtMs = Date.now();
    meta.lastError = message;
@@ -735,6 +756,8 @@ interface DesiredSummary {
    fingerprint: string;
    /** Rows the sync wants cached for this set: the progress denominator. */
    rows: number;
+   /** Sources that get a summary; 0 when summaries are off. */
+   summarySources: number;
 }
 
 /**
@@ -821,9 +844,16 @@ async function computeDesiredSummary(
             // The fields only the keyphrase step reads (data type, code).
             keyphraseInputsDigest(unique, settings.keyphrases) +
             "\n" +
+            // What the source summary step shows the model (field types,
+            // join targets, the prompt, the model); empty when it is off.
+            sourceSummaryInputsDigest(unique, settings.sourceSummary) +
+            "\n" +
             desiredFingerprint(desired),
       ),
       rows: desired.length,
+      summarySources: settings.sourceSummary
+         ? countSummarizableSources(unique)
+         : 0,
    };
 }
 
@@ -947,6 +977,7 @@ export async function deletePackageEmbeddings(
          [environmentName, packageName],
       );
       await deletePackageKeyphrases(db, environmentName, packageName);
+      await deletePackageSourceSummaries(db, environmentName, packageName);
       meta.generation = ++generationCounter;
       // Removing the entry keeps package churn from growing the map for
       // the process lifetime; it is safe because generations are
@@ -988,6 +1019,7 @@ export async function deleteEnvironmentEmbeddings(
       environmentName,
    ]);
    await deleteEnvironmentKeyphrases(db, environmentName);
+   await deleteEnvironmentSourceSummaries(db, environmentName);
 }
 
 /**
@@ -1098,6 +1130,7 @@ async function syncPackageEmbeddings(
       // keyphrases cannot be produced is an error, never a quiet fallback to
       // doc-or-name vectors. Progress is on the meta for the status.
       let keyphrases: Map<string, string> | undefined;
+      let keyphraseCalls = 0;
       if (settings.keyphrases) {
          meta.keyphraseProgress = {
             done: 0,
@@ -1115,8 +1148,34 @@ async function syncPackageEmbeddings(
             },
          });
          keyphrases = outcome.keyphrases;
+         keyphraseCalls = outcome.calls;
       } else {
          meta.keyphraseProgress = undefined;
+      }
+
+      // Source summaries next: one LLM call per source, from the same entity
+      // list. They share the sync's call limit with the keyphrases above, are
+      // saved as they return, and a failure stops the sync here with the
+      // stage named, before any embedding is written.
+      if (settings.sourceSummary) {
+         meta.sourceSummaryProgress = {
+            done: 0,
+            total: countSummarizableSources(entities),
+            capped: false,
+         };
+         await resolveSourceSummaries({
+            db,
+            environmentName,
+            packageName,
+            entities,
+            settings: settings.sourceSummary,
+            callBudget: settings.sourceSummary.maxCallsPerSync - keyphraseCalls,
+            onProgress: (p) => {
+               meta.sourceSummaryProgress = p;
+            },
+         });
+      } else {
+         meta.sourceSummaryProgress = undefined;
       }
 
       const existingRows = await db.all<ExistingRow>(
@@ -1365,13 +1424,19 @@ async function runTrackedSync(
       meta.lastErrorStage = undefined;
    } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      const stage =
-         error instanceof KeyphraseStageError ? "keyphrase" : undefined;
+      const stage: SyncStage | undefined =
+         error instanceof KeyphraseStageError
+            ? "keyphrase"
+            : error instanceof SourceSummaryStageError
+              ? "source_summary"
+              : undefined;
       markProviderFailure(meta, message, stage);
       logger.warn(
-         stage
+         stage === "keyphrase"
             ? "[MCP Tool getContext] Keyphrase generation failed; semantic ranking cooling down"
-            : "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
+            : stage === "source_summary"
+              ? "[MCP Tool getContext] Source summary generation failed; semantic ranking cooling down"
+              : "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
          { environmentName, packageName, stage, error: message },
       );
    } finally {
@@ -2045,10 +2110,11 @@ export interface EmbeddingIndexStatus {
    reason?: "cooldown" | "too-many-entities";
    /**
     * The sync stage that failed, when `status` is `error` because of one:
-    * `keyphrase` means the LLM could not write keyphrases (after retries), so
+    * `keyphrase` means the LLM could not write keyphrases and `source_summary`
+    * that it could not write source summaries (each after retries), so
     * nothing was embedded. Absent when the embedding call itself failed.
     */
-   stage?: "keyphrase";
+   stage?: SyncStage;
    lastError?: { message: string; retryAt?: string };
    /**
     * Entities whose keyphrase comes from the LLM, and how many have one.
@@ -2057,6 +2123,13 @@ export interface EmbeddingIndexStatus {
     * call limit stopped the step; the next sync continues.
     */
    keyphraseProgress?: { done: number; total: number; capped?: boolean };
+   /**
+    * Sources that get an LLM summary, and how many have a current one.
+    * Present only when source summaries are on (the package does not turn them
+    * off and an LLM is configured). `done` below `total` while `ready` means
+    * the per-sync call limit stopped the step; the next sync continues.
+    */
+   sourceSummaryProgress?: { done: number; total: number; capped?: boolean };
    /** When the sync now running began. Absent when none is running. */
    startedAt?: string;
    /**
@@ -2233,6 +2306,12 @@ export async function getEmbeddingIndexStatus(
            ),
         })
       : undefined;
+   const sourceSummaryProgress = settings.sourceSummary
+      ? (meta?.sourceSummaryProgress ?? {
+           done: 0,
+           total: summary.summarySources,
+        })
+      : undefined;
 
    return {
       ...state,
@@ -2240,6 +2319,7 @@ export async function getEmbeddingIndexStatus(
          ? { startedAt: new Date(meta.syncStartedAtMs).toISOString() }
          : {}),
       ...(keyphraseProgress ? { keyphraseProgress } : {}),
+      ...(sourceSummaryProgress ? { sourceSummaryProgress } : {}),
       embeddedRows,
       totalRows: summary.rows,
       totalEntities: entityCount,
