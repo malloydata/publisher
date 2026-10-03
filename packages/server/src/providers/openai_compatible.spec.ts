@@ -13,6 +13,7 @@ import {
    jsonResponse,
    stubFetch,
 } from "../test_helpers/fetch_stub";
+import { OPENAI_REASONING_HEADROOM } from "./openai_compatible";
 import { LlmJsonError } from "./json";
 import { createChatModel, createEmbeddingModel } from "./registry";
 import type { LlmSettings } from "./types";
@@ -104,8 +105,13 @@ describe("openai-compatible chat adapter", () => {
       expect(requests[0].url).toBe(
          "https://api.openai.com/v1/chat/completions",
       );
-      expect(requests[0].body.max_completion_tokens).toBe(9);
+      // The caller's 9 plus the headroom that hidden reasoning is counted in.
+      expect(requests[0].body.max_completion_tokens).toBe(
+         9 + OPENAI_REASONING_HEADROOM,
+      );
       expect(requests[0].body.max_tokens).toBeUndefined();
+      // OpenAI's current models answer 400 to any temperature but the default.
+      expect("temperature" in requests[0].body).toBe(false);
       expect(requests[0].body.response_format).toEqual({
          type: "json_object",
       });

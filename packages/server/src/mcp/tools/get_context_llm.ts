@@ -44,14 +44,22 @@ export class StageError extends Error {
 
 /**
  * The array a model replied with. A root array is what the prompts ask for,
- * but a vendor's JSON mode only returns objects, so an object with exactly one
- * array-valued key (`{"ratings": [...]}`) is accepted as that array.
+ * but a vendor's JSON mode only returns objects, so these shapes are accepted
+ * as well, each seen from OpenAI's `json_object` mode:
+ * - an object with exactly one array-valued key (`{"ratings": [...]}`);
+ * - a single element returned bare (`{"index": 3, "score": "HIGH"}`), which
+ *   is what a model does when it has one thing to say;
+ * - an empty object, which is what it does when it has nothing to say.
  */
 export function replyArray(value: unknown): unknown[] {
    if (Array.isArray(value)) return value;
    if (typeof value === "object" && value !== null) {
       const arrays = Object.values(value).filter(Array.isArray);
       if (arrays.length === 1) return arrays[0] as unknown[];
+      if (arrays.length === 0) {
+         if (Object.keys(value).length === 0) return [];
+         if ("index" in value) return [value];
+      }
    }
    throw new Error(
       'expected a JSON array, for example [{"index": 1, "score": ...}]',
