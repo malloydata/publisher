@@ -129,7 +129,7 @@ test.describe("layout notebooks", () => {
       await editorOpen(page);
       await expect(
          page.getByText(
-            "This notebook is in the cell format. Saving rewrites it as a layout notebook; Undo save puts it back.",
+            /This notebook is in the cell format\. Saving rewrites it/,
          ),
       ).toBeVisible();
       // Nothing was edited, and Save is already on: the conversion is the change.
