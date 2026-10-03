@@ -48,9 +48,9 @@ Imports are edited there as a source picker.
 (or its file name when it has none) and a kind badge, and the **New** button sits on the section's
 heading row. A pair of files sharing a name in different folders shows the folder to tell them apart.
 
-**A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved.
+**A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved, and a nudge stops at 24 columns, so nudging a `# colspan` above 24 sets it to 24.
 
-**Grid width has one entry per width, and a ceiling of 24.** Settings → Grid width no longer has a "Default (2)" item that duplicated "2" and removed the `columns` tag; it shows the file's width (2 when unset) and writes `columns=N` when you pick one. The list is 2, 3, 4, 6, 12 and 24, the widths whose Full, ½, ⅓ and ¼ presets are whole columns; a file's own width is still shown. A `# dashboard { columns=N }` above 24 now draws a package warning, and the reader still renders it.
+**Grid width has one entry per width, and a ceiling of 24.** Settings → Grid width no longer has a "Default (2)" item that duplicated "2" and removed the `columns` tag; it shows the file's width (2 when unset) and writes `columns=N` when you pick one. The list is 2, 3, 4, 6 and 12 (the divisors of 12) and 24; a file's own width is still shown. A `# dashboard { columns=N }` above 24 now draws a package warning, and the reader still renders it.
 
 **Save writes at once.** There is no review step before a save any more, for notebooks or for
 dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
@@ -102,8 +102,8 @@ and one column.
 - A `DocumentStorage` host sees Undo save as an ordinary `saveDocument` of the earlier text. The host store has no compare-and-swap, so a newer version written elsewhere is overwritten.
 - `DashboardEditor` takes `path` and `kind`, to open a document as its tag's kind from the path the package lists it at. `NotebookEditor` is now a wrapper over the dashboard builder with `kind="notebook"`, and the cell-notebook builder is gone.
 - `useServer().mutable` is `boolean | undefined`: `undefined` while `/status` loads or when it failed, and the editor offers no package Save until it is `true`.
-- `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported, and returned by `useDocumentChoices` as `canRetry`) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
-- `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag` and `splitSourceLines`, for a host that reads a file's tag without loading MUI or the Malloy parser.
+- `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported; `useDocumentChoices` returns its answer as the `canRetry` boolean) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
+- `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag`, its `ArtifactTag` type, `splitSourceLines` and `canRetryRequest`, for a host that reads a file's tag without loading MUI or the Malloy parser.
 - `NotebookEditor` takes `path`, as `DashboardEditor` does.
 - The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped. Saving one writes CRLF throughout, where the lines it inserted or rewrote used to come out LF.
 - Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
@@ -159,9 +159,9 @@ gate can be previewed and saved. The same tag anywhere else, including a line no
 route, a block's opener or closer line, a comment or a string, is refused as before, and text the
 server cannot lex is judged the old way.
 
-## [Unreleased] - A query that reads a given with no default no longer keeps its package from loading
+## [Unreleased] — A query that reads a given with no default no longer keeps its package from loading
 
-A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload kept serving, so the failure only hit a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
+A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload failed the same way but kept serving the model compiled before it, marked `stale`, so the package went missing only on a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
 
 One case still fails to load, with or without a default: a source `view:` whose later `nest:` stage reads a given. That is a Malloy limit, not specific to this change.
 
