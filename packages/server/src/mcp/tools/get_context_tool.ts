@@ -3041,12 +3041,23 @@ function indexingResponse(
 }
 
 /**
- * The answer when an LLM stage (refine or rerank) failed after the provider
- * layer's retries. An error result that names the stage and the reason, with
- * `sources: []` like every get_context error. It is never replaced by an
- * unrefined or lexical answer: a ranking that quietly differs from the one the
- * working stages give is harder to trust than an error.
+ * The answer when an LLM stage (refine, rerank or source_match, or building
+ * the LLM client for them) failed after the provider layer's retries. An error
+ * result that names the stage and the reason, with `sources: []` like every
+ * get_context error. It is never replaced by an unrefined or lexical answer: a
+ * ranking that quietly differs from the one the working stages give is harder
+ * to trust than an error.
+ *
+ * The advice names the package setting that turns the failing step off, and
+ * the three that turn every request-time LLM step off. The index-time steps
+ * (keyphrases, source summaries) fail a sync, not a request, and are reported
+ * through the index status instead.
  */
+const STAGE_SETTING: Readonly<Record<string, string>> = {
+   refine: "retrieval.refine",
+   rerank: "retrieval.rerank",
+   source_match: "retrieval.sourceMatch",
+};
 function stageFailureError(
    uri: string,
    error: StageError,
@@ -3058,7 +3069,11 @@ function stageFailureError(
          message: `get_context failed in the ${error.stage} step: ${error.reason}`,
          suggestions: [
             "Ask the same question again; a timeout or a malformed model reply is often transient.",
-            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. To search without the LLM steps, set the package's retrieval.refine and retrieval.rerank to enabled: false.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +
+               (STAGE_SETTING[error.stage]
+                  ? `To skip just this step, set the package's ${STAGE_SETTING[error.stage]} to enabled: false in publisher.json. `
+                  : "") +
+               "To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
             "A request with no search_text (a listing) runs no LLM step and still works.",
          ],
       },

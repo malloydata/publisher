@@ -3,7 +3,7 @@
     "error": "get_context failed in the refine step: openai-compatible scripted did not return usable JSON after one repair: the reply is not valid JSON (JSON Parse error: Unexpected identifier \"I\")",
     "suggestions": [
       "Ask the same question again; a timeout or a malformed model reply is often transient.",
-      "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. To search without the LLM steps, set the package's retrieval.refine and retrieval.rerank to enabled: false.",
+      "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. To skip just this step, set the package's retrieval.refine to enabled: false in publisher.json. To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
       "A request with no search_text (a listing) runs no LLM step and still works."
     ],
     "sources": [],
