@@ -87,14 +87,14 @@ export {
 
 export { DASHBOARDS_DIR };
 
+/** The widest grid the Console builder offers; matches `MAX_COLUMNS` in the SDK. */
+const MAX_BUILDER_COLUMNS = 24;
+
 /**
  * Suffixes Malloyyo treats as a dashboard's custom component. Publisher does
  * not render these, and keeps the list only to warn that such a file was found
  * and ignored — see `unsupportedComponentWarnings`.
  */
-/** The widest grid the Console builder offers; matches `MAX_COLUMNS` in the SDK. */
-const MAX_BUILDER_COLUMNS = 24;
-
 export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
 
 const MODEL_FILE_SUFFIX = ".malloy";
@@ -1366,7 +1366,8 @@ export function lintDashboard(
    // go through the same helper so they cannot disagree about a tag.
    const columnsTag = ownTag?.tag("dashboard");
    if (columnsTag?.has("columns")) {
-      if (positiveInteger(tagNumeric(columnsTag, "columns")) === undefined) {
+      const width = positiveInteger(tagNumeric(columnsTag, "columns"));
+      if (width === undefined) {
          // `tagText` returns undefined for exactly the bad-literal case this
          // guard exists for, and `JSON.stringify(undefined)` is the literal text
          // `undefined`, so the author was told the value was "undefined" rather
@@ -1378,12 +1379,9 @@ export function lintDashboard(
                `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
                `The grid falls back to the default.`,
          );
-      } else if (
-         (positiveInteger(tagNumeric(columnsTag, "columns")) ?? 0) >
-         MAX_BUILDER_COLUMNS
-      ) {
+      } else if (width > MAX_BUILDER_COLUMNS) {
          add(
-            `# dashboard { columns=${positiveInteger(tagNumeric(columnsTag, "columns"))} } is wider than the builder offers (${MAX_BUILDER_COLUMNS}); the reader still renders it.`,
+            `# dashboard { columns=${width} } is wider than the builder offers (${MAX_BUILDER_COLUMNS}); the reader still renders it.`,
          );
       }
    }
