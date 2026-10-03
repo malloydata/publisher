@@ -160,8 +160,14 @@ export class ChatModelImpl implements ChatModel {
          recordLlmCall(this.provider, "chat", Date.now() - started);
          return result;
       } catch (error) {
-         // A refused call must not extend its own cooldown.
-         if (!(error instanceof ProviderCooldownError)) this.cooldown.failure();
+         // Only a failure that looks like an outage counts: 429, 408, 5xx, a
+         // timeout or a network error. The cooldown is process-wide, so a 400,
+         // a rejected key or a reply that is not usable JSON (one package's bad
+         // prompt) must not stop every other package's LLM steps. A refused
+         // call must not extend its own cooldown either.
+         if (error instanceof HttpRequestError && error.retryable) {
+            this.cooldown.failure();
+         }
          recordLlmCall(
             this.provider,
             "chat",

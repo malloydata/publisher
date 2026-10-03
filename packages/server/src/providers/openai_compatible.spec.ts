@@ -242,21 +242,92 @@ describe("openai-compatible chat adapter", () => {
       expect(requests).toHaveLength(2);
    });
 
-   it("cools down after three failed calls and refuses the fourth without a request", async () => {
+   it("cools down after three outage-shaped failures and refuses the fourth without a request", async () => {
       const { fetchFn, requests } = stubFetch([
-         () => jsonResponse({}, { status: 400 }),
+         () => jsonResponse({}, { status: 503 }),
       ]);
       const chat = createChatModel(settings(), {
          fetchFn,
          retry: instantRetry(),
       });
       for (let i = 0; i < 3; i++) {
-         await expect(chat.complete({ prompt: "p" })).rejects.toThrow("(400)");
+         await expect(chat.complete({ prompt: "p" })).rejects.toThrow("(503)");
       }
+      const sent = requests.length;
       await expect(chat.complete({ prompt: "p" })).rejects.toThrow(
          "cooling down",
       );
-      expect(requests).toHaveLength(3);
+      expect(requests).toHaveLength(sent);
+   });
+
+   it("counts 429, 408 and a timeout toward the cooldown too", async () => {
+      for (const status of [429, 408]) {
+         const { fetchFn, requests } = stubFetch([
+            () => jsonResponse({}, { status }),
+         ]);
+         const chat = createChatModel(settings(), {
+            fetchFn,
+            retry: instantRetry(),
+         });
+         for (let i = 0; i < 3; i++) {
+            await expect(chat.complete({ prompt: "p" })).rejects.toThrow(
+               `(${status})`,
+            );
+         }
+         const sent = requests.length;
+         await expect(chat.complete({ prompt: "p" })).rejects.toThrow(
+            "cooling down",
+         );
+         expect(requests).toHaveLength(sent);
+      }
+      const timeout = Object.assign(new Error("slow"), {
+         name: "TimeoutError",
+      });
+      const { fetchFn, requests } = stubFetch([
+         () => {
+            throw timeout;
+         },
+      ]);
+      const chat = createChatModel(settings(), {
+         fetchFn,
+         retry: instantRetry(),
+      });
+      for (let i = 0; i < 3; i++) {
+         await expect(chat.complete({ prompt: "p" })).rejects.toThrow(
+            "timed out",
+         );
+      }
+      const sent = requests.length;
+      await expect(chat.complete({ prompt: "p" })).rejects.toThrow(
+         "cooling down",
+      );
+      expect(requests).toHaveLength(sent);
+   });
+
+   it("does not cool down for a bad request, a rejected key or unusable JSON, so one package's bad prompts cannot block the rest", async () => {
+      const cases: Array<{ name: string; respond: () => Response }> = [
+         { name: "400", respond: () => jsonResponse({}, { status: 400 }) },
+         { name: "401", respond: () => jsonResponse({}, { status: 401 }) },
+         { name: "404", respond: () => jsonResponse({}, { status: 404 }) },
+         { name: "not JSON", respond: () => reply("not json at all") },
+      ];
+      for (const { name, respond } of cases) {
+         const { fetchFn, requests } = stubFetch([respond]);
+         const chat = createChatModel(settings(), {
+            fetchFn,
+            retry: instantRetry(),
+         });
+         for (let i = 0; i < 6; i++) {
+            const failure = await chat
+               .completeJson({ prompt: "p", validate: (v) => v })
+               .catch((e: unknown) => e as Error);
+            expect(failure).toBeInstanceOf(Error);
+            expect((failure as Error).message).not.toContain("cooling down");
+         }
+         // Every call reached the vendor; none was refused.
+         expect(requests.length).toBeGreaterThanOrEqual(6);
+         expect(name).toBeTruthy();
+      }
    });
 
    it("openai-compatible without a baseUrl is an actionable error", () => {
