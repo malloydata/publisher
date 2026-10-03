@@ -4109,7 +4109,8 @@ components:
             also tells a caller which tiles a changed control needs to re-run;
             running a tile with the dashboard's whole control row also works,
             because an unreferenced given is ignored. Absent when discovery
-            could not resolve the tile (its expression does not compile), in
+            could not resolve the tile (its expression neither compiles nor is
+            a plain `source -> view` or named query the static walk reads), in
             which case send the whole control row. One such tile
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that

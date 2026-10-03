@@ -1061,8 +1061,9 @@ export function buildDashboardManifest(
          // runs with only the givens it references, but the row a viewer shows
          // is every given any tile can filter by.
          //
-         // A tile discovery cannot resolve (its query does not compile)
-         // carries no `givenNames`, and taking the union
+         // A tile discovery cannot resolve (it neither compiles nor is a plain
+         // `source -> view` or named query the static walk reads) carries no
+         // `givenNames`, and taking the union
          // of the resolved ones alone would drop its givens from the row
          // entirely: no control, and the tile filtered at the given's default
          // with nothing said. That is the same silent filtering the source-level

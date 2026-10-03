@@ -432,6 +432,8 @@ A tile that ignores some of the row's controls says so: a small amber chip under
 "Doesn't respond to Brand" (a count past three filters), and its tooltip explains that the tile's
 query never reads that given, so changing it will not change the tile. A tile that reads every
 control shows nothing, as does a tile that could not be resolved, which runs with the whole row.
+Because one unresolved tile widens the row to every given the file surfaces, the tiles that did
+resolve then chip "Doesn't respond to" for any of those that no tile reads.
 "Reads" is what Malloy compiles the tile to, not just its view's `where:`: a given read through the
 source's own `where:`, a joined source's `where:`, a dimension or measure the tile uses, or the
 source's `#(authorize)`/`#(access_filter)` gate all count. The builder shows the same chip, and
