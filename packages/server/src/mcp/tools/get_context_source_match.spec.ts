@@ -72,11 +72,16 @@ interface CtxOptions {
    /** Stored LLM summaries by source name. */
    summaries?: Record<string, string>;
    meter?: LlmMeter;
+   /** Configure rerank (one call) so the stage has to leave room for it. */
+   rerank?: boolean;
 }
 
 function ctxFor(o: CtxOptions): PipelineContext {
    const chat = o.meter ? o.meter.wrap(o.chat.model) : o.chat.model;
+   const warnings: string[] = [];
    return {
+      warnings,
+      ...(o.meter ? { meter: o.meter } : {}),
       request: {
          environmentName: "e",
          packageName: "pkg",
@@ -114,6 +119,7 @@ function ctxFor(o: CtxOptions): PipelineContext {
       llmStages: {
          concurrency: o.concurrency ?? 4,
          sourceMatch: { chat, instructions: DEFAULT_SOURCE_MATCH_INSTRUCTIONS },
+         ...(o.rerank ? { rerank: { chat, topSources: 10 } } : {}),
       },
    } as unknown as PipelineContext;
 }
@@ -493,6 +499,7 @@ describe("source match stage", () => {
    it("counts its calls against the per-request ceiling", async () => {
       const chat = scriptedChat(() => "[]");
       const meter = new LlmMeter(2);
+      // Three source targets need three calls at the least; the ceiling is two.
       const failure = await sourceMatchStage
          .run(
             empty,
@@ -500,6 +507,7 @@ describe("source match stage", () => {
                entities: names(25).map((n) => source(n)),
                chat,
                meter,
+               texts: ["a", "b", "c"],
             }),
          )
          .catch((e) => e);
@@ -510,6 +518,90 @@ describe("source match stage", () => {
       );
       expect(chat.prompts.length).toBeLessThanOrEqual(2);
       expect(meter.snapshot().calls).toBe(2);
+   });
+
+   describe("a package with more sources than the call budget can batch", () => {
+      // The defaults: 3 source targets, rerank on, maxCallsPerRequest 20.
+      const manySources = (n: number) =>
+         names(n).map((name) => source(name, `Table ${name}.`));
+
+      it("stays inside the default call budget with 300 sources and 3 source targets", async () => {
+         const chat = scriptedChat(() => "[]");
+         const meter = new LlmMeter(20);
+         const ctx = ctxFor({
+            entities: manySources(300),
+            chat,
+            meter,
+            rerank: true,
+            texts: ["customers", "shipments", "invoices"],
+         });
+         await sourceMatchStage.run(empty, ctx);
+         // Rerank keeps one call; source match uses at most the other 19.
+         expect(meter.snapshot().calls).toBeLessThanOrEqual(19);
+         expect(meter.snapshot().calls).toBeGreaterThan(3);
+      });
+
+      it("says how many sources each target did not see", async () => {
+         const chat = scriptedChat(() => "[]");
+         const ctx = ctxFor({
+            entities: manySources(300),
+            chat,
+            meter: new LlmMeter(20),
+            rerank: true,
+            texts: ["customers", "shipments", "invoices"],
+         });
+         await sourceMatchStage.run(empty, ctx);
+         expect(ctx.warnings).toHaveLength(1);
+         expect(ctx.warnings[0]).toContain("60 of 300 sources");
+         expect(ctx.warnings[0]).toContain("240");
+         expect(ctx.warnings[0]).toContain("retrieval.llm.maxCallsPerRequest");
+      });
+
+      it("keeps the sources whose name or doc shares a word with the target", async () => {
+         const chat = scriptedChat(() => "[]");
+         const entities = [
+            ...manySources(299),
+            source("customer_orders", "One row per customer order."),
+         ];
+         const ctx = ctxFor({
+            entities,
+            chat,
+            meter: new LlmMeter(20),
+            rerank: true,
+            texts: ["customer orders", "x1", "x2"],
+         });
+         await sourceMatchStage.run(empty, ctx);
+         const first = chat.prompts.filter((p) =>
+            p.includes('"customer orders"'),
+         );
+         expect(first.join("\n")).toContain("customer_orders");
+      });
+
+      it("sends every source, and no warning, when they fit the budget", async () => {
+         const chat = scriptedChat(() => "[]");
+         const ctx = ctxFor({
+            entities: manySources(60),
+            chat,
+            meter: new LlmMeter(20),
+            rerank: true,
+            texts: ["customers", "shipments", "invoices"],
+         });
+         await sourceMatchStage.run(empty, ctx);
+         expect(chat.prompts).toHaveLength(18);
+         expect(ctx.warnings).toEqual([]);
+      });
+
+      it("sends every source when there is no ceiling", async () => {
+         const chat = scriptedChat(() => "[]");
+         const ctx = ctxFor({
+            entities: manySources(300),
+            chat,
+            texts: ["customers"],
+         });
+         await sourceMatchStage.run(empty, ctx);
+         expect(chat.prompts).toHaveLength(30);
+         expect(ctx.warnings).toEqual([]);
+      });
    });
 });
 
