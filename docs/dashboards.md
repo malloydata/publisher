@@ -439,6 +439,10 @@ counts a filter you have just added before it is saved. A tile the saved file do
 shows no chip until it is saved, unless you bind it a filter or its source scopes it, because only
 the saved file's compile knows what the model's own sources read. The single-query form has no chip.
 
+A given that only the source's gate reads is in the tile's `givenNames`, so a value the host
+injects (an `ORG` from its session, say) is sent with the tile rather than dropped, but it does not
+become a control: a gate is a model concern, so the row stays the givens the tiles' queries read.
+
 Three things it costs, none of them fixable by tagging differently:
 
 - **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view

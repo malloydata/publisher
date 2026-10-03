@@ -1079,7 +1079,12 @@ export function buildDashboardManifest(
          givens: buildGivenSpecs(
             queries.some((tile) => tile.givenNames === undefined)
                ? Array.from(facts.givens.keys())
-               : queries.flatMap((tile) => tile.givenNames ?? []),
+               : // A given only a gate reads is the host's to inject, not a viewer control.
+                 queries.flatMap((tile) =>
+                    (referencedTileGivens(tile.query, facts) ?? []).filter(
+                       (name) => facts.givens.has(name),
+                    ),
+                 ),
             facts,
          ),
       };

@@ -4035,7 +4035,8 @@ components:
           type: array
           description: |
             The control row. Normally one entry per given the dashboard runs
-            with: the union over `tiles`, or what `query` references when the tag
+            with: the union over `tiles` (less a given only a source's gate
+            reads, which a host injects rather than a viewer sets), or what `query` references when the tag
             sits on a query, and which the entry file
             can bind. The row widens to
             every given the entry file surfaces when any tile is one discovery

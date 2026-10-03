@@ -860,13 +860,27 @@ describe("service/dashboard manifest (composite form)", () => {
          // Did not compile: the static walk still answers.
          { kind: "query", query: "orders -> broken", givenNames: ["SCOPE"] },
       ]);
+      // ORG is read only by the gate: sent when a host injects it, never a viewer control.
       expect(manifest?.givens.map((s) => s.name)).toEqual([
          "SCOPE",
          "BRAND",
          "REGION",
-         "ORG",
          "CAT",
       ]);
+   });
+
+   it("keeps a gate given a tile also reads on the row", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: ['## artifact { tiles=["orders -> by_org"] }\n'],
+            viewGivens: new Map([["orders -> by_org", ["ORG"]]]),
+            compiledTileGivens: new Map([
+               ["orders -> by_org", { reads: ["ORG"], gateReads: ["ORG"] }],
+            ]),
+            givens: new Map([given("ORG", "number[]", [])]),
+         }),
+      );
+      expect(manifest?.givens.map((s) => s.name)).toEqual(["ORG"]);
    });
 
    it("does not lint an unimported gate given", () => {
