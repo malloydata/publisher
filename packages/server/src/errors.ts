@@ -383,8 +383,20 @@ export class InvalidArgumentError extends BadRequestError {}
  */
 export class CompileRefusedError extends BadRequestError {}
 
+/**
+ * `lookup` is set where a name was looked up and missed. It carries the names
+ * that do exist, so an MCP tool can tell the agent what to use instead. The
+ * names stay out of the message because the message is also the REST 404 body,
+ * and a REST caller may be scoped to one environment by the router in front.
+ */
 export class EnvironmentNotFoundError extends Error {
-   constructor(message: string) {
+   constructor(
+      message: string,
+      readonly lookup?: {
+         environmentName: string;
+         availableEnvironments: string[];
+      },
+   ) {
       super(message);
    }
 }

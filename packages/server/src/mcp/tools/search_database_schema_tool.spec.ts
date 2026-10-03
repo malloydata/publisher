@@ -23,6 +23,7 @@ mock.module("../../controller/connection.controller", () => ({
    },
 }));
 import type { EnvironmentStore } from "../../service/environment_store";
+import { EnvironmentNotFoundError } from "../../errors";
 import {
    bareTableName,
    canPasteSource,
@@ -255,18 +256,28 @@ describe("search_database_schema tiers", () => {
       ]);
    });
 
-   it("returns a tool error when the environment does not exist", async () => {
+   it("names the unknown environment and the ones that exist", async () => {
       const handler = captureHandler({
          getEnvironment: async () => {
-            throw new Error("Environment not found");
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
          },
       });
       const result = await handler({
-         environmentName: "nope",
-         connectionName: "c",
+         environmentName: "analytics",
+         connectionName: "bq_demo",
       });
       expect(result.isError).toBe(true);
-      expect(parse(result).tables).toEqual([]);
+      const parsed = parse(result);
+      expect(parsed.tables).toEqual([]);
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 });
 

@@ -347,6 +347,10 @@ value, that the prefix "is not a well-formed route", because a route ends at the
 complaint is a **compile** diagnostic on a compile that still succeeds, not a package warning, so
 step 6 will not show it. Pick by which reader you care about.
 
+`dimension=` can name a field through a join, the same path a `group_by:` takes. Quote it, because
+an unquoted dotted value does not parse as a tag:
+`suggest { source=sales dimension="products.department" }`.
+
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
 `range_min`/`range_max` on a `filter<number>` renders a two-handled range slider; a `filter<date>` or
 `filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare

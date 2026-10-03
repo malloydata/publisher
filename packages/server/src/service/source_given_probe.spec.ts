@@ -69,6 +69,18 @@ source: scoped is orders extend {
     aggregate: total_amount
   }
 }
+
+// A join chain, for a suggest whose dimension is a path like
+// "products.brands.name".
+source: brands is duckdb.sql("""select 'Nike' as name""")
+source: products is duckdb.sql("""
+  select 'Tops' as department, 'Nike' as brand_name
+""") extend {
+  join_one: brands on brand_name = brands.name
+}
+source: sales is duckdb.sql("""select 'Tops' as department""") extend {
+  join_one: products on department = products.department
+}
 `;
 
 async function facts() {
@@ -100,5 +112,22 @@ describe("givens applied on a source reach that source's views", () => {
    it("leaves an unscoped source's views alone", async () => {
       const { viewGivens } = await facts();
       expect(viewGivens.get("orders -> by_brand")).toEqual([]);
+   });
+});
+
+describe("joins reach the suggest lint", () => {
+   it("records each source's joins, and theirs, with their field names", async () => {
+      const { sourceJoins } = await facts();
+      const products = sourceJoins.get("sales")?.get("products");
+      expect([...(products?.fields ?? [])].sort()).toEqual([
+         "brand_name",
+         "brands",
+         "department",
+      ]);
+      expect([...(products?.joins.get("brands")?.fields ?? [])]).toEqual([
+         "name",
+      ]);
+      // A source with no join gets no entry, not an empty one.
+      expect(sourceJoins.has("brands")).toBe(false);
    });
 });

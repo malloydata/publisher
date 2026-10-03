@@ -31,8 +31,9 @@
  * an error.
  */
 
-import { isSourceDef } from "@malloydata/malloy";
+import { isJoined, isSourceDef } from "@malloydata/malloy";
 import type {
+   FieldDef,
    ModelDef,
    NamedModelObject,
    NamedQueryDef,
@@ -467,6 +468,12 @@ export interface DashboardModelFacts {
    /** Field names per source, for validating `suggest { source= dimension= }`. */
    sourceFields: Map<string, Set<string>>;
    /**
+    * The joins of each source in {@link DashboardModelFacts.sourceFields}, by
+    * join name, so a dotted `dimension="products.department"` can be resolved
+    * one segment at a time. A source with no joins has no entry.
+    */
+   sourceJoins: Map<string, Map<string, JoinedFields>>;
+   /**
     * Every `# drill` tag reachable in this file, one per tagged dimension. Drill
     * is declared on model dimensions rather than on a dashboard, so a file's
     * drills come from the sources it imports.
@@ -478,6 +485,29 @@ export interface DashboardModelFacts {
     * source's, narrowed to what this file can bind. See `suggestGivenLookup`.
     */
    suggestGivens: SuggestGivenLookup;
+}
+
+/** The field names of one joined struct, and its own joins in turn. */
+export interface JoinedFields {
+   fields: Set<string>;
+   joins: Map<string, JoinedFields>;
+}
+
+/**
+ * The joins among `fields`, each with its field names, recursively. Malloy
+ * embeds every joined source as a nested struct on its join field, so the
+ * compiled tree already holds the whole path a `group_by: a.b.c` can walk.
+ */
+function readJoins(fields: readonly FieldDef[]): Map<string, JoinedFields> {
+   const joins = new Map<string, JoinedFields>();
+   for (const field of fields) {
+      if (!isJoined(field)) continue;
+      joins.set(field.as || field.name, {
+         fields: new Set(field.fields.map((inner) => inner.as || inner.name)),
+         joins: readJoins(field.fields),
+      });
+   }
+   return joins;
 }
 
 /** A `# drill { to=[…] given=… }` tag on a source dimension. */
@@ -588,12 +618,15 @@ export function readDashboardModelFacts(
    const viewGivens = new Map<string, string[]>();
    const viewAnnotations = new Map<string, string[]>();
    const sourceFields = new Map<string, Set<string>>();
+   const sourceJoins = new Map<string, Map<string, JoinedFields>>();
    const drills: DashboardDrill[] = [];
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
       const sourceName = obj.as || obj.name;
       const fieldNames = new Set<string>();
       sourceFields.set(sourceName, fieldNames);
+      const joins = readJoins(obj.fields);
+      if (joins.size > 0) sourceJoins.set(sourceName, joins);
 
       // A source-level `where:` referencing a given scopes every view of that
       // source, but it lives on the source rather than in any view's pipeline,
@@ -647,6 +680,7 @@ export function readDashboardModelFacts(
       viewGivens,
       viewAnnotations,
       sourceFields,
+      sourceJoins,
       drills,
       suggestGivens: suggestGivenLookup(
          modelDef,
@@ -1368,21 +1402,61 @@ export function lintDashboard(
                   `"${suggest.source}", which this file does not define.`,
                "error",
             );
-         } else if (
-            suggest.dimension !== undefined &&
-            !fields.has(suggest.dimension)
-         ) {
-            add(
-               `given "${spec.name}" suggests options from ` +
-                  `"${suggest.source} -> ${suggest.dimension}", but that ` +
-                  `source has no field "${suggest.dimension}".`,
-               "error",
+         } else if (suggest.dimension !== undefined) {
+            const missing = unresolvedSuggestDimension(
+               suggest.source,
+               suggest.dimension,
+               fields,
+               facts.sourceJoins.get(suggest.source),
             );
+            if (missing) {
+               add(
+                  `given "${spec.name}" suggests options from ` +
+                     `"${suggest.source} -> ${suggest.dimension}", but ` +
+                     `${missing}.`,
+                  "error",
+               );
+            }
          }
       }
    }
 
    return findings;
+}
+
+/**
+ * Why `dimension` does not resolve on `source`, or undefined when it does.
+ *
+ * The suggest query is `group_by: <dimension>`, which Malloy reads as a path,
+ * so `products.department` is valid wherever `sales` joins `products`. Every
+ * segment but the last must be a join; the last must be a field of whatever
+ * the path reached, checked the same way a flat name is.
+ */
+function unresolvedSuggestDimension(
+   source: string,
+   dimension: string,
+   fields: Set<string>,
+   joins: Map<string, JoinedFields> | undefined,
+): string | undefined {
+   const segments = dimension.split(".");
+   const last = segments.pop() as string;
+   // A flat name keeps the wording this finding has always had.
+   if (segments.length === 0) {
+      return fields.has(last)
+         ? undefined
+         : `that source has no field "${last}"`;
+   }
+   let owner = source;
+   let current: JoinedFields = { fields, joins: joins ?? new Map() };
+   for (const segment of segments) {
+      const next = current.joins.get(segment);
+      if (!next) return `"${owner}" has no join "${segment}"`;
+      owner = segment;
+      current = next;
+   }
+   return current.fields.has(last)
+      ? undefined
+      : `"${owner}" has no field "${last}"`;
 }
 
 /**

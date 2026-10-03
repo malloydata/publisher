@@ -10,7 +10,7 @@ import type {
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
 import { isDashboardModelPath } from "./dashboard";
-import { notebookLintProblems } from "./notebook_lint";
+import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -1031,10 +1031,45 @@ export class Environment {
                         pathToFileURL(
                            path.join(packagePath, compiled.modelPath),
                         ).toString(),
+                     ).filter(
+                        (problem) =>
+                           !reportedByDashboardLint(
+                              problem,
+                              compiled.modelPath,
+                           ),
                      ),
                      compiled.modelPath,
                   );
                }
+            }
+            // The findings a reload would add on the main thread after this
+            // same worker compile: render tags and the dashboard, given and
+            // drill lints. Each keeps its own severity, so a broken dashboard
+            // makes the compile an error, as it should. They carry no
+            // position; the model and the message name what is wrong.
+            const { renderTagWarnings, dashboardWarnings } =
+               await Package.lintWorkerOutcome(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  pkg.getMalloyConfig(),
+                  outcome,
+                  boundManifestEntries,
+               );
+            const asProblem = (
+               warning: (typeof renderTagWarnings)[number],
+               code: string,
+            ): LogMessage =>
+               ({
+                  severity: warning.severity ?? "warn",
+                  message: warning.message,
+                  code,
+               }) as LogMessage;
+            for (const warning of renderTagWarnings) {
+               collect([asProblem(warning, "render-tag")], warning.model);
+            }
+            for (const warning of dashboardWarnings) {
+               collect([asProblem(warning, "dashboard-lint")], warning.model);
             }
             if (
                source !== undefined &&

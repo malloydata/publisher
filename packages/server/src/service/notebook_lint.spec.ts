@@ -931,6 +931,7 @@ describe("notebook lint", () => {
          viewGivens: new Map([["orders -> kpis", []]]),
          viewAnnotations: new Map([["orders -> kpis", []]]),
          sourceFields: new Map([["orders", new Set(["kpis"])]]),
+         sourceJoins: new Map(),
          drills: [],
          suggestGivens: {
             forSource: () => undefined,

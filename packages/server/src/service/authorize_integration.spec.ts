@@ -1127,6 +1127,16 @@ source: gated is duckdb.table('customers') extend {
          "run: ungated -> { aggregate: c }\nrun: gated -> { aggregate: c }",
          { ROLE: "intern" },
       );
+      // The same text from a caller the lock admits is still refused, as more
+      // than one `run:`: the lock decides first, so a denied caller keeps the
+      // 403 above rather than this 400.
+      const admitted = runGated(
+         "rt_multi.malloy",
+         "run: ungated -> { aggregate: c }\nrun: gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      await expect(admitted).rejects.toBeInstanceOf(BadRequestError);
+      await expect(admitted).rejects.toThrow("The query has 2 run: statements");
    });
 
    it("leaves a source with no authorize annotations unrestricted", async () => {

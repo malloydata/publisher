@@ -37,6 +37,7 @@ function facts(
       viewGivens: new Map(),
       viewAnnotations: new Map(),
       sourceFields: new Map(),
+      sourceJoins: new Map(),
       drills: [],
       suggestGivens: { forSource: () => undefined, forQuery: () => undefined },
       ...overrides,
@@ -1400,6 +1401,68 @@ describe("service/dashboard lint", () => {
          expect.stringContaining('query "missing_q"'),
          expect.stringContaining("source= alone names no column"),
          expect.stringContaining('has no field "nope"'),
+      ]);
+   });
+
+   it("resolves a dotted suggest dimension through the source's joins", () => {
+      // The suggest query is `group_by: products.department`, which Malloy
+      // reads as a path, so the lint walks the same path: each segment but the
+      // last is a join, the last is a field of what it reached.
+      const suggests = (dimensions: string[]) =>
+         lint(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ['# artifact { title="Overview" }\n'],
+                     givens: dimensions.map((_, i) => `G${i}`),
+                  },
+               ],
+               sourceFields: new Map([["sales", new Set(["products", "id"])]]),
+               sourceJoins: new Map([
+                  [
+                     "sales",
+                     new Map([
+                        [
+                           "products",
+                           {
+                              fields: new Set(["department", "brands"]),
+                              joins: new Map([
+                                 [
+                                    "brands",
+                                    {
+                                       fields: new Set(["name"]),
+                                       joins: new Map(),
+                                    },
+                                 ],
+                              ]),
+                           },
+                        ],
+                     ]),
+                  ],
+               ]),
+               givens: new Map(
+                  dimensions.map((dimension, i) =>
+                     given(`G${i}`, "filter<string>", [
+                        `# suggest { source=sales dimension="${dimension}" }\n`,
+                     ]),
+                  ),
+               ),
+            }),
+         );
+      expect(suggests(["products.department", "products.brands.name"])).toEqual(
+         [],
+      );
+      expect(
+         suggests(["prodcts.department", "products.departmnt", "id.x"]),
+      ).toEqual([
+         'given "G0" suggests options from "sales -> prodcts.department", ' +
+            'but "sales" has no join "prodcts".',
+         'given "G1" suggests options from "sales -> products.departmnt", ' +
+            'but "products" has no field "departmnt".',
+         // A plain field is not a join, so a path cannot continue through it.
+         'given "G2" suggests options from "sales -> id.x", ' +
+            'but "sales" has no join "id".',
       ]);
    });
 
