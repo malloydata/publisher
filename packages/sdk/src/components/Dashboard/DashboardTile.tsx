@@ -64,8 +64,8 @@ export interface DashboardTileProps {
    onExplore?: () => void;
    /** `none` draws the result bare, its label a quiet caption above it. */
    chrome?: TileChrome;
-   /** Labels of the filters this tile answers to, shown as a small tag. */
-   filterLabels?: readonly string[];
+   /** Labels of the page's filters this tile ignores, shown as a warning chip. */
+   ignoredFilters?: readonly string[];
 }
 
 /**
@@ -112,7 +112,7 @@ export function DashboardTile({
    drill,
    onExplore,
    chrome = "card",
-   filterLabels,
+   ignoredFilters,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
    const state = useQueryResult({
@@ -172,7 +172,7 @@ export function DashboardTile({
                }
             />
          )}
-         {filterLabels && <TileFilterTag labels={filterLabels} />}
+         {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
          <ResultPanel
             fill
             state={state}

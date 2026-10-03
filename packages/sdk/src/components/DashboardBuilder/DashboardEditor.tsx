@@ -9,7 +9,7 @@ import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
-import { tileFilterLabels } from "../Dashboard/TileFilterTag";
+import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import type { BuilderEvent } from "./telemetry";
 import { now } from "../../utils/clock";
 import { encodeResourceUri } from "../../utils/formatting";
@@ -34,7 +34,7 @@ import {
 import { locatorFor } from "../DocumentCreate/documentPath";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
-import { previewGivens, previewTileQuery } from "./preview";
+import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
 import {
    chooseWorkspace,
    expectedHashFor,
@@ -983,12 +983,32 @@ function Surface({
    });
 
    const manifestSettled = !served || isSuccess || isError;
+   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
+   const servedReads = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.givenNames
+                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(tile: QueryTile, heading?: TileHeadingSlots) {
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             if (!manifestSettled) return <Loading text="Running…" />;
-            const query = previewTileQuery(doc, tile, runnable, applied);
+            const query = previewTileQuery(
+               doc,
+               tile,
+               runnable,
+               applied,
+               servedReads.get(
+                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
+               ),
+            );
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -1008,7 +1028,7 @@ function Surface({
                   givens={applied}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
-                  filterLabels={tileFilterLabels(query.givenNames, specs)}
+                  ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   height={TILE_MAX_HEIGHT}
                />
             );
@@ -1017,6 +1037,7 @@ function Surface({
          doc,
          manifestSettled,
          runnable,
+         servedReads,
          environmentName,
          packageName,
          versionId,

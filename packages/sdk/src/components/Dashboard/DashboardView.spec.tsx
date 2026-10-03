@@ -82,12 +82,67 @@ describe("DashboardView tiles", () => {
       expect(queries).toContain("run: orders -> by_year");
    });
 
-   it("tags each query tile with the filters that apply to it", async () => {
-      render(view(), { wrapper: serverWrapper });
+   it("warns only on a tile that ignores some of the page's filters", async () => {
+      const manifest = {
+         ...base,
+         givens: [
+            { name: "REGION", type: "string", label: "Region" },
+            { name: "BRAND", type: "string", label: "Brand" },
+         ],
+         tiles: [
+            { kind: "text", name: "intro", markdown: "Hello **reader**" },
+            {
+               kind: "query",
+               query: "orders -> all_apply",
+               givenNames: ["BRAND", "REGION"],
+            },
+            {
+               kind: "query",
+               query: "orders -> one_missing",
+               givenNames: ["REGION"],
+            },
+            // Unresolved: it runs with the whole row, so nothing is ignored.
+            { kind: "query", query: "orders -> unresolved" },
+         ],
+      } as DashboardManifest;
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
 
       const tags = await screen.findAllByTestId("tile-filter-tag");
-      // The by_year tile names no givens, so only the monthly tile is tagged.
-      expect(tags.map((tag) => tag.textContent)).toEqual(["Region"]);
+      expect(tags.map((tag) => tag.textContent)).toEqual([
+         "Doesn't respond to Brand",
+      ]);
+      expect(tags[0].closest("[data-chrome]")?.textContent).toContain(
+         "One missing",
+      );
+   });
+
+   it("puts no warning on a single-query dashboard", async () => {
+      render(
+         <DashboardView
+            manifest={
+               {
+                  name: "ops",
+                  path: "dashboards/ops.malloy",
+                  query: "overview",
+                  givens: [{ name: "REGION", type: "string", label: "Region" }],
+               } as DashboardManifest
+            }
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      expect(screen.queryByTestId("tile-filter-tag")).toBeNull();
    });
 });
 

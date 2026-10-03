@@ -473,7 +473,7 @@ test.describe("package-dashboards", () => {
       }).toPass({ timeout: 30_000 });
    });
 
-   test("a short table fills its card beside a chart, under its filter tag", async ({
+   test("a short table fills its card beside a chart, with no filter warning", async ({
       page,
    }) => {
       await openDashboard(page, "tiled");
@@ -514,9 +514,22 @@ test.describe("package-dashboards", () => {
          ).toBeLessThanOrEqual(3);
       }).toPass({ timeout: 30_000 });
 
-      // The tag sits with the heading at the top of the card, not under the result.
+      // Every tile reads BRAND through the extension's own `where:`, so none warns.
+      await expect(page.getByTestId("tile-filter-tag")).toHaveCount(0);
+   });
+
+   test("a tile that ignores a filter says so above its result", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      const card = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: page.locator('[title="orders -> by_brand"]') });
+      const table = card.locator(".malloy-table.root");
+      await expect(table).toBeVisible({ timeout: 30_000 });
+
       const tag = card.getByTestId("tile-filter-tag");
-      await expect(tag).toBeVisible();
+      await expect(tag).toHaveText("Doesn't respond to Region");
       const tagBox = (await tag.boundingBox())!;
       const tableBox = (await table.boundingBox())!;
       expect(tagBox.y + tagBox.height).toBeLessThanOrEqual(tableBox.y);

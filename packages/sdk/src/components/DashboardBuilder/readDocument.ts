@@ -365,6 +365,12 @@ async function readDocumentText(
             name: d.name,
             expression: d.expression,
          }));
+      const scopedBy = new Set(
+         source.wheres.flatMap((where) =>
+            where.clauses.flatMap((clause) => clause.givens),
+         ),
+      );
+      if (scopedBy.size > 0) entry.scopedBy = Array.from(scopedBy);
       sources.push(entry);
 
       // A `# drill` is a tag on a dimension's declaration, so the dimensions

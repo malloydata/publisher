@@ -22,7 +22,7 @@ import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import type { DashboardEventHandler } from "./telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
-import { tileFilterLabels } from "./TileFilterTag";
+import { tileIgnoredFilterLabels } from "./TileFilterTag";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
@@ -227,7 +227,10 @@ export function DashboardView({
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         chrome={chrome}
-                        filterLabels={tileFilterLabels(tile.givenNames, specs)}
+                        ignoredFilters={tileIgnoredFilterLabels(
+                           tile.givenNames,
+                           specs,
+                        )}
                         onExplore={() => {
                            setExploring(tile.query);
                            onEvent?.({

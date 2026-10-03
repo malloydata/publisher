@@ -85,6 +85,8 @@ agrees. Notebooks are authored as layouts
 (`tiles=[…]`), the shape the builder writes, and a layout notebook's read view has no cards around
 its tiles.
 
+**A tile that ignores a filter says so.** In the reader and the builder, a tile whose query never reads one of the page's controls shows an amber "Doesn't respond to Brand" chip under its heading, and a tile that reads them all shows nothing; `DashboardTile.givenNames` is now what the tile's compiled query reads (a joined source's `where:`, a `$X` dimension and the source's gates included, and refinements resolved), where it used to be a static walk of the view.
+
 **API contract.** `DashboardTile` gains `kind` (`query` or `text`), `name` and `markdown`; `query` is
 absent on a text tile, so a client that runs a dashboard's tiles should skip `kind=text` tiles when
 running queries, and a text tile's `colspan` and `break` come from its `tiles=[…]` entry.

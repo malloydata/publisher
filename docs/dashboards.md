@@ -428,6 +428,15 @@ knowing: if a tile cannot be resolved, the row widens to every given the entry f
 than narrowing to the tiles that did resolve. The unresolvable tile is a package warning of its own,
 so the state is visible, but the control row is usually where it is noticed first.
 
+A tile that ignores some of the row's controls says so: a small amber chip under its heading reads
+"Doesn't respond to Brand" (a count past three filters), and its tooltip explains that the tile's
+query never reads that given, so changing it will not change the tile. A tile that reads every
+control shows nothing, as does a tile that could not be resolved, which runs with the whole row.
+"Reads" is what Malloy compiles the tile to, not just its view's `where:`: a given read through the
+source's own `where:`, a joined source's `where:`, a dimension or measure the tile uses, or the
+source's `#(authorize)`/`#(access_filter)` gate all count. The builder shows the same chip, and
+counts a filter you have just added before it is saved. The single-query form has no chip.
+
 Three things it costs, none of them fixable by tagging differently:
 
 - **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view

@@ -104,7 +104,7 @@ it("has no explore button when the host offers nowhere to go", () => {
    expect(screen.queryByLabelText(/^Explore /)).toBeNull();
 });
 
-it("puts the filter tag under the heading and above the result", () => {
+it("puts the filter warning under the heading and above the result", () => {
    render(
       <DashboardTile
          environmentName="env"
@@ -114,12 +114,13 @@ it("puts the filter tag under the heading and above the result", () => {
          givens={new Map()}
          declaredTypes={new Map()}
          height={400}
-         filterLabels={["Region"]}
+         ignoredFilters={["Region"]}
       />,
       { wrapper: serverWrapper },
    );
    const heading = screen.getByText("Sales by month");
    const tag = screen.getByTestId("tile-filter-tag");
+   expect(tag.textContent).toBe("Doesn't respond to Region");
    const body = screen.getByText("Running…");
    const follows = (a: Node, b: Node) =>
       Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);

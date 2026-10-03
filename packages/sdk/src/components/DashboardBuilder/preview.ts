@@ -112,6 +112,16 @@ function dropsBaseChart(declaration: QueryTile["declaration"]): boolean {
    );
 }
 
+/** A tile expression as the server keys it, so `a->b` and `a -> b` match. */
+export function tileExpressionKey(expression: string): string {
+   // Split rather than `/\s*->\s*/g`, which backtracks quadratically on long whitespace.
+   return expression
+      .split("->")
+      .map((part) => part.trim().replace(/\s+/g, " "))
+      .join(" -> ")
+      .replace(/\s+/g, " ");
+}
+
 /** A tile's query as the document has it, and the givens it sends. */
 export interface PreviewTileQuery {
    /** A run expression, without `run:` — what `DashboardTile.tile` takes. */
@@ -126,11 +136,17 @@ export interface PreviewTileQuery {
     */
    annotation?: string;
    /**
-    * The givens this tile binds and the server can take, for narrowing the
-    * request. Undefined for a tile whose bindings live in the model, where the
+    * The givens this tile binds or its extension reads that the server can
+    * take, for narrowing the request. Undefined for a tile whose bindings live in the model, where the
     * document cannot know them: send the whole row, as the reader does.
     */
    givenNames: string[] | undefined;
+   /**
+    * Every given this tile's preview answers to, runnable or not, for saying
+    * which controls it ignores. Undefined when nothing can say: an inherited
+    * tile the served file did not resolve.
+    */
+   reads: string[] | undefined;
 }
 
 /**
@@ -175,6 +191,8 @@ export function previewTileQuery(
    tile: QueryTile,
    runnable: ReadonlySet<string>,
    values: ReadonlyMap<string, GivenValue> = new Map(),
+   /** What the served file's compiled tile reads (`DashboardTile.givenNames`), when it has this tile. */
+   served?: readonly string[],
 ): PreviewTileQuery {
    if (tile.declaration.kind === "inherited") {
       // Declared in the model; bindings live there too, out of this
@@ -182,6 +200,7 @@ export function previewTileQuery(
       return {
          expression: `${tile.source} -> ${tile.name}`,
          givenNames: undefined,
+         reads: served && [...served],
       };
    }
    // Run on the dashboard's OWN extension, not the model source it extends.
@@ -196,16 +215,24 @@ export function previewTileQuery(
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
-   const sent: string[] = [];
+   // The extension's own `where:` filters every tile on it, as the served manifest counts.
+   const scopedBy =
+      document.sources.find((source) => source.name === on)?.scopedBy ?? [];
+   const sent = new Set(scopedBy.filter((name) => runnable.has(name)));
+   // A binding removed but not yet saved still counts here until the save; it errs toward no warning.
+   const reads = new Set<string>([...scopedBy, ...(served ?? [])]);
    const clauses: string[] = [];
    for (const filter of tile.filters ?? []) {
       const comparison = `where: ${malloyPath(filter.field)} ${filter.op ?? "~"}`;
       if (runnable.has(filter.given)) {
-         sent.push(filter.given);
+         sent.add(filter.given);
+         reads.add(filter.given);
          clauses.push(`${comparison} $${filter.given}`);
          continue;
       }
       if (!localTypes.has(filter.given)) continue;
+      // Applied as a literal, so the control still changes this tile.
+      reads.add(filter.given);
       const literal = malloyLiteral(
          values.get(filter.given),
          localTypes.get(filter.given),
@@ -226,6 +253,7 @@ export function previewTileQuery(
       ...(annotation ? { annotation } : {}),
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
-      givenNames: sent,
+      givenNames: Array.from(sent),
+      reads: Array.from(reads),
    };
 }

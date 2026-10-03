@@ -223,6 +223,8 @@ export interface DashboardSource {
     * the model.
     */
    dimensions?: DashboardDimension[];
+   /** Givens the extension's own `where:`s read, which filter every tile on it. Read-only: never written. */
+   scopedBy?: string[];
 }
 
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */

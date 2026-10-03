@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, QueryTile } from "./document";
 import { queryTile } from "./testing/fixtures";
-import { previewGivens, previewTileQuery } from "./preview";
+import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
 
 const tile = (
    name: string,
@@ -220,6 +220,62 @@ describe("previewTileQuery", () => {
          expression: "orders -> by_brand",
          givenNames: undefined,
       });
+   });
+});
+
+describe("previewTileQuery reads", () => {
+   const runnable = new Set(["CATEGORY", "REGION"]);
+
+   it("counts a literal-bound local given the server cannot be sent", () => {
+      const q = previewTileQuery(document, queryTile(document, 0), runnable);
+      expect(q.givenNames).toEqual(["CATEGORY"]);
+      expect(q.reads).toEqual(["CATEGORY", "SINCE"]);
+   });
+
+   it("counts, and sends, what the extension's own where: reads", () => {
+      const scoped: DashboardDocument = {
+         ...document,
+         sources: [
+            { name: "overview", base: "order_items", scopedBy: ["REGION"] },
+         ],
+      };
+      const q = previewTileQuery(scoped, queryTile(scoped, 2), runnable);
+      expect(q.expression).toBe("overview -> by_state");
+      expect(q.givenNames).toEqual(["REGION"]);
+      expect(q.reads).toEqual(["REGION"]);
+   });
+
+   it("adds what the served tile reads, which the document cannot see", () => {
+      const q = previewTileQuery(
+         document,
+         queryTile(document, 2),
+         runnable,
+         new Map(),
+         ["BRAND"],
+      );
+      expect(q.reads).toEqual(["BRAND"]);
+   });
+
+   it("takes an inherited tile's reads from the served file alone", () => {
+      const inherited: QueryTile = {
+         name: "by_brand",
+         source: "orders",
+         declaration: { kind: "inherited" },
+      };
+      expect(
+         previewTileQuery(document, inherited, runnable, new Map(), ["REGION"])
+            .reads,
+      ).toEqual(["REGION"]);
+      expect(
+         previewTileQuery(document, inherited, runnable).reads,
+      ).toBeUndefined();
+   });
+});
+
+describe("tileExpressionKey", () => {
+   it("keys a tile expression as the server does", () => {
+      expect(tileExpressionKey("orders->by_x")).toBe("orders -> by_x");
+      expect(tileExpressionKey("  orders  ->   by_x ")).toBe("orders -> by_x");
    });
 });
 

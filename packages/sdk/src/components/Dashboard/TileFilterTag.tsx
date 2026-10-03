@@ -1,38 +1,49 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import FilterAltOutlinedIcon from "@mui/icons-material/FilterAltOutlined";
+import FilterAltOffOutlinedIcon from "@mui/icons-material/FilterAltOffOutlined";
 import { Box } from "@mui/material";
 import type { Given } from "../../client";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
+/** Past this many, the chip counts the filters instead of naming them. */
+const NAMED_LIMIT = 3;
+
 /**
- * Display labels of the controls a tile answers to.
+ * Display labels of the controls on the page that a tile does NOT read.
  *
  * `givenNames` undefined means discovery could not resolve the tile, so the
- * whole control row applies, as it does when the tile runs.
+ * whole control row applies, as it does when the tile runs: nothing to warn of.
  */
-export function tileFilterLabels(
+export function tileIgnoredFilterLabels(
    givenNames: readonly string[] | undefined,
    declared: readonly Given[],
 ): string[] {
-   const byName = new Map(
-      declared.flatMap((given) =>
-         given.name ? [[given.name, given.label ?? given.name] as const] : [],
-      ),
+   if (givenNames === undefined) return [];
+   const reads = new Set(givenNames);
+   return declared.flatMap((given) =>
+      given.name && !reads.has(given.name) ? [given.label ?? given.name] : [],
    );
-   if (givenNames === undefined) return [...byName.values()];
-   return givenNames.map((name) => byName.get(name) ?? name);
 }
 
-/** A small tag naming the filters that apply to a tile; nothing when none do. */
-export function TileFilterTag({ labels }: { labels: readonly string[] }) {
+function joinOr(labels: readonly string[]): string {
+   return labels.length < 2
+      ? labels.join("")
+      : `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+}
+
+/** A small amber chip naming the page's filters a tile ignores; nothing when it reads them all. */
+export function TileFilterTag({ ignored }: { ignored: readonly string[] }) {
    const { theme } = usePublisherTheme();
-   if (labels.length === 0) return null;
+   if (ignored.length === 0) return null;
+   const text =
+      ignored.length > NAMED_LIMIT
+         ? `Doesn't respond to ${ignored.length} filters`
+         : `Doesn't respond to ${ignored.join(", ")}`;
    return (
       <Box
          data-testid="tile-filter-tag"
-         title={`Filtered by ${labels.join(", ")}`}
+         title={`This tile's query never reads ${joinOr(ignored)}, so changing ${ignored.length === 1 ? "it" : "them"} won't change this tile`}
          sx={{
             display: "inline-flex",
             alignItems: "center",
@@ -42,16 +53,16 @@ export function TileFilterTag({ labels }: { labels: readonly string[] }) {
             alignSelf: "flex-start",
             px: 0.75,
             py: 0.125,
-            border: theme.cardBorder,
+            border: 1,
+            borderColor: "warning.main",
             borderRadius: 1,
             fontSize: 11,
             lineHeight: 1.6,
-            color: theme.tileTitle,
+            color: "warning.main",
             fontFamily: theme.font.family,
-            opacity: 0.8,
          }}
       >
-         <FilterAltOutlinedIcon sx={{ fontSize: 12 }} />
+         <FilterAltOffOutlinedIcon sx={{ fontSize: 12 }} />
          <Box
             component="span"
             sx={{
@@ -60,7 +71,7 @@ export function TileFilterTag({ labels }: { labels: readonly string[] }) {
                whiteSpace: "nowrap",
             }}
          >
-            {labels.join(", ")}
+            {text}
          </Box>
       </Box>
    );

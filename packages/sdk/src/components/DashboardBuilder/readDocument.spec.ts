@@ -409,6 +409,25 @@ source: a is one extend {
       ]);
    });
 
+   it("reads the givens an extension's own where: reads, compound or not", async () => {
+      const doc =
+         await read(`## artifact { title="T" tiles=["a -> x", "b -> y"] }
+import "../m.malloy"
+
+source: a is one extend {
+  where: region ~ $REGION, (brand ~ $BRAND or brand = null)
+  view: x is vx + { where: cat ~ $CATEGORY }
+}
+
+source: b is two extend {
+  view: y is vy
+}`);
+      expect(doc.sources.map((source) => source.scopedBy)).toEqual([
+         ["REGION", "BRAND"],
+         undefined,
+      ]);
+   });
+
    // Givens are the one declaration the parser's symbol tree does not cover.
    it("reads a dashboard-local given", async () => {
       const doc = await read(`##! experimental.givens
