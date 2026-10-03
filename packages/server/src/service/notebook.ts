@@ -186,24 +186,50 @@ export function hasArtifactLineOutsideBlocks(
    return findArtifactLineOutsideBlocks(source, artifactLine) !== undefined;
 }
 
+/**
+ * Finds the first line after `after` that closes a block opened at `column`
+ * with `closer`, or -1. Asked in rising `after` order, it reads each line once,
+ * so a file of unclosed openers is not rescanned to its end per opener.
+ */
+function blockCloserFinder(
+   lines: readonly string[],
+): (column: number, closer: string, after: number) => number {
+   const byKey = new Map<string, number[]>();
+   lines.forEach((line, at) => {
+      const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+      for (const closer of ["|##", "|#"])
+         if (closesBlock(line, 0, indent, closer)) {
+            const key = `${indent}${closer}`;
+            const ats = byKey.get(key);
+            if (ats) ats.push(at);
+            else byKey.set(key, [at]);
+            break;
+         }
+   });
+   const cursor = new Map<string, number>();
+   return (column, closer, after) => {
+      const key = `${column}${closer}`;
+      const ats = byKey.get(key) ?? [];
+      let k = cursor.get(key) ?? 0;
+      while (k < ats.length && ats[k] <= after) k++;
+      cursor.set(key, k);
+      return ats[k] ?? -1;
+   };
+}
+
 function findArtifactLineOutsideBlocks(
    source: string,
    artifactLine: LineTest,
 ): string | undefined {
    const lines = source.split(/\r\n|\r|\n/);
+   const closerAfter = blockCloserFinder(lines);
    for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trimStart();
       const opener = /^(#{1,2})\|/.exec(trimmed);
       if (opener) {
          // The lexer takes the opener's whole line, so a `|##` on it closes nothing.
-         const wanted = `|${opener[1]}`;
          const column = lines[i].length - trimmed.length;
-         let end = -1;
-         for (let at = i + 1; at < lines.length; at++)
-            if (closesBlock(lines[at], 0, column, wanted)) {
-               end = at;
-               break;
-            }
+         const end = closerAfter(column, `|${opener[1]}`, i);
          // An unclosed opener holds no block, so it must not hide the rest of the file.
          if (end !== -1) {
             const block = [trimmed, ...lines.slice(i + 1, end)].join("\n");

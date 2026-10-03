@@ -25,6 +25,7 @@ import {
 import { Model } from "./model";
 import { Package } from "./package";
 import {
+   ANY_ARTIFACT_NOTE,
    artifactKindInText,
    artifactNoteLine,
    claimsToBeANotebook,
@@ -115,6 +116,23 @@ describe("notebook predicates", () => {
       );
       expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
       expect(isArtifactNoteText("## title=artifact")).toBe(false);
+   });
+
+   it("scans a megabyte of unclosed block openers in linear time", () => {
+      const MB = 1024 * 1024;
+      const flat = "##| x\n".repeat(MB / 6);
+      let indented = "";
+      for (let i = 0; indented.length < MB; i++)
+         indented += `${" ".repeat(i % 64)}##| x\n`;
+      for (const source of [flat, indented]) {
+         const started = performance.now();
+         expect(claimsToBeANotebook(source)).toBe(false);
+         expect(hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE)).toBe(
+            false,
+         );
+         expect(artifactKindInText(source)).toBeUndefined();
+         expect(performance.now() - started).toBeLessThan(2000);
+      }
    });
 
    it("locates the artifact note by its line, and only the ## form", () => {

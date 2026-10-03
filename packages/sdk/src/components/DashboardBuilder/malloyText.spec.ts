@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    artifactLine,
+   artifactTag,
    blockSpans,
    closesBlock,
    isBareName,
@@ -12,6 +13,7 @@ import {
    malloyPath,
    readPath,
    markdownNote,
+   splitSourceLines,
    tileSteps,
 } from "./malloyText";
 
@@ -114,6 +116,21 @@ describe("blockSpans", () => {
          "*/",
       ];
       expect(blockSpans(lines, (i) => i >= 4)).toEqual([[0, 3]]);
+   });
+});
+
+describe("unclosed block openers", () => {
+   it("are scanned in linear time", () => {
+      const MB = 1024 * 1024;
+      const flat = "##| x\n".repeat(MB / 6);
+      let indented = "";
+      for (let i = 0; indented.length < MB; i++)
+         indented += `${" ".repeat(i % 64)}##| x\n`;
+      for (const source of [flat, indented]) {
+         const started = performance.now();
+         expect(artifactTag(splitSourceLines(source))).toBeUndefined();
+         expect(performance.now() - started).toBeLessThan(2000);
+      }
    });
 });
 

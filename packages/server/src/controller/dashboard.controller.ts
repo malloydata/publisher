@@ -155,7 +155,14 @@ export class DashboardController {
       // Tolerates a non-string path or source: the 400 for either comes from writeDashboardSource.
       const kind: DashboardWriteKind =
          typeof modelPath === "string" && typeof body?.source === "string"
-            ? documentKind(modelPath, artifactKindInText(body.source))
+            ? documentKind(
+                 modelPath,
+                 // A body the cheap refusals turn away is never scanned; its folder names the kind.
+                 this.environmentStore.publisherConfigIsFrozen ||
+                    !DASHBOARD_FILE.test(modelPath)
+                    ? undefined
+                    : artifactKindInText(body.source),
+              )
             : "dashboard";
       try {
          const result = await this.writeDashboardSource(

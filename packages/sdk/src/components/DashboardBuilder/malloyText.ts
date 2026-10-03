@@ -123,18 +123,33 @@ export function blockSpans(
    lines: string[],
    skip?: (line: number) => boolean,
 ): [number, number][] {
+   // Each closer's lines by its column, so a file of unclosed openers is not rescanned to its end per opener.
+   const closers = new Map<string, number[]>();
+   lines.forEach((line, at) => {
+      const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+      for (const closer of ["|##", "|#"] as const)
+         if (closesBlock(line, indent, closer)) {
+            const key = `${indent}${closer}`;
+            const ats = closers.get(key);
+            if (ats) ats.push(at);
+            else closers.set(key, [at]);
+            break;
+         }
+   });
+   const cursor = new Map<string, number>();
    const spans: [number, number][] = [];
    for (let i = 0; i < lines.length; i++) {
       if (skip?.(i)) continue;
       const opener = /^([ \t]*)(#{1,2})\|/.exec(lines[i]);
       if (!opener) continue;
-      const closer = opener[2] === "#" ? "|#" : "|##";
-      for (let j = i + 1; j < lines.length; j++) {
-         if (closesBlock(lines[j], opener[1].length, closer)) {
-            spans.push([i, j]);
-            i = j;
-            break;
-         }
+      const key = `${opener[1].length}${opener[2] === "#" ? "|#" : "|##"}`;
+      const ats = closers.get(key) ?? [];
+      let k = cursor.get(key) ?? 0;
+      while (k < ats.length && ats[k] <= i) k++;
+      cursor.set(key, k);
+      if (k < ats.length) {
+         spans.push([i, ats[k]]);
+         i = ats[k];
       }
    }
    return spans;
