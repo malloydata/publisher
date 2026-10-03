@@ -60,6 +60,7 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   embeddingStartupNotices,
    getRetrievalConfig,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
@@ -364,6 +365,9 @@ if (embeddingConfig) {
             ? ` at ${new URL(embeddingConfig.baseUrl).host}`
             : ""),
    );
+}
+for (const notice of embeddingStartupNotices(retrievalConfig?.embedding)) {
+   logger[notice.level](notice.message);
 }
 const llmSettings = getLlmSettings(retrievalConfig?.llm);
 if (llmSettings) {

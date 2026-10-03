@@ -754,6 +754,88 @@ export function getEmbeddingSettings(
    };
 }
 
+/** A line for the startup log about the embedding settings. */
+export interface StartupNotice {
+   level: "info" | "warn";
+   message: string;
+}
+
+const hostOf = (url: string): string => {
+   try {
+      return new URL(url).host;
+   } catch {
+      return "<invalid URL>";
+   }
+};
+
+/**
+ * What the startup log should say about the embedding settings that would
+ * otherwise act silently:
+ *
+ * - a provider that needs a key (`openai`, `openai-compatible`, `google`) is
+ *   named in the file and `EMBEDDING_API_KEY` is unset, so semantic search is
+ *   off and `get_context` ranks lexically. getEmbeddingSettings returns null
+ *   for this on purpose (the key is never read from ambient variables), so
+ *   without this line an operator who named the provider sees nothing.
+ * - a file value overrides a different `EMBEDDING_*` variable. The file wins by
+ *   design, and a changed model or dimensions re-embeds every package.
+ *
+ * A base URL is shown as its host only: the URL can carry credentials.
+ */
+export function embeddingStartupNotices(
+   file?: RetrievalEmbeddingConfig,
+): StartupNotice[] {
+   if (!file) return [];
+   const notices: StartupNotice[] = [];
+   const key = process.env.EMBEDDING_API_KEY?.trim();
+   const provider = file.provider;
+   if (
+      !key &&
+      (provider === "openai" ||
+         provider === "openai-compatible" ||
+         provider === "google")
+   ) {
+      notices.push({
+         level: "warn",
+         message:
+            `retrieval.embedding names provider "${provider}" but EMBEDDING_API_KEY is not set, so semantic search is off and get_context ranks lexically. ` +
+            `Fix: set EMBEDDING_API_KEY in the server's environment.`,
+      });
+   }
+   const reembeds =
+      "Changing the model or its dimensions re-embeds every package.";
+   const envModel = process.env.EMBEDDING_MODEL?.trim();
+   if (file.model && envModel && envModel !== file.model) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.model "${file.model}" in publisher.config.json overrides EMBEDDING_MODEL "${envModel}". ${reembeds}`,
+      });
+   }
+   const envDimensions = process.env.EMBEDDING_DIMENSIONS?.trim();
+   if (
+      file.dimensions !== undefined &&
+      envDimensions &&
+      envDimensions !== String(file.dimensions)
+   ) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.dimensions ${file.dimensions} in publisher.config.json overrides EMBEDDING_DIMENSIONS ${envDimensions}. ${reembeds}`,
+      });
+   }
+   const envBase = process.env.EMBEDDING_API_BASE?.trim();
+   if (
+      file.baseUrl &&
+      envBase &&
+      envBase.replace(/\/+$/, "") !== file.baseUrl.replace(/\/+$/, "")
+   ) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.baseUrl (host "${hostOf(file.baseUrl)}") in publisher.config.json overrides EMBEDDING_API_BASE (host "${hostOf(envBase)}").`,
+      });
+   }
+   return notices;
+}
+
 /**
  * The LLM settings in force, or `null` when every LLM feature is off. On iff
  * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
