@@ -46,7 +46,7 @@ source: open_orders is duckdb.sql("select 1 as id, 'x' as region") extend {
   view: plain is { aggregate: n is count() }
 }
 
-## artifact { kind=dashboard tiles=["orders -> by_join", "orders -> by_dim", "orders -> multi", "orders -> plain", "orders -> plain + { where: cat = $CAT }", "open_orders -> plain", "open_orders -> nothing_here"] }
+## artifact { kind=KIND tiles=["orders -> by_join", "orders -> by_dim", "orders -> multi", "orders -> plain", "orders -> plain + { where: cat = $CAT }", "open_orders -> plain", "open_orders -> nothing_here"] }
 `;
 
 const EXPECTED: Record<string, string[] | undefined> = {
@@ -79,7 +79,12 @@ async function makeMalloyConfig() {
    return { malloyConfig, duckdb };
 }
 
-async function tileGivens(): Promise<Record<string, string[] | undefined>> {
+type Tile = { kind?: string; query?: string; givenNames?: string[] };
+
+/** The same tiles as a dashboard, or as a notebook read through the notebook route. */
+async function tileGivens(
+   kind: "dashboard" | "notebook",
+): Promise<Record<string, string[] | undefined>> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-tile-givens-"));
    const { malloyConfig, duckdb } = await makeMalloyConfig();
    try {
@@ -87,13 +92,21 @@ async function tileGivens(): Promise<Record<string, string[] | undefined>> {
          path.join(dir, "publisher.json"),
          JSON.stringify({ name: "pkg" }),
       );
-      fs.mkdirSync(path.join(dir, "dashboards"));
-      fs.writeFileSync(path.join(dir, "dashboards", "d.malloy"), DASHBOARD);
+      const folder = kind === "dashboard" ? "dashboards" : "notebooks";
+      fs.mkdirSync(path.join(dir, folder));
+      fs.writeFileSync(
+         path.join(dir, folder, "d.malloy"),
+         DASHBOARD.replace("KIND", kind),
+      );
       const pkg = await Package.create("env", "pkg", dir, malloyConfig);
-      const manifest = pkg.getDashboard("d");
-      expect(manifest).toBeDefined();
+      const tiles: Tile[] | undefined =
+         kind === "dashboard"
+            ? pkg.getDashboard("d")?.tiles
+            : (await pkg.getModel("notebooks/d.malloy")?.getNotebook())
+                 ?.dashboard?.tiles;
+      expect(tiles).toBeDefined();
       return Object.fromEntries(
-         (manifest?.tiles ?? []).flatMap((tile) =>
+         (tiles ?? []).flatMap((tile) =>
             tile.kind === "query" && tile.query
                ? [[tile.query, tile.givenNames]]
                : [],
@@ -107,7 +120,11 @@ async function tileGivens(): Promise<Record<string, string[] | undefined>> {
 
 describe("dashboard tile givenNames come from the compiled query", () => {
    it("in process", async () => {
-      expect(await tileGivens()).toEqual(EXPECTED);
+      expect(await tileGivens("dashboard")).toEqual(EXPECTED);
+   });
+
+   it("on the notebook route, in process", async () => {
+      expect(await tileGivens("notebook")).toEqual(EXPECTED);
    });
 
    describe("through the worker pool", () => {
@@ -123,7 +140,11 @@ describe("dashboard tile givenNames come from the compiled query", () => {
       });
 
       it("matches", async () => {
-         expect(await tileGivens()).toEqual(EXPECTED);
+         expect(await tileGivens("dashboard")).toEqual(EXPECTED);
+      });
+
+      it("matches on the notebook route", async () => {
+         expect(await tileGivens("notebook")).toEqual(EXPECTED);
       });
    });
 });

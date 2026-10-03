@@ -715,6 +715,8 @@ export class Model {
    private compiledDashboardFacts:
       | Promise<DashboardModelFacts | undefined>
       | undefined;
+   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
+   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -4960,7 +4962,9 @@ export class Model {
    public getCompiledDashboardModelFacts(): Promise<
       DashboardModelFacts | undefined
    > {
-      this.compiledDashboardFacts ??= this.compileDashboardModelFacts();
+      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
+         (facts) => (this.settledCompiledDashboardFacts = facts),
+      );
       return this.compiledDashboardFacts;
    }
 
@@ -6154,7 +6158,9 @@ export class Model {
 
    /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
    private readNotebookLayout(): DashboardManifest | undefined {
-      const facts = this.getDashboardModelFacts();
+      // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
+      const facts =
+         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
       const manifest = facts && buildDashboardManifest(facts);
       return manifest?.kind === "notebook" && manifest.tiles
          ? manifest
