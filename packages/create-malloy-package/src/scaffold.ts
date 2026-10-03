@@ -27,11 +27,8 @@ import {
    validateEnvironmentName,
    validatePackageName,
 } from "./names";
-import {
-   assertSkillsAvailable,
-   installSkills,
-   isWithinDirectory,
-} from "./skills";
+import { installSkills, isWithinDirectory } from "@malloy-publisher/skills";
+import { assertSkillsAvailable } from "./skills";
 import { renderTemplate, templatesDir } from "./templates";
 
 export type Host = "claude-code" | "cursor";
