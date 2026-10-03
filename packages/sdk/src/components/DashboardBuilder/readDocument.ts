@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   chartLinesOf,
+   chartStateOfTagLines,
+   type ChartState,
+} from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -9,18 +14,24 @@ import type {
    DashboardTile,
    LocalGiven,
 } from "./document";
+import { isTextTile } from "./document";
+import { parseTagLines } from "./tagParse";
 import {
    parseMalloy,
    parseRefused,
+   readTileList,
    type ParsedMalloy,
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
 import {
-   ARTIFACT_LINE,
-   blockLines,
+   ARTIFACT_NOT_FIRST,
+   artifactLeads,
+   artifactTag as locateArtifactTag,
    descriptionNotes,
-   markdownNote,
+   readPath,
+   splitSourceLines,
+   tagAnnotation,
    tileSteps,
 } from "./malloyText";
 
@@ -54,6 +65,8 @@ export interface ReadFailure {
    reason: string;
    /** 1-based, for a message that can point at the line. */
    line?: number;
+   /** The file is a `kind=notebook` in the run-cell format, which `convertLegacyNotebook` turns into a layout notebook. */
+   legacyNotebook?: true;
 }
 
 export type ReadResult =
@@ -129,26 +142,17 @@ export function blockAbove(
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
 const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 
-/** The model-level `##` lines, which are not symbols and must be read as text. */
-function modelLines(lines: string[]): {
-   description?: string;
-   artifact: string[];
+/** The tile's `chart` property, absent when its wrapper carries no chart line; a custom one also carries the lines. */
+function chartField(tags: Array<{ text: string }>): {
+   chart?: ChartState;
+   chartLines?: string[];
 } {
-   const artifact: string[] = [];
-   const inside = blockLines(lines);
-   for (const [i, raw] of lines.entries()) {
-      if (inside.has(i)) continue;
-      const text = raw.trim();
-      const note = markdownNote(text);
-      if (
-         text.startsWith("##") &&
-         !text.startsWith('##"') &&
-         !text.startsWith("##!") &&
-         !(note?.level === 2 && !note.block)
-      )
-         artifact.push(text);
-   }
-   return { description: descriptionNotes(lines).text, artifact };
+   const lines = tagText(tags);
+   const chart = chartStateOfTagLines(lines);
+   if (chart === undefined) return {};
+   return chart === "custom"
+      ? { chart, chartLines: chartLinesOf(lines) }
+      : { chart };
 }
 
 /**
@@ -169,7 +173,11 @@ function filtersOf(
       for (const clause of where.clauses) {
          if (!clause.binding) continue;
          const { field, op, given } = clause.binding;
-         out.push({ field, given, ...(op === "~" ? {} : { op }) });
+         out.push({
+            field: readPath(field),
+            given,
+            ...(op === "~" ? {} : { op }),
+         });
       }
    return out.length > 0 ? out : undefined;
 }
@@ -266,22 +274,30 @@ function gridWidth(
    return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-/** The `tiles=[…]` entries, in order, as written. */
-function tileEntries(artifactLine: string): string[] {
-   const key = artifactLine.search(/tiles\s*=\s*\[/);
-   if (key < 0) return [];
-   const open = artifactLine.indexOf("[", key);
-   const close = artifactLine.indexOf("]", open);
-   if (close < 0) return [];
-   const list = artifactLine.slice(open + 1, close);
-   return [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-}
+const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
+const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 
+/** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
    sourceText: string,
+   modelPath?: string,
+): Promise<ReadResult> {
+   try {
+      return await readDocumentText(sourceText, modelPath);
+   } catch (error) {
+      return {
+         ok: false,
+         reason: `A value in this file's tags cannot be read (${error instanceof Error ? error.message : String(error)}), so it cannot be opened in the builder.`,
+      };
+   }
+}
+
+async function readDocumentText(
+   sourceText: string,
+   modelPath: string | undefined,
 ): Promise<ReadResult> {
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
-   const lines = sourceText.split("\n");
+   const lines = splitSourceLines(sourceText);
 
    const parse = await parseMalloy(sourceText);
    if (parseRefused(parse))
@@ -292,24 +308,52 @@ export async function readDashboardDocument(
       };
    const parsed = parse.parsed;
 
-   const { description, artifact } = modelLines(lines);
-   const artifactLine = artifact.find((l) => ARTIFACT_LINE.test(l));
-   if (artifactLine === undefined) {
+   const description = descriptionNotes(lines).text;
+   const artifactAt = locateArtifactTag(lines);
+   if (artifactAt === undefined) {
       return {
          ok: false,
          reason:
             "No `## artifact { … }` tag, so this file is not a composite dashboard.",
       };
    }
+   if (!artifactLeads(artifactAt.text))
+      return {
+         ok: false,
+         reason: ARTIFACT_NOT_FIRST,
+         line: artifactAt.from + 1,
+      };
 
-   const tag = parseAnnotation([artifactLine.replace(/^##\s*/, "# ")]).tag;
+   const { tag, errors: tagErrors } = parseTagLines(parseAnnotation, [
+      tagAnnotation(artifactAt.text),
+   ]);
    const artifactTag = tag?.tag("artifact");
-   const entries = tileEntries(artifactLine);
-   if (entries.length === 0) {
+   const tagKind = artifactTag?.text("kind");
+   // The server's rule: a tag that names no kind takes the folder's.
+   const kind =
+      tagKind === "notebook" ||
+      (tagKind !== "dashboard" && modelPath?.startsWith("notebooks/"))
+         ? ("notebook" as const)
+         : undefined;
+   const list = readTileList(artifactAt.text);
+   if (list === undefined) {
+      if (tagErrors.length > 0)
+         return {
+            ok: false,
+            reason: `The \`## artifact\` tag does not parse: ${tagErrors[0]}`,
+         };
+      // A notebook is told from a layout one by whether it lists tiles at all.
+      if (kind === "notebook")
+         return {
+            ok: false,
+            legacyNotebook: true,
+            reason:
+               "This notebook is in the cell format, with no `tiles=[…]` list.",
+         };
       return {
          ok: false,
          reason:
-            "The `## artifact` tag names no tiles, so there is nothing to lay out.",
+            "The `## artifact` tag has no `tiles=[…]` list the builder can read.",
       };
    }
 
@@ -329,6 +373,12 @@ export async function readDashboardDocument(
             name: d.name,
             expression: d.expression,
          }));
+      const scopedBy = new Set(
+         source.wheres.flatMap((where) =>
+            where.clauses.flatMap((clause) => clause.givens),
+         ),
+      );
+      if (scopedBy.size > 0) entry.scopedBy = Array.from(scopedBy);
       sources.push(entry);
 
       // A `# drill` is a tag on a dimension's declaration, so the dimensions
@@ -357,8 +407,40 @@ export async function readDashboardDocument(
    }
 
    const tiles: DashboardTile[] = [];
-   for (const entry of entries) {
-      const steps = tileSteps(entry);
+   for (const { text: entryText } of list.entries) {
+      const quoted = QUOTED_ENTRY.exec(entryText);
+      const textName = quoted ? undefined : TEXT_ENTRY.exec(entryText)?.[1];
+      if (textName !== undefined) {
+         const textTag = parseAnnotation([`# ${entryText}`]).tag?.tag(textName);
+         if (textTag?.text("kind") !== "text") {
+            return {
+               ok: false,
+               reason:
+                  `The tile \`${entryText}\` is neither a quoted \`source -> view\` ` +
+                  `expression nor a \`${textName} { kind=text }\` entry, which are ` +
+                  `the only forms the builder can lay out.`,
+            };
+         }
+         if (tiles.some((tile) => isTextTile(tile) && tile.name === textName)) {
+            return {
+               ok: false,
+               reason: `Two text tiles are named \`${textName}\`, so the builder cannot tell them apart.`,
+            };
+         }
+         const colspan = gridWidth(textTag, "colspan");
+         tiles.push({
+            kind: "text",
+            name: textName,
+            markdown:
+               parsed.textBlocks.find((block) => block.name === textName)
+                  ?.body ?? "",
+            ...(colspan === undefined ? {} : { colspan }),
+            ...(textTag.has("break") ? { break: true } : {}),
+         });
+         continue;
+      }
+      const entry = quoted?.[1] ?? entryText;
+      const steps = quoted ? tileSteps(entry) : undefined;
       if (!steps) {
          return {
             ok: false,
@@ -415,6 +497,7 @@ export async function readDashboardDocument(
             ...(t?.numeric("colspan") !== undefined
                ? { colspan: t.numeric("colspan") as number }
                : {}),
+            ...chartField(view.tags),
             ...(t?.has("break") ? { break: true } : {}),
             ...(t?.has("borderless") ? { borderless: true } : {}),
          });
@@ -441,6 +524,7 @@ export async function readDashboardDocument(
          ...(t?.numeric("colspan") !== undefined
             ? { colspan: t.numeric("colspan") as number }
             : {}),
+         ...chartField(view.tags),
          ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
@@ -467,6 +551,7 @@ export async function readDashboardDocument(
    return {
       ok: true,
       document: {
+         ...(kind ? { kind } : {}),
          title: artifactTag?.text("title") ?? "",
          ...(description ? { description } : {}),
          ...(columnsTag === undefined ? {} : { columns: columnsTag }),

@@ -31,6 +31,140 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
+
+A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
+`notebooks/*.malloy` notebook has an **Edit** button in the Console, and a dashboard and a notebook
+share one set of tools: drag tiles into order, pick a chart, add filters, and add **text tiles**,
+which hold markdown. Dashboards gain text tiles too. Everything is click-to-edit, with no edit icon:
+click a title, a description, a text tile or a tile's heading and type. Insert a tile between two
+with its **+**, and switch a document between **Dashboard** and **Notebook** under **Settings → Show
+as**: a tag edit on the same file, in place. Switching to Notebook writes `kind=notebook` and drops
+the `dashboard { columns=N }` line, since a notebook is one column; switching a file under
+`notebooks/` to Dashboard writes `kind=dashboard` explicitly, so the server serves it as one.
+Imports are edited there as a source picker.
+
+**The package page lists dashboards and notebooks in one Artifacts section.** Each row shows its title
+(or its file name when it has none) and a kind badge, and the **New** button sits on the section's
+heading row. A pair of files sharing a name in different folders shows the folder to tell them apart.
+
+**A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved, and a nudge stops at 24 columns, so nudging a `# colspan` above 24 sets it to 24.
+
+**Grid width has one entry per width, and a ceiling of 24.** Settings → Grid width no longer has a "Default (2)" item that duplicated "2" and removed the `columns` tag; it shows the file's width (2 when unset) and writes `columns=N` when you pick one. The list is 2, 3, 4, 6 and 12 (the divisors of 12) and 24; a file's own width is still shown. A `# dashboard { columns=N }` above 24 now draws a package warning, and the reader still renders it.
+
+**Save writes at once.** There is no review step before a save any more, for notebooks or for
+dashboards (a dashboard's Save used to ask first when it added or removed a tile). The save then
+shows **View change**, the file's diff read-only, and **Undo save**, which writes the file back as
+it was. The save target is named under the button, and the exit button reads **Close**. Wording
+elsewhere is plainer: **Viz type**, **Drill-through**, "On or after a date", and a **Filters**
+heading over the filter strip.
+
+**Cell-format notebooks convert when saved.** A notebook written the older way, with `(markdown)`
+cells, opens converted to the tile layout and unsaved; Save writes the layout and Undo save puts the
+original text back. Nothing is written until you save. Save writes to the host's record when the host
+has one, and otherwise to the package, so the Console on a server that does not take writes has no
+Save. A notebook the editor cannot convert opens read-only and says why: a `run:` that is not
+`<source> -> <view or body>` (an inline `extend` before the arrow, a source that is not a name,
+nothing after the arrow), a refinement of a multi-stage query, a run defined through more than ten
+other named queries, a tag value Malloy cannot read (a malformed date such as `@2024-13-01`), and
+the read-level refusals that were already there (a statement above the tag, text after a block
+closer, a comment straddling two cells, a lone carriage return). The write route
+(`PUT …/models/{path}`) accepts tagged `notebooks/*.malloy` as well as `dashboards/*.malloy`; an
+untagged write to `notebooks/` is refused with 400. Two refusals are new: a dashboard whose name
+another file already holds answers 409 and nothing is written, and a file whose compiled model carries
+no `## artifact` tag (a tag only inside a block comment) is rolled back and answers 500 where it
+used to land unserved; a `dashboards/` file with no `artifact` property on any `#` or `##` tag line
+is refused with 400 before it compiles. A tagged dashboard with no tiles still saves.
+
+**What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
+(`dashboard` or `notebook`), and a tagged file is listed and served from wherever the package puts
+it. A file whose tag names no `kind` is edited as its folder's kind (`notebooks/` is a notebook).
+The tag can be written in block form (`##|`), closed by `|##` on a line of its own: as Malloy reads
+it, a `|##` on the opener's line closes nothing, and the server's check of an unsaved file now
+agrees. Notebooks are authored as layouts
+(`tiles=[…]`), the shape the builder writes, and a layout notebook's read view has no cards around
+its tiles.
+
+**A tile that ignores a filter says so.** In the reader and the builder, a tile whose query never reads one of the page's controls shows an amber "Doesn't respond to Brand" chip under its heading, and a tile that reads them all shows nothing; `DashboardTile.givenNames` is now what the tile's compiled query reads (a joined source's `where:`, a `$X` dimension and the source's gates included, and refinements resolved), where it used to be a static walk of the view, on the dashboard and notebook routes alike. A given only a gate reads is now sent with the tile when the host supplies it, rather than dropped, but does not become a control.
+
+**API contract.** `DashboardTile` gains `kind` (`query` or `text`), `name` and `markdown`; `query` is
+absent on a text tile, so a client that runs a dashboard's tiles should skip `kind=text` tiles when
+running queries, and a text tile's `colspan` and `break` come from its `tiles=[…]` entry.
+`DashboardManifest` gains `kind` (always `dashboard` on `GET …/dashboards/{name}`), and
+`RawNotebook` gains `dashboard`, the layout of a notebook written as tiles, with `kind` `notebook`
+and one column.
+
+**For hosts that mount the builders.**
+
+- `DashboardBuilder`'s `onSave` is now `onSave(source, { purpose, document })`, where `purpose` is `"save"` or `"undo"` and `document` is the document the written text holds. Undo save calls it too, with the text from before the save, so write through the same channel and checks. `SaveContext` and `SaveHandler` are exported from `@malloy-publisher/sdk/builder`.
+- The notice prop is `onSaveNoticeChange(showing)`: hold back replacing the open document while the View change / Undo save notice is up.
+- Undo save reports `notebook.save_undone` or `dashboard.save_undone`, and `notebook.save_undo_refused` or `dashboard.save_undo_refused` when the write is refused; `BuilderEvent` is the union of the dashboard and notebook events.
+- A `DocumentStorage` host sees Undo save as an ordinary `saveDocument` of the earlier text. The host store has no compare-and-swap, so a newer version written elsewhere is overwritten.
+- `DashboardEditor` takes `path` and `kind`, to open a document as its tag's kind from the path the package lists it at. `NotebookEditor` is now a wrapper over the dashboard builder with `kind="notebook"`, and the cell-notebook builder is gone.
+- `useServer().mutable` is `boolean | undefined`: `undefined` while `/status` loads or when it failed, and the editor offers no package Save until it is `true`.
+- `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported; `useDocumentChoices` returns its answer as the `canRetry` boolean) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
+- `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag`, its `ArtifactTag` type, `splitSourceLines` and `canRetryRequest`, for a host that reads a file's tag without loading MUI or the Malloy parser. `artifactTag` finds `artifact` anywhere among a `##` tag's properties (`## dashboard { columns=2 } artifact { … }`), as the server does. The builder opens such a file read-only, with the reason, until `artifact { … }` is moved first on the tag.
+- `NotebookEditor` takes `path`, as `DashboardEditor` does.
+- The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped. Saving one writes CRLF throughout, where the lines it inserted or rewrote used to come out LF.
+- Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
+- The read view's `DashboardView` takes a `chrome` prop, and a narrowed tile now narrows instead of keeping the width of the chart it replaced.
+
+The package page has a **New** menu with **Dashboard** and **Notebook**: choose a type (Dashboard or
+Notebook), a model, a source and its view (one select), and a title, and the file is created and opened in its editor. On the Console it creates the
+file in the package and refuses to overwrite one that exists; on a host with an authoritative record
+it creates the document there. The menu is offered when the server takes writes or a host keeps the
+record and can store; it is not offered when neither route exists, on a record that cannot store, or
+on a pinned version of a package. The same primitives (`createDocument`, `createRoute`, `useDocumentChoices`,
+`newNotebookSource`, `locatorFor`) are exported from `@malloy-publisher/sdk/builder`, and
+`dashboard.created` is a new case on `DashboardEvent`, and `NotebookEvent` is a new event type
+that carries `notebook.created` (both `{ where }` only; additive, but a host that switches
+exhaustively over `DashboardEvent` will see one new case).
+
+A dashboard tile gets a **Viz type** picker: From the view (the view's own chart), Table, Line, Bar,
+Big value, Scatter, Shape map and Segment map. Every choice is listed; one the view cannot render is
+disabled with its reason beside it (Big value needs a view with only totals, a map needs a view that
+already carries a map chart). The picker writes one chart
+line that turns off the chart tags the view carries (all the others when the catalog does not know the view). A chart line it did not write (for example
+`# bar_chart { size=spark }`) is kept byte for byte on every edit, and the picker is disabled for
+that tile with the reason shown.
+
+A dashboard with no tiles now opens in the editor instead of being refused. It is not served until it
+has a tile (its page 404s and the load lint reports it), and the editor will not remove the last tile.
+
+**Fixed: a filter on a joined dimension.** A dashboard filter added in the builder on a dimension
+reached through a join (`products.category`) was written with only its last segment, so its options
+came from the wrong field. It now keeps the full path, always quoted in the file. The dashboard lint
+now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
+the source had no such field.
+
+## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
+
+**Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder` and `DashboardEditor` (and `NotebookEditor`, which wraps them) shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
+
+For hosts that mount an editor themselves, the builders now draw "Close" and take two props: `onExit`, called once the user has chosen to leave, and `onDirtyChange(dirty)`, the hook for your own navigation guard. A host that passed its own exit button as `toolbar` should pass `onExit` instead, and a host whose `onExit` also prompts will now prompt twice. `UnsavedChangesDialog` is exported from `@malloy-publisher/sdk` for pages that need the same prompt.
+
+Smaller changes in the same pass:
+
+- **Text tiles** have a Cancel button that drops the draft; Escape, Done or Cmd/Ctrl+Enter keeps it, and Cmd/Ctrl+S saves from inside the field.
+- **Disabled controls say why.** Remove tile on a saved dashboard's last tile, and a Viz type choice the view cannot render, stay focusable and show their reason on screen.
+- **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
+- **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
+
+## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
+
+Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
+except where the tag sits inside the body of a `(markdown)` or `(text)` block note, or after the
+`(markdown)` or `(text)` prefix of a line note: there it is prose, so a notebook that writes about a
+gate can be previewed and saved. The same tag anywhere else, including a line note with any other
+route, a block's opener or closer line, a comment or a string, is refused as before, and text the
+server cannot lex is judged the old way.
+
+## [Unreleased] — A query that reads a given with no default no longer keeps its package from loading
+
+A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload failed the same way but kept serving the model compiled before it, marked `stale`, so the package went missing only on a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
+
+One case still fails to load, with or without a default: a source `view:` whose later `nest:` stage reads a given. That is a Malloy limit, not specific to this change.
+
 ## [0.9.1] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
 
 0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount at boot, whose `loadErrors` entry now carries the errno instead of only `Failed to mount local directory`. An unreadable package directory, which answered 404 `Package manifest … does not exist.`, now names the errno too.

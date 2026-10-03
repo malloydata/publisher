@@ -8,6 +8,7 @@ import {
    encodeResourceUri,
    SecondaryButton,
    useGivenUrlParams,
+   useNarrowScreen,
 } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { Box } from "@mui/material";
@@ -54,7 +55,10 @@ export default function DashboardPage({
    // already here, and the switch is then a re-render rather than a page that
    // empties and refills. Idle time, and the browser caches the module, so a
    // reader who never edits pays one background request.
+   // Below 600px the editor steps aside, so there is nothing to warm.
+   const narrow = useNarrowScreen();
    useEffect(() => {
+      if (narrow) return;
       const warm = () => void import("@malloy-publisher/sdk/builder");
       const idle = window.requestIdleCallback;
       if (idle) {
@@ -63,7 +67,7 @@ export default function DashboardPage({
       }
       const timer = setTimeout(warm, 1500);
       return () => clearTimeout(timer);
-   }, []);
+   }, [narrow]);
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
@@ -75,11 +79,15 @@ export default function DashboardPage({
          {/* The same bar the builder has, with the same button in the same
              place: Edit becomes Done and nothing else on the page moves. */}
          <DashboardBar>
-            <SecondaryButton
-               label="Edit"
-               icon={<EditOutlinedIcon />}
-               onClick={() => navigate(`${pathname.replace(/\/$/, "")}/edit`)}
-            />
+            {!narrow && (
+               <SecondaryButton
+                  label="Edit"
+                  icon={<EditOutlinedIcon />}
+                  onClick={() =>
+                     navigate(`${pathname.replace(/\/$/, "")}/edit`)
+                  }
+               />
+            )}
          </DashboardBar>
          <Dashboard
             resourceUri={encodeResourceUri({ environmentName, packageName })}

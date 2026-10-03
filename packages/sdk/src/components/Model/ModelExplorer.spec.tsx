@@ -258,7 +258,7 @@ describe("a model that declares givens", () => {
 });
 
 describe("a model with no givens", () => {
-   it("renders no Parameters row, and sends no givens key", async () => {
+   it("renders no Filters row, and sends no givens key", async () => {
       executeQueryModel.mockImplementation(() =>
          Promise.resolve({ data: { result: JSON.stringify({}) } }),
       );
@@ -273,7 +273,7 @@ describe("a model with no givens", () => {
 
       // Nothing to wait on the label for, so wait on the button instead.
       await screen.findByRole("button", { name: "Run" });
-      expect(screen.queryByText("Parameters")).toBeNull();
+      expect(screen.queryByText("Filters")).toBeNull();
       run();
 
       await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());

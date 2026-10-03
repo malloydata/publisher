@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
+import { CHART_TAGS } from "./chartLine";
+
+export { CHART_TAGS };
 
 /**
  * What a package offers a dashboard: the sources, the views on them, and the
@@ -30,6 +34,8 @@ export interface CatalogView {
    description?: string;
    /** `bar_chart`, `line_chart`, `shape_map`, … if the view declares one. */
    chart?: string;
+   /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
+   aggregateOnly?: boolean;
 }
 
 export interface CatalogSource {
@@ -52,17 +58,6 @@ export interface PackageCatalog {
    sources: CatalogSource[];
 }
 
-/** The renderer's chart tags, as they are spelled in a model. */
-const CHART_TAGS = [
-   "bar_chart",
-   "line_chart",
-   "scatter_chart",
-   "shape_map",
-   "segment_map",
-   "big_value",
-   "sparkline",
-];
-
 /** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
 export function docOf(annotations: string[] | undefined): string | undefined {
    for (const raw of annotations ?? []) {
@@ -75,7 +70,8 @@ export function docOf(annotations: string[] | undefined): string | undefined {
 /** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
 export function chartOf(annotations: string[] | undefined): string | undefined {
    for (const raw of annotations ?? []) {
-      const name = /^#\s*([a-z_]+)/.exec(raw.trim())?.[1];
+      // A `-name` removes a tag, so it is never the chart the view declares.
+      const name = /^#\s*(?:-[A-Za-z_]+\s+)*([a-z_]+)/.exec(raw.trim())?.[1];
       if (name && CHART_TAGS.includes(name)) return name;
    }
    return undefined;
@@ -123,21 +119,61 @@ function schemaFields(
  */
 function fieldsOf(model: CompiledModel): Map<string, CatalogField[]> {
    const byName = new Map<string, CatalogField[]>();
+   for (const info of parsedSourceInfos(model))
+      byName.set(info.name, schemaFields(info.schema?.fields, "", JOIN_DEPTH));
+   return byName;
+}
+
+interface ParsedSourceInfo {
+   name: string;
+   schema?: { fields?: Array<Record<string, unknown>> };
+}
+
+/** The well-formed `sourceInfos` entries; a malformed one is skipped. */
+function parsedSourceInfos(model: CompiledModel): ParsedSourceInfo[] {
+   const infos: ParsedSourceInfo[] = [];
    for (const entry of model.sourceInfos ?? []) {
-      let parsed: unknown;
       try {
-         parsed = typeof entry === "string" ? JSON.parse(entry) : entry;
+         const parsed = (
+            typeof entry === "string" ? JSON.parse(entry) : entry
+         ) as ParsedSourceInfo | null;
+         if (parsed?.name) infos.push(parsed);
       } catch {
          continue;
       }
-      const info = parsed as {
-         name?: string;
-         schema?: { fields?: Array<Record<string, unknown>> };
-      };
-      if (!info?.name) continue;
-      byName.set(info.name, schemaFields(info.schema?.fields, "", JOIN_DEPTH));
    }
-   return byName;
+   return infos;
+}
+
+/** An aggregate output column has `calculation` as a top-level property of its `#(malloy)` note; a group-by or nested one does not. */
+const isAggregateColumn = (field: Record<string, unknown>) =>
+   ((field["annotations"] as Array<{ value?: string }> | undefined) ?? []).some(
+      (note) => {
+         const text = note.value ?? "";
+         return (
+            text.startsWith("#(malloy)") &&
+            parseTag(text.slice("#(malloy)".length)).tag?.has("calculation") ===
+               true
+         );
+      },
+   );
+
+/** Per source, the views whose every output column is an aggregate. */
+function aggregateViewsOf(model: CompiledModel): Map<string, Set<string>> {
+   const bySource = new Map<string, Set<string>>();
+   for (const info of parsedSourceInfos(model)) {
+      const names = new Set<string>();
+      for (const field of info.schema?.fields ?? []) {
+         if (field["kind"] !== "view" || typeof field["name"] !== "string")
+            continue;
+         const columns = (field["schema"] as { fields?: unknown } | undefined)
+            ?.fields as Array<Record<string, unknown>> | undefined;
+         if (columns && columns.length > 0 && columns.every(isAggregateColumn))
+            names.add(field["name"]);
+      }
+      bySource.set(info.name, names);
+   }
+   return bySource;
 }
 
 /**
@@ -182,6 +218,7 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
       const modelPath = pathOf(model);
       if (isDashboardModel(modelPath)) continue;
       const fields = fieldsOf(model);
+      const aggregates = aggregateViewsOf(model);
 
       for (const source of model.sources ?? []) {
          const name = source.name;
@@ -213,6 +250,9 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
                      : {}),
                   ...(chartOf(view.annotations)
                      ? { chart: chartOf(view.annotations) as string }
+                     : {}),
+                  ...(aggregates.get(name)?.has(view.name as string)
+                     ? { aggregateOnly: true }
                      : {}),
                })),
             givens,

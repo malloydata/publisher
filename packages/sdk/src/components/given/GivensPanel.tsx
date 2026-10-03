@@ -10,7 +10,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 /**
  * How the control row is laid out.
  *
- * - `panel`: the vertical "Parameters" block a notebook shows above its cells.
+ * - `panel`: the vertical "Filters" block a notebook shows above its cells.
  * - `bar`: a horizontal filter bar above a dashboard grid.
  *
  * Two presentations of one control implementation, rather than two
@@ -39,7 +39,7 @@ export interface GivensPanelProps {
       /** Whether anything has changed since the last apply. */
       pending: boolean;
    };
-   /** Overrides the `panel` layout's "Parameters" heading. */
+   /** Overrides the `panel` layout's "Filters" heading. */
    title?: string;
 }
 
@@ -180,7 +180,7 @@ export function GivensPanel({
                variant="subtitle2"
                sx={{ fontWeight: 600, color: "text.primary" }}
             >
-               {title ?? "Parameters"}
+               {title ?? "Filters"}
             </Typography>
             {actions}
          </Stack>

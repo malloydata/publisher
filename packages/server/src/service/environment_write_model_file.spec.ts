@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { WriteVerifyError } from "../errors";
 import { Environment } from "./environment";
 
 /**
@@ -137,6 +138,60 @@ describe("Environment.writeModelFileTransactional", () => {
          ),
       ).rejects.toThrow(/previous text was put back/);
       expect(read()).toBeUndefined();
+   });
+
+   describe("what a rolled-back write tells the caller", () => {
+      const rolledBack = (verify: () => Promise<unknown>) =>
+         environment
+            .writeModelFileTransactional(
+               PKG,
+               FILE,
+               "bad",
+               () => undefined,
+               verify,
+            )
+            .then(
+               () => {
+                  throw new Error("expected a rollback");
+               },
+               (error: Error) => error,
+            );
+
+      it("keeps a reload failure's server path out of the message", async () => {
+         let calls = 0;
+         (
+            environment as unknown as {
+               _loadOrGetPackageLocked: () => Promise<unknown>;
+            }
+         )._loadOrGetPackageLocked = async () => {
+            if (calls++ === 0)
+               throw Object.assign(
+                  new Error(
+                     "ENOENT: no such file, open '/srv/publisher_data/env/pkg/x.malloy'",
+                  ),
+                  { code: "ENOENT", syscall: "open" },
+               );
+            return {};
+         };
+         const error = await rolledBack(async () => undefined);
+         expect(error.message).toMatch(/previous text was put back/);
+         expect(error.message).not.toMatch(/publisher_data/);
+      });
+
+      it("carries a verify refusal worded for the caller", async () => {
+         const error = await rolledBack(async () => {
+            throw new WriteVerifyError("not served");
+         });
+         expect(error.message).toContain("not served");
+      });
+
+      it("drops any other verify failure's text", async () => {
+         const error = await rolledBack(async () => {
+            throw new Error("FILE: file:///x");
+         });
+         expect(error.message).not.toContain("file:///x");
+         expect(error.message).toMatch(/previous text was put back/);
+      });
    });
 
    it("serializes two racing writes, so the second checks what the first wrote", async () => {

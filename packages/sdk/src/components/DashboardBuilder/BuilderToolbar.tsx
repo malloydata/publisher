@@ -3,14 +3,32 @@
 
 import AddIcon from "@mui/icons-material/Add";
 import TuneIcon from "@mui/icons-material/Tune";
+import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
-import { Button, Chip, Divider, IconButton, Tooltip } from "@mui/material";
-import type { ReactNode } from "react";
+import {
+   Box,
+   Button,
+   Chip,
+   Divider,
+   IconButton,
+   Tooltip,
+   Typography,
+} from "@mui/material";
+import type { ReactNode, Ref } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { SecondaryButton } from "../buttons";
 import { DashboardBar } from "../Dashboard/DashboardBar";
+import type { SavesTo } from "./documentSession";
 import { MOD } from "./useBuilderShortcuts";
+
+/** Where Save puts the document, in the words under the button. */
+export const SAVE_TARGET: Record<SavesTo, string> = {
+   package: "Saves to the package file",
+   browser: "Saves in this browser",
+   host: "Saves where the host app keeps it",
+};
 
 /**
  * The edit bar across the top of the builder: that you are editing on the
@@ -34,12 +52,18 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
-   /** The host's way out of editing: Done, at the right edge. */
+   /** Where Save writes, shown under the button. */
+   savesTo?: SavesTo;
+   /** The Save button, so focus can return to it after an Undo save. */
+   saveButton?: Ref<HTMLButtonElement>;
+   /** The host's own extra actions, beside Done. */
    actions?: ReactNode;
+   /** Leave editing: draws "Close" at the right edge. Absent, no such button. */
+   onExit?: () => void;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
-   /** Open the page's settings, anchored to the button that asked. */
-   onSettings: (anchor: HTMLElement) => void;
+   /** Open the page's settings, anchored to the button that asked. Absent, no Settings button. */
+   onSettings?: (anchor: HTMLElement) => void;
 }
 
 export function BuilderToolbar({
@@ -50,7 +74,10 @@ export function BuilderToolbar({
    dirty,
    saving,
    onSave,
+   savesTo = "package",
+   saveButton,
    actions,
+   onExit,
    onAddTile,
    onSettings,
 }: BuilderToolbarProps) {
@@ -92,12 +119,14 @@ export function BuilderToolbar({
                Tile
             </Button>
          )}
-         <Button
-            startIcon={<TuneIcon />}
-            onClick={(event) => onSettings(event.currentTarget)}
-         >
-            Settings
-         </Button>
+         {onSettings && (
+            <Button
+               startIcon={<TuneIcon />}
+               onClick={(event) => onSettings(event.currentTarget)}
+            >
+               Settings
+            </Button>
+         )}
 
          {/* What happens to a change: take it back, or put it down. */}
          <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
@@ -129,31 +158,57 @@ export function BuilderToolbar({
          </Tooltip>
          {onSave && (
             <>
-               <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
-                  <span>
-                     <Button
-                        variant={dirty ? "contained" : "outlined"}
-                        disabled={!dirty || saving}
-                        onClick={onSave}
-                        // Wide enough for the longest of the three labels, so
-                        // the bar does not reflow as the state cycles.
-                        sx={{ minWidth: 124 }}
-                     >
-                        {/* Says what will happen, then that it is happening,
+               <Box
+                  sx={{
+                     display: "flex",
+                     flexDirection: "column",
+                     alignItems: "center",
+                  }}
+               >
+                  <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
+                     <span>
+                        <Button
+                           ref={saveButton}
+                           variant={dirty ? "contained" : "outlined"}
+                           disabled={!dirty || saving}
+                           onClick={onSave}
+                           // Wide enough for the longest of the three labels, so
+                           // the bar does not reflow as the state cycles.
+                           sx={{ minWidth: 124 }}
+                        >
+                           {/* Says what will happen, then that it is happening,
                             then what did. One tick in the bar, on "Done
                             editing"; here the word carries the state. */}
-                        {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
-                     </Button>
-                  </span>
-               </Tooltip>
+                           {saving
+                              ? "Saving…"
+                              : dirty
+                                ? "Save changes"
+                                : "Saved"}
+                        </Button>
+                     </span>
+                  </Tooltip>
+                  <Typography
+                     variant="caption"
+                     sx={{ fontSize: 11, lineHeight: 1.2, opacity: 0.7 }}
+                  >
+                     {SAVE_TARGET[savesTo]}
+                  </Typography>
+               </Box>
             </>
          )}
 
          {/* Leaving, where the reader's view has Edit. */}
-         {actions && (
+         {(actions || onExit) && (
             <>
                <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
                {actions}
+               {onExit && (
+                  <SecondaryButton
+                     label="Close"
+                     icon={<CheckIcon />}
+                     onClick={onExit}
+                  />
+               )}
             </>
          )}
       </DashboardBar>

@@ -16,6 +16,9 @@
          ],
          "client/*": [
             "dist/client/*.d.ts"
+         ],
+         "text": [
+            "dist/text-entry.d.ts"
          ]
       }
    },
@@ -37,6 +40,12 @@
          "import": "./dist/builder/index.es.js",
          "require": "./dist/builder/index.cjs.js",
          "default": "./dist/builder/index.es.js"
+      },
+      "./text": {
+         "types": "./dist/text-entry.d.ts",
+         "import": "./dist/text/index.es.js",
+         "require": "./dist/text/index.cjs.js",
+         "default": "./dist/text/index.es.js"
       },
       "./client/*": {
          "types": "./dist/client/*.d.ts",

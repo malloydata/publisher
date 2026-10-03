@@ -30,10 +30,10 @@ describe("dashboard_write_metrics", () => {
    });
 
    it("counts each attempt once, labelled by outcome", async () => {
-      recordDashboardWrite("created", 120);
-      recordDashboardWrite("replaced", 95);
-      recordDashboardWrite("replaced", 80);
-      recordDashboardWrite("conflict", 4);
+      recordDashboardWrite("created", 120, "dashboard");
+      recordDashboardWrite("replaced", 95, "dashboard");
+      recordDashboardWrite("replaced", 80, "dashboard");
+      recordDashboardWrite("conflict", 4, "dashboard");
 
       expect(
          await harness.collectCounter("publisher_dashboard_writes_total", {
@@ -53,8 +53,8 @@ describe("dashboard_write_metrics", () => {
    });
 
    it("records the duration against the same outcome label", async () => {
-      recordDashboardWrite("created", 100);
-      recordDashboardWrite("created", 300);
+      recordDashboardWrite("created", 100, "dashboard");
+      recordDashboardWrite("created", 300, "dashboard");
 
       const created = await harness.collectHistogram(
          "publisher_dashboard_write_duration_ms",
@@ -72,8 +72,8 @@ describe("dashboard_write_metrics", () => {
     * counter that is definitely being written.
     */
    it("counts a rollback under its own outcome, not with the refusals", async () => {
-      recordDashboardWrite("refused", 1);
-      recordDashboardWrite("rolled_back", 900);
+      recordDashboardWrite("refused", 1, "dashboard");
+      recordDashboardWrite("rolled_back", 900, "dashboard");
 
       expect(
          await harness.collectCounter("publisher_dashboard_writes_total", {
@@ -98,7 +98,8 @@ describe("dashboard_write_metrics", () => {
          "refused",
          "rolled_back",
       ];
-      for (const outcome of outcomes) recordDashboardWrite(outcome, 10);
+      for (const outcome of outcomes)
+         recordDashboardWrite(outcome, 10, "dashboard");
       for (const outcome of outcomes) {
          expect(
             await harness.collectCounter("publisher_dashboard_writes_total", {

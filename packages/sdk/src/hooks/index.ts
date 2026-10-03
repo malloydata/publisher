@@ -56,3 +56,6 @@ export {
    type DocumentControls,
    type UseDocumentControlsOptions,
 } from "./useDocumentControls";
+
+// Below the 600px breakpoint, where the editors step aside
+export { isNarrowScreen, useNarrowScreen } from "./useNarrowScreen";

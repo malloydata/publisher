@@ -18,7 +18,7 @@ import { malloyLiteral } from "../../utils/malloyLiteral";
 import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
-import { now } from "./telemetry";
+import { now } from "../../utils/clock";
 
 /**
  * The rows behind a value: "show the rows" on a cell, as one query.

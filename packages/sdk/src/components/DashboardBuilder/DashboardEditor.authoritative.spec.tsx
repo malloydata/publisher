@@ -47,6 +47,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 const withTitle = (title: string) =>
    PACKAGE_FILE.replace('title="Storefront"', `title="${title}"`);
 
@@ -217,11 +218,7 @@ const button = (name: string | RegExp) =>
 
 /** Rename the one tile, which is a non-structural edit and saves directly. */
 const renameTile = (to: string, from = "By category") => {
-   fireEvent.click(screen.getByLabelText(`Settings for ${from}`));
-   fireEvent.change(screen.getByLabelText("Tile title"), {
-      target: { value: to },
-   });
-   fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+   editInline(from, "Tile title", to);
 };
 
 /**
@@ -568,6 +565,39 @@ describe("DashboardEditor, after a save", () => {
       expect(screen.queryByText(/changed since you opened it/)).toBeNull();
    });
 
+   it("holds a new version back behind the banner while the save can still be undone, rather than remounting", async () => {
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(screen.getByText(/changed since you opened it/)).toBeDefined();
+      expect(screen.queryByText("Elsewhere")).toBeNull();
+      // Same mount: the history the save left is still there.
+      expect(screen.getByLabelText("Settings for Categories")).toBeDefined();
+      expect(button("Undo").hasAttribute("disabled")).toBe(false);
+   });
+
+   it("says loading a held version drops Undo save, not the edits, when nothing is unsaved", async () => {
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(screen.getByText(/drops Undo save/)).toBeDefined();
+      expect(screen.queryByText(/Your edits are still here/)).toBeNull();
+   });
+
    it("offers a version another writer landed while the save was in flight", async () => {
       // The case compare-and-swap exists for: this editor's write never comes
       // back, because someone else's landed after it. Reading "the fetch does
@@ -582,6 +612,9 @@ describe("DashboardEditor, after a save", () => {
       await settle();
 
       await packageChangedTo(withTitle("Elsewhere"));
+      // Held while the save can still be undone, then loaded when asked.
+      expect(screen.getByText(/changed since you opened it/)).toBeDefined();
+      fireEvent.click(button("Load it"));
       expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 
@@ -598,6 +631,9 @@ describe("DashboardEditor, after a save", () => {
       await settle();
 
       await packageChangedTo(withTitle("Elsewhere"));
+      // Held while the save can still be undone, then loaded when asked.
+      expect(screen.getByText(/changed since you opened it/)).toBeDefined();
+      fireEvent.click(button("Load it"));
       expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 });

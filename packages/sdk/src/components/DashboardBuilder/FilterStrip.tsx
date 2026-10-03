@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
+import CancelIcon from "@mui/icons-material/Cancel";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { SecondaryButton } from "../buttons";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
+
+/** The `DashboardBar` is this tall and sticky; the strip pins just below it. */
+const TOOLBAR_HEIGHT_PX = 49;
 
 /**
  * The strip under the header where the dashboard's controls are configured —
@@ -20,6 +24,7 @@ export function FilterStrip({
    unknownFieldsOf,
    onEdit,
    onAdd,
+   onRemove,
    children,
 }: {
    controls: BuilderControl[];
@@ -28,6 +33,8 @@ export function FilterStrip({
    unknownFieldsOf: (name: string, type: string | undefined) => string[];
    onEdit: (control: BuilderControl) => void;
    onAdd: () => void;
+   /** Take a control off the dashboard, as its window's Remove does. */
+   onRemove: (name: string) => void;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -36,12 +43,21 @@ export function FilterStrip({
       <>
          {/* The filter band, as every dashboard builder has one. The header is the
        dashboard's controls as this FILE has them: a chip per control,
-       which opens its window — the one place a control is edited, bound
-       or removed, so the consequences are in view when it happens. A ×
-       on the chip was a second place, with none of them. The live control row the caller
+       which opens its window; the × on a chip removes it, as the window's
+       Remove does. The live control row the caller
        passes in sits directly under, showing the same controls as a
        reader gets them — from the saved file. */}
-         <Stack sx={{ gap: 1 }}>
+         <Stack
+            sx={{
+               gap: 1,
+               position: "sticky",
+               // Under the toolbar, which pins at the top of the same scroller.
+               top: TOOLBAR_HEIGHT_PX,
+               zIndex: 4,
+               bgcolor: theme.background,
+               pb: 1,
+            }}
+         >
             <Stack
                direction="row"
                aria-label="Filters"
@@ -97,6 +113,12 @@ export function FilterStrip({
                                  : "outlined"
                            }
                            onClick={() => onEdit(control)}
+                           onDelete={() => onRemove(control.name)}
+                           deleteIcon={
+                              <CancelIcon
+                                 aria-label={`Remove filter ${control.name}`}
+                              />
+                           }
                            sx={{
                               // Faint when nothing binds it: declared, but not yet a
                               // control a reader would see.

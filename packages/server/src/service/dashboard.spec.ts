@@ -7,6 +7,7 @@ import * as path from "path";
 import {
    buildDashboardManifest,
    normalizeTileExpression,
+   queryTiles,
    dashboardSlug,
    docCommentText,
    docCommentTitleAndDescription,
@@ -733,8 +734,8 @@ describe("service/dashboard manifest (composite form)", () => {
          autorun: true,
       });
       expect(manifest?.tiles).toEqual([
-         { query: "orders -> by_month" },
-         { query: "users -> signups" },
+         { kind: "query", query: "orders -> by_month" },
+         { kind: "query", query: "users -> signups" },
       ]);
       expect(manifest?.query).toBe(undefined);
    });
@@ -761,9 +762,9 @@ describe("service/dashboard manifest (composite form)", () => {
       // Each tile carries only its own givens, so a viewer can re-run just the
       // tiles a changed control affects.
       expect(manifest?.tiles).toEqual([
-         { query: "orders -> by_brand", givenNames: ["BRAND"] },
-         { query: "orders->by_region", givenNames: ["REGION"] },
-         { query: "orders -> plain", givenNames: [] },
+         { kind: "query", query: "orders -> by_brand", givenNames: ["BRAND"] },
+         { kind: "query", query: "orders->by_region", givenNames: ["REGION"] },
+         { kind: "query", query: "orders -> plain", givenNames: [] },
       ]);
       // The control row is the union — every given any tile can filter by.
       expect(manifest?.givens.map((s) => s.name)).toEqual(["BRAND", "REGION"]);
@@ -782,10 +783,10 @@ describe("service/dashboard manifest (composite form)", () => {
          }),
       );
       expect(manifest?.tiles).toEqual([
-         { query: "top_brands", givenNames: ["BRAND"] },
+         { kind: "query", query: "top_brands", givenNames: ["BRAND"] },
          // A refinement is not a form discovery resolves statically; absent
          // rather than guessed, which stays compile-safe.
-         { query: "orders -> by_brand + { limit: 5 }" },
+         { kind: "query", query: "orders -> by_brand + { limit: 5 }" },
       ]);
       expect(manifest?.givens.map((s) => s.name)).toEqual(["BRAND"]);
    });
@@ -809,10 +810,106 @@ describe("service/dashboard manifest (composite form)", () => {
          }),
       );
       expect(manifest?.tiles).toEqual([
-         { query: "orders -> by_brand", givenNames: ["BRAND"] },
-         { query: "orders -> by_region", givenNames: [] },
+         { kind: "query", query: "orders -> by_brand", givenNames: ["BRAND"] },
+         { kind: "query", query: "orders -> by_region", givenNames: [] },
       ]);
       expect(manifest?.givens.map((s) => s.name)).toEqual(["BRAND"]);
+   });
+
+   it("reads a tile's givens from its compiled query, in the static walk's order", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: [
+               '## artifact { tiles=["orders -> by_brand", "orders -> plain + { where: x = $CAT }", "orders -> broken"] }\n',
+            ],
+            viewGivens: new Map([
+               ["orders -> by_brand", ["SCOPE", "BRAND"]],
+               ["orders -> broken", ["SCOPE"]],
+            ]),
+            compiledTileGivens: new Map([
+               // The join's `where:` read REGION, which the static walk missed.
+               [
+                  "orders -> by_brand",
+                  { reads: ["REGION", "BRAND", "SCOPE"], gateReads: ["ORG"] },
+               ],
+               [
+                  "orders -> plain + { where: x = $CAT }",
+                  { reads: ["CAT", "HIDDEN"], gateReads: [] },
+               ],
+            ]),
+            givens: new Map([
+               given("SCOPE", "string", []),
+               given("BRAND", "string", []),
+               given("REGION", "string", []),
+               given("CAT", "string", []),
+               given("ORG", "number[]", []),
+            ]),
+         }),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> by_brand",
+            givenNames: ["SCOPE", "BRAND", "REGION", "ORG"],
+         },
+         {
+            kind: "query",
+            query: "orders -> plain + { where: x = $CAT }",
+            givenNames: ["CAT"],
+         },
+         // Did not compile: the static walk still answers.
+         { kind: "query", query: "orders -> broken", givenNames: ["SCOPE"] },
+      ]);
+      // ORG is read only by the gate: sent when a host injects it, never a viewer control.
+      expect(manifest?.givens.map((s) => s.name)).toEqual([
+         "SCOPE",
+         "BRAND",
+         "REGION",
+         "CAT",
+      ]);
+   });
+
+   it("keeps a gate given a tile also reads on the row", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: ['## artifact { tiles=["orders -> by_org"] }\n'],
+            viewGivens: new Map([["orders -> by_org", ["ORG"]]]),
+            compiledTileGivens: new Map([
+               ["orders -> by_org", { reads: ["ORG"], gateReads: ["ORG"] }],
+            ]),
+            givens: new Map([given("ORG", "number[]", [])]),
+         }),
+      );
+      expect(manifest?.givens.map((s) => s.name)).toEqual(["ORG"]);
+   });
+
+   it("does not lint an unimported gate given", () => {
+      const f = facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> plain"] }\n'],
+         viewGivens: new Map([["orders -> plain", []]]),
+         compiledTileGivens: new Map([
+            ["orders -> plain", { reads: ["SCOPE"], gateReads: ["ORG"] }],
+         ]),
+      });
+      const messages = lintDashboard(f, build(f)!)
+         .map((x) => x.message)
+         .join("\n");
+      expect(messages).toContain('"SCOPE"');
+      expect(messages).not.toContain("ORG");
+   });
+
+   it("lints an unimported given once when the compiled query reads it twice", () => {
+      const f = facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> plain"] }\n'],
+         viewGivens: new Map([["orders -> plain", []]]),
+         compiledTileGivens: new Map([
+            ["orders -> plain", { reads: ["SCOPE", "SCOPE"], gateReads: [] }],
+         ]),
+      });
+      const findings = lintDashboard(f, build(f)!).filter((x) =>
+         x.message.includes('"SCOPE"'),
+      );
+      expect(findings).toHaveLength(1);
    });
 
    it("prefers a composite declaration over a query-level tag in the same file", () => {
@@ -895,6 +992,7 @@ describe("service/dashboard per-tile layout", () => {
       );
       expect(manifest?.tiles).toEqual([
          {
+            kind: "query",
             query: "orders -> kpi",
             givenNames: [],
             colspan: 3,
@@ -902,6 +1000,7 @@ describe("service/dashboard per-tile layout", () => {
             subtitle: "Last 90 days",
          },
          {
+            kind: "query",
             query: "orders -> by_month",
             givenNames: [],
             colspan: 9,
@@ -918,7 +1017,7 @@ describe("service/dashboard per-tile layout", () => {
          }),
       );
       expect(manifest?.tiles).toEqual([
-         { query: "orders -> detail", givenNames: [] },
+         { kind: "query", query: "orders -> detail", givenNames: [] },
       ]);
    });
 
@@ -935,7 +1034,7 @@ describe("service/dashboard per-tile layout", () => {
          }),
       );
       expect(manifest?.tiles).toEqual([
-         { query: "totals", givenNames: [], colspan: 6 },
+         { kind: "query", query: "totals", givenNames: [], colspan: 6 },
       ]);
    });
 
@@ -951,7 +1050,7 @@ describe("service/dashboard per-tile layout", () => {
             }),
          );
          expect(manifest?.tiles).toEqual([
-            { query: "orders -> kpi", givenNames: [] },
+            { kind: "query", query: "orders -> kpi", givenNames: [] },
          ]);
       }
    });
@@ -980,6 +1079,34 @@ describe("service/dashboard per-tile layout", () => {
       expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
          expect.stringContaining("clamped to 4"),
       ]);
+   });
+
+   it("warns on a grid wider than the builder offers, and still serves it", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=36 }\n',
+         { "orders -> kpi": ["# colspan=6\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.dashboardColumns).toBe(36);
+      expect(lintDashboard(f, manifest)).toEqual([
+         expect.objectContaining({
+            severity: "warn",
+            message: expect.stringContaining(
+               "wider than the builder offers (24)",
+            ),
+         }),
+      ]);
+   });
+
+   it("says nothing about a grid at the builder's maximum", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=24 }\n',
+         { "orders -> kpi": ["# colspan=6\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
    });
 
    it("reports an unreadable colspan without printing the word undefined", () => {
@@ -1400,6 +1527,34 @@ describe("service/dashboard lint", () => {
          expect.stringContaining('query "missing_q"'),
          expect.stringContaining("source= alone names no column"),
          expect.stringContaining('has no field "nope"'),
+      ]);
+   });
+
+   it("accepts a dotted joined dimension and flags one the source lacks", () => {
+      const messages = lint(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ['# artifact { title="Overview" }\n'],
+                  givens: ["A", "B"],
+               },
+            ],
+            sourceFields: new Map([
+               ["orders", new Set(["region", "products.category"])],
+            ]),
+            givens: new Map([
+               given("A", "filter<string>", [
+                  '# suggest { source=orders dimension="products.category" }\n',
+               ]),
+               given("B", "filter<string>", [
+                  '# suggest { source=orders dimension="products.maker.name" }\n',
+               ]),
+            ]),
+         }),
+      );
+      expect(messages).toEqual([
+         expect.stringContaining('has no field "products.maker.name"'),
       ]);
    });
 
@@ -2094,12 +2249,12 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(build(f)?.dashboardColumns).toBeUndefined();
    });
 
-   it("says a kind=text tile is not rendered yet, rather than that kind is unread", () => {
+   it("says a kind=text tile with no block shows nothing, rather than that kind is unread", () => {
       const f = composite(
          '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
       );
       const message = lintOf(f).find((finding) => finding.includes("`intro`"));
-      expect(message).toContain("does not render text tiles yet");
+      expect(message).toContain("has no `##|(markdown) intro` block");
       expect(message).not.toContain("carries");
    });
 
@@ -2165,7 +2320,7 @@ describe("service/dashboard grid width and hostile literals", () => {
          '## artifact { tiles=[intro { colspan=3 }, "orders -> totals"] }\n',
       );
       // It builds, and the entry is reduced to its text.
-      expect(build(f)?.tiles?.map((tile) => tile.query)).toEqual([
+      expect(queryTiles(build(f)?.tiles).map((tile) => tile.query)).toEqual([
          "intro",
          "orders -> totals",
       ]);
@@ -2395,30 +2550,167 @@ describe("service/dashboard text tile entries", () => {
       ),
       "utf8",
    );
+   const blocks = [
+      "##|(markdown) intro\n## How to read this page\n\nSome **bold** text.",
+   ];
    const f = facts({
-      modelAnnotations: fixture
-         .split("\n")
-         .filter((line) => line.startsWith("## artifact"))
-         .map((line) => `${line}\n`),
+      modelAnnotations: [
+         ...fixture
+            .split("\n")
+            .filter((line) => line.startsWith("## artifact"))
+            .map((line) => `${line}\n`),
+         ...blocks,
+      ],
       viewGivens: new Map([["orders -> kpis", []]]),
       viewAnnotations: new Map([["orders -> kpis", []]]),
       sourceFields: new Map([["orders", new Set(["kpis"])]]),
    });
 
-   // Text tiles do not render yet, so the entry is left out of the manifest
-   // rather than shown as a run expression that cannot resolve.
-   it("leaves a kind=text entry out of the manifest and draws one warning", () => {
+   it("keeps a kind=text entry as a tile, in order, with its block as the body and its own layout", () => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(manifest.tiles?.map((tile) => tile.query)).toEqual([
-         "orders -> kpis",
+      expect(manifest.tiles).toEqual([
+         {
+            kind: "text",
+            name: "intro",
+            markdown: "## How to read this page\n\nSome **bold** text.",
+            colspan: 12,
+         },
+         { kind: "query", query: "orders -> kpis", givenNames: [] },
       ]);
-      const findings = lintDashboard(f, manifest);
-      expect(findings.map((x) => [x.severity, x.message])).toEqual([
-         [
-            "warn",
-            "`intro` in `tiles=[…]` is a text tile, but Publisher does not render text tiles yet, so it is left out of the page.",
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+
+   it("reads break on a text entry, and leaves a text tile out of the control row", () => {
+      const g = facts({
+         ...f,
+         modelAnnotations: [
+            '## artifact { tiles=[note { kind=text break }, "orders -> kpis"] }\n',
+            "##|(markdown) note\nhello",
          ],
+         givens: new Map([given("REGION", "string", [])]),
+      });
+      const manifest = build(g);
+      expect(manifest?.tiles?.[0]).toEqual({
+         kind: "text",
+         name: "note",
+         markdown: "hello",
+         break: true,
+      });
+      expect(manifest?.givens).toEqual([]);
+   });
+
+   it("says a bare tile naming a (markdown) block needs kind=text", () => {
+      const g = facts({
+         ...f,
+         modelAnnotations: [
+            '## artifact { tiles=[intro, "orders -> kpis"] }\n',
+            "##|(markdown) intro\nhello",
+         ],
+      });
+      const manifest = build(g);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(g, manifest).map((x) => x.message)).toEqual([
+         'tile "intro" names the ##|(markdown) intro block but has no kind=text, so it is read as a query. Fix: write intro { kind=text }',
       ]);
+   });
+
+   it("gives a text tile with no block an empty body and a finding", () => {
+      const g = facts({
+         ...f,
+         modelAnnotations: ["## artifact { tiles=[note { kind=text }] }\n"],
+      });
+      const manifest = build(g);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.tiles).toEqual([
+         { kind: "text", name: "note", markdown: "" },
+      ]);
+      expect(lintDashboard(g, manifest).map((x) => x.message)).toEqual([
+         expect.stringContaining("has no `##|(markdown) note` block"),
+      ]);
+   });
+
+   it("warns about a text entry property it does not read, and about a repeated block", () => {
+      const g = facts({
+         ...f,
+         modelAnnotations: [
+            '## artifact { tiles=[note { kind=text label="x" colspan=0 }] }\n',
+            "##|(markdown) note\none",
+            "##|(markdown) note\ntwo",
+         ],
+      });
+      const manifest = build(g);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(manifest.tiles?.[0]).toMatchObject({ markdown: "one" });
+      const messages = lintDashboard(g, manifest).map((x) => x.message);
+      expect(messages).toEqual(
+         expect.arrayContaining([
+            expect.stringContaining("carries `label`"),
+            expect.stringContaining("colspan on text tile `note`"),
+            expect.stringContaining("written twice"),
+         ]),
+      );
+   });
+});
+
+describe("service/dashboard kind", () => {
+   const text = (kind: string) =>
+      `## artifact { kind=${kind} tiles=[note { kind=text }] } dashboard { columns=6 }\n`;
+
+   it("reads the kind off the tag, whichever folder the file is in", () => {
+      expect(
+         build(
+            facts({
+               modelPath: "notebooks/tour.malloy",
+               modelAnnotations: [text("dashboard")],
+            }),
+         )?.kind,
+      ).toBe("dashboard");
+      expect(
+         build(
+            facts({
+               modelPath: "dashboards/tour.malloy",
+               modelAnnotations: [text("notebook")],
+            }),
+         )?.kind,
+      ).toBe("notebook");
+   });
+
+   it("falls back to the folder when the tag names no kind", () => {
+      const untagged =
+         '## artifact { tiles=["orders -> kpis"] } dashboard { columns=6 }\n';
+      expect(
+         build(
+            facts({
+               modelPath: "notebooks/tour.malloy",
+               modelAnnotations: [untagged],
+            }),
+         )?.kind,
+      ).toBe("notebook");
+      expect(build(facts({ modelAnnotations: [untagged] }))?.kind).toBe(
+         "dashboard",
+      );
+   });
+
+   it("lays a notebook out in one column, whatever the file asks for", () => {
+      const manifest = build(
+         facts({
+            modelPath: "notebooks/tour.malloy",
+            modelAnnotations: [text("notebook"), "##|(markdown) note\nhi"],
+         }),
+      );
+      expect(manifest?.dashboardColumns).toBe(1);
+   });
+
+   it("serves a notebook with no tiles yet as a layout, and a dashboard with none as nothing", () => {
+      const empty = (kind: string, modelPath: string) =>
+         build(
+            facts({
+               modelPath,
+               modelAnnotations: [`## artifact { kind=${kind} tiles=[] }\n`],
+            }),
+         );
+      expect(empty("notebook", "notebooks/new.malloy")?.tiles).toEqual([]);
+      expect(empty("dashboard", "dashboards/new.malloy")).toBeUndefined();
    });
 });

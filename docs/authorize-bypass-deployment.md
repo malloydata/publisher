@@ -93,7 +93,8 @@ bypass, and one that fires at load — but are worth knowing apart from
 `publisher_authorize_bypass_total` when reading a dashboard:
 `publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
 `empty_after_filter`) and `publisher_authorize_row_level_rejected_total` (labelled `cause`) cover
-row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field`) counts 400s for a
+row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field` and `match`, the latter `lexed` or
+`whole_text`) counts 400s for a
 caller-declared `#(access_filter)` annotation; and `publisher_authorize_admit_all_total` (labelled
 `route`) counts the sources that declare an unconditional `true` admit-all, at package load. That
 last one is the other side of this page's concern — the bypass header turns every gate off for one

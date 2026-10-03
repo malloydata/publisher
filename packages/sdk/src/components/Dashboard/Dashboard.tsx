@@ -1,35 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
-import type { DashboardManifest } from "../../client";
-import { useDocumentControls } from "../../hooks/useDocumentControls";
+import { Alert } from "@mui/material";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import {
-   useDrill,
-   type DrillBinding,
-   type DrillClickPayload,
-   type DrillNavigation,
-   type DrillRowsRequest,
-} from "../drill";
-import { GivensPanel } from "../given";
-import { Prose } from "../Prose";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
+import type { DrillNavigation } from "../drill";
 import { Loading } from "../Loading";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
-import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
-import { DashboardTile } from "./DashboardTile";
-import { ExploreDialog } from "./ExploreDialog";
-import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
+import { DashboardView } from "./DashboardView";
 import type { DashboardEventHandler } from "./telemetry";
+import type { TileChrome } from "./TileCard";
 
 // The grid rule moved to `DashboardGrid`, which the builder shares.
 // Re-exported so existing importers of it are unaffected.
 export { DEFAULT_COLUMNS, tileGridColumn } from "./DashboardGrid";
+export { DashboardProse } from "./DashboardView";
 
 export interface DashboardProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
@@ -74,6 +60,11 @@ export interface DashboardProps {
    maxResultSize?: number;
    /** The rows shown and tiles explored, for the host to log or count. */
    onEvent?: DashboardEventHandler;
+   /**
+    * `card` (default) draws each tile as a panel; `none` draws them bare, a
+    * document that reads top to bottom.
+    */
+   chrome?: TileChrome;
 }
 
 /**
@@ -94,17 +85,14 @@ export function Dashboard({
    height,
    maxResultSize,
    onEvent,
+   chrome,
 }: DashboardProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
-   // Degraded, not thrown. `Notebook`, `Model` and `Package` all let a bad URI
-   // fail into an error display; a throw in the render body takes the host's
-   // whole tree down with it instead, which is a white screen rather than a
-   // message. The Console cannot reach this, because `DashboardPage` builds the
-   // URI from params `ModelPage` has already guarded, so the only caller a throw
-   // could punish is the embedding host the docs invite. Reported below rather
-   // than here, so every hook still runs in the same order.
+   // Degraded, not thrown: a throw in the render body takes the embedding
+   // host's whole tree down with it, which is a white screen rather than a
+   // message.
    const environmentName = parsed.environmentName ?? "";
    const packageName = parsed.packageName ?? "";
    const versionId = parsed.versionId;
@@ -139,81 +127,6 @@ export function Dashboard({
    });
    const manifest = manifestResponse?.data;
 
-   const specs = useMemo(() => manifest?.givens ?? [], [manifest]);
-
-   // The control row's state, options and `to=self` drill: the same hook the
-   // notebook uses, so a control behaves identically on both surfaces.
-   const controls = useDocumentControls({
-      specs,
-      loaded: isSuccess,
-      startingValues: manifest?.startingGivens,
-      params: givens,
-      onGivensChange,
-      // Which document these edits belong to, version included: two
-      // dashboards whose starting values coincide (both empty, usually)
-      // would otherwise look like one document, and the one you came from
-      // would keep filtering the one you drilled into. Only the EDITS: a host
-      // that round-trips givens through its own URL hands them straight back,
-      // and they still apply across the swap.
-      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
-      // Absent means autorun; only an explicit `autorun=false` batches.
-      autorun: manifest?.autorun !== false,
-      environmentName,
-      packageName,
-      modelPath: manifest?.path,
-      versionId,
-      documentName: dashboard,
-   });
-   const { applied, declaredTypes, canSelf, onSelf } = controls;
-
-   // The rows behind a clicked value, and a tile's query in the explorer —
-   // the two ways past a number. Composite tiles only: each names its
-   // source, which is what the rows are of and what the explorer opens on.
-   const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
-   const [exploring, setExploring] = useState<string | undefined>(undefined);
-   const onRows = useCallback((request: DrillRowsRequest) => {
-      const steps = stepsOf(request.context);
-      if (steps === undefined) return;
-      setRows({
-         ...steps,
-         field: request.field,
-         rawValue: request.rawValue,
-         label: request.label,
-      });
-   }, []);
-
-   // The whole applied row: a source's own `where:` may read any of it, and a
-   // given the rows query does not reference is ignored by the server.
-   const rowsGivens = useMemo(
-      () => givensToRequest(applied, declaredTypes),
-      [applied, declaredTypes],
-   );
-
-   // The explorer's controls take the URL-string form, not the request form.
-   const exploreGivens = useMemo(
-      () => givensToParams(applied, declaredTypes),
-      [applied, declaredTypes],
-   );
-
-   const { drill, drillMenu } = useDrill({
-      onNavigate,
-      onSelf,
-      canSelf,
-      selfLabel: "Filter this dashboard",
-      onRows,
-   });
-   // Each tile's clicks carry the tile they came from, so the rows behind a
-   // value know which source to run against.
-   const drillFor = useCallback(
-      (tile: string): DrillBinding => ({
-         canDrill: drill.canDrill,
-         onClick: (payload: DrillClickPayload) =>
-            drill.onClick({ ...payload, context: tile }),
-      }),
-      [drill],
-   );
-
-   // After every hook, so the hook order does not depend on the URI.
    if (!uriNamesBoth) {
       return (
          <Alert severity="error">
@@ -235,185 +148,21 @@ export function Dashboard({
       return <Loading text="Loading dashboard…" />;
    }
 
-   // Reachable on the in-process load path only. Production loads a package
-   // through the worker pool, which aborts the package on the first compile
-   // error, so an uncompilable file answers 424 everywhere rather than serving a
-   // per-file error. Measured on this base with one bad file: the package
-   // endpoint, the dashboards listing, and the manifest of a dashboard that was
-   // FINE all answered 424. The earlier note here said such a dashboard "still
-   // lists and still resolves", which contradicted this repo's own docs and was
-   // the wrong half of the pair. Kept because the per-file error manifest still
-   // exists and an empty frame would be worse than saying why.
-   if (manifest.error) {
-      return (
-         <Stack spacing={2}>
-            <DashboardHeader manifest={manifest} />
-            <Alert severity="error">{manifest.error}</Alert>
-         </Stack>
-      );
-   }
-
-   const modelPath = manifest.path;
-   const tiles = manifest.tiles ?? [];
-   const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
-
    return (
-      <Stack spacing={2}>
-         <DashboardHeader manifest={manifest} />
-
-         <GivensPanel {...controls.panel} layout="bar" />
-
-         {modelPath === undefined ? (
-            <Alert severity="error">
-               This dashboard has no model path, so there is nothing to run.
-            </Alert>
-         ) : manifest.query !== undefined ? (
-            // Single-query form: one query whose result IS the dashboard. Its
-            // `# dashboard {columns=N}` tag is the renderer's business, so no
-            // grid is imposed here: doing so would nest a grid in a grid.
-            <DashboardTile
-               environmentName={environmentName}
-               packageName={packageName}
-               versionId={versionId}
-               modelPath={modelPath}
-               queryName={manifest.query}
-               givens={applied}
-               declaredTypes={declaredTypes}
-               height={height}
-               maxResultSize={maxResultSize}
-               drill={drill}
-            />
-         ) : tiles.length > 0 ? (
-            // Composite form: each tile runs on its own and the results are
-            // combined into one grid here, since no single Malloy result spans
-            // them.
-            <DashboardGrid
-               tiles={tiles}
-               columns={columns}
-               // Position too, not the expression alone: `tiles=[…]` can repeat
-               // one, which is a typo rather than a request for two identical
-               // panels, and keying on the expression made the duplicate warn
-               // and reconcile onto its twin.
-               keyOf={(tile, index) => `${index}:${tile.query}`}
-               renderTile={(tile) => (
-                  <DashboardTile
-                     environmentName={environmentName}
-                     packageName={packageName}
-                     versionId={versionId}
-                     modelPath={modelPath}
-                     tile={tile.query}
-                     label={tile.label}
-                     subtitle={tile.subtitle}
-                     borderless={tile.borderless}
-                     givens={applied}
-                     declaredTypes={declaredTypes}
-                     givenNames={tile.givenNames}
-                     height={height ?? TILE_MAX_HEIGHT}
-                     maxResultSize={maxResultSize}
-                     drill={drillFor(tile.query)}
-                     onExplore={() => {
-                        setExploring(tile.query);
-                        onEvent?.({
-                           type: "dashboard.explored",
-                           tile: tile.query,
-                        });
-                     }}
-                  />
-               )}
-            />
-         ) : (
-            <Alert severity="warning">
-               This dashboard names neither a query nor any tiles.
-            </Alert>
-         )}
-
-         {drillMenu}
-         {modelPath !== undefined && (
-            <>
-               <RowsDialog
-                  request={rows}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={rowsGivens}
-                  onClose={() => setRows(undefined)}
-                  onDone={(ok, durationMs) => {
-                     if (rows)
-                        onEvent?.({
-                           type: "dashboard.rows_shown",
-                           source: rows.source,
-                           view: rows.view,
-                           field: rows.field,
-                           ok,
-                           durationMs,
-                        });
-                  }}
-               />
-               <ExploreDialog
-                  tile={exploring}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={exploreGivens}
-                  onClose={() => setExploring(undefined)}
-               />
-            </>
-         )}
-      </Stack>
-   );
-}
-
-/**
- * The dashboard's prose header: its title, and the description as MARKDOWN.
- *
- * A description comes from the file's model-level doc comment (`##"` lines),
- * and Malloy carries a whole block of them through with its newlines and blank
- * lines intact — measured: `'## Why this page exists\nRevenue is up but margin
- * is flat.\n\nThe tile below says where it went.'` reaches the manifest exactly
- * like that. Rendering it as a plain `Typography` collapsed all of that onto
- * one unstyled line, so a dashboard could already carry a narrative header and
- * was throwing it away at the last step.
- *
- * Markdown here and not in a tile: prose BETWEEN tiles needs a tile kind the
- * format cannot express yet. This is the half that needs nothing new.
- */
-function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
-   return (
-      <DashboardProse
-         title={manifest.title ?? manifest.name}
-         {...(manifest.description
-            ? { description: manifest.description }
-            : {})}
+      <DashboardView
+         manifest={manifest}
+         environmentName={environmentName}
+         packageName={packageName}
+         versionId={versionId}
+         documentName={dashboard}
+         givens={givens}
+         onGivensChange={onGivensChange}
+         onNavigate={onNavigate}
+         height={height}
+         maxResultSize={maxResultSize}
+         onEvent={onEvent}
+         chrome={chrome}
       />
-   );
-}
-
-/**
- * The prose header itself, over the two fields it actually needs.
- *
- * Separate from {@link DashboardHeader} so the BUILDER can render the same
- * header over a `DashboardDocument` — which carries `title` and `description`
- * but is not a manifest. Same argument as {@link tileGridColumn}: what the
- * builder shows a author is the thing a reader will see, and one component is
- * what stops the two drifting. A builder that restated this markdown block
- * would be one edit away from showing a different header than it writes.
- */
-export function DashboardProse({
-   title,
-   description,
-}: {
-   title: string;
-   description?: string;
-}) {
-   return (
-      <Box>
-         <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {title}
-         </Typography>
-         {description && <Prose variant="caption">{description}</Prose>}
-      </Box>
    );
 }
 

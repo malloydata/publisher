@@ -42,14 +42,12 @@ export function useTileReorder({
    const [dragging, setDragging] = useState(false);
 
    /**
-    * Reordering, unlike resizing, is offered on EVERY tile — an inherited one
-    * included.
+    * Reordering is offered on EVERY tile — an inherited one included.
     *
-    * The two edits touch different parts of the file. A width is a `# colspan`
-    * tag on the view, so a tile whose view lives in the model cannot be
-    * resized here; but order is the `tiles=[…]` array on this file's own
-    * `## artifact` tag, which this file always owns. So a tile the properties
-    * panel refuses can still be moved.
+    * Order is the `tiles=[…]` array on this file's own `## artifact` tag,
+    * which this file always owns, unlike a width, which is a `# colspan` tag
+    * on a view that may live in the model. So a tile the menu refuses to
+    * resize can still be moved.
     *
     * The gesture itself is `@dnd-kit/react`'s — see `sortable.tsx`. What is
     * decided HERE is what a drop means for the file. The library reports which
