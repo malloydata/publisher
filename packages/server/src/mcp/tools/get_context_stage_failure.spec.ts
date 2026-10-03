@@ -21,7 +21,7 @@ import {
    instantRetry,
    jsonResponse,
    stubFetch,
-} from "../../providers/fetch_stub";
+} from "../../test_helpers/fetch_stub";
 import { createChatModel } from "../../providers/registry";
 import {
    callPayload,

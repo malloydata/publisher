@@ -3,7 +3,11 @@
 
 import { describe, expect, it, spyOn } from "bun:test";
 import { logger } from "../logger";
-import { instantRetry, jsonResponse, stubFetch } from "./fetch_stub";
+import {
+   instantRetry,
+   jsonResponse,
+   stubFetch,
+} from "../test_helpers/fetch_stub";
 import { createChatModel, createEmbeddingModel } from "./registry";
 import type { EmbeddingSettings, LlmSettings } from "./types";
 

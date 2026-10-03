@@ -8,7 +8,11 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
-import { instantRetry, jsonResponse, stubFetch } from "./fetch_stub";
+import {
+   instantRetry,
+   jsonResponse,
+   stubFetch,
+} from "../test_helpers/fetch_stub";
 import { OPENAI_REASONING_HEADROOM } from "./openai_compatible";
 import { LlmJsonError } from "./json";
 import { createChatModel, createEmbeddingModel } from "./registry";
