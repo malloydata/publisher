@@ -378,22 +378,31 @@ describe("the reply validator", () => {
       ).toThrow(`the limit is ${SOURCE_SUMMARY_MAX_CHARS}`);
    });
 
-   it("requires exactly The `<name>` source. when the source has no docs", () => {
-      const fine = { ...ok, one_line_summary: "The `bare` source." };
-      expect(check(fine, false, "bare").oneLineSummary).toBe(
+   it("writes exactly The `<name>` source. for a source with no docs, whatever the model said", () => {
+      for (const said of [
          "The `bare` source.",
-      );
-      for (const bad of [
          "Codes for things.",
          "The bare source.",
-         "The `bare` source",
-         "the `bare` source.",
          "The `other` source.",
+         "two\nlines",
+         "x".repeat(300),
+         "",
+         undefined,
       ]) {
-         expect(() =>
-            check({ ...ok, one_line_summary: bad }, false, "bare"),
-         ).toThrow("must be exactly: The `bare` source.");
+         const reply =
+            said === undefined
+               ? { summary: ok.summary }
+               : { ...ok, one_line_summary: said };
+         expect(check(reply, false, "bare").oneLineSummary).toBe(
+            "The `bare` source.",
+         );
       }
+   });
+
+   it("still refuses a missing summary for a source with no docs", () => {
+      expect(() => check({ one_line_summary: "x" }, false, "bare")).toThrow(
+         '"summary" is missing',
+      );
    });
 
    it("lets a documented source use any one-liner, including that one", () => {
@@ -404,8 +413,8 @@ describe("the reply validator", () => {
 
    it("reports every problem at once, for the model's single re-ask", () => {
       expect(() =>
-         check({ summary: "", one_line_summary: "x".repeat(130) }, false),
-      ).toThrow(/"summary".*"one_line_summary" is 130.*must be exactly/);
+         check({ summary: "", one_line_summary: "x".repeat(130) }),
+      ).toThrow(/"summary".*"one_line_summary" is 130/);
    });
 });
 
@@ -611,11 +620,9 @@ describe("generating summaries", () => {
 });
 
 describe("a model that gets it wrong", () => {
-   it("is re-asked once with the reason, and the corrected reply is used", async () => {
-      let first = true;
+   it("is not re-asked about the one-liner of a source with no docs: the sync writes it", async () => {
       const chat = scriptedChat((prompt) => {
-         if (/^Source name: bare$/m.test(prompt) && first) {
-            first = false;
+         if (/^Source name: bare$/m.test(prompt)) {
             return JSON.stringify({
                summary: "Holds codes.",
                one_line_summary: "Holds codes for things.",
@@ -624,11 +631,8 @@ describe("a model that gets it wrong", () => {
          return summaryReply(prompt);
       });
       await resolve(shop(), settingsFor(chat));
-      // 3 sources + the one repair.
-      expect(chat.prompts).toHaveLength(4);
-      const repair = chat.prompts[chat.prompts.length - 1];
-      expect(repair).toContain("It was rejected:");
-      expect(repair).toContain("must be exactly: The `bare` source.");
+      // One call per source, no repair.
+      expect(chat.prompts).toHaveLength(3);
       expect((await stored()).get("bare")?.oneLineSummary).toBe(
          "The `bare` source.",
       );
@@ -637,7 +641,7 @@ describe("a model that gets it wrong", () => {
    it("fails the stage, naming it, when the reply is still wrong after the re-ask", async () => {
       const chat = scriptedChat((prompt) =>
          /^Source name: bare$/m.test(prompt)
-            ? JSON.stringify({ summary: "x", one_line_summary: "Wrong." })
+            ? JSON.stringify({ summary: "", one_line_summary: "Wrong." })
             : summaryReply(prompt),
       );
       const error = (await resolve(shop(), settingsFor(chat)).catch(
@@ -648,7 +652,7 @@ describe("a model that gets it wrong", () => {
       expect(error.message).toContain(
          "Source summary generation failed after 2 of 3 sources",
       );
-      expect(error.message).toContain("must be exactly: The `bare` source.");
+      expect(error.message).toContain('"summary" is missing');
       // What was saved before the failure stays.
       expect([...(await stored()).keys()].sort()).toEqual([
          "customers",
