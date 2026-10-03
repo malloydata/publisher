@@ -121,3 +121,66 @@ describe("refine failure", () => {
       expect(chat.prompts).toHaveLength(0);
    });
 });
+
+describe("the advice in a stage failure", () => {
+   const down = () =>
+      scriptedChat(() => {
+         throw new Error("upstream exploded");
+      }).model;
+   const sourceTarget = {
+      search_targets: [{ target_type: "source", search_text: "orders" }],
+      scopes: [{ environment: "fail", package: "advice" }],
+   };
+
+   // Each stage, made the first one to fail, and the setting that turns it off.
+   const cases: Array<{
+      stage: string;
+      setting: string;
+      retrieval: Parameters<typeof shopPackage>[0];
+      request: ReturnType<typeof params> | typeof sourceTarget;
+   }> = [
+      {
+         stage: "refine",
+         setting: "retrieval.refine",
+         retrieval: {},
+         request: params("advice"),
+      },
+      {
+         stage: "rerank",
+         setting: "retrieval.rerank",
+         retrieval: {
+            refine: { enabled: false, minLevel: "MEDIUM" },
+            sourceMatch: { enabled: false },
+         },
+         request: params("advice"),
+      },
+      {
+         stage: "source_match",
+         setting: "retrieval.sourceMatch",
+         retrieval: {},
+         request: sourceTarget,
+      },
+   ];
+
+   for (const { stage, setting, retrieval, request } of cases) {
+      it(`for ${stage} names ${setting} and every other LLM step setting`, async () => {
+         useChat(down());
+         const handler = h.handlerFor(shopPackage(retrieval));
+         const { isError, payload } = await untilSemantic(handler, request);
+         expect(isError).toBe(true);
+         expect(payload.retrieval_stage).toBe(stage);
+         const advice = payload.suggestions.join(" ");
+         // The failing step's own setting, then all three for turning every step off.
+         expect(advice).toContain(
+            `set the package's ${setting} to enabled: false`,
+         );
+         for (const key of [
+            "retrieval.refine",
+            "retrieval.rerank",
+            "retrieval.sourceMatch",
+         ]) {
+            expect(advice).toContain(key);
+         }
+      });
+   }
+});
