@@ -98,45 +98,51 @@ test.describe("builder affordances", () => {
       expect(box!.y + box!.height).toBeLessThanOrEqual(720);
    });
 
-   test("an empty Dashboards section offers New dashboard, which opens the create dialog", async ({
+   test("an empty package offers New artifact, which opens the create dialog on the kind picked", async ({
       page,
    }, testInfo) => {
       pe = await registerPackageEnv(
          baseOf(testInfo),
-         "emptydash",
+         "emptyart",
+         serverFixture("dashboards-test"),
+         "dashboards-test",
+         {},
+         [
+            "dashboards",
+            "brands.malloynb",
+            "orders-since.malloynb",
+            "orders-start.malloynb",
+         ],
+      );
+      await page.goto(`/${pe.env}/${pe.pkg}`);
+      await expect(page.getByText("No artifacts yet")).toBeVisible({
+         timeout: 60_000,
+      });
+      await page.getByRole("button", { name: "New artifact" }).click();
+      await page.getByRole("menuitem", { name: "Notebook" }).click();
+      await expect(
+         page.getByRole("dialog", { name: "New notebook" }),
+      ).toBeVisible();
+   });
+
+   test("the Artifacts heading row carries New, whichever kind the package already has", async ({
+      page,
+   }, testInfo) => {
+      pe = await registerPackageEnv(
+         baseOf(testInfo),
+         "newrow",
          serverFixture("notebooks-malloyyo"),
          "notebooks-malloyyo",
          {},
          ["dashboards"],
       );
       await page.goto(`/${pe.env}/${pe.pkg}`);
-      await expect(page.getByText("No dashboards yet")).toBeVisible({
-         timeout: 60_000,
-      });
-      await page.getByRole("button", { name: "New dashboard" }).click();
+      const section = page.getByRole("region", { name: "Artifacts" });
+      await expect(section).toBeVisible({ timeout: 60_000 });
+      await section.getByRole("button", { name: "New", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Dashboard" }).click();
       await expect(
          page.getByRole("dialog", { name: "New dashboard" }),
-      ).toBeVisible();
-   });
-
-   test("an empty Notebooks section offers New notebook, which opens the create dialog", async ({
-      page,
-   }, testInfo) => {
-      pe = await registerPackageEnv(
-         baseOf(testInfo),
-         "emptynb",
-         serverFixture("dashboards-test"),
-         "dashboards-test",
-         {},
-         ["brands.malloynb", "orders-since.malloynb", "orders-start.malloynb"],
-      );
-      await page.goto(`/${pe.env}/${pe.pkg}`);
-      await expect(page.getByText("No notebooks yet")).toBeVisible({
-         timeout: 60_000,
-      });
-      await page.getByRole("button", { name: "New notebook" }).click();
-      await expect(
-         page.getByRole("dialog", { name: "New notebook" }),
       ).toBeVisible();
    });
 });

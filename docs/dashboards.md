@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 A dashboard is a self-contained `.malloy` file in a package's `dashboards/` directory. The file _is_
 the dashboard: it imports the model parts it needs, names the views to show, and tags the layout.
-Publisher discovers it at package load, lists it on the package page, and serves it at
+Publisher discovers it at package load, lists it on the package page (in the one **Artifacts** list, beside the notebooks), and serves it at
 `/<env>/<package>/dashboards/<name>`.
 
 **One form:** `## artifact { tiles=[…] }` at model level, one tile per named view. The controls at the
@@ -673,7 +673,7 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Dashboards or Notebooks section also offers its own **New dashboard** or **New notebook**): pick a
+dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Artifacts section also offers a **New artifact** button that opens the same menu): pick a
 type (Dashboard or Notebook), a model, a source and its view (one select), and a title, and the file is written into the package and opened in the builder. From there it is
 the classic loop — **drag a tile by its grip to move it, set its width, view, label and chart from its own
 menu (or nudge the width with the arrow keys), and add filters from the strip above the grid.** Titles,

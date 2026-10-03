@@ -7,6 +7,7 @@ import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
+import { presetSpan } from "../Dashboard/DashboardGrid";
 import { ChartPicker } from "./ChartPicker";
 
 /**
@@ -70,7 +71,7 @@ function WidthPresets({
                ["¼", 4],
             ] as const
          ).map(([label, share]) => {
-            const span = Math.max(1, Math.round(columns / share));
+            const span = presetSpan(columns, share);
             const active = (colspan ?? 1) === span;
             return (
                <Button

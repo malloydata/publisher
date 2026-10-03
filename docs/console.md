@@ -63,16 +63,18 @@ is a Console convenience.
 
 ## What you can do in the Console
 
-- **Browse a package** — one section each for **Dashboards**, **Notebooks**, **Data Apps**,
-  **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
-  `README.malloynb` rendered underneath. Data Apps is hidden when the package has none. Dashboards
-  and Notebooks are hidden when empty too, unless creating is offered: then each shows an empty row
-  with its own **New dashboard** or **New notebook** button. Every kind has its own icon and its own color, so a
-  row's type reads before its name does.
+- **Browse a package** — one section each for **Artifacts**, **Data Apps**, **Semantic Models**,
+  **Package Data** and **Materializations**, in that order, plus the package's `README.malloynb`
+  rendered underneath. Artifacts lists dashboards and notebooks together, each row tagged with its
+  kind, and carries the **New** button on its heading row. Data Apps is hidden when the package has
+  none. Artifacts is hidden when empty too, unless creating is offered: then it shows a "No
+  artifacts yet" row with a **New artifact** button. Every kind has its own icon and its own color,
+  so a row's type reads before its name does.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
-  Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
-  slug beside it; a notebook's title comes from its opening markdown heading unless a
+  An artifact is listed by its title, or by its file name without folder or extension when it has
+  none; the folder path appears beside it only to tell apart two files with the same name, and a
+  `.malloynb` keeps its path. A notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
   a grid you rearrange directly: drag a tile to move it, set its

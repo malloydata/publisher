@@ -305,13 +305,13 @@ test.describe("embedded host", () => {
 
       await page.goto(`/${storefront.env}/${storefront.pkg}?host=scratch`);
       await expect(
-         page.getByRole("heading", { name: "Notebooks", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
          page.getByRole("button", { name: "New", exact: true }),
       ).toHaveCount(0);
       await expect(
-         page.getByRole("button", { name: "New notebook" }),
+         page.getByRole("button", { name: "New artifact" }),
       ).toHaveCount(0);
    });
 });

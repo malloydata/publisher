@@ -50,12 +50,22 @@ import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
-import { documentRoute, documentSlug } from "./documentLocation";
+import {
+   documentRoute,
+   documentSlug,
+   type DocumentKind,
+} from "./documentLocation";
 
 // The pinned README: the root `.malloynb`, or a served notebook named README in `notebooks/`.
 const README_NOTEBOOK = "README.malloynb";
 const isServedReadme = (path: string | undefined) =>
    path?.toLowerCase() === "notebooks/readme.malloy";
+
+const draftPrefix = (
+   environmentName: string,
+   packageName: string,
+   kind: DocumentType,
+) => `${environmentName}/${packageName}/${kind}s/`;
 
 /** A served notebook opens by slug, like a dashboard; a `.malloynb` opens by path. */
 
@@ -85,15 +95,15 @@ export default function Package({
    const [newMenu, setNewMenu] = useState<HTMLElement | null>(null);
    const narrow = useNarrowScreen();
 
-   // Dashboards the host keeps for this package and the package does not have:
-   // the builder's drafts, listed so they are found rather than stumbled on.
+   // Dashboards and notebooks the host keeps for this package and the package
+   // does not have: the builder's drafts, listed so they are found rather than
+   // stumbled on.
    // Each carries the workspace's own description, because where a document is
    // kept is the backend's to say and only one host's answer is "this browser".
    const storage = useOptionalDocumentStorage()?.documentStorage;
    const [drafts, setDrafts] = useState<
       { locator: DocumentLocator; where: string }[]
    >([]);
-   const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
    // Where a create may land is the chosen workspace's to say, so New waits
    // for the answer; a host whose workspaces cannot be listed gets no New
    // rather than a guess that could write the package under its record.
@@ -112,19 +122,23 @@ export default function Package({
       setWorkspace({ state: "ready", chosen: chooseWorkspace(workspaces) });
       const found: { locator: DocumentLocator; where: string }[] = [];
       for (const candidate of workspaces.filter((w) => w.writeable))
-         for (const locator of await storage.listDocuments(
-            candidate,
-            "dashboard",
-         ))
-            if (locator.path.startsWith(draftPrefix))
-               found.push({ locator, where: candidate.description });
+         for (const kind of ["dashboard", "notebook"] as const)
+            for (const locator of await storage.listDocuments(candidate, kind))
+               if (
+                  locator.path.startsWith(
+                     draftPrefix(environmentName, packageName, kind),
+                  )
+               )
+                  found.push({ locator, where: candidate.description });
       setDrafts(found);
-   }, [storage, draftPrefix]);
+   }, [storage, environmentName, packageName]);
    useEffect(() => {
       void refreshDrafts();
    }, [refreshDrafts]);
    const draftSlug = (locator: DocumentLocator) =>
-      locator.path.slice(draftPrefix.length).replace(/\.malloy$/, "");
+      locator.path
+         .slice(draftPrefix(environmentName, packageName, locator.type).length)
+         .replace(/\.malloy$/, "");
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -139,12 +153,26 @@ export default function Package({
 
    const notebooksQuery = useQueryWithApiError({
       queryKey: ["notebooks", environmentName, packageName, versionId],
-      queryFn: () =>
-         apiClients.notebooks.listNotebooks(
-            environmentName,
-            packageName,
-            versionId,
-         ),
+      queryFn: async () => {
+         try {
+            return await apiClients.notebooks.listNotebooks(
+               environmentName,
+               packageName,
+               versionId,
+            );
+         } catch (e) {
+            // Non-fatal like the dashboards list: an older Publisher without
+            // the route has no notebooks to list.
+            const status = (e as { response?: { status?: number } })?.response
+               ?.status;
+            if (status === 404 || status === undefined) {
+               return { data: [] } as Awaited<
+                  ReturnType<typeof apiClients.notebooks.listNotebooks>
+               >;
+            }
+            throw e;
+         }
+      },
    });
 
    const modelsQuery = useQueryWithApiError({
@@ -222,28 +250,12 @@ export default function Package({
          }
       },
    });
-   // Sorted by the string the row actually SHOWS, not by the slug or the path
-   // underneath it. A list labelled by title and ordered by filename reads as
-   // unsorted: `overview` titled "Business Overview" sorts ahead of `regions`
-   // titled "Regional Sales". Notebooks acquired that mismatch here too, when
-   // they started being listed by title while still being ordered by path.
-   const dashboardLabel = (dashboard: { name?: string; title?: string }) =>
-      dashboard.title && dashboard.title !== dashboard.name
-         ? dashboard.title
-         : (dashboard.name ?? "");
-   const notebookLabel = (notebook: { path?: string; title?: string }) =>
-      notebook.title && notebook.title !== notebook.path
-         ? notebook.title
-         : (notebook.path ?? "");
-
-   const dashboards = (dashboardsQuery.data?.data ?? [])
-      .slice()
-      .sort((a, b) => dashboardLabel(a).localeCompare(dashboardLabel(b)));
-
+   const dashboards = dashboardsQuery.data?.data ?? [];
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
-      .sort((a, b) => notebookLabel(a).localeCompare(notebookLabel(b)));
-   // A dashboard is listed once, under Dashboards. Its file is a model like any
+      .sort((a, b) => (a.path ?? "").localeCompare(b.path ?? ""));
+   const artifacts = artifactRows(dashboards, notebooks);
+   // A dashboard is listed once, under Artifacts. Its file is a model like any
    // other, so it would otherwise appear a second time under Semantic Models
    // where clicking it opens the Explorer rather than the dashboard. Untagged
    // shared includes in `dashboards/` are not dashboards and stay in the model
@@ -277,6 +289,8 @@ export default function Package({
       (q) => q.isSuccess || q.isError,
    );
    const canCreate = route !== undefined && listingsSettled;
+   // The editors step aside on a narrow screen, so no entry point to one is offered there.
+   const canNew = canCreate && !narrow;
    const createTarget = useMemo((): CreateTarget | undefined => {
       if (!canCreate) return undefined;
       const existing = [
@@ -400,41 +414,27 @@ export default function Package({
                   {description}
                </Typography>
             )}
-            {canCreate && !narrow && (
-               <>
-                  <Button
-                     variant="outlined"
-                     size="small"
-                     endIcon={<ArrowDropDownIcon />}
-                     aria-haspopup="menu"
-                     aria-label="New"
-                     sx={{ mt: 2 }}
-                     onClick={(event) => setNewMenu(event.currentTarget)}
-                  >
-                     New
-                  </Button>
-                  <Menu
-                     anchorEl={newMenu}
-                     open={newMenu !== null}
-                     onClose={() => setNewMenu(null)}
-                  >
-                     {(["dashboard", "notebook"] as const).map((kind) => (
-                        <MenuItem
-                           key={kind}
-                           onClick={() => {
-                              setNewMenu(null);
-                              setCreating(kind);
-                           }}
-                        >
-                           {kind === "dashboard" ? "Dashboard" : "Notebook"}
-                        </MenuItem>
-                     ))}
-                  </Menu>
-               </>
-            )}
          </Box>
 
          {isLoading && <Loading text="Loading package..." />}
+
+         <Menu
+            anchorEl={newMenu}
+            open={newMenu !== null}
+            onClose={() => setNewMenu(null)}
+         >
+            {(["dashboard", "notebook"] as const).map((kind) => (
+               <MenuItem
+                  key={kind}
+                  onClick={() => {
+                     setNewMenu(null);
+                     setCreating(kind);
+                  }}
+               >
+                  {kind === "dashboard" ? "Dashboard" : "Notebook"}
+               </MenuItem>
+            ))}
+         </Menu>
 
          {createTarget && (
             <NewDocumentDialog
@@ -467,83 +467,102 @@ export default function Package({
 
          {!isLoading && (
             <>
-               {/* First: the at-a-glance artifact a visitor most likely wants,
-                   ahead of the notebooks and models it is built on. Hidden when
-                   empty, like Data Apps. */}
                {/* A listing that FAILED renders identically to a package with
-                   no dashboards: `dashboards` falls back to `[]` and the
-                   section hides itself. Only `pkgQuery` reaches the error page,
-                   so nothing else here would say a word. Now that the listing
-                   carries a `versionId`, a host that resolves it on some routes
-                   and refuses it on others has a new way in, and "this package
-                   has no dashboards" is the wrong thing to conclude from a
-                   transport error. The 404 above stays swallowed: that one is
-                   an older Publisher with no route, which genuinely has none. */}
-               {dashboardsQuery.isError && (
+                   none: the list falls back to `[]` and the section hides
+                   itself. Only `pkgQuery` reaches the error page, so nothing
+                   else here would say a word, and one failed list hides only
+                   half the artifacts. The 404 swallowed in each query is an
+                   older Publisher with no route, which genuinely has none. */}
+               {(dashboardsQuery.isError || notebooksQuery.isError) && (
                   <Box sx={{ mb: 4 }}>
                      <Alert severity="warning">
-                        Could not list this package&apos;s dashboards, so any it
-                        has are missing from this page.
+                        Could not list some artifacts, so any this package has
+                        are missing from this page.
                      </Alert>
                   </Box>
                )}
-               {(dashboards.length > 0 || canCreate) && (
-                  <PackageSection title="Dashboards" count={dashboards.length}>
-                     {dashboards.length === 0 && (
+               {(artifacts.length > 0 || canCreate) && (
+                  <PackageSection
+                     title="Artifacts"
+                     count={artifacts.length}
+                     {...(canNew
+                        ? {
+                             action: (
+                                <Button
+                                   variant="outlined"
+                                   size="small"
+                                   endIcon={<ArrowDropDownIcon />}
+                                   aria-haspopup="menu"
+                                   aria-label="New"
+                                   onClick={(event) =>
+                                      setNewMenu(event.currentTarget)
+                                   }
+                                >
+                                   New
+                                </Button>
+                             ),
+                          }
+                        : {})}
+                  >
+                     {artifacts.length === 0 && (
                         <EmptyRow
-                           label="No dashboards yet"
-                           {...(canCreate
+                           label="No artifacts yet"
+                           {...(canNew
                               ? {
                                    action: {
-                                      label: "New dashboard",
-                                      onClick: () => setCreating("dashboard"),
+                                      label: "New artifact",
+                                      onClick: (event) =>
+                                         setNewMenu(event.currentTarget),
                                    },
                                 }
                               : {})}
                         />
                      )}
-                     {dashboards.map((dashboard) => {
-                        // A title equal to the slug is what the server falls
-                        // back to when the file names itself neither way, so
-                        // showing both would print the same word twice.
-                        const hasTitle =
-                           !!dashboard.title &&
-                           dashboard.title !== dashboard.name;
-                        return (
-                           <PackageItemRow
-                              key={dashboard.name}
-                              type="dashboard"
-                              label={
-                                 hasTitle ? dashboard.title! : dashboard.name!
-                              }
-                              rightLabel={hasTitle ? dashboard.name : undefined}
-                              onClick={(event) =>
-                                 onClick(
-                                    documentRoute(
-                                       environmentName,
-                                       packageName,
-                                       "dashboard",
-                                       dashboard.name ?? "",
-                                    ),
-                                    event,
-                                 )
-                              }
-                           />
-                        );
-                     })}
+                     {artifacts.map((artifact) => (
+                        <PackageItemRow
+                           key={`${artifact.kind}:${artifact.path}`}
+                           type={
+                              artifact.kind === "dashboard"
+                                 ? "dashboard"
+                                 : "report"
+                           }
+                           label={artifact.label}
+                           {...(artifact.secondary === undefined
+                              ? {}
+                              : { description: artifact.secondary })}
+                           rightLabel={KIND_BADGE[artifact.kind]}
+                           onClick={(event) =>
+                              onClick(
+                                 artifact.slug === undefined
+                                    ? `/${environmentName}/${packageName}/${artifact.path}`
+                                    : documentRoute(
+                                         environmentName,
+                                         packageName,
+                                         artifact.kind,
+                                         artifact.slug,
+                                      ),
+                                 event,
+                              )
+                           }
+                        />
+                     ))}
                   </PackageSection>
                )}
                {drafts.length > 0 && (
                   <PackageSection title="Drafts" count={drafts.length}>
                      {drafts.map(({ locator, where }) => (
                         <PackageItemRow
-                           key={locator.path}
-                           type="dashboard"
+                           key={`${locator.type}:${locator.path}`}
+                           type={
+                              locator.type === "dashboard"
+                                 ? "dashboard"
+                                 : "report"
+                           }
                            label={draftSlug(locator)}
                            rightLabel={where}
                            onClick={(event) =>
                               onClick(
-                                 `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(draftSlug(locator))}/edit`,
+                                 `${documentRoute(environmentName, packageName, locator.type, draftSlug(locator))}/edit`,
                                  event,
                               )
                            }
@@ -565,58 +584,6 @@ export default function Package({
                            }
                         />
                      ))}
-                  </PackageSection>
-               )}
-
-               {/* Hidden when empty, like Dashboards and Data Apps. A package
-                   that holds no notebooks is not a package missing them, and a
-                   heading over the words "No notebooks" is a row of furniture
-                   saying nothing. */}
-               {(notebooks.length > 0 || canCreate) && (
-                  <PackageSection title="Notebooks" count={notebooks.length}>
-                     {notebooks.length === 0 && (
-                        <EmptyRow
-                           label="No notebooks yet"
-                           {...(canCreate
-                              ? {
-                                   action: {
-                                      label: "New notebook",
-                                      onClick: () => setCreating("notebook"),
-                                   },
-                                }
-                              : {})}
-                        />
-                     )}
-                     {notebooks.map((notebook) => {
-                        // Named the way dashboards and data apps are: a notebook
-                        // that titles itself is listed by that title, with the
-                        // filename kept as the secondary label so the path a
-                        // reader needs to find the file is never lost.
-                        const hasTitle =
-                           !!notebook.title && notebook.title !== notebook.path;
-                        const slug = documentSlug(notebook.path);
-                        return (
-                           <PackageItemRow
-                              key={notebook.path}
-                              type="report"
-                              label={hasTitle ? notebook.title! : notebook.path}
-                              rightLabel={hasTitle ? notebook.path : undefined}
-                              onClick={(event) =>
-                                 onClick(
-                                    slug === undefined
-                                       ? `/${environmentName}/${packageName}/${notebook.path}`
-                                       : documentRoute(
-                                            environmentName,
-                                            packageName,
-                                            "notebook",
-                                            slug,
-                                         ),
-                                    event,
-                                 )
-                              }
-                           />
-                        );
-                     })}
                   </PackageSection>
                )}
 
@@ -774,12 +741,14 @@ export default function Package({
 function PackageItemRow({
    type,
    label,
+   description,
    rightLabel,
    onClick,
    trailingAction,
 }: {
    type: ContentType;
    label: string;
+   description?: string;
    rightLabel?: string;
    onClick?: (event: React.MouseEvent) => void;
    /** Optional element rendered at the end of the row (e.g. an
@@ -793,6 +762,7 @@ function PackageItemRow({
          tint={CONTENT_TINT[type]}
          label={label}
          mono
+         {...(description === undefined ? {} : { description })}
          {...(rightLabel === undefined ? {} : { rightLabel })}
          {...(onClick === undefined ? {} : { onClick })}
          {...(trailingAction === undefined ? {} : { trailingAction })}
@@ -800,12 +770,73 @@ function PackageItemRow({
    );
 }
 
+const KIND_BADGE: Record<DocumentKind, string> = {
+   dashboard: "Dashboard",
+   notebook: "Notebook",
+};
+
+interface ArtifactRow {
+   kind: DocumentKind;
+   path: string;
+   /** Absent for a `.malloynb`, which opens by path. */
+   slug: string | undefined;
+   label: string;
+   /** The path, when the label alone does not say which file this is. */
+   secondary: string | undefined;
+}
+
+/** Dashboards and notebooks as one list: the title when set, else the slug, ordered by what is shown. */
+function artifactRows(
+   dashboards: readonly { name?: string; path?: string; title?: string }[],
+   notebooks: readonly { path?: string; title?: string }[],
+): ArtifactRow[] {
+   const rows = [
+      ...dashboards.map((d) => ({
+         kind: "dashboard" as const,
+         path: d.path ?? "",
+         slug: d.name ?? documentSlug(d.path),
+         title: d.title,
+      })),
+      ...notebooks.map((n) => ({
+         kind: "notebook" as const,
+         path: n.path ?? "",
+         slug: documentSlug(n.path),
+         title: n.title,
+      })),
+   ];
+   const slugCount = new Map<string, number>();
+   for (const row of rows)
+      if (row.slug !== undefined)
+         slugCount.set(row.slug, (slugCount.get(row.slug) ?? 0) + 1);
+   return rows
+      .map(({ title, ...row }): ArtifactRow => {
+         // A title equal to the slug or path is the server's fallback for a file that names itself neither way.
+         const hasTitle = !!title && title !== row.slug && title !== row.path;
+         const ambiguous =
+            row.slug !== undefined && (slugCount.get(row.slug) ?? 0) > 1;
+         return {
+            ...row,
+            label: hasTitle ? title : (row.slug ?? row.path),
+            secondary: (row.slug === undefined ? hasTitle : ambiguous)
+               ? row.path
+               : undefined,
+         };
+      })
+      .sort(
+         (a, b) =>
+            a.label.localeCompare(b.label) || a.path.localeCompare(b.path),
+      );
+}
+
 function EmptyRow({
    label,
    action,
 }: {
    label: string;
-   action?: { label: string; onClick: () => void };
+   action?: {
+      label: string;
+      onClick: (event: React.MouseEvent<HTMLElement>) => void;
+   };
 }) {
    return (
       <Stack direction="row" sx={{ alignItems: "center", gap: 1, py: 1 }}>

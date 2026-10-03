@@ -8,7 +8,7 @@ import { tmpName } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
- * The dashboard viewer, end to end in a browser: the Dashboards section on the
+ * The dashboard viewer, end to end in a browser: the Artifacts section on the
  * package page, the control row the manifest's given specs produce, URL-carried
  * filter state, Apply mode, and the composite tile grid.
  *
@@ -62,7 +62,7 @@ test.describe("package-dashboards", () => {
       await page.goto(`/${env}/${PKG}/dashboards/${slug}`);
    };
 
-   test("the package page lists dashboards and lists them only once", async ({
+   test("the package page lists dashboards and notebooks as artifacts, each once, with New on the heading row", async ({
       page,
    }) => {
       await gotoHome(page);
@@ -70,8 +70,25 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Dashboards", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
+      await expect(
+         page.getByRole("heading", { name: "Dashboards", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+         page.getByRole("heading", { name: "Notebooks", exact: true }),
+      ).toHaveCount(0);
+      // One list: a dashboard row and a notebook row each carry a name and a kind badge.
+      const artifacts = page.getByRole("region", { name: "Artifacts" });
+      await expect(
+         artifacts.getByRole("button", { name: /Business Overview/ }),
+      ).toContainText("Dashboard");
+      await expect(
+         artifacts.getByRole("button", { name: /Orders in a window/ }),
+      ).toContainText("Notebook");
+      await expect(
+         artifacts.getByRole("button", { name: "New", exact: true }),
+      ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
@@ -100,7 +117,7 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Notebooks", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
 
       // An explicit `## title=`, and a title read from the first markdown
@@ -126,7 +143,7 @@ test.describe("package-dashboards", () => {
       await openEnvironment(page, env);
       await openPackage(page, env, PKG);
       await expect(
-         page.getByRole("heading", { name: "Dashboards", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
 
       // Polled rather than snapshotted once: the rows arrive after the section

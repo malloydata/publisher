@@ -10,7 +10,11 @@ import {
    within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "bun:test";
-import { MAX_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
+import {
+   MAX_COLUMNS,
+   nudgedSpan,
+   presetSpan,
+} from "../Dashboard/DashboardGrid";
 import { SettingsPopover, type PageSettings } from "./SettingsPopover";
 
 afterEach(cleanup);
@@ -70,5 +74,14 @@ describe("nudgedSpan", () => {
       expect(nudgedSpan(12, 1, 12)).toBe(12);
       expect(nudgedSpan(5, 1, 12)).toBe(6);
       expect(nudgedSpan(MAX_COLUMNS, 1, 36)).toBe(MAX_COLUMNS);
+   });
+});
+
+describe("presetSpan", () => {
+   it("takes a fraction of the grid and never passes the builder maximum", () => {
+      expect(presetSpan(12, 3)).toBe(4);
+      expect(presetSpan(2, 4)).toBe(1);
+      expect(presetSpan(36, 1)).toBe(MAX_COLUMNS);
+      expect(presetSpan(36, 2)).toBe(18);
    });
 });

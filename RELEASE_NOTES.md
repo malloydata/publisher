@@ -44,6 +44,10 @@ the `dashboard { columns=N }` line, since a notebook is one column; switching a 
 `notebooks/` to Dashboard writes `kind=dashboard` explicitly, so the server serves it as one.
 Imports are edited there as a source picker.
 
+**The package page lists dashboards and notebooks in one Artifacts section.** Each row shows its title
+(or its file name when it has none) and a kind badge, and the **New** button sits on the section's
+heading row. A pair of files sharing a name in different folders shows the folder to tell them apart.
+
 **A tile's width is set from its menu, not by dragging its edge.** The right-edge drag handle is gone; a drop never changes a tile's width. Pick Full, ½, ⅓ or ¼ from the tile's menu, nudge the selected tile with the arrow keys, or write `# colspan=N`. The arrow keys no longer change the width while a tile is being moved.
 
 **Grid width has one entry per width, and a ceiling of 24.** Settings → Grid width no longer has a "Default (2)" item that duplicated "2" and removed the `columns` tag; it shows the file's width (2 when unset) and writes `columns=N` when you pick one. The list is 2, 3, 4, 6, 12 and 24, the widths whose Full, ½, ⅓ and ¼ presets are whole columns; a file's own width is still shown. A `# dashboard { columns=N }` above 24 now draws a package warning, and the reader still renders it.

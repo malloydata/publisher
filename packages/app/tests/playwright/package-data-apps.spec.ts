@@ -40,8 +40,8 @@ test.describe("package-data-apps", () => {
       // Anchor on a positive assertion first. toHaveCount(0) is satisfied the
       // instant the page is blank, so a bare absence check here passes before
       // any section has rendered and pins nothing. "Data Apps" rather than
-      // "Notebooks": an empty section no longer renders, and this package has
-      // no notebooks.
+      // "Artifacts": an empty section no longer renders, and this package has
+      // no dashboards or notebooks.
       await expect(
          page.getByRole("heading", { name: "Data Apps" }),
       ).toBeVisible();
@@ -55,7 +55,7 @@ test.describe("package-data-apps", () => {
       // The section this package has nothing for is absent rather than empty,
       // except where the reader can create one: then it carries the action.
       await expect(
-         page.getByRole("heading", { name: "Notebooks" }),
+         page.getByRole("heading", { name: "Artifacts" }),
       ).toHaveCount(mutable ? 1 : 0);
       await expect(page.getByRole("heading", { name: "Pages" })).toHaveCount(0);
    });

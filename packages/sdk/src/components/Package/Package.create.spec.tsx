@@ -150,7 +150,7 @@ describe("who is offered New", () => {
       mount();
       await settled();
       expect(screen.getByRole("button", { name: "New" })).toBeDefined();
-      // One create entry, the header's: the sections carry none of their own.
+      // One create entry, on the Artifacts heading row.
       expect(
          screen.queryByRole("button", { name: "Add dashboard" }),
       ).toBeNull();
@@ -186,21 +186,24 @@ describe("who is offered New", () => {
       );
    });
 
-   it("an empty section's row offers its own kind, and no one when New is not offered", async () => {
+   it("an empty list's row offers New, and no one when New is not offered", async () => {
+      listDashboards.mockImplementationOnce(() =>
+         Promise.resolve({ data: [] }),
+      );
       mount();
-      await settled();
+      await screen.findByText("No artifacts yet");
       expect(
-         screen.getByRole("button", { name: "New notebook" }),
+         screen.getByRole("button", { name: "New artifact" }),
       ).toBeDefined();
-      // Dashboards has one, so its row is not empty.
-      expect(
-         screen.queryByRole("button", { name: "New dashboard" }),
-      ).toBeNull();
       cleanup();
+      clearCache();
       context.mutable = false;
+      listDashboards.mockImplementationOnce(() =>
+         Promise.resolve({ data: [] }),
+      );
       mount();
-      await settled();
-      expect(screen.queryByRole("button", { name: "New notebook" })).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(screen.queryByRole("button", { name: "New artifact" })).toBeNull();
    });
 
    it("no New menu below 600px, where the editors step aside", async () => {
@@ -220,6 +223,16 @@ describe("who is offered New", () => {
          await settled();
          await new Promise((resolve) => setTimeout(resolve, 20));
          expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+         cleanup();
+         clearCache();
+         listDashboards.mockImplementationOnce(() =>
+            Promise.resolve({ data: [] }),
+         );
+         mount();
+         await screen.findByText("No artifacts yet");
+         expect(
+            screen.queryByRole("button", { name: "New artifact" }),
+         ).toBeNull();
       } finally {
          window.matchMedia = was;
       }
@@ -263,11 +276,16 @@ describe("creating", () => {
       expect(getModel.mock.calls[0][2]).toBe("storefront.malloy");
    });
 
-   it("opens the dialog on the kind of the empty row's action", async () => {
+   it("opens the New menu from the empty row, then the dialog on the kind picked", async () => {
+      listDashboards.mockImplementationOnce(() =>
+         Promise.resolve({ data: [] }),
+      );
       mount();
-      await settled();
       fireEvent.click(
-         await screen.findByRole("button", { name: "New notebook" }),
+         await screen.findByRole("button", { name: "New artifact" }),
+      );
+      fireEvent.click(
+         await screen.findByRole("menuitem", { name: "Notebook" }),
       );
       await waitFor(() =>
          expect(screen.getByLabelText("Notebook title")).toBeDefined(),
