@@ -90,9 +90,10 @@ describe("notebook predicates", () => {
          '##| artifact { kind=notebook\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
       expect(artifactKindInText(block)).toBe("notebook");
       expect(claimsToBeANotebook(block)).toBe(true);
-      expect(
-         artifactKindInText("##| artifact { kind=dashboard } |##\nrun: x"),
-      ).toBe("dashboard");
+      // The lexer takes the opener's whole line, so a same-line `|##` is tag text the tag cannot parse.
+      const sameLine = "##| artifact { kind=dashboard } |##\n}\n|##\nrun: x";
+      expect(claimsToBeANotebook(sameLine)).toBe(true);
+      expect(artifactKindInText(sameLine)).toBeUndefined();
       expect(claimsToBeANotebook("##| artifacts\nprose\n|##\nrun: x")).toBe(
          false,
       );

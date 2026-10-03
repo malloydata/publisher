@@ -1,0 +1,77 @@
+{
+   "about": "The artifact tag as read off raw text, by the server (findArtifactLineOutsideBlocks) and the SDK (artifactTag). Malloy's lexer is the authority: a ##| opener consumes its whole line, and a block closes only at a later line's start, at the opener's column. `tag` is the tag's lines, each trimmed, or null for none. `server` overrides `tag` for the server alone, with `why`.",
+   "cases": [
+      {
+         "name": "a one-line ## tag",
+         "source": "##! experimental.givens\n## artifact { kind=dashboard tiles=[\"a -> b\"] }\nrun: x",
+         "tag": ["## artifact { kind=dashboard tiles=[\"a -> b\"] }"]
+      },
+      {
+         "name": "a ##| block tag over several lines",
+         "source": "##| artifact { kind=notebook\n  tiles=[\n    \"s -> v\"\n  ]\n}\n|##\nrun: x",
+         "tag": ["##| artifact { kind=notebook", "tiles=[", "\"s -> v\"", "]", "}"]
+      },
+      {
+         "name": "a ##| block tag in CRLF",
+         "source": "##| artifact { kind=notebook\r\n  tiles=[\r\n    \"s -> v\"\r\n  ]\r\n}\r\n|##\r\nrun: x\r\n",
+         "tag": ["##| artifact { kind=notebook", "tiles=[", "\"s -> v\"", "]", "}"]
+      },
+      {
+         "name": "a one-line ## tag in CRLF",
+         "source": "##! experimental.givens\r\n## artifact { kind=dashboard }\r\nrun: x\r\n",
+         "tag": ["## artifact { kind=dashboard }"]
+      },
+      {
+         "name": "a same-line |## does not close the block: it runs to the next closer",
+         "source": "##| artifact { kind=dashboard } |##\nsource: s is t\n##|(markdown) intro\nhi\n|##\nrun: x",
+         "tag": [
+            "##| artifact { kind=dashboard } |##",
+            "source: s is t",
+            "##|(markdown) intro",
+            "hi"
+         ]
+      },
+      {
+         "name": "a same-line |## with no later closer leaves the block unclosed",
+         "source": "##| artifact { kind=dashboard } |##\nrun: x",
+         "tag": null,
+         "server": ["##| artifact { kind=dashboard } |##"],
+         "why": "The file does not compile (`unclosed-block-annotation`). The server's write gate still reads the opener as a tag so the write reaches the compiler, whose error says to close the block, instead of being refused as untagged."
+      },
+      {
+         "name": "a |## inside a string in the block body does not close it",
+         "source": "##| artifact { kind=notebook title=\"a |## b\"\n}\n|##\nrun: x",
+         "tag": ["##| artifact { kind=notebook title=\"a |## b\"", "}"]
+      },
+      {
+         "name": "a |## at a line start inside a SQL string is no opener and hides nothing",
+         "source": "## artifact { kind=dashboard }\nsource: s is duckdb.sql(\"\"\"\n|##\n\"\"\")",
+         "tag": ["## artifact { kind=dashboard }"]
+      },
+      {
+         "name": "a |## after // on the opener line is still the opener's",
+         "source": "##| artifact { kind=notebook // |##\n}\n|##\nrun: x",
+         "tag": ["##| artifact { kind=notebook // |##", "}"]
+      },
+      {
+         "name": "a closer indented past the opener's column does not close it",
+         "source": "##|\"\nprose\n  |##\n## artifact { kind=notebook }\n|##\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "a tag-like line inside a ##|\" block body is prose",
+         "source": "##|\"\n## artifact { kind=notebook }\n|##\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "a tile's kind=text is inside the tag, not a tag of its own",
+         "source": "## artifact { kind=notebook tiles=[intro { kind=text }, \"s -> v\"] }\n##|(markdown) intro\n# Hi\n|##\nrun: x",
+         "tag": ["## artifact { kind=notebook tiles=[intro { kind=text }, \"s -> v\"] }"]
+      },
+      {
+         "name": "an untagged file",
+         "source": "source: s is t\nrun: s -> v",
+         "tag": null
+      }
+   ]
+}

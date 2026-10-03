@@ -142,14 +142,8 @@ function findArtifactLineOutsideBlocks(
       const trimmed = lines[i].trimStart();
       const opener = /^(#{1,2})\|/.exec(trimmed);
       if (opener) {
+         // The lexer takes the opener's whole line, so a `|##` on it closes nothing.
          const wanted = `|${opener[1]}`;
-         const sameLine = trimmed.indexOf(wanted, opener[0].length);
-         if (sameLine !== -1) {
-            const block = trimmed.slice(0, sameLine);
-            if (artifactLine.test(block.replace(/^(#{1,2})\|\s*/, "$1 ")))
-               return block;
-            continue;
-         }
          const column = lines[i].length - trimmed.length;
          let end = -1;
          for (let at = i + 1; at < lines.length; at++)
@@ -186,9 +180,14 @@ export function claimsToBeANotebook(source: string): boolean {
    return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
 }
 
+/** A file's artifact tag as written, a `## artifact` line or a `##|` block, read off its text. */
+export function artifactTagText(source: string): string | undefined {
+   return findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+}
+
 /** The `kind` of a file's `## artifact` line, read off its text for a file that did not compile. */
 export function artifactKindInText(source: string): string | undefined {
-   const line = findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+   const line = artifactTagText(source);
    return line === undefined
       ? undefined
       : tagText(motlyTag([line])?.tag("artifact"), "kind");
