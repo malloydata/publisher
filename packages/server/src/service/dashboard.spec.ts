@@ -816,6 +816,74 @@ describe("service/dashboard manifest (composite form)", () => {
       expect(manifest?.givens.map((s) => s.name)).toEqual(["BRAND"]);
    });
 
+   it("reads a tile's givens from its compiled query, in the static walk's order", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: [
+               '## artifact { tiles=["orders -> by_brand", "orders -> plain + { where: x = $CAT }", "orders -> broken"] }\n',
+            ],
+            viewGivens: new Map([
+               ["orders -> by_brand", ["SCOPE", "BRAND"]],
+               ["orders -> broken", ["SCOPE"]],
+            ]),
+            compiledTileGivens: new Map([
+               // The join's `where:` read REGION, which the static walk missed.
+               [
+                  "orders -> by_brand",
+                  { reads: ["REGION", "BRAND", "SCOPE"], gateReads: ["ORG"] },
+               ],
+               [
+                  "orders -> plain + { where: x = $CAT }",
+                  { reads: ["CAT", "HIDDEN"], gateReads: [] },
+               ],
+            ]),
+            givens: new Map([
+               given("SCOPE", "string", []),
+               given("BRAND", "string", []),
+               given("REGION", "string", []),
+               given("CAT", "string", []),
+               given("ORG", "number[]", []),
+            ]),
+         }),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            kind: "query",
+            query: "orders -> by_brand",
+            givenNames: ["SCOPE", "BRAND", "REGION", "ORG"],
+         },
+         {
+            kind: "query",
+            query: "orders -> plain + { where: x = $CAT }",
+            givenNames: ["CAT"],
+         },
+         // Did not compile: the static walk still answers.
+         { kind: "query", query: "orders -> broken", givenNames: ["SCOPE"] },
+      ]);
+      expect(manifest?.givens.map((s) => s.name)).toEqual([
+         "SCOPE",
+         "BRAND",
+         "REGION",
+         "ORG",
+         "CAT",
+      ]);
+   });
+
+   it("does not lint an unimported gate given", () => {
+      const f = facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> plain"] }\n'],
+         viewGivens: new Map([["orders -> plain", []]]),
+         compiledTileGivens: new Map([
+            ["orders -> plain", { reads: ["SCOPE"], gateReads: ["ORG"] }],
+         ]),
+      });
+      const messages = lintDashboard(f, build(f)!)
+         .map((x) => x.message)
+         .join("\n");
+      expect(messages).toContain('"SCOPE"');
+      expect(messages).not.toContain("ORG");
+   });
+
    it("prefers a composite declaration over a query-level tag in the same file", () => {
       const manifest = build(
          facts({

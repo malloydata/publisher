@@ -2915,7 +2915,7 @@ export class Package {
 
          let facts: DashboardModelFacts | undefined;
          try {
-            facts = model.getDashboardModelFacts();
+            facts = await model.getCompiledDashboardModelFacts();
             if (facts) allFacts.set(modelPath, facts);
          } catch (err) {
             logger.warn("Reading a model's dashboard facts failed", {

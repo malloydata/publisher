@@ -4100,13 +4100,16 @@ components:
           items:
             type: string
           description: |
-            Names of the givens this tile references. This is a scoping hint,
-            not a binding constraint: it tells a caller which tiles a changed
-            control actually needs to re-run. Running a tile with the
-            dashboard's whole control row also works, because an unreferenced
-            given is ignored. Absent when the tile expression is not one
-            discovery can resolve, a refinement or a multi-stage pipeline for
-            instance, in which case send the whole control row. One such tile
+            Names of the givens this tile's compiled query reads: through its
+            view, its source's `where:`, a joined source's `where:`, a
+            dimension or measure it uses, and its source's `#(authorize)` and
+            `#(access_filter)` gates. A control not listed does not change the
+            tile, which is what a viewer's "Doesn't respond to" chip says. It
+            also tells a caller which tiles a changed control needs to re-run;
+            running a tile with the dashboard's whole control row also works,
+            because an unreferenced given is ignored. Absent when discovery
+            could not resolve the tile (its expression does not compile), in
+            which case send the whole control row. One such tile
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.

@@ -125,7 +125,9 @@ import {
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    buildDashboardManifest,
+   normalizeTileExpression,
    readDashboardModelFacts,
+   type CompiledTileGivens,
    type DashboardManifest,
    type DashboardModelFacts,
 } from "./dashboard";
@@ -710,6 +712,9 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   private compiledDashboardFacts:
+      | Promise<DashboardModelFacts | undefined>
+      | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -4940,6 +4945,80 @@ export class Model {
             ),
          ),
       );
+   }
+
+   /**
+    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * reads (`compiledTileGivens`), for the manifest discovery serves.
+    *
+    * The static walk misses a given read through a joined source's `where:`, a
+    * dimension defined with `$X`, or a gate, and cannot resolve a refinement;
+    * Malloy's `givenUsage` has all of those. About a millisecond per tile, and
+    * cached for this Model's life. A tile that fails to compile keeps the
+    * static answer.
+    */
+   public getCompiledDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      this.compiledDashboardFacts ??= this.compileDashboardModelFacts();
+      return this.compiledDashboardFacts;
+   }
+
+   private async compileDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      const facts = this.getDashboardModelFacts();
+      const materializer = this.modelMaterializer;
+      if (!facts || !materializer) return facts;
+      let tiles: string[];
+      try {
+         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+            tile.kind === "query" ? [tile.query] : [],
+         );
+      } catch {
+         // Discovery builds it again and reports the throw.
+         return facts;
+      }
+      const compiled = new Map<string, CompiledTileGivens>();
+      for (const tile of tiles) {
+         const key = normalizeTileExpression(tile);
+         if (compiled.has(key)) continue;
+         let prepared: {
+            _query?: {
+               givenUsage?: { id: string }[];
+               structRef?: unknown;
+            };
+            _modelDef?: ModelDef;
+         };
+         try {
+            prepared = (await materializer
+               .loadQuery(`run: ${tile}`)
+               .getPreparedQuery()) as typeof prepared;
+         } catch {
+            continue;
+         }
+         const usage = prepared._query?.givenUsage;
+         if (!usage) continue;
+         const registry =
+            prepared._modelDef?.givens ?? this.modelDef?.givens ?? {};
+         const reads = usage
+            .map((given) => registry[given.id]?.name)
+            .filter((name): name is string => name !== undefined);
+         const target = prepared._query?.structRef;
+         const sourceName =
+            typeof target === "string"
+               ? target
+               : (target as { as?: string; name?: string } | undefined)?.as ||
+                 (target as { name?: string } | undefined)?.name;
+         const gateReads = new Set<string>();
+         for (const expr of sourceName
+            ? (gateGivenSource(this.sources ?? [], sourceName) ?? [])
+            : []) {
+            for (const name of referencedGivenNames(expr)) gateReads.add(name);
+         }
+         compiled.set(key, { reads, gateReads: Array.from(gateReads) });
+      }
+      return { ...facts, compiledTileGivens: compiled };
    }
 
    /**

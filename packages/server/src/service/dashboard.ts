@@ -126,11 +126,12 @@ export interface DashboardQueryTileSpec extends DashboardTileLayout {
    /** The run expression exactly as written in `tiles=[…]` (`"orders -> by_month"`). */
    query: string;
    /**
-    * Given names this tile references and the entry file can bind, or undefined
-    * when the tile expression is not one discovery can resolve (see
-    * {@link resolveTileGivens}). Running a tile with the dashboard's whole
-    * control row also works — an unreferenced given is ignored — so this list is
-    * for scoping: which tiles a changed control actually needs to re-run.
+    * Given names this tile's compiled query reads (gates included) and the
+    * entry file can bind, or undefined when discovery could not resolve the
+    * tile (see {@link resolveTileGivens}). Running a tile with the dashboard's
+    * whole control row also works — an unreferenced given is ignored — so this
+    * list scopes which tiles a changed control re-runs, and tells a reader
+    * which controls a tile ignores.
     */
    givenNames?: string[];
 }
@@ -524,6 +525,13 @@ export interface DashboardModelFacts {
     */
    viewGivens: Map<string, string[]>;
    /**
+    * What each tile's COMPILED query reads, keyed by normalized tile
+    * expression; preferred over {@link viewGivens} wherever present. Absent for
+    * a tile that did not compile, and entirely when the caller compiled
+    * nothing (a test, a sync reader). See `Model.getCompiledDashboardModelFacts`.
+    */
+   compiledTileGivens?: Map<string, CompiledTileGivens>;
+   /**
     * Annotation texts on each source view, keyed the way
     * {@link DashboardModelFacts.viewGivens} is. The per-tile layout tags live
     * here; a model-level named query's are in `queries[].annotations` already.
@@ -549,6 +557,18 @@ export interface DashboardModelFacts {
     * source's, narrowed to what this file can bind. See `suggestGivenLookup`.
     */
    suggestGivens: SuggestGivenLookup;
+}
+
+/** The givens one compiled tile query depends on. */
+export interface CompiledTileGivens {
+   /** Malloy's `givenUsage`: every given the query reads, joins and dimensions included. */
+   reads: string[];
+   /**
+    * Givens the run target's `#(authorize)`/`#(access_filter)` gates read.
+    * Kept apart from `reads` because an unimported gate given is accepted at
+    * query time, so the import lint must not name it.
+    */
+   gateReads: string[];
 }
 
 /** A `# drill { to=[…] given=… }` tag on a source dimension. */
@@ -801,25 +821,29 @@ function tagTextArray(
 }
 
 /**
- * The givens a composite tile references, or undefined when the tile expression
- * is not one we can resolve statically.
+ * The givens a composite tile reads, or undefined when discovery could not
+ * resolve the tile.
  *
- * Resolvable: Malloyyo's documented `source -> view` form, and a bare
- * model-level named query. Anything else (an inline refinement, a multi-stage
- * pipeline) leaves `givens` absent rather than guessing — a consumer that finds
- * it absent can fall back to sending the whole control row, which the server
- * accepts: a surfaced given a tile doesn't reference is simply ignored. The
- * per-tile list is precision, letting a viewer re-run only the tiles a changed
- * control affects.
+ * Its compiled query answers first (see {@link CompiledTileGivens}), which
+ * resolves any expression that compiles. Without one, the static walk covers
+ * Malloyyo's documented `source -> view` form and a bare model-level named
+ * query, and leaves anything else absent rather than guessing — a consumer
+ * that finds it absent falls back to sending the whole control row, which the
+ * server accepts: a surfaced given a tile doesn't reference is simply ignored.
  */
 function resolveTileGivens(
    tile: string,
    facts: DashboardModelFacts,
 ): string[] | undefined {
+   const reads = referencedTileGivens(tile, facts);
+   if (reads === undefined) return undefined;
+   const gateReads =
+      facts.compiledTileGivens?.get(normalizeTileExpression(tile))?.gateReads ??
+      [];
    // Narrowed to what the entry file can bind: a tile may reference a given
    // reachable only through an import chain, and sending that name back would
    // guarantee an "unknown given" error.
-   return referencedTileGivens(tile, facts)?.filter((name) =>
+   return Array.from(new Set([...reads, ...gateReads])).filter((name) =>
       facts.givens.has(name),
    );
 }
@@ -856,10 +880,17 @@ function referencedTileGivens(
    facts: DashboardModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
-   return (
+   const statically =
       facts.viewGivens.get(normalized) ??
-      facts.queries.find((query) => query.name === normalized)?.givens
-   );
+      facts.queries.find((query) => query.name === normalized)?.givens;
+   const compiled = facts.compiledTileGivens?.get(normalized)?.reads;
+   if (!compiled) return statically;
+   // Ordered as the static walk was, so the control row a tile feeds keeps its order.
+   const rank = (name: string) => {
+      const at = statically?.indexOf(name) ?? -1;
+      return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+   };
+   return [...compiled].sort((a, b) => rank(a) - rank(b));
 }
 
 /**
@@ -1030,8 +1061,8 @@ export function buildDashboardManifest(
          // runs with only the givens it references, but the row a viewer shows
          // is every given any tile can filter by.
          //
-         // A tile discovery cannot resolve statically (a refinement, a
-         // multi-stage pipeline) carries no `givenNames`, and taking the union
+         // A tile discovery cannot resolve (its query does not compile)
+         // carries no `givenNames`, and taking the union
          // of the resolved ones alone would drop its givens from the row
          // entirely: no control, and the tile filtered at the given's default
          // with nothing said. That is the same silent filtering the source-level
