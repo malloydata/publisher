@@ -2799,7 +2799,9 @@ function semanticUnavailableError(uri: string, result: Unavailable) {
                : `Semantic search for this package is paused after an embedding failure: ${cause}`;
          suggestions = [
             retryAt
-               ? `Try again after ${retryAt}; the server retries then.`
+               ? // No timer fires at retryAt: the retry starts when a question
+                 // arrives after it (see kickSync in embedding_index.ts).
+                 `The next question after ${retryAt} tries again; nothing retries on its own before then.`
                : "Try again in a minute.",
             "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
             listing,

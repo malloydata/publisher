@@ -275,8 +275,9 @@ What to know before turning it on:
   carries an `embeddingIndex` object with `status` (`lexical` / `indexing` / `ready` / `error`),
   `embeddedRows` of `totalRows` (progress while indexing), `totalEntities`, `embeddedEntities`,
   `lastSyncedAt`, `startedAt` (when the running sync began), and, on an error, `reason`
-  (`cooldown` or `too-many-entities`) and `lastError` (`message`, and `retryAt` when a retry is
-  scheduled). `lexical` means no embedding provider is configured: that is a mode, not a failure.
+  (`cooldown` or `too-many-entities`) and `lastError` (`message`, and `retryAt`, the earliest
+  time a retry can start: nothing retries on a timer, the next question after it does).
+  `lexical` means no embedding provider is configured: that is a mode, not a failure.
   Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
   index; there is no need to send a question first, because indexing starts when the package
   loads. After a restart every package reads `indexing` until its turn in the queue has checked
