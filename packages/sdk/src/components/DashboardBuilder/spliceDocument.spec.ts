@@ -2600,14 +2600,13 @@ source: a is one extend {
 
 describe("spliceDashboardDocument: a CRLF file", () => {
    const CRLF = SOURCE.replace(/\n/g, "\r\n");
-   const bareNewlines = (text: string) =>
-      text.match(/(?<!\r)\n/g)?.length ?? 0;
+   const bareNewlines = (text: string) => text.match(/(?<!\r)\n/g)?.length ?? 0;
 
    it("writes its own line ending into every line it inserts", async () => {
       const out = await spliced(CRLF, (d) => {
          queryTile(d, 0).label = "Categories";
          queryTile(d, 1).filters = [{ field: "brand", given: "BRAND" }];
-         d.tiles[1].subtitle = "Top brands";
+         queryTile(d, 1).subtitle = "Top brands";
          d.tiles.push({
             name: "by_state",
             source: "a",

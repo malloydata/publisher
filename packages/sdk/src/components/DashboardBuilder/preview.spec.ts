@@ -267,8 +267,13 @@ describe("previewTileQuery reads", () => {
          previewTileQuery(document, queryTile(document, 2), runnable).reads,
       ).toBeUndefined();
       expect(
-         previewTileQuery(document, queryTile(document, 2), runnable, new Map(), [])
-            .reads,
+         previewTileQuery(
+            document,
+            queryTile(document, 2),
+            runnable,
+            new Map(),
+            [],
+         ).reads,
       ).toEqual([]);
    });
 
