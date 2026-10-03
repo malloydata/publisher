@@ -92,8 +92,9 @@ export interface RankedResult {
 
 /**
  * Tables above this cap are not embedded; the schema stays lexical. Mirrors
- * MAX_EMBEDDED_ENTITIES in the package index for the same reason: the first
- * embed of a schema that large is minutes of provider calls.
+ * the package index's entity cap (`retrieval.indexing.maxEntities`, also 5,000
+ * by default) for the same reason: the first embed of a schema that large is
+ * minutes of provider calls.
  */
 export const MAX_INDEXED_TABLES = 5_000;
 

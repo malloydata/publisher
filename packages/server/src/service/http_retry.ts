@@ -33,9 +33,10 @@ export class HttpRequestError extends Error {
  * The delay before retry n is `baseDelayMs * 2^(n-1)`, capped at
  * `maxDelayMs`, then spread over its upper half with jitter so that several
  * clients sharing one rate limit do not retry in step. A `Retry-After` longer
- * than that is honoured exactly. Both a single wait (`maxDelayMs`) and the sum
- * of all waits (`maxTotalDelayMs`) are bounded: when the next wait would
- * exceed either, the last error is thrown rather than waited out.
+ * than that replaces it, but only up to `maxDelayMs`: a longer one is not
+ * waited out. Both a single wait (`maxDelayMs`) and the sum of all waits
+ * (`maxTotalDelayMs`) are bounded: when the next wait would exceed either, the
+ * last error is thrown at once rather than waited out.
  */
 export interface RetryPolicy {
    /** Total attempts including the first. */

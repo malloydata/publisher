@@ -4,12 +4,11 @@
 /**
  * The two ways get_context ranks a package's entities: semantic (cosine over
  * cached embeddings) and lexical (lunr). Each is a Retriever, so the
- * orchestrator in get_context_tool.ts can try them in order and fall back
- * without knowing how either one scores. Later stages (refine/prune, rerank,
- * value attach) do not belong here; they plug in as RankStage after retrieval.
- *
- * The bodies are the code that used to sit inline in runContextQuery, moved
- * rather than rewritten.
+ * orchestrator in get_context_tool.ts can pick one without knowing how either
+ * scores: semantic when an embedding provider is configured (and it never
+ * falls back to lexical, which would rank differently from the finished
+ * index), lexical otherwise. Later stages (refine/prune, rerank) do not belong
+ * here; they plug in as RankStage or CardStage after retrieval.
  */
 
 import type lunr from "lunr";
@@ -89,13 +88,12 @@ export const semanticRetriever: Retriever = {
       }
       if (provider) {
          try {
-            // One pass per target, merged on score. A max ACROSS passes is
-            // meaningful here and only here: cosine is an absolute scale,
-            // so 0.7 from the measure target and 0.7 from the dimension
-            // target mean the same thing. (The lexical path below has to
-            // normalize first, because lunr scores are relative to their
-            // own query.) The next commit collapses these passes into one
-            // batched embed and one scan; the merge rule does not change.
+            // Every target is scored in one scan and the rows are merged on
+            // score. A max ACROSS targets is meaningful here and only here:
+            // cosine is an absolute scale, so 0.7 from the measure target and
+            // 0.7 from the dimension target mean the same thing. (The lexical
+            // path below has to normalize first, because lunr scores are
+            // relative to their own query.)
             const merged = new Map<string, ResultEntity>();
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
