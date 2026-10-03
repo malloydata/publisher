@@ -2077,6 +2077,24 @@ export async function spliceDashboardDocument(
    requested: DashboardDocument,
    options: SpliceOptions = {},
 ): Promise<SpliceResult> {
+   // The planners split and join on `\n`, so a wholly CRLF file is edited as LF and written back as CRLF.
+   const crlf = sourceText.includes("\r\n") && !/(?<!\r)\n/.test(sourceText);
+   if (!crlf) return spliceLines(sourceText, requested, options);
+   const result = await spliceLines(
+      sourceText.replace(/\r\n/g, "\n"),
+      requested,
+      options,
+   );
+   return spliceFailed(result)
+      ? result
+      : { ...result, source: result.source.replace(/\n/g, "\r\n") };
+}
+
+async function spliceLines(
+   sourceText: string,
+   requested: DashboardDocument,
+   options: SpliceOptions,
+): Promise<SpliceResult> {
    const before = await readDashboardDocument(sourceText, options.modelPath);
    if (readFailed(before)) {
       return {

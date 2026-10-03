@@ -105,7 +105,7 @@ and one column.
 - `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported, and returned by `useDocumentChoices` as `canRetry`) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
 - `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag` and `splitSourceLines`, for a host that reads a file's tag without loading MUI or the Malloy parser.
 - `NotebookEditor` takes `path`, as `DashboardEditor` does.
-- The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped.
+- The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped. Saving one writes CRLF throughout, where the lines it inserted or rewrote used to come out LF.
 - Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
 - The read view's `DashboardView` takes a `chrome` prop, and a narrowed tile now narrows instead of keeping the width of the chart it replaced.
 
