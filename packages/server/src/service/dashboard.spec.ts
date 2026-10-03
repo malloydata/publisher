@@ -898,6 +898,20 @@ describe("service/dashboard manifest (composite form)", () => {
       expect(messages).not.toContain("ORG");
    });
 
+   it("lints an unimported given once when the compiled query reads it twice", () => {
+      const f = facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> plain"] }\n'],
+         viewGivens: new Map([["orders -> plain", []]]),
+         compiledTileGivens: new Map([
+            ["orders -> plain", { reads: ["SCOPE", "SCOPE"], gateReads: [] }],
+         ]),
+      });
+      const findings = lintDashboard(f, build(f)!).filter((x) =>
+         x.message.includes('"SCOPE"'),
+      );
+      expect(findings).toHaveLength(1);
+   });
+
    it("prefers a composite declaration over a query-level tag in the same file", () => {
       const manifest = build(
          facts({

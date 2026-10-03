@@ -1419,9 +1419,10 @@ export function lintDashboard(
       // file never imported itself, which leaves it with no control: the value
       // silently stays at its default. Bindability is per-file, so the fix is an
       // import in this file.
-      const unbindable = (referencedTileGivens(tile, facts) ?? []).filter(
-         (name) => !facts.givens.has(name),
-      );
+      // A compiled query can read one given twice.
+      const unbindable = Array.from(
+         new Set(referencedTileGivens(tile, facts) ?? []),
+      ).filter((name) => !facts.givens.has(name));
       for (const name of unbindable) {
          add(
             `tile "${tile}" filters by given "${name}", which this file does ` +
