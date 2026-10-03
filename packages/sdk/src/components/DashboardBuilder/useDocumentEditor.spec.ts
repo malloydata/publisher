@@ -230,6 +230,45 @@ describe("useDocumentEditor: undoing a save", () => {
       expect(view.result.current.lastSave?.before).toBe("P");
    });
 
+   it("stays dirty over a resumed draft once its save is undone, even with the edit undone too", async () => {
+      const { writes, onSave } = writer();
+      const view = renderHook(() =>
+         useDocumentEditor<Doc>({
+            source: "D",
+            replaces: "P",
+            document: { items: ["a"] },
+            splice,
+            structural,
+            onSave,
+         }),
+      );
+      act(() => view.result.current.update((d) => void d.items.push("b")));
+      await saveIt(view);
+      await act(async () => {
+         await view.result.current.undoSave();
+      });
+      act(() => view.result.current.undo());
+      // The package holds P again and the save dropped the stored draft, so the draft's text is in no file.
+      expect(view.result.current.document.items).toEqual(["a"]);
+      expect(view.result.current.dirty).toBe(true);
+      // Work to lose, so a leave guard warns.
+      expect(view.result.current.edited).toBe(true);
+      expect(view.result.current.pendingOpen).toBe(false);
+      await saveIt(view);
+      expect(view.result.current.dirty).toBe(false);
+      expect(view.result.current.lastSave?.before).toBe("P");
+      expect(writes.map((w) => [w.source, w.purpose])).toEqual([
+         ["a,b", "save"],
+         ["P", "undo"],
+         ["a", "save"],
+      ]);
+      // Undoing that save puts the editor back over the draft text again, still unsaved.
+      await act(async () => {
+         await view.result.current.undoSave();
+      });
+      expect(view.result.current.dirty).toBe(true);
+   });
+
    it("offers to undo a save, and undoing writes the file back and restores the editor to just before Save", async () => {
       const { writes, onSave } = writer();
       const view = open({ onSave });
