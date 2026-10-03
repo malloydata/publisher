@@ -83,10 +83,29 @@ source: a is scoped_orders extend {
   view: by_cat is by_category + { where: cat ~ $CATEGORY }
   view: by_brand is by_brand_view
 }`;
-      served = { givens: [CATEGORY] };
+      served = {
+         givens: [CATEGORY],
+         tiles: [
+            { kind: "query", query: "a -> by_cat", givenNames: ["CATEGORY"] },
+            { kind: "query", query: "a -> by_brand", givenNames: [] },
+         ],
+      };
       expect(await warnings()).toEqual({
          "Tile by_brand": "Doesn't respond to Category",
       });
+   });
+
+   it("does not warn on an unbound tile the saved file does not have yet", async () => {
+      packageFile = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
+import { scoped_orders } from "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  view: by_cat is by_category + { where: cat ~ $CATEGORY }
+  view: by_brand is by_brand_view
+}`;
+      // The model's own source may read CATEGORY; only a saved compile can say.
+      served = { givens: [CATEGORY] };
+      expect(await warnings()).toEqual({});
    });
 
    it("does not warn on a tile its extension's own where: scopes", async () => {
