@@ -4,6 +4,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useServer } from "../ServerProvider";
+import { canRetryRequest } from "./canRetry";
 import { exportedSources } from "./exportedSources";
 
 export interface DocumentChoice {
@@ -17,7 +18,8 @@ export interface DocumentChoice {
  * while `enabled` (the dialog is open) and cached after, so opening it costs
  * nothing until it is opened. A model whose lookup errors drops out of
  * `choices` and is named in `failed` (once nothing is loading), so a caller can
- * tell "every lookup failed" from "none exist"; `retry` refetches only those.
+ * tell "every lookup failed" from "none exist"; `retry` refetches only those,
+ * and `canRetry` says whether any of them could succeed on a second attempt.
  */
 export function useDocumentChoices({
    environmentName,
@@ -41,6 +43,8 @@ export function useDocumentChoices({
    failed: string[];
    /** Refetches only the failed lookups. */
    retry: () => void;
+   /** Whether a failed lookup could succeed if retried, by {@link canRetryRequest}. */
+   canRetry: boolean;
 } {
    const { apiClients, server } = useServer();
    const results = useQueries({
@@ -90,6 +94,8 @@ export function useDocumentChoices({
    }, [version, models]);
    const isLoading = results.some((q) => q.isLoading);
    const failed = isLoading ? [] : models.filter((_, i) => results[i]?.isError);
+   const canRetry =
+      !isLoading && results.some((q) => q.isError && canRetryRequest(q.error));
    const retry = () => {
       results.forEach((q) => {
          if (q.isError) void q.refetch();
@@ -102,5 +108,6 @@ export function useDocumentChoices({
       isSuccess: results.length > 0 && results.every((q) => !q.isPending),
       failed,
       retry,
+      canRetry,
    };
 }

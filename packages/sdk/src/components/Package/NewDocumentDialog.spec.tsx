@@ -7,6 +7,7 @@ import {
    cacheKeys,
    clearCache,
    mockServerProvider,
+   pending,
    serverWrapper,
    TEST_SERVER,
 } from "../../../test/serverProvider";
@@ -46,10 +47,13 @@ const MODELS: Record<string, unknown> = {
       ],
    },
 };
-const getModel = mock(
-   (_env: string, _pkg: string, path: string, _versionId?: string) =>
-      Promise.resolve({ data: MODELS[path] }),
-);
+const serve = (
+   _env: string,
+   _pkg: string,
+   path: string,
+   _versionId?: string,
+): Promise<{ data: unknown }> => Promise.resolve({ data: MODELS[path] });
+const getModel = mock(serve);
 mockServerProvider({ models: { getModel } });
 
 const { NewDocumentDialog } = await import("./NewDocumentDialog");
@@ -85,7 +89,21 @@ const titleFilled = (value: string, label = "Dashboard title") =>
 beforeEach(() => {
    clearCache();
    getModel.mockClear();
+   getModel.mockImplementation(serve);
 });
+
+const failing = (status?: number) =>
+   Promise.reject(
+      Object.assign(
+         new Error("Request failed"),
+         status === undefined ? {} : { response: { status } },
+      ),
+   );
+
+const createButton = (name: string | RegExp) =>
+   screen.getByRole("button", { name });
+
+const isDisabled = (element: HTMLElement) => element.hasAttribute("disabled");
 
 describe("NewDocumentDialog", () => {
    it("writes a dashboard with the picked view as its first tile and hands back where it went", async () => {
@@ -241,7 +259,9 @@ describe("NewDocumentDialog", () => {
       expect(getModel).not.toHaveBeenCalled();
       expect(
          screen
-            .getByRole("button", { name: "Create dashboard" })
+            .getByRole("button", {
+               name: "Create dashboard: No model view to start from yet",
+            })
             .hasAttribute("disabled"),
       ).toBe(true);
    });
@@ -377,5 +397,353 @@ describe("NewDocumentDialog: what a model read is cached under", () => {
       const [key] = cacheKeys("new-document-model");
       expect(key).toContain('"v3"');
       expect(key).toContain(TEST_SERVER);
+   });
+});
+
+describe("NewDocumentDialog: a model it could not read", () => {
+   it("names it, keeps the rest, and offers a retry that brings its views back", async () => {
+      let healthy = false;
+      getModel.mockImplementation((env, pkg, path, versionId) =>
+         path === "storefront.malloy" && !healthy
+            ? failing(503)
+            : serve(env, pkg, path, versionId),
+      );
+      mount();
+      expect(
+         await screen.findByText(
+            "Couldn't read storefront.malloy, so its views aren't listed.",
+         ),
+      ).toBeDefined();
+      expect(
+         screen.queryByText(/no model in this package declares/),
+      ).toBeNull();
+      expect(
+         isDisabled(
+            createButton(
+               "Create dashboard: Couldn't read the model views to start from",
+            ),
+         ),
+      ).toBe(true);
+
+      healthy = true;
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await titleFilled("by category");
+      expect(screen.queryByText(/Couldn't read storefront\.malloy/)).toBeNull();
+      expect(isDisabled(createButton("Create dashboard"))).toBe(false);
+   });
+
+   it("names every model it could not read", async () => {
+      getModel.mockImplementation(() => failing(500));
+      mount();
+      expect(
+         await screen.findByText(
+            "Couldn't read storefront.malloy, other.malloy, so their views aren't listed.",
+         ),
+      ).toBeDefined();
+   });
+
+   it("lets Create through when another model still offers a view", async () => {
+      getModel.mockImplementation((env, pkg, path, versionId) =>
+         path === "other.malloy"
+            ? failing(500)
+            : serve(env, pkg, path, versionId),
+      );
+      mount();
+      await titleFilled("by category");
+      expect(
+         await screen.findByText(
+            "Couldn't read other.malloy, so its views aren't listed.",
+         ),
+      ).toBeDefined();
+      expect(isDisabled(createButton("Create dashboard"))).toBe(false);
+   });
+
+   for (const [status, retry] of [
+      [401, false],
+      [403, false],
+      [404, false],
+      [500, true],
+      [503, true],
+      [undefined, true],
+   ] as const)
+      it(`${retry ? "offers" : "offers no"} Retry after ${status ?? "no response"}`, async () => {
+         getModel.mockImplementation(() => failing(status));
+         mount({ models: ["storefront.malloy"] });
+         await screen.findByText(/Couldn't read storefront\.malloy/);
+         expect(screen.queryByRole("button", { name: "Retry" }) !== null).toBe(
+            retry,
+         );
+      });
+});
+
+describe("NewDocumentDialog: why Create is off", () => {
+   it("while the views load, in its name and its tooltip", async () => {
+      getModel.mockImplementation(() => pending());
+      mount();
+      const button = createButton("Create dashboard: Loading model views");
+      expect(isDisabled(button)).toBe(true);
+      fireEvent.mouseOver(button.parentElement!);
+      expect((await screen.findByRole("tooltip")).textContent).toBe(
+         "Loading model views",
+      );
+   });
+
+   it("while the host still lists the models, not that the package has none", () => {
+      mount({ models: [], modelsLoading: true });
+      expect(screen.queryByText(/This package has no models yet/)).toBeNull();
+      expect(
+         isDisabled(createButton("Create dashboard: Loading model views")),
+      ).toBe(true);
+   });
+
+   it("when the host could not list the models, with its Retry", () => {
+      const onRetryModels = mock(() => {});
+      mount({
+         models: [],
+         modelsError: Object.assign(new Error("x"), {
+            response: { status: 502 },
+         }),
+         onRetryModels,
+      });
+      expect(screen.queryByText(/This package has no models yet/)).toBeNull();
+      expect(
+         screen.getByText(/Couldn't read this package's models/),
+      ).toBeDefined();
+      expect(
+         isDisabled(
+            createButton(
+               "Create dashboard: Couldn't read the model views to start from",
+            ),
+         ),
+      ).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(onRetryModels).toHaveBeenCalledTimes(1);
+   });
+
+   it("offers no Retry for a models listing a retry cannot fix", () => {
+      mount({
+         models: [],
+         modelsError: { status: 403 },
+         onRetryModels: () => {},
+      });
+      expect(
+         screen.getByText(/Couldn't read this package's models/),
+      ).toBeDefined();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+   });
+
+   it("when every model failed to read", async () => {
+      getModel.mockImplementation(() => failing(500));
+      mount();
+      await screen.findByText(/Couldn't read storefront\.malloy/);
+      expect(
+         isDisabled(
+            createButton(
+               "Create dashboard: Couldn't read the model views to start from",
+            ),
+         ),
+      ).toBe(true);
+   });
+
+   it("when no model has a view", async () => {
+      mount({ models: ["other.malloy"] });
+      await screen.findByText(/no model in this package declares one yet/);
+      expect(
+         isDisabled(
+            createButton("Create dashboard: No model view to start from yet"),
+         ),
+      ).toBe(true);
+   });
+
+   it("not for a blank title, whose problem it shows on press", async () => {
+      const write = mock((_path: string, _source: string) => Promise.resolve());
+      mount({ target: packageTarget([], write) });
+      await titleFilled("by category");
+      fireEvent.change(screen.getByLabelText("Dashboard title"), {
+         target: { value: "  " },
+      });
+      expect(screen.queryByText("A title cannot be empty.")).toBeNull();
+      const button = createButton("Create dashboard");
+      expect(isDisabled(button)).toBe(false);
+      fireEvent.click(button);
+      expect(screen.getByText("A title cannot be empty.")).toBeDefined();
+      expect(
+         screen.getByLabelText("Dashboard title").getAttribute("aria-invalid"),
+      ).toBe("true");
+      expect(write).not.toHaveBeenCalled();
+   });
+
+   it("not for a title that cannot be written, whose problem shows as it is typed", async () => {
+      mount({ kind: "notebook" });
+      await titleFilled("by category", "Notebook title");
+      fireEvent.change(screen.getByLabelText("Notebook title"), {
+         target: { value: "a |## b" },
+      });
+      expect(screen.getByText(/A title cannot contain `\|##`/)).toBeDefined();
+      expect(isDisabled(createButton("Create notebook"))).toBe(false);
+   });
+});
+
+describe("NewDocumentDialog: the picked view", () => {
+   const base = MODELS["storefront.malloy"] as Record<string, unknown>;
+   const versions: Record<string, unknown> = {
+      reordered: {
+         ...base,
+         sources: [
+            {
+               name: "order_items",
+               views: [{ name: "by_brand" }, { name: "by_category" }],
+            },
+         ],
+      },
+      dropped: {
+         ...base,
+         sources: [{ name: "order_items", views: [{ name: "by_category" }] }],
+      },
+   };
+
+   const reread = (view: ReturnType<typeof mount>, versionId: string) =>
+      view.rerender(
+         <NewDocumentDialog
+            open
+            kind="dashboard"
+            environmentName="env"
+            packageName="pkg"
+            versionId={versionId}
+            models={["storefront.malloy"]}
+            target={packageTarget()}
+            onClose={() => {}}
+            onCreated={() => {}}
+         />,
+      );
+
+   const firstTile = () => screen.getByRole("combobox", { name: /First tile/ });
+
+   const pickBrand = async () => {
+      await titleFilled("by category");
+      fireEvent.mouseDown(firstTile());
+      fireEvent.click(
+         screen.getByRole("option", { name: "order_items → by_brand" }),
+      );
+      expect(firstTile().textContent).toBe("order_items → by_brand");
+   };
+
+   beforeEach(() => {
+      getModel.mockImplementation((env, pkg, path, versionId) =>
+         versionId !== undefined && versions[versionId] !== undefined
+            ? Promise.resolve({ data: versions[versionId] })
+            : serve(env, pkg, path, versionId),
+      );
+   });
+
+   it("stays picked when the views are read again in another order", async () => {
+      const view = mount({ models: ["storefront.malloy"], versionId: "first" });
+      await pickBrand();
+      reread(view, "reordered");
+      await waitFor(() => expect(getModel).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+         expect(firstTile().textContent).toBe("order_items → by_brand"),
+      );
+      expect(isDisabled(createButton("Create dashboard"))).toBe(false);
+   });
+
+   it("is not swapped for another when it leaves the list", async () => {
+      const view = mount({ models: ["storefront.malloy"], versionId: "first" });
+      await pickBrand();
+      reread(view, "dropped");
+      expect(
+         await screen.findByText(
+            "The view you picked is no longer in this model; pick another.",
+         ),
+      ).toBeDefined();
+      expect(firstTile().textContent).not.toContain("by_category");
+      expect(
+         isDisabled(
+            createButton("Create dashboard: Pick a view to start from"),
+         ),
+      ).toBe(true);
+   });
+});
+
+describe("NewDocumentDialog: while it creates", () => {
+   it("says so, and neither Cancel, Escape nor the backdrop closes it", async () => {
+      let finish: () => void = () => {};
+      const write = mock(
+         (_path: string, _source: string) =>
+            new Promise<void>((resolve) => {
+               finish = resolve;
+            }),
+      );
+      const onClose = mock(() => {});
+      const onCreated = mock((_created: unknown) => {});
+      mount({ target: packageTarget([], write), onClose, onCreated });
+      await titleFilled("by category");
+      fireEvent.click(createButton("Create dashboard"));
+
+      const creating = await screen.findByRole("button", {
+         name: "Creating dashboard…",
+      });
+      expect(isDisabled(creating)).toBe(true);
+      expect(isDisabled(screen.getByRole("button", { name: "Cancel" }))).toBe(
+         true,
+      );
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      fireEvent.click(document.querySelector(".MuiBackdrop-root")!);
+      expect(onClose).not.toHaveBeenCalled();
+
+      finish();
+      await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+   });
+
+   it("names the notebook kind while it creates one", async () => {
+      mount({ kind: "notebook", target: packageTarget([], () => pending()) });
+      await titleFilled("by category", "Notebook title");
+      fireEvent.click(createButton("Create notebook"));
+      expect(
+         await screen.findByRole("button", { name: "Creating notebook…" }),
+      ).toBeDefined();
+   });
+});
+
+describe("NewDocumentDialog: what the host decides", () => {
+   it("closes from Cancel and from Escape", async () => {
+      const onClose = mock(() => {});
+      mount({ onClose });
+      await titleFilled("by category");
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      expect(onClose).toHaveBeenCalledTimes(2);
+   });
+
+   it("offers no kind to switch to when allowKindChange is false", async () => {
+      mount({ kind: "notebook", allowKindChange: false });
+      await titleFilled("by category", "Notebook title");
+      expect(screen.queryByRole("combobox", { name: /Type/ })).toBeNull();
+      expect(createButton("Create notebook")).toBeDefined();
+   });
+
+   it("says where the host saves it, in the host's words", async () => {
+      mount({
+         target: {
+            route: "storage",
+            storage: {} as DocumentStorage,
+            workspace: {
+               name: "w",
+               writeable: true,
+               description: "",
+               authoritative: true,
+            },
+            environmentName: "env",
+            packageName: "pkg",
+            existing: [],
+         },
+         savedAs: "Saved to your workspace, and opened in the builder.",
+      });
+      await titleFilled("by category");
+      expect(
+         screen.getByText(
+            "Saved to your workspace, and opened in the builder.",
+         ),
+      ).toBeDefined();
    });
 });

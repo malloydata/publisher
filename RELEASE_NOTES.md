@@ -79,7 +79,9 @@ saves.
 **What a file is comes from its tag, not its folder.** A document's kind is its `## artifact` tag
 (`dashboard` or `notebook`), and a tagged file is listed and served from wherever the package puts
 it. A file whose tag names no `kind` is edited as its folder's kind (`notebooks/` is a notebook).
-The tag can be written in block form (`##|`). Notebooks are authored as layouts
+The tag can be written in block form (`##|`), closed by `|##` on a line of its own: as Malloy reads
+it, a `|##` on the opener's line closes nothing, and the server's check of an unsaved file now
+agrees. Notebooks are authored as layouts
 (`tiles=[…]`), the shape the builder writes, and a layout notebook's read view has no cards around
 its tiles.
 
@@ -98,6 +100,10 @@ and one column.
 - A `DocumentStorage` host sees Undo save as an ordinary `saveDocument` of the earlier text. The host store has no compare-and-swap, so a newer version written elsewhere is overwritten.
 - `DashboardEditor` takes `path` and `kind`, to open a document as its tag's kind from the path the package lists it at. `NotebookEditor` is now a wrapper over the dashboard builder with `kind="notebook"`, and the cell-notebook builder is gone.
 - `useServer().mutable` is `boolean | undefined`: `undefined` while `/status` loads or when it failed, and the editor offers no package Save until it is `true`.
+- `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported, and returned by `useDocumentChoices` as `canRetry`) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
+- `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag` and `splitSourceLines`, for a host that reads a file's tag without loading MUI or the Malloy parser.
+- `NotebookEditor` takes `path`, as `DashboardEditor` does.
+- The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped.
 - Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
 - The read view's `DashboardView` takes a `chrome` prop, and a narrowed tile now narrows instead of keeping the width of the chart it replaced.
 

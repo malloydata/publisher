@@ -104,6 +104,31 @@ describe("useDocumentChoices: which lookups failed", () => {
       expect(callsFor("b.malloy")).toBe(2);
    });
 
+   it("offers a retry only when a failed lookup could succeed on a second attempt", async () => {
+      const status = (code: number) =>
+         Promise.reject(
+            Object.assign(new Error("x"), { response: { status: code } }),
+         );
+      getModel.mockImplementation((_e, _p, path) =>
+         path === "a.malloy" ? status(403) : status(404),
+      );
+      const denied = render(["a.malloy", "b.malloy"]);
+      await waitFor(() =>
+         expect(denied.result.current.failed).toEqual(["a.malloy", "b.malloy"]),
+      );
+      expect(denied.result.current.canRetry).toBe(false);
+
+      clearCache();
+      getModel.mockImplementation((_e, _p, path) =>
+         path === "a.malloy" ? status(404) : status(503),
+      );
+      const flaky = render(["a.malloy", "b.malloy"]);
+      await waitFor(() =>
+         expect(flaky.result.current.failed).toEqual(["a.malloy", "b.malloy"]),
+      );
+      expect(flaky.result.current.canRetry).toBe(true);
+   });
+
    it("makes no calls while disabled", () => {
       const { result } = render(["a.malloy"], false);
       expect(getModel).not.toHaveBeenCalled();

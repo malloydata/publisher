@@ -9,3 +9,9 @@ export {
    type LocatedDocument,
 } from "./documentLocation";
 export { useDocumentLocation } from "./useDocumentLocation";
+export {
+   NewDocumentDialog,
+   type NewDocumentDialogProps,
+} from "./NewDocumentDialog";
+// Exported so a host decides Retry on its own failed requests as the dialog does.
+export { canRetryRequest } from "../DocumentCreate/canRetry";

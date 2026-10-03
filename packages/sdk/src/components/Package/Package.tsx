@@ -452,6 +452,11 @@ export default function Package({
                         !path.startsWith("dashboards/") &&
                         !path.startsWith("notebooks/"),
                   )}
+               modelsLoading={modelsQuery.isPending}
+               {...(modelsQuery.isError
+                  ? { modelsError: modelsQuery.error }
+                  : {})}
+               onRetryModels={() => void modelsQuery.refetch()}
                target={createTarget}
                onClose={() => setCreating(undefined)}
                onCreated={(created) => {
