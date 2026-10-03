@@ -19,6 +19,7 @@ import {
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import {
+   ANY_ARTIFACT_NOTE,
    artifactKindInText,
    claimsToBeANotebook,
    documentKind,
@@ -66,14 +67,6 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
 
 /** The only files the write endpoint accepts: a dashboard or a notebook, at the top of its directory. */
 const DASHBOARD_FILE = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
-
-/**
- * A `#` or `##` tag line, or a `##|` block, with an `artifact` property anywhere
- * outside a quoted string. Loose on purpose: the post-reload verify still rolls
- * back a file that turns out untagged, and a strict check refused valid files.
- */
-const ANY_ARTIFACT_NOTE =
-   /^#{1,2}\|?[ \t]*(?=[A-Za-z_])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w.$-])artifact\b/;
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>

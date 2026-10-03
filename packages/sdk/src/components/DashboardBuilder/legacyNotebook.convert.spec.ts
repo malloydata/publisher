@@ -275,6 +275,14 @@ describe("convertLegacyNotebook: every cell-format notebook in the corpus", () =
       const result = await refusal(read(path.join(FIXTURES, "refused.malloy")));
       expect(result.line).toBeGreaterThan(0);
    });
+
+   it("refuses a tag whose artifact property is not the first, rather than rewriting it", async () => {
+      const result = await refusal(
+         `##! experimental.givens\n## dashboard { columns=2 } artifact { kind=notebook title="T" }\nimport "../m.malloy"\n\nrun: orders -> kpis\n`,
+      );
+      expect(result.refused).toContain("`artifact { … }` first");
+      expect(result.line).toBe(2);
+   });
 });
 
 describe("convertLegacyNotebook: shapes", () => {

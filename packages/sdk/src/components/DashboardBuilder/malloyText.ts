@@ -42,11 +42,43 @@ export const isStrictName = (text: string) =>
 export const malloyPath = (path: string) =>
    isIdentifier(path) && !isBareName(path) ? `\`${path}\`` : path;
 
-/** The server's rule for the tag line: `## artifact` at the start of a line. */
-export const ARTIFACT_LINE = /^##[ \t]*artifact\b/;
-
-/** The block spelling of the same tag: `##|` then `artifact`, which may start the next line. */
-const ARTIFACT_BLOCK = /^##\|\s*artifact\b/;
+/**
+ * Whether a `##` note or `##|` block sets `artifact` as a top-level property, anywhere among its
+ * properties, as the tag parser reads it: not inside a string, a nested `{…}` or `[…]`, or a `#`
+ * comment, and not as a value (`title=artifact`) or a dotted path's tail. The server's rule too.
+ */
+export function setsArtifactProperty(note: string): boolean {
+   // A routed note (`##(markdown)`, `##"`) or a flag (`##!`) is never a tag.
+   const prefix = /^##(?:\|\s*|[ \t]*)(?=[A-Za-z_])/.exec(note);
+   if (!prefix) return false;
+   let depth = 0;
+   let before = "";
+   for (let i = prefix[0].length; i < note.length; i++) {
+      const c = note[i];
+      if (/\s/.test(c)) continue;
+      if (c === '"' || c === "'") {
+         const fence = note.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+         i += fence.length;
+         while (i < note.length && !note.startsWith(fence, i))
+            i += note[i] === "\\" ? 2 : 1;
+         i += fence.length - 1;
+      } else if (c === "#") {
+         const eol = note.indexOf("\n", i);
+         if (eol < 0) return false;
+         i = eol;
+         continue;
+      } else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") depth--;
+      else if (/\w/.test(c)) {
+         const word = /^\w+/.exec(note.slice(i))?.[0] ?? c;
+         if (depth === 0 && word === "artifact" && !/[=.-]/.test(before))
+            return true;
+         i += word.length - 1;
+      }
+      before = c;
+   }
+   return false;
+}
 
 /**
  * A note's markdown route, by Malloy's prefix rule: the first whitespace-delimited token is
@@ -155,10 +187,14 @@ export interface ArtifactTag {
 export function artifactTag(lines: string[]): ArtifactTag | undefined {
    const inBlock = blockLines(lines);
    const single = lines.findIndex(
-      (l, i) => !inBlock.has(i) && ARTIFACT_LINE.test(l.trim()),
+      (l, i) =>
+         !inBlock.has(i) &&
+         // An unclosed `##|` opener holds no block, so it is no tag either.
+         !/^\s*##\|/.test(l) &&
+         setsArtifactProperty(l.trim()),
    );
    const span = blockSpans(lines).find(([from, to]) =>
-      ARTIFACT_BLOCK.test(lines.slice(from, to).join("\n").trim()),
+      setsArtifactProperty(lines.slice(from, to).join("\n").trim()),
    );
    if (span && (single < 0 || span[0] < single))
       return {
@@ -171,6 +207,14 @@ export function artifactTag(lines: string[]): ArtifactTag | undefined {
       ? undefined
       : { from: single, to: single, block: false, text: lines[single] };
 }
+
+/** Whether `artifact { … }` is the tag's first property, the one spelling the builder's tag rewrites can edit. */
+export const artifactLeads = (tagText: string) =>
+   /^\s*##(?:\|\s*|[ \t]*)artifact\b/.test(tagText);
+
+/** Why a tag the server serves is not opened when `artifact` is not its first property. */
+export const ARTIFACT_NOT_FIRST =
+   "The `artifact` property is not the first on its tag, so the builder cannot rewrite the tag without risking the properties before it. Move `artifact { … }` first on the tag to edit this file here.";
 
 /** The line carrying the model-level artifact tag (a block's opener), or -1. */
 export const artifactLine = (lines: string[]) => artifactTag(lines)?.from ?? -1;

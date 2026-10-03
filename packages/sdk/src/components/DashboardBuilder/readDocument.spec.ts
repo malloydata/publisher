@@ -6,6 +6,7 @@ import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import { readForEditor } from "./readForEditor";
 import { parseMalloy, parseRefused } from "./malloyTree";
 import { queryTile } from "./testing/fixtures";
 import { tileKey } from "./document";
@@ -833,6 +834,49 @@ describe("readDashboardDocument: what it refuses", () => {
       );
       expect(queryTile(doc, 0).declaration).toEqual({ kind: "inline" });
       expect(doc.tiles[0].colspan).toBe(6);
+   });
+});
+
+// The server serves such a file; the builder's tag rewrites only know `artifact { … }` leading.
+describe("a tag whose artifact property is not the first", () => {
+   const rest = SIMPLE.split("\n").slice(5).join("\n");
+   const refused = async (text: string, modelPath?: string) => {
+      const result = await readDashboardDocument(text, modelPath);
+      if (!readFailed(result)) throw new Error("expected a refusal");
+      return result;
+   };
+
+   it("is refused with the reason, not read as untagged", async () => {
+      const result = await refused(
+         `## dashboard { columns=2 } artifact { title="Probe" tiles=["a -> by_cat"] }\n${rest}`,
+      );
+      expect(result.reason).toContain("`artifact { … }` first");
+      expect(result.reason).not.toContain("No `## artifact");
+   });
+
+   it("is refused in a ##| block too", async () => {
+      const result = await refused(
+         `##| dashboard { columns=2 }\n  artifact { title="Probe" tiles=["a -> by_cat"] }\n|##\n${rest}`,
+      );
+      expect(result.reason).toContain("`artifact { … }` first");
+   });
+
+   it("is refused, not converted, for a cell-format notebook", async () => {
+      const open = await readForEditor(
+         `##! experimental.givens\n## dashboard { columns=2 } artifact { kind=notebook title="T" }\nrun: a -> by_cat`,
+         "notebooks/n.malloy",
+      );
+      expect(open.ok === false && open.reason).toContain(
+         "`artifact { … }` first",
+      );
+   });
+
+   it("still opens when artifact leads and another property follows", async () => {
+      const doc = await read(
+         `## artifact { title="Probe" tiles=["a -> by_cat"] } dashboard { columns=2 }\n${rest}`,
+      );
+      expect(doc.title).toBe("Probe");
+      expect(doc.columns).toBe(2);
    });
 });
 

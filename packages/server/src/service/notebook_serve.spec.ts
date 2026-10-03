@@ -100,6 +100,23 @@ describe("notebook predicates", () => {
       expect(isArtifactNoteText("##| artifact { kind=notebook }")).toBe(true);
    });
 
+   it("reads an artifact property anywhere among the tag's properties", () => {
+      const second = "## dashboard { columns=2 } artifact { kind=notebook }";
+      expect(isArtifactNoteText(second)).toBe(true);
+      expect(claimsToBeANotebook(`${second}\nrun: x`)).toBe(true);
+      expect(artifactKindInText(`${second}\nrun: x`)).toBe("notebook");
+      expect(
+         artifactKindInText(
+            "##| dashboard { columns=2 }\n  artifact { kind=notebook }\n|##\nrun: x",
+         ),
+      ).toBe("notebook");
+      expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
+      expect(isArtifactNoteText("## title=artifact")).toBe(false);
+   });
+
    it("locates the artifact note by its line, and only the ## form", () => {
       const notes = [
          note('##" above\n', 0),
@@ -272,6 +289,25 @@ describe("served notebooks (worker path)", () => {
          expect(pkg.getModel("notebooks/untagged.malloy")!.isNotebook()).toBe(
             false,
          );
+      });
+   });
+
+   it("serves a notebook whose artifact property follows another property", async () => {
+      manifest();
+      write(
+         "notebooks/second.malloy",
+         `## dashboard { columns=2 } artifact { kind=notebook }\n${BASE}`,
+      );
+      write(
+         "notebooks/titled.malloy",
+         `## dashboard { title="artifact" }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.isServedNotebook("notebooks/second.malloy")).toBe(true);
+         expect(pkg.getModel("notebooks/second.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         expect(pkg.isServedNotebook("notebooks/titled.malloy")).toBe(false);
       });
    });
 

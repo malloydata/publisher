@@ -97,6 +97,7 @@ import {
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import {
+   ANY_ARTIFACT_NOTE,
    artifactKindInText,
    claimsToBeANotebook,
    documentKind,
@@ -2816,7 +2817,7 @@ export class Package {
     * wrong tool; its comment says so.
     *
     * Deliberately textual and deliberately generous: it looks for an `artifact`
-    * annotation at the start of a line. Note the cost of a false positive is
+    * property anywhere on a `#` or `##` annotation line. Note the cost of a false positive is
     * NOT the same on every path. On the original one it lists a broken file
     * that was never a dashboard, which is merely noisy. On the drop paths it
     * emits an `error` finding claiming a dashboard should exist and registers
@@ -2830,7 +2831,7 @@ export class Package {
             safeJoinUnderRoot(this.packagePath, modelPath),
             "utf8",
          );
-         return hasArtifactLineOutsideBlocks(source, /^##?[ \t]*artifact\b/);
+         return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
       } catch {
          return false;
       }

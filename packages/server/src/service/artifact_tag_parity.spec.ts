@@ -9,6 +9,7 @@ import {
    translateToParse,
    type TokenStreamShape,
 } from "./notebook";
+import { motlyParseErrors, motlyTag } from "./motly";
 
 // One case table for this reader and the SDK's `artifactTag`, whose spec reads the same file.
 const FIXTURE = path.resolve(
@@ -30,7 +31,13 @@ const lines = (text: string) =>
       .map((l) => l.trim())
       .filter((l, i, all) => i < all.length - 1 || l !== "");
 
-/** The tag as Malloy's lexer reads it: a `##` note, or a `##|` block that closes, spelled `artifact`. */
+/** Whether the tag parser reads `note` as setting a top-level `artifact`; a note that does not parse counts when it opens with `artifact`, so its error is reported rather than the file read as untagged. */
+const setsArtifact = (note: string) =>
+   motlyParseErrors([note]).length > 0
+      ? /^##(?:\|\s*|[ \t]*)artifact\b/.test(note)
+      : Boolean(motlyTag([note])?.tag("artifact"));
+
+/** The tag as Malloy reads it: the first `##` note, or `##|` block that closes, that sets `artifact`. */
 function lexerTag(source: string): string[] | null {
    const stream = translateToParse(source).parse?.tokenStream as
       | TokenStreamShape
@@ -42,7 +49,7 @@ function lexerTag(source: string): string[] | null {
       source.slice(tokens[i].startIndex, tokens[i].stopIndex + 1);
    for (let i = 0; i < tokens.length; i++) {
       const kind = name(tokens[i].type);
-      if (kind === "DOC_ANNOTATION" && /^##[ \t]*artifact\b/.test(text(i)))
+      if (kind === "DOC_ANNOTATION" && setsArtifact(text(i)))
          return lines(text(i));
       if (kind !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
       const body: string[] = [];
@@ -52,7 +59,7 @@ function lexerTag(source: string): string[] | null {
          if (++j >= tokens.length || name(tokens[j].type) === "EOF")
             return null;
       }
-      if (/^##\|\s*artifact\b/.test(text(i))) return lines(body.join(""));
+      if (setsArtifact(body.join(""))) return lines(body.join(""));
       i = j;
    }
    return null;

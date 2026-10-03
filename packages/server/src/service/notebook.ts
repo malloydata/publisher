@@ -52,8 +52,61 @@ export function documentKind(
    return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
 }
 
-/** A `## artifact` line, or the opener of a `##| artifact … |##` block. */
-const ARTIFACT_NOTE = /^##(?:\|\s*|[ \t]*)artifact\b/;
+/** A text test, which a `RegExp` is too. */
+export interface LineTest {
+   test(text: string): boolean;
+}
+
+/**
+ * A `##` note or `##|` block that sets `artifact` as a top-level property,
+ * anywhere among its properties, as the tag parser reads it: not inside a
+ * string, a nested `{…}` or `[…]`, or a `#` comment, and not as a value
+ * (`title=artifact`) or a dotted path's tail. The SDK's `artifactTag` reads the
+ * same rule; `artifact_tag_parity.spec.ts` holds the two to the tag parser.
+ */
+const ARTIFACT_NOTE: LineTest = {
+   test(note: string): boolean {
+      // A routed note (`##(markdown)`, `##"`) or a flag (`##!`) is never a tag.
+      const prefix = /^##(?:\|\s*|[ \t]*)(?=[A-Za-z_])/.exec(note);
+      if (!prefix) return false;
+      let depth = 0;
+      let before = "";
+      for (let i = prefix[0].length; i < note.length; i++) {
+         const c = note[i];
+         if (/\s/.test(c)) continue;
+         if (c === '"' || c === "'") {
+            const fence = note.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+            i += fence.length;
+            while (i < note.length && !note.startsWith(fence, i))
+               i += note[i] === "\\" ? 2 : 1;
+            i += fence.length - 1;
+         } else if (c === "#") {
+            const eol = note.indexOf("\n", i);
+            if (eol < 0) return false;
+            i = eol;
+            continue;
+         } else if (c === "{" || c === "[") depth++;
+         else if (c === "}" || c === "]") depth--;
+         else if (/\w/.test(c)) {
+            const word = /^\w+/.exec(note.slice(i))?.[0] ?? c;
+            if (depth === 0 && word === "artifact" && !/[=.-]/.test(before))
+               return true;
+            i += word.length - 1;
+         }
+         before = c;
+      }
+      return false;
+   },
+};
+
+/**
+ * A `#` or `##` tag line, or a `##|` block, with an `artifact` property anywhere
+ * outside a quoted string. Loose on purpose: a query can carry a dashboard's
+ * tag, the write path's post-reload verify still rolls back a file that turns
+ * out untagged, and a false negative hides a real dashboard.
+ */
+export const ANY_ARTIFACT_NOTE =
+   /^#{1,2}\|?[ \t]*(?=[A-Za-z_])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w.$-])artifact\b/;
 
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
@@ -128,14 +181,14 @@ export function dashboardDescriptionNotes(
  */
 export function hasArtifactLineOutsideBlocks(
    source: string,
-   artifactLine: RegExp,
+   artifactLine: LineTest,
 ): boolean {
    return findArtifactLineOutsideBlocks(source, artifactLine) !== undefined;
 }
 
 function findArtifactLineOutsideBlocks(
    source: string,
-   artifactLine: RegExp,
+   artifactLine: LineTest,
 ): string | undefined {
    const lines = source.split(/\r\n|\r|\n/);
    for (let i = 0; i < lines.length; i++) {

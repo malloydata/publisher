@@ -1,5 +1,5 @@
 {
-   "about": "The artifact tag as read off raw text, by the server (findArtifactLineOutsideBlocks) and the SDK (artifactTag). Malloy's lexer is the authority: a ##| opener consumes its whole line, and a block closes only at a later line's start, at the opener's column. `tag` is the tag's lines, each trimmed, or null for none. `server` overrides `tag` for the server alone, with `why`.",
+   "about": "The artifact tag as read off raw text, by the server (findArtifactLineOutsideBlocks) and the SDK (artifactTag). Malloy's lexer and tag parser are the authority: a note is the tag when it sets `artifact` as a top-level property, wherever it sits among the note's properties; a ##| opener consumes its whole line, and a block closes only at a later line's start, at the opener's column. `tag` is the tag's lines, each trimmed, or null for none. `server` overrides `tag` for the server alone, with `why`.",
    "cases": [
       {
          "name": "a one-line ## tag",
@@ -67,6 +67,71 @@
          "name": "a tile's kind=text is inside the tag, not a tag of its own",
          "source": "## artifact { kind=notebook tiles=[intro { kind=text }, \"s -> v\"] }\n##|(markdown) intro\n# Hi\n|##\nrun: x",
          "tag": ["## artifact { kind=notebook tiles=[intro { kind=text }, \"s -> v\"] }"]
+      },
+      {
+         "name": "artifact after another property on a ## line",
+         "source": "## dashboard { columns=2 } artifact { kind=dashboard tiles=[\"s -> v\"] }\nrun: x",
+         "tag": ["## dashboard { columns=2 } artifact { kind=dashboard tiles=[\"s -> v\"] }"]
+      },
+      {
+         "name": "artifact before another property on a ## line",
+         "source": "## artifact { kind=dashboard tiles=[\"s -> v\"] } dashboard { columns=2 }\nrun: x",
+         "tag": ["## artifact { kind=dashboard tiles=[\"s -> v\"] } dashboard { columns=2 }"]
+      },
+      {
+         "name": "artifact as a dotted path",
+         "source": "## artifact.kind=dashboard\nrun: x",
+         "tag": ["## artifact.kind=dashboard"]
+      },
+      {
+         "name": "a ##| block whose artifact property is on a later line",
+         "source": "##| dashboard { columns=2 }\n  artifact { kind=notebook }\n|##\nrun: x",
+         "tag": ["##| dashboard { columns=2 }", "artifact { kind=notebook }"]
+      },
+      {
+         "name": "a ##| block whose opener line sets artifact second",
+         "source": "##| dashboard { columns=2 } artifact { kind=notebook\n}\n|##\nrun: x",
+         "tag": ["##| dashboard { columns=2 } artifact { kind=notebook", "}"]
+      },
+      {
+         "name": "artifact as a quoted string value is no tag",
+         "source": "## dashboard { title=\"artifact\" }\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact inside a single-quoted string is no tag",
+         "source": "## dashboard { title='an artifact' }\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact as a bare value is no tag",
+         "source": "## title=artifact\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact nested inside another property is no tag",
+         "source": "## dashboard { artifact { kind=dashboard } }\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact under another property's dotted path is no tag",
+         "source": "## dashboard.artifact=1\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact after a # comment on the tag line is no tag",
+         "source": "## dashboard { columns=2 } # artifact\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "a routed note that mentions artifact is no tag",
+         "source": "##(markdown) about the artifact\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "a query-level # tag is not the model-level tag",
+         "source": "source: s is t\n# dashboard { columns=2 } artifact { }\nquery: q is s -> v",
+         "tag": null
       },
       {
          "name": "an untagged file",

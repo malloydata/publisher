@@ -25,6 +25,8 @@ import {
    type TreeView,
 } from "./malloyTree";
 import {
+   ARTIFACT_NOT_FIRST,
+   artifactLeads,
    artifactTag as locateArtifactTag,
    descriptionNotes,
    readPath,
@@ -315,6 +317,12 @@ async function readDocumentText(
             "No `## artifact { … }` tag, so this file is not a composite dashboard.",
       };
    }
+   if (!artifactLeads(artifactAt.text))
+      return {
+         ok: false,
+         reason: ARTIFACT_NOT_FIRST,
+         line: artifactAt.from + 1,
+      };
 
    const { tag, errors: tagErrors } = parseTagLines(parseAnnotation, [
       tagAnnotation(artifactAt.text),

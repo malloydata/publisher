@@ -228,6 +228,25 @@ describe("DashboardController.putDashboardSource", () => {
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 
+   it("lets a notebooks/ file whose artifact follows another property through the pre-write check", async () => {
+      const { controller, environment } = harness();
+      await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         source:
+            '## dashboard { columns=2 } artifact { kind=notebook tiles=["s -> v"] }\n',
+      });
+      expect(environment.compileSource.called).toBe(true);
+   });
+
+   it("refuses a notebooks/ file whose only artifact is a string value, before compiling", async () => {
+      const { controller, environment } = harness();
+      await expect(
+         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: '## dashboard { title="artifact" }\n',
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(environment.compileSource.called).toBe(false);
+   });
+
    it("still refuses an untagged notebooks/ file whatever the kind would have been", async () => {
       const { controller, environment } = harness();
       await expect(

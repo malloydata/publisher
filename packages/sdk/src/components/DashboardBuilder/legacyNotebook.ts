@@ -27,7 +27,13 @@ import {
 } from "./malloyTree";
 import { mentionsChartTag, parseChartLine } from "./chartLine";
 import { annotationTextProblem } from "./annotationText";
-import { artifactTag, isBareName } from "./malloyText";
+import {
+   ARTIFACT_NOT_FIRST,
+   artifactLeads,
+   artifactTag,
+   isBareName,
+   setsArtifactProperty,
+} from "./malloyText";
 import { parseTagLines } from "./tagParse";
 
 export type { Span };
@@ -112,7 +118,6 @@ const STATEMENT_ACCESSORS: readonly [string, "run" | "notes" | "definition"][] =
       ["exportStatement", "definition"],
    ];
 
-const ARTIFACT_NOTE = /^##(?:\|\s*|[ \t]*)artifact\b/;
 const TEXT_BLOCK_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PARSE_URL = "file:///publisher-notebook-builder/notebook.malloy";
 
@@ -458,7 +463,7 @@ export async function readNotebookSource(
    }
 
    const artifactAt = items.findIndex(
-      (item) => item.kind === "note" && ARTIFACT_NOTE.test(item.note.text),
+      (item) => item.kind === "note" && setsArtifactProperty(item.note.text),
    );
    if (artifactAt < 0)
       return refuse(
@@ -710,6 +715,8 @@ export async function convertLegacyNotebook(
 
    const headerLines = text.slice(header.start, header.end).split("\n");
    const artifact = artifactTag(headerLines);
+   if (artifact && !artifactLeads(artifact.text))
+      return refuse(artifact.from, ARTIFACT_NOT_FIRST);
    if (!artifact || readTileList(artifact.text))
       return refuse(
          Math.max(artifact?.from ?? 0, 0),
