@@ -21,11 +21,9 @@ export const presetSpan = (columns: number, share: number) =>
 /**
  * The gutter between tiles, in px.
  *
- * A number rather than a `gap: 2` spacing unit because the BUILDER has to do
- * arithmetic with it: turning a dragged edge into a column count means solving
- * for the track width, and that needs the gutter in the same units as a
- * `getBoundingClientRect`. Exported so the value the grid paints and the value
- * the drag solves with cannot drift apart.
+ * A number rather than a `gap: 2` spacing unit because a tile's default span is
+ * solved for the track width in px. Exported so the builder's column guides sit
+ * on the same gutters the grid paints.
  */
 export const GRID_GAP_PX = 16;
 

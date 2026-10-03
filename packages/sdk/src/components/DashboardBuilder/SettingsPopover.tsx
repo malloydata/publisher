@@ -78,7 +78,7 @@ export const withoutSource = (
       return names.length === 0 ? [] : [{ ...i, names }];
    });
 
-/** Widths whose tile-menu presets land on whole columns; the file may say any other. */
+/** The divisors of 12 from 2 up, and 24; the file may say any other width. */
 const WIDTHS = [2, 3, 4, 6, 12, MAX_COLUMNS];
 
 export function SettingsPopover({
