@@ -190,14 +190,15 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    });
 
    it(
-      "answers lexically while indexing, then flips to semantic with scores",
+      "reports indexing while the index builds, then answers semantically with scores",
       async () => {
          const first = await callGetContext({
             targetType: "measure",
             searchText: "total sales revenue",
          });
-         // Configured server: the marker is always present on tier 4.
-         expect(["lexical", "semantic"]).toContain(first.retrieval);
+         // A configured server never answers lexically: it is still
+         // indexing, or the build already finished.
+         expect(["indexing", "semantic"]).toContain(first.retrieval);
 
          let payload = first;
          for (let i = 0; i < 60 && payload.retrieval !== "semantic"; i++) {
