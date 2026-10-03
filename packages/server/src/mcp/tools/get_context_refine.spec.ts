@@ -492,10 +492,10 @@ describe("refine prompt", () => {
       expect(chat.prompts[0]).not.toContain("leaked");
    });
 
-   it("asks for recall, a JSON array, and marks candidates as data", async () => {
+   it("asks for recall, a results object, and marks candidates as data", async () => {
       const chat = scriptedChat(rateAll("HIGH"));
       await refineStage.run(state([row("s", "f", 0.5)]), ctxFor(chat));
-      expect(chat.prompts[0]).toContain("JSON array");
+      expect(chat.prompts[0]).toContain('{"results": [...]}');
       expect(chat.prompts[0]).toContain("<candidates>");
       expect(namesIn(chat.prompts[0])).toEqual(["f"]);
    });
