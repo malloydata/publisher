@@ -7,6 +7,7 @@ import {
    scriptedChat,
    type ScriptedChat,
 } from "../../test_helpers/get_context_llm_harness";
+import { DEFAULT_REFINE_INSTRUCTIONS } from "../../prompts/refine";
 import { StageError } from "./get_context_llm";
 import type { PipelineContext, RankedState } from "./get_context_pipeline";
 import {
@@ -498,6 +499,18 @@ describe("refine prompt", () => {
       expect(chat.prompts[0]).toContain('{"results": [...]}');
       expect(chat.prompts[0]).toContain("<candidates>");
       expect(namesIn(chat.prompts[0])).toEqual(["f"]);
+   });
+
+   // Real models read the instructions literally. An earlier version said "if a
+   // candidate might be useful, rate it LOW" while the stage drops LOW, so
+   // gpt-4.1-mini rated `total_sales` LOW for "revenue after discounts" and the
+   // query returned nothing. The default instructions must say what the stage
+   // does with each level.
+   it("tells the model that LOW candidates are dropped, and not to rate a useful one LOW", () => {
+      expect(DEFAULT_REFINE_INSTRUCTIONS).toContain(
+         "LOW candidates are dropped",
+      );
+      expect(DEFAULT_REFINE_INSTRUCTIONS).not.toContain("rate it LOW rather");
    });
 });
 
