@@ -19,6 +19,11 @@
  *      (MEDIUM), published through the knots as 0.9 and 0.7. Assembly, rerank,
  *      paging and the size budget treat it like any other source row.
  *
+ * The number of sources a target sends is capped so this stage cannot spend a
+ * request's whole call budget (see sourceCapPerTarget): past the cap, the
+ * sources are ranked by how many of the target's words their name, doc and
+ * summary share, the best are sent, and the response says how many were not.
+ *
  * Entity targets are not touched: the retrievers never see the source targets
  * while this stage is on (see sourceMatchActive), and this stage only adds the
  * source rows. A failed batch fails the stage (StageError); there is no
@@ -37,6 +42,7 @@ import {
 } from "../../prompts/source_match";
 import { compareRanked } from "./get_context_assembly";
 import { StageError, replyArray, runPooled } from "./get_context_llm";
+import { REFINE_BATCH_SIZE, REFINE_TOTAL } from "./get_context_refine";
 import type {
    PipelineContext,
    RankStage,
@@ -102,6 +108,72 @@ function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
    return (ctx.pkgIndex.sourceContext?.get(key)?.joins ?? []).map(
       (j) => j.name,
    );
+}
+
+/**
+ * How many sources one source target may send to the model, or null for no cap.
+ *
+ * Every source target costs ceil(sent / SOURCE_MATCH_BATCH_SIZE) calls, and the
+ * request shares `maxCallsPerRequest` with the stages that run after this one.
+ * Sending every source made the default settings fail on a package with more
+ * than about 70 sources (3 targets, 20 calls). So the cap is sized from the
+ * calls still available: what is left, minus one call for rerank and the
+ * worst case for refine on each entity target, split evenly between the source
+ * targets, at least one batch each. With no ceiling there is no cap.
+ */
+export function sourceCapPerTarget(ctx: PipelineContext): number | null {
+   const remaining = ctx.meter?.remaining() ?? null;
+   if (remaining === null) return null;
+   const { request } = ctx;
+   const sourceTargets = sourceSearches(request).length;
+   if (sourceTargets === 0) return null;
+   const entityTargets = request.searches.length - sourceTargets;
+   const reserved =
+      (ctx.llmStages?.rerank ? 1 : 0) +
+      (ctx.llmStages?.refine
+         ? entityTargets * Math.ceil(REFINE_TOTAL / REFINE_BATCH_SIZE)
+         : 0);
+   const batches = Math.max(
+      1,
+      Math.floor(Math.max(0, remaining - reserved) / sourceTargets),
+   );
+   return batches * SOURCE_MATCH_BATCH_SIZE;
+}
+
+const wordsOf = (text: string): string[] =>
+   text
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1);
+
+/**
+ * The positions of the `cap` candidates that best match `phrase`, in their
+ * original order. A candidate scores two points for each distinct word of the
+ * phrase found in its name and one for each found only in its doc or summary.
+ * Ties keep the package's own order, so the cut is the same on every request.
+ */
+function topCandidates(
+   phrase: string,
+   texts: ReadonlyArray<{ name: string; text: string }>,
+   cap: number,
+): number[] {
+   const wanted = [...new Set(wordsOf(phrase))];
+   const scored = texts.map(({ name, text }, at) => {
+      const inName = new Set(wordsOf(name));
+      const inText = new Set(wordsOf(text));
+      let score = 0;
+      for (const w of wanted) {
+         if (inName.has(w)) score += 2;
+         else if (inText.has(w)) score += 1;
+      }
+      return { at, score };
+   });
+   return scored
+      .sort((a, b) => b.score - a.score || a.at - b.at)
+      .slice(0, cap)
+      .map((c) => c.at)
+      .sort((a, b) => a - b);
 }
 
 /** The one-line doc the model sees for a source. */
@@ -188,17 +260,31 @@ export const sourceMatchStage: RankStage = {
          description: sourceDescription(ctx, e),
          ...summaryOf(ctx, e),
       }));
+      const cap = sourceCapPerTarget(ctx);
+      const capped = cap !== null && candidates.length > cap;
+      const texts = capped
+         ? candidates.map((e, at) => ({
+              name: e.name,
+              text: `${lines[at].description} ${lines[at].summary ?? ""}`,
+           }))
+         : [];
       const jobs = searches.flatMap((search) => {
+         const positions = capped
+            ? topCandidates(search.text, texts, cap)
+            : candidates.map((_, at) => at);
          const batches: number[][] = [];
-         for (let i = 0; i < candidates.length; i += SOURCE_MATCH_BATCH_SIZE) {
-            batches.push(
-               candidates
-                  .slice(i, i + SOURCE_MATCH_BATCH_SIZE)
-                  .map((_, at) => i + at),
-            );
+         for (let i = 0; i < positions.length; i += SOURCE_MATCH_BATCH_SIZE) {
+            batches.push(positions.slice(i, i + SOURCE_MATCH_BATCH_SIZE));
          }
          return batches.map((batch) => ({ search, batch }));
       });
+      if (capped) {
+         ctx.warnings.push(
+            `Source match sent the best ${cap} of ${candidates.length} sources to the model for each source target, ` +
+               `so ${candidates.length - cap} were not shown to it and cannot appear in this answer. ` +
+               `Narrow the search with model_path or source_name, or raise retrieval.llm.maxCallsPerRequest to let it read more.`,
+         );
+      }
 
       // target index -> candidate position -> level
       const rated = new Map<number, Map<number, MatchLevel>>(

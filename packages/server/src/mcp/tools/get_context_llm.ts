@@ -123,6 +123,13 @@ export class LlmMeter {
       return { ...this.used };
    }
 
+   /** Calls this request may still make, or null when there is no ceiling. */
+   remaining(): number | null {
+      return this.limit === null
+         ? null
+         : Math.max(0, this.limit - this.used.calls);
+   }
+
    /** Count one call, or throw if the limit is already reached. Synchronous, so concurrent callers cannot slip past it. */
    private admit(): void {
       if (this.limit !== null && this.used.calls >= this.limit) {
