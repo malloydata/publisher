@@ -67,8 +67,13 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
 /** The only files the write endpoint accepts: a dashboard or a notebook, at the top of its directory. */
 const DASHBOARD_FILE = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
 
-/** An `# artifact` or `## artifact` line, or the opener of a block holding one. */
-const ANY_ARTIFACT_NOTE = /^#{1,2}(?:\|\s*|[ \t]*)artifact\b/;
+/**
+ * A `#` or `##` tag line, or a `##|` block, with an `artifact` property anywhere
+ * outside a quoted string. Loose on purpose: the post-reload verify still rolls
+ * back a file that turns out untagged, and a strict check refused valid files.
+ */
+const ANY_ARTIFACT_NOTE =
+   /^#{1,2}\|?[ \t]*(?=[A-Za-z_])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w.$-])artifact\b/;
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
@@ -217,7 +222,7 @@ export class DashboardController {
                `(\`notebooks/<slug>.malloy\`) can be written here.`,
          );
       }
-      // A dashboard may be tagged at the query level (`#`), so either sigil passes; a tag in a comment or string still reaches the reload verify.
+      // A dashboard may be tagged at the query level (`#`), so either sigil passes; a tag inside a block comment still reaches the reload verify.
       if (
          !inNotebooksFolder &&
          !hasArtifactLineOutsideBlocks(body.source, ANY_ARTIFACT_NOTE)

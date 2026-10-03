@@ -273,6 +273,51 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.compileSource.called).toBe(true);
    });
 
+   // Each of these compiles to a served dashboard: `artifact` need not be the line's first property.
+   it.each([
+      [
+         "a model-level line",
+         '## dashboard { columns=2 } artifact { tiles=["s -> v"] }\n',
+      ],
+      [
+         "a query-level line",
+         '# dashboard { columns=2 } artifact { title="T" }\nquery: q is s -> v\n',
+      ],
+      [
+         "a block",
+         '##| dashboard { columns=2 }\nartifact { tiles=["s -> v"] }\n|##\n',
+      ],
+   ])(
+      "lets artifact after another property on %s through the pre-write check",
+      async (_name, source) => {
+         const { controller, environment } = harness();
+         await controller.putDashboardSource("env", "pkg", PATH, { source });
+         expect(environment.compileSource.called).toBe(true);
+      },
+   );
+
+   it.each([
+      ["a line comment", "// ## artifact { tiles=[] }\n"],
+      ["a string", '## dashboard { title="artifact { }" }\n'],
+      ["a doc route", '##" The artifact { } page\n'],
+      ["a markdown route", "##(markdown) artifact { }\n"],
+      [
+         'a ##|" block',
+         '##|"\nThe "page" is an artifact { } of\n|##\nsource: a is duckdb.sql("select 1")\n',
+      ],
+      ["a property path", "## dashboard.artifact { }\n"],
+   ])(
+      "refuses a dashboards/ file whose only artifact is in %s with 400",
+      async (_name, source) => {
+         const { controller, environment } = harness();
+         const error = await controller
+            .putDashboardSource("env", "pkg", PATH, { source })
+            .catch((e) => e);
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(environment.compileSource.called).toBe(false);
+      },
+   );
+
    it("refuses a tagged write over an existing untagged file, a shared include", async () => {
       const include = "##(markdown) shared\n";
       const { controller, environment } = harness({ current: include });
