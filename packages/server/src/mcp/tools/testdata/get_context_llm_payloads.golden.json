@@ -204,7 +204,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -217,7 +218,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           }
@@ -256,7 +258,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -269,7 +272,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           },
@@ -282,7 +286,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.74
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -311,7 +316,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.8
+                "relevance": 0.8,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -340,7 +346,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.77
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -379,7 +386,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -392,7 +400,8 @@
             "matched_targets": [
               {
                 "search_text": "sum of order revenue",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -405,7 +414,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           },
@@ -418,7 +428,8 @@
             "matched_targets": [
               {
                 "search_text": "sum of order revenue",
-                "relevance": 0.79
+                "relevance": 0.79,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           },
@@ -431,7 +442,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.74
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -460,7 +472,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.77
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -499,7 +512,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -512,7 +526,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           },
@@ -525,7 +540,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.74
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -564,7 +580,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -577,7 +594,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           },
@@ -590,7 +608,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.74
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -619,7 +638,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.8
+                "relevance": 0.8,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -648,7 +668,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.77
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -752,7 +773,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.77
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }
@@ -791,7 +813,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 1
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
               }
             ]
           },
@@ -804,7 +827,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.99
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
               }
             ]
           },
@@ -817,7 +841,8 @@
             "matched_targets": [
               {
                 "search_text": "state the order ships to",
-                "relevance": 0.74
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
               }
             ]
           }

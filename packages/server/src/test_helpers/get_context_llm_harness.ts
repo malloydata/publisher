@@ -40,6 +40,8 @@ export interface ScriptedChat {
    model: ChatModel;
    /** Every prompt the model received, in arrival order (repair re-asks included). */
    prompts: string[];
+   /** The `maxTokens` of every request, in arrival order. */
+   maxTokens: Array<number | undefined>;
    /** Most requests ever in flight at once. */
    maxInFlight: () => number;
 }
@@ -53,11 +55,13 @@ export function scriptedChat(
    options: { delayMs?: number } = {},
 ): ScriptedChat {
    const prompts: string[] = [];
+   const maxTokens: Array<number | undefined> = [];
    let inFlight = 0;
    let peak = 0;
    const raw: RawChat = {
       async send(req) {
          prompts.push(req.prompt);
+         maxTokens.push(req.maxTokens);
          inFlight += 1;
          peak = Math.max(peak, inFlight);
          try {
@@ -77,6 +81,7 @@ export function scriptedChat(
          retry: NO_WAIT_RETRY,
       }),
       prompts,
+      maxTokens,
       maxInFlight: () => peak,
    };
 }
@@ -150,9 +155,15 @@ export function keywordReply(prompt: string): string {
       return JSON.stringify(
          numberedLines(prompt).map(([index, line]) => {
             const n = overlap(words, contentWords(line));
+            const score = n >= 2 ? "HIGH" : n === 1 ? "MEDIUM" : "LOW";
             return {
                index,
-               score: n >= 2 ? "HIGH" : n === 1 ? "MEDIUM" : "LOW",
+               score,
+               ...(score === "LOW"
+                  ? {}
+                  : {
+                       reason: `Shares ${n} word${n === 1 ? "" : "s"} with the phrase.`,
+                    }),
             };
          }),
       );

@@ -225,6 +225,29 @@ describe("assembleCards: joined copies", () => {
       expect(copy.bestTarget).toBe(0);
    });
 
+   it("gives a copy of a refined field the reason refine gave the direct field", () => {
+      const row: ResultEntity = {
+         ...ranked("cust", "name", 0.5),
+         raw: 3.5,
+         targetRaw: new Map([[0, 3.5]]),
+         level: 3,
+         targetReasons: new Map([[0, "It is the customer's name."]]),
+      };
+      const state = assemble([row]);
+      const copy = state.cards
+         .find((c) => c.source === "inv")
+         ?.rows.find((r) => r.name === "customer.name") as ResultEntity;
+      expect([...(copy.targetReasons ?? [])]).toEqual([
+         [0, "It is the customer's name."],
+      ]);
+      // An unrefined field has no reason to carry.
+      const plain = assemble([ranked("cust", "name", 0.5)]);
+      const plainCopy = plain.cards
+         .find((c) => c.source === "inv")
+         ?.rows.find((r) => r.name === "customer.name") as ResultEntity;
+      expect(plainCopy.targetReasons).toBeUndefined();
+   });
+
    it("keeps the higher score when one display name is reached twice", () => {
       // The target source resolvable from two files ranks as two rows.
       const state = assemble([
