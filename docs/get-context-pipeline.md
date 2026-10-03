@@ -184,7 +184,7 @@ can bypass it.
   turn a stage on, or set `keyphrases: always`, but cannot spend past either ceiling.
 - **Prompts.** A package may point a stage at a prompt file inside the package. A package author already controls the
   text the LLM sees; the ceilings bound what that can cost. Model docs are fenced in the prompt and marked as
-  data. The model's reason text for a rating is not passed to the calling agent.
+  data. The model's one-sentence reason for a rating is passed to the calling agent as `match_reason` (2.10).
 - **Vector-affecting settings are not per package.** The embedding model, its dimensions and its prefixes are
   per server, because one process-wide provider embeds for every package. `representation` and `keyphrases`
   are per package. So "settings travel with the package" is true for how a package is searched, not for the
@@ -368,7 +368,10 @@ precedence and the provider requirements are documented in [configuration.md](co
 
 This step registers the first two LLM stages. **Refine** is a RankStage: per entity-search target it rates the
 best 10 fields per source (120 overall) LOW, MEDIUM or HIGH in batches of 15, drops what falls below the package's
-`minLevel` (default MEDIUM) or is not returned, and scores a survivor `level + cosine`. **Rerank** is a CardStage
+`minLevel` (default MEDIUM) or is not returned, and scores a survivor `level + cosine`. The model also gives each
+rated field a one-sentence reason (trimmed, at most 200 characters, optional). A survivor keeps the reason for each
+target that rated it, and the response shows it as `matched_targets: [{search_text, relevance, match_reason}]` on the
+entity; with no refine there is no `match_reason`. **Rerank** is a CardStage
 after assembly: with two or more source cards it scores the best 8 (`topSources`) from 0 to 3 in one call, adds a
 tiebreak from the order the model listed them, drops cards below 2 unless the scope pins a source, and keeps the
 cards it cut from the top 8 in `total_available`. When refine ran, published scores are the raw score through the

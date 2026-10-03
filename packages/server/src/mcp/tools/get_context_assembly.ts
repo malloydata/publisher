@@ -211,7 +211,10 @@ function dampTargetScores(
 function dampedScores(
    row: ResultEntity,
    factor: number,
-): Pick<ResultEntity, "score" | "raw" | "targetScores" | "targetRaw"> {
+): Pick<
+   ResultEntity,
+   "score" | "raw" | "targetScores" | "targetRaw" | "targetReasons"
+> {
    if (row.raw !== undefined) {
       const raw = row.raw * factor;
       const targetRaw = row.targetRaw
@@ -225,6 +228,7 @@ function dampedScores(
       return {
          raw,
          score: mapRawScore(raw),
+         ...(row.targetReasons ? { targetReasons: row.targetReasons } : {}),
          ...(targetRaw
             ? {
                  targetRaw,

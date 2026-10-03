@@ -203,8 +203,12 @@ export interface ResultEntity {
    raw?: number;
    /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
    targetRaw?: Map<number, number>;
-   /** Unused until a stage sets it. Refine's sentence for matched_targets. */
-   reason?: string;
+   /**
+    * Set by refine: the model's one-sentence reason for each target that
+    * rated this row, behind `matched_targets[].match_reason`. Absent when
+    * refine did not run or the model gave no reason.
+    */
+   targetReasons?: Map<number, string>;
    /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
    joinHops?: number;
    /** Unused until value attach runs. Nested dimension values. */
@@ -379,7 +383,8 @@ export const REASON_BY_UNAVAILABLE: Record<
  *    `include_code`), and the response-level `retrieval`
  *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
  * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
- *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
+ *    `summary`, `prominence`, `values`, `values_indexed`. (`match_reason`
+ *    rides on `matched_targets` only when refine ran and gave one.)
  *    That spec omits null fields, so absence is in-contract on both sides.
  */
 interface ResourceId {
@@ -400,6 +405,13 @@ interface SourceCardInfo {
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
+}
+
+interface MatchedTarget {
+   search_text: string;
+   relevance: number;
+   /** Refine's one-sentence reason. Present only when refine ran and gave one. */
+   match_reason?: string;
 }
 
 interface SourceCardEntity {
@@ -423,7 +435,7 @@ interface SourceCardEntity {
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
-   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   matched_targets?: MatchedTarget[];
    aliases?: string[];
 }
 
@@ -544,15 +556,20 @@ function toSourceResults(
 function matchedTargetsFor(
    r: ResultEntity,
    searchTexts: Map<number, string>,
-): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+): { matched_targets?: MatchedTarget[] } {
    if (!r.targetScores || r.targetScores.size === 0) return {};
    const matched = [...r.targetScores.entries()]
       .sort((a, b) => a[0] - b[0])
       .flatMap(([index, relevance]) => {
          const search_text = searchTexts.get(index);
          if (search_text === undefined) return [];
+         const match_reason = r.targetReasons?.get(index);
          return [
-            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+            {
+               search_text,
+               relevance: Math.round(relevance * 10_000) / 10_000,
+               ...(match_reason ? { match_reason } : {}),
+            },
          ];
       });
    return matched.length > 0 ? { matched_targets: matched } : {};

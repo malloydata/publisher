@@ -13,6 +13,8 @@ import type { PipelineContext, RankedState } from "./get_context_pipeline";
 import {
    REFINE_BATCH_SIZE,
    REFINE_PER_SOURCE,
+   REFINE_REASON_MAX_CHARS,
+   REFINE_TOKENS_PER_CANDIDATE,
    REFINE_TOTAL,
    refineStage,
    selectCandidates,
@@ -266,9 +268,9 @@ describe("refine stage", () => {
       expect(b.targetScores?.get(0)).toBe(0.94);
       expect(b.targetRaw?.get(0)).toBe(3.4);
       expect(a.level).toBe(2);
-      // Best first, and the unpublished reason is never kept.
+      // Best first. The replies gave no reason, so none is carried.
       expect(out.rows.map((r) => r.name)).toEqual(["b", "a"]);
-      expect(a.reason).toBeUndefined();
+      expect(a.targetReasons).toBeUndefined();
    });
 
    it("ignores out-of-range and duplicate indexes", async () => {
@@ -530,5 +532,109 @@ describe("refine stage enabled()", () => {
             state([]),
          ),
       ).toBe(false);
+   });
+});
+
+describe("refine reasons", () => {
+   /** Rate every candidate HIGH and give it `reason` (a raw value, so tests can send odd ones). */
+   const withReason = (reason: unknown) => (prompt: string) =>
+      JSON.stringify(
+         numberedLines(prompt).map(([index]) => ({
+            index,
+            score: "HIGH",
+            reason,
+         })),
+      );
+
+   const run = async (reason: unknown, rows = [row("s", "f", 0.5)]) => {
+      const chat = scriptedChat(withReason(reason));
+      const out = await refineStage.run(state(rows), ctxFor(chat));
+      return { chat, out };
+   };
+
+   it("carries a surviving candidate's reason on its row, per target", async () => {
+      const { out } = await run("It is the state the order ships to.");
+      expect(out.rows[0].targetReasons?.get(0)).toBe(
+         "It is the state the order ships to.",
+      );
+   });
+
+   it("trims the reason and flattens its whitespace", async () => {
+      const { out } = await run("  fits the\nphrase   well \n");
+      expect(out.rows[0].targetReasons?.get(0)).toBe("fits the phrase well");
+   });
+
+   it("caps a long reason at the limit", async () => {
+      const { out } = await run("x".repeat(REFINE_REASON_MAX_CHARS + 150));
+      const reason = out.rows[0].targetReasons?.get(0) as string;
+      expect(reason).toHaveLength(REFINE_REASON_MAX_CHARS);
+      expect(reason.endsWith("...")).toBe(true);
+   });
+
+   it("treats a missing, blank or non-string reason as no reason, not an error", async () => {
+      for (const reason of [undefined, "", "   ", 7, null, ["a"], { a: 1 }]) {
+         const { chat, out } = await run(reason);
+         expect(chat.prompts).toHaveLength(1);
+         expect(out.rows).toHaveLength(1);
+         expect(out.rows[0].targetReasons).toBeUndefined();
+      }
+   });
+
+   it("keeps a separate reason for each target a row matched", async () => {
+      const rows = [row("s", "shared", 0.6, { extraTargets: [[1, 0.5]] })];
+      const searches = [
+         search(0, "dimension", "first phrase"),
+         search(1, "dimension", "second phrase"),
+      ];
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify(
+            numberedLines(prompt).map(([index]) => ({
+               index,
+               score: "HIGH",
+               reason: prompt.includes(`"first phrase"`)
+                  ? "reason one"
+                  : "reason two",
+            })),
+         ),
+      );
+      const out = await refineStage.run(
+         state(rows),
+         ctxFor(chat, { searches }),
+      );
+      expect([...(out.rows[0].targetReasons ?? [])]).toEqual([
+         [0, "reason one"],
+         [1, "reason two"],
+      ]);
+   });
+
+   it("gives a reason only to candidates that survive", async () => {
+      const rows = [row("s", "keep", 0.9), row("s", "drop", 0.8)];
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify(
+            numberedLines(prompt).map(([index, rest]) => ({
+               index,
+               score: rest.startsWith("keep ") ? "HIGH" : "LOW",
+               reason: "because",
+            })),
+         ),
+      );
+      const out = await refineStage.run(state(rows), ctxFor(chat));
+      expect(out.rows.map((r) => r.name)).toEqual(["keep"]);
+      expect(out.rows[0].targetReasons?.get(0)).toBe("because");
+   });
+
+   it("asks for a one-sentence reason in the reply format", async () => {
+      const { chat } = await run("r");
+      expect(chat.prompts[0]).toContain('"reason"');
+      expect(chat.prompts[0]).toContain("one short sentence");
+      expect(chat.prompts[0]).not.toContain("allowed and ignored");
+   });
+
+   it("budgets the reply for a reason per candidate", async () => {
+      const rows = Array.from({ length: 10 }, (_, i) => row("s", `f${i}`, 0.5));
+      const { chat } = await run("r", rows);
+      // A reason is up to 200 characters, about 50 tokens, on top of the index and score.
+      expect(REFINE_TOKENS_PER_CANDIDATE).toBeGreaterThanOrEqual(90);
+      expect(chat.maxTokens).toEqual([10 * REFINE_TOKENS_PER_CANDIDATE + 100]);
    });
 });

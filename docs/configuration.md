@@ -504,8 +504,11 @@ existed, byte for byte.
 the best 120 overall, sends them in batches of 15 (up to `retrieval.llm.concurrency` batches at a
 time), and asks the model to rate each `LOW`, `MEDIUM` or `HIGH` against the search text. A field
 rated below `refine.minLevel`, or not returned, is dropped for that target. A survivor's raw score
-is its level (`LOW` 1, `MEDIUM` 2, `HIGH` 3) plus its cosine. The model's reason, if it gives one,
-is ignored and never sent to the caller.
+is its level (`LOW` 1, `MEDIUM` 2, `HIGH` 3) plus its cosine. The model also gives a one-sentence
+reason for each field it keeps. The reason is trimmed, cut at 200 characters, and sent to the caller as
+`match_reason` on that target's entry in the entity's `matched_targets`
+(`{search_text, relevance, match_reason}`). A reply with no reason is not an error, and the key is
+left out. Without refine (no LLM, or refine off) `matched_targets` has no `match_reason`.
 
 **Scores.** After refine, `relevance` (on entities, on `matched_targets` and on sources) is the raw
 score through a piecewise linear map with knots at 0, 1, 2, 3, 4 and values 0, 0.4, 0.7, 0.9, 1.0,
