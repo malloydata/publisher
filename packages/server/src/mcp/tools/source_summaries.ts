@@ -31,7 +31,6 @@
 import { createHash } from "crypto";
 import { logger } from "../../logger";
 import {
-   NO_SOURCE_DOCS,
    ONE_LINE_SUMMARY_MAX_CHARS,
    renderSourceSummaryUserPrompt,
    undocumentedOneLine,
@@ -360,8 +359,11 @@ export interface GeneratedSummary {
 /**
  * Validate a reply: `{summary, one_line_summary}`. Every problem is named in
  * one message, which the provider layer shows the model for its single re-ask.
- * A source with no documentation must get exactly "The `<name>` source.", so
- * the model cannot invent a purpose the inputs do not state.
+ * A source with no documentation gets exactly "The `<name>` source." as its
+ * one-liner, so the model cannot invent a purpose the inputs do not state. The
+ * validator writes that line itself and ignores what the model sent for it:
+ * the line is fixed and known, so rejecting a miss would only spend a re-ask,
+ * and a second miss would fail the whole sync and put the package in cooldown.
  */
 export function validateSourceSummary(source: string, hasDoc: boolean) {
    return (value: unknown): GeneratedSummary => {
@@ -386,7 +388,9 @@ export function validateSourceSummary(source: string, hasDoc: boolean) {
       }
 
       let oneLine = "";
-      if (
+      if (!hasDoc) {
+         oneLine = undocumentedOneLine(source);
+      } else if (
          typeof reply.one_line_summary !== "string" ||
          reply.one_line_summary.trim() === ""
       ) {
@@ -400,11 +404,6 @@ export function validateSourceSummary(source: string, hasDoc: boolean) {
          } else if (oneLine.length > ONE_LINE_SUMMARY_MAX_CHARS) {
             problems.push(
                `"one_line_summary" is ${oneLine.length} characters; the limit is ${ONE_LINE_SUMMARY_MAX_CHARS}`,
-            );
-         }
-         if (!hasDoc && oneLine !== undocumentedOneLine(source)) {
-            problems.push(
-               `the source documentation is "${NO_SOURCE_DOCS}", so "one_line_summary" must be exactly: ${undocumentedOneLine(source)}`,
             );
          }
       }
