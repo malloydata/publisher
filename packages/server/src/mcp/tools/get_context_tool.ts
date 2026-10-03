@@ -2390,21 +2390,19 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
 - scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
-- Read warnings and any error/stale field before trusting a number.
+- Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
+- Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
-ranking, returned of total_available sources, next_offset on a listing, warnings[].
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon; errors carry retrieval_reason.
-
-## Example
-{"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
+ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
+below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
 
 /**
  * An error keeps the empty collection the tool would have answered with, so a
