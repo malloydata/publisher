@@ -13,14 +13,20 @@ import {
    keyphrasePromptHash,
 } from "../../prompts/keyphrase";
 import { activeLlmSettings, getChatModel } from "../../providers/active";
+import {
+   DEFAULT_SOURCE_SUMMARY_INSTRUCTIONS,
+   sourceSummaryPromptHash,
+} from "../../prompts/source_summary";
 import { getEgressPreset } from "../../retrieval_config";
 import { logger } from "../../logger";
 import type { Package } from "../../service/package";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
+   sourceSummarySettingsOf,
    type PackageRepresentation,
 } from "../../service/package_retrieval";
 import type { KeyphraseSettings } from "./keyphrases";
+import type { SourceSummarySettings } from "./source_summaries";
 
 export interface IndexSettings {
    representation: PackageRepresentation;
@@ -30,6 +36,12 @@ export interface IndexSettings {
     * otherwise, which is how `auto` quietly acts as `never` with no LLM.
     */
    keyphrases?: KeyphraseSettings;
+   /**
+    * Present when source summaries will be generated: the package does not turn
+    * them off AND the operator has an LLM configured. Absent otherwise, which
+    * is how `auto` quietly acts as off with no LLM.
+    */
+   sourceSummary?: SourceSummarySettings;
    /**
     * A string that changes whenever a setting that alters rows changes. It is
     * folded into the readiness fingerprint, so editing `publisher.json`
@@ -49,9 +61,11 @@ export function indexSettingsOf(pkg: Package | undefined): IndexSettings {
       (pkg as Partial<Package> | undefined)?.getRetrievalSettings?.() ??
       DEFAULT_PACKAGE_RETRIEVAL;
    const keyphrases = keyphraseSettingsFor(retrieval);
+   const sourceSummary = sourceSummarySettingsFor(retrieval);
    return {
       representation: retrieval.representation,
       keyphrases,
+      sourceSummary,
       key: [
          retrieval.representation,
          keyphrases
@@ -63,7 +77,46 @@ export function indexSettingsOf(pkg: Package | undefined): IndexSettings {
                  keyphrases.egress,
               ].join(":")
             : "kp:off",
+         // Added only when on, so a package without summaries keeps the key
+         // it always had.
+         ...(sourceSummary
+            ? [
+                 ["ss", sourceSummary.promptHash, sourceSummary.modelId].join(
+                    ":",
+                 ),
+              ]
+            : []),
       ].join("|"),
+   };
+}
+
+function sourceSummarySettingsFor(
+   retrieval: typeof DEFAULT_PACKAGE_RETRIEVAL,
+): SourceSummarySettings | undefined {
+   if (sourceSummarySettingsOf(retrieval).enabled === false) return undefined;
+   const llm = activeLlmSettings();
+   if (!llm) return undefined;
+   let chat;
+   try {
+      chat = getChatModel();
+   } catch (error) {
+      logger.warn(
+         "[get_context] The LLM is configured but its client could not be built; source summaries are off",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return undefined;
+   }
+   if (!chat) return undefined;
+   const instructions =
+      retrieval.prompts.sourceSummary?.text ??
+      DEFAULT_SOURCE_SUMMARY_INSTRUCTIONS;
+   return {
+      chat,
+      modelId: `${llm.provider}/${llm.model}`,
+      instructions,
+      promptHash: sourceSummaryPromptHash(instructions),
+      concurrency: llm.concurrency,
+      maxCallsPerSync: llm.maxCallsPerSync,
    };
 }
 

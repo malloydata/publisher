@@ -789,6 +789,304 @@
     "below_cutoff_count": 1,
     "total_entities": 2
   },
+  "source summaries: a pinned source carries the full summary": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-a-pinned-source-carries-the-full-summary",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "summary": "One row per customer. Fields: `state`, `region`, `customer_count`.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 1,
+    "returned": 1,
+    "retrieval": "semantic",
+    "below_cutoff_count": 1,
+    "total_entities": 2
+  },
+  "source summaries: a source search that matched one source carries its summary": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-a-source-search-that-matched-one-source-carries-its-summary",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-a-source-search-that-matched-one-source-carries-its-summary",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "summary": "One row per shipment leaving a warehouse. Fields: `ship_state`, `carrier`, `shipment_count`.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "ship_state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:shipments:ship_state",
+            "relevance": 0.8,
+            "description": "State a shipment goes to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 0.7
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-a-source-search-that-matched-one-source-carries-its-summary",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 3,
+    "returned": 3,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
+  "source summaries: every card carries the one-liner, none the full summary": {
+    "sources": [
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-every-card-carries-the-one-liner-none-the-full-summary",
+            "model_path": "orders.malloy",
+            "source": "orders"
+          },
+          "one_line_summary": "One row per customer order.",
+          "docs": "One row per customer order.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:state",
+            "relevance": 1,
+            "description": "State the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 1,
+                "match_reason": "Shares 3 words with the phrase."
+              }
+            ]
+          },
+          {
+            "name": "city",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:city",
+            "relevance": 0.99,
+            "description": "City the order ships to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.99,
+                "match_reason": "Shares 2 words with the phrase."
+              }
+            ]
+          },
+          {
+            "name": "status",
+            "entity_type": "dimension",
+            "entity_id": "dimension:orders:status",
+            "relevance": 0.74,
+            "description": "Order lifecycle status.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.74,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 1
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-every-card-carries-the-one-liner-none-the-full-summary",
+            "model_path": "shipping.malloy",
+            "source": "shipments"
+          },
+          "one_line_summary": "One row per shipment leaving a warehouse.",
+          "docs": "One row per shipment leaving a warehouse.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "ship_state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:shipments:ship_state",
+            "relevance": 0.8,
+            "description": "State a shipment goes to.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.8,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 0.8
+      },
+      {
+        "source_info": {
+          "resource_id": {
+            "environment": "llm",
+            "package": "source-summaries-every-card-carries-the-one-liner-none-the-full-summary",
+            "model_path": "customers.malloy",
+            "source": "customers"
+          },
+          "one_line_summary": "One row per customer.",
+          "docs": "One row per customer.",
+          "joins": []
+        },
+        "entities": [
+          {
+            "name": "state",
+            "entity_type": "dimension",
+            "entity_id": "dimension:customers:state",
+            "relevance": 0.77,
+            "description": "State the customer lives in.",
+            "matched_targets": [
+              {
+                "search_text": "state the order ships to",
+                "relevance": 0.77,
+                "match_reason": "Shares 1 word with the phrase."
+              }
+            ]
+          }
+        ],
+        "relevance": 0.77
+      }
+    ],
+    "ranking": "relevance",
+    "total_available": 3,
+    "returned": 3,
+    "retrieval": "semantic",
+    "below_cutoff_count": 2,
+    "total_entities": 7
+  },
   "topSources 2 counts the discarded source in total_available": {
     "sources": [
       {

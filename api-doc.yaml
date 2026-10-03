@@ -3750,11 +3750,14 @@ components:
           type: string
           enum:
             - keyphrase
+            - source_summary
           description: >-
             The sync stage that failed, when `status` is `error` because of one.
             `keyphrase` = the LLM could not write the package's keyphrases
-            (after retries), so nothing was embedded; `lastError.message` has
-            the reason. Absent when the embedding call itself failed.
+            (after retries), so nothing was embedded; `source_summary` = the
+            LLM could not write the package's source summaries (after retries),
+            so nothing was embedded. `lastError.message` has the reason.
+            Absent when the embedding call itself failed.
         keyphraseProgress:
           type: object
           description: >-
@@ -3775,6 +3778,27 @@ components:
               description: >-
                 True when `retrieval.llm.maxCallsPerSync` stopped the step before
                 every entity had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
+        sourceSummaryProgress:
+          type: object
+          description: >-
+            Present only when source summaries are on: the package does not turn
+            them off (`retrieval.sourceSummary.enabled` is `auto` or `true`, the
+            default being `auto`) and `retrieval.llm` is configured. Counts the
+            sources that get an LLM-written summary. A source with no fields is
+            not counted.
+          properties:
+            done:
+              type: integer
+              description: Sources that get a summary and have a current one stored.
+            total:
+              type: integer
+              description: Sources that get a summary.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every source had one. The status can be `ready` with `done` below
                 `total`; the next sync (a restart) continues from there.
         lastError:
           type: object

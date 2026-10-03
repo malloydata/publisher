@@ -79,11 +79,13 @@ export function shopPackage(retrieval: Partial<PackageRetrievalSettings> = {}) {
       "customers.malloy": CUSTOMERS_MODEL,
       "shipping.malloy": SHIPPING_MODEL,
    };
-   // Keyphrases are off so the index sync never asks the (scripted) chat model
-   // anything: these specs count the chat calls get_context itself makes.
+   // Keyphrases and source summaries are off so the index sync never asks the
+   // (scripted) chat model anything: these specs count the chat calls
+   // get_context itself makes. The source summary specs turn summaries on.
    const settings: PackageRetrievalSettings = {
       representation: "single",
       keyphrases: "never",
+      sourceSummary: { enabled: false },
       prompts: {},
       ...retrieval,
    };

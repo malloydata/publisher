@@ -40,6 +40,7 @@ import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
    createEntityEmbeddingsTable,
    createEntityKeyphrasesTable,
+   createSourceSummariesTable,
 } from "../../storage/duckdb/schema";
 import {
    EmbeddableEntity,
@@ -69,6 +70,7 @@ beforeAll(async () => {
    await db.initialize();
    await createEntityEmbeddingsTable(db);
    await createEntityKeyphrasesTable(db);
+   await createSourceSummariesTable(db);
 });
 
 afterAll(async () => {
@@ -505,6 +507,8 @@ const pkgWith = (retrieval: Partial<PackageRetrievalSettings> = {}): Package =>
       getRetrievalSettings: () => ({
          representation: "single",
          keyphrases: "auto",
+         // This spec's scripted chat only writes keyphrases.
+         sourceSummary: { enabled: false },
          prompts: {},
          ...retrieval,
       }),

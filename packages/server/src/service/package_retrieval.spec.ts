@@ -15,6 +15,7 @@ import {
    rerankSettingsOf,
    resolvePromptPath,
    sourceMatchSettingsOf,
+   sourceSummarySettingsOf,
 } from "./package_retrieval";
 
 describe("publisher.json retrieval block", () => {
@@ -62,12 +63,12 @@ describe("publisher.json retrieval block", () => {
       }
       expect(error).toBeInstanceOf(PackageManifestError);
       expect((error as Error).message).toBe(
-         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, prompts.",
+         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts.",
       );
       expect(() =>
          parsePackageRetrieval({ prompts: { rephrase: "p.md" } }),
       ).toThrow(
-         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank, sourceMatch.",
+         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank, sourceMatch, sourceSummary.",
       );
    });
 });
@@ -204,6 +205,94 @@ describe("publisher.json retrieval.refine and retrieval.rerank", () => {
    });
 });
 
+describe("retrieval.sourceSummary", () => {
+   it("defaults to auto and parses enabled", () => {
+      expect(sourceSummarySettingsOf(DEFAULT_PACKAGE_RETRIEVAL)).toEqual({
+         enabled: "auto",
+      });
+      expect("sourceSummary" in parsePackageRetrieval({})).toBe(false);
+      for (const enabled of ["auto", true, false] as const) {
+         expect(
+            parsePackageRetrieval({ sourceSummary: { enabled } }).sourceSummary,
+         ).toEqual({ enabled });
+      }
+      expect(
+         parsePackageRetrieval({ sourceSummary: {} }).sourceSummary,
+      ).toEqual({ enabled: "auto" });
+   });
+
+   it("rejects a bad value or an unknown key, naming the key and a fix", () => {
+      expect(() =>
+         parsePackageRetrieval({ sourceSummary: { enabled: "yes" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.sourceSummary.enabled: expected "auto", true or false, got "yes". Fix:',
+      );
+      expect(() =>
+         parsePackageRetrieval({ sourceSummary: { maxFields: 3 } }),
+      ).toThrow(
+         "retrieval.sourceSummary: unknown key 'maxFields'. Valid keys: enabled.",
+      );
+      expect(() => parsePackageRetrieval({ sourceSummary: true })).toThrow(
+         "Invalid publisher.json retrieval.sourceSummary: expected an object, got true. Fix:",
+      );
+   });
+
+   it("enabled: true without an LLM stops the load and names both fixes", () => {
+      const settings = readSync({ sourceSummary: { enabled: true } });
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         PackageManifestError,
+      );
+      expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
+         /retrieval\.sourceSummary\.enabled: true needs an LLM.*retrieval\.llm.*LLM_API_KEY.*"auto"/s,
+      );
+      expect(() => assertRequiredStagesAvailable(settings, true)).not.toThrow();
+      for (const enabled of ["auto", false]) {
+         expect(() =>
+            assertRequiredStagesAvailable(
+               readSync({ sourceSummary: { enabled } }),
+               false,
+            ),
+         ).not.toThrow();
+      }
+   });
+
+   it("reads the sourceSummary prompt, with the same path rules as the others", async () => {
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "pkg-summary-"));
+      const root = path.join(base, "pkg");
+      fs.mkdirSync(path.join(root, "prompts"), { recursive: true });
+      try {
+         fs.writeFileSync(path.join(root, "prompts", "s.md"), "Summarize.");
+         const s = await readPackageRetrieval(root, {
+            prompts: { sourceSummary: "prompts/s.md" },
+         });
+         expect(s.prompts.sourceSummary).toMatchObject({
+            path: "prompts/s.md",
+            text: "Summarize.",
+         });
+         expect(s.prompts.sourceSummary?.hash).toMatch(/^[0-9a-f]{64}$/);
+         await expect(
+            readPackageRetrieval(root, {
+               prompts: { sourceSummary: "../x.md" },
+            }),
+         ).rejects.toThrow(
+            /retrieval\.prompts\.sourceSummary: "\.\.\/x\.md" resolves outside the package directory\. Fix: use a path inside the package, e\.g\. "prompts\/sourceSummary\.md"/,
+         );
+         await expect(
+            readPackageRetrieval(root, {
+               prompts: { sourceSummary: path.join(base, "x.md") },
+            }),
+         ).rejects.toThrow("is an absolute path");
+         await expect(
+            readPackageRetrieval(root, {
+               prompts: { sourceSummary: "prompts/none.md" },
+            }),
+         ).rejects.toThrow("retrieval.prompts.sourceSummary: cannot read");
+      } finally {
+         fs.rmSync(base, { recursive: true, force: true });
+      }
+   });
+});
+
 /** Settings as readPackageRetrieval would return them, with no prompt files. */
 function readSync(raw: unknown) {
    const parsed = parsePackageRetrieval(raw);
@@ -213,6 +302,7 @@ function readSync(raw: unknown) {
       ...(parsed.refine ? { refine: parsed.refine } : {}),
       ...(parsed.rerank ? { rerank: parsed.rerank } : {}),
       ...(parsed.sourceMatch ? { sourceMatch: parsed.sourceMatch } : {}),
+      ...(parsed.sourceSummary ? { sourceSummary: parsed.sourceSummary } : {}),
       prompts: {},
    };
 }

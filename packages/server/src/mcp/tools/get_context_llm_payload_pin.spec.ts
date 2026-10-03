@@ -203,3 +203,38 @@ describe("get_context LLM payload pin", () => {
       { chat: () => "I cannot help with that." },
    );
 });
+
+// Source summaries on: the sync writes them (the keyword chat's stand-in),
+// the response reads them. Refine keeps every rated field and rerank is off so
+// more than one card comes back.
+const SUMMARIES = {
+   sourceSummary: { enabled: true },
+   refine: { enabled: "auto", minLevel: "LOW" },
+   rerank: { enabled: false, topSources: 8 },
+} as const;
+
+describe("get_context LLM payload pin: source summaries", () => {
+   scenario(
+      "source summaries: every card carries the one-liner, none the full summary",
+      { search_targets: [target("dimension", "state the order ships to")] },
+      { retrieval: SUMMARIES },
+   );
+   scenario(
+      "source summaries: a pinned source carries the full summary",
+      {
+         search_targets: [target("dimension", "state the order ships to")],
+         scopes: [{ source: "customers" }],
+      },
+      { retrieval: SUMMARIES },
+   );
+   scenario(
+      "source summaries: a source search that matched one source carries its summary",
+      {
+         search_targets: [
+            target("source", "one row per shipment"),
+            target("dimension", "state the order ships to"),
+         ],
+      },
+      { retrieval: SUMMARIES },
+   );
+});

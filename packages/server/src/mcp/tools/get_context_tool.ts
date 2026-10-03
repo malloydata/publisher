@@ -53,6 +53,11 @@ import {
 } from "./get_context_source_match";
 import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
+import { indexSettingsOf } from "./index_settings";
+import {
+   loadSourceSummaries,
+   type StoredSourceSummary,
+} from "./source_summaries";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -74,6 +79,11 @@ export interface Entity {
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
    relationship?: Relationship;
+   // On `kind: "join"` entities: the source the join leads to, when the
+   // compiled model names one (the topology below has it; a model with no
+   // compiled IR does not). Read by the source summary to nest a joined
+   // source's fields; never serialized.
+   joinTarget?: string;
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
@@ -396,7 +406,16 @@ interface ResourceId {
 
 interface SourceCardInfo {
    resource_id: ResourceId;
+   /**
+    * The LLM's one-line summary of the source when one is stored; otherwise the
+    * first line of its doc (absent when undocumented).
+    */
    one_line_summary?: string;
+   /**
+    * The LLM's full summary of the source. Only when one is stored AND the
+    * request pins the source or a source search matched at most one source.
+    */
+   summary?: string;
    docs?: string;
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
@@ -468,6 +487,8 @@ function toSourceResults(
    includeCode = false,
    /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
    droppedSources: Set<string> = new Set(),
+   /** Stored LLM source summaries, when the package has any. */
+   summaries?: SummaryView,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -489,6 +510,8 @@ function toSourceResults(
       let entry = bySource.get(key);
       if (!entry) {
          const ctx = sourceContext.get(key);
+         const stored = summaries?.stored.get(name);
+         const oneLine = stored?.oneLineSummary ?? ctx?.oneLineSummary;
          entry = {
             source_info: {
                resource_id: {
@@ -497,8 +520,9 @@ function toSourceResults(
                   model_path: modelPathFallback,
                   source: name,
                },
-               ...(ctx?.oneLineSummary
-                  ? { one_line_summary: ctx.oneLineSummary }
+               ...(oneLine ? { one_line_summary: oneLine } : {}),
+               ...(stored && summaries?.full.has(name)
+                  ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
@@ -542,6 +566,42 @@ function toSourceResults(
       if (relevance !== undefined) entry.relevance = relevance;
    }
    return Array.from(bySource.values());
+}
+
+/**
+ * The stored LLM summaries a response may use, and for which sources it may
+ * carry the full text. Built by {@link summaryViewFor}; absent when the package
+ * has no stored summary, which leaves every card as it always was.
+ */
+interface SummaryView {
+   /** Every stored summary of the package, by source name. */
+   stored: ReadonlyMap<string, StoredSourceSummary>;
+   /** Source names whose card carries `summary`, not just `one_line_summary`. */
+   full: ReadonlySet<string>;
+}
+
+/**
+ * The full summary rides only on a card the caller has narrowed to: the scope
+ * pins the source, or a source search matched at most one source. A broader
+ * answer carries the one-liner alone, so the response stays a list of sources
+ * to choose from instead of a page of prose.
+ */
+export function summaryViewFor(
+   stored: ReadonlyMap<string, StoredSourceSummary> | undefined,
+   request: Pick<ResolvedRequest, "sourceName">,
+   cards: ReadonlyArray<{ source: string; rows: readonly ResultEntity[] }>,
+): SummaryView | undefined {
+   if (!stored || stored.size === 0) return undefined;
+   const full = new Set<string>();
+   if (request.sourceName) full.add(request.sourceName);
+   // A source row is there only because a source target matched it.
+   const matched = new Set(
+      cards
+         .filter((card) => card.rows.some((r) => r.kind === "source"))
+         .map((card) => card.source),
+   );
+   if (matched.size <= 1) for (const name of matched) full.add(name);
+   return { stored, full };
 }
 
 /**
@@ -686,6 +746,9 @@ function shapeCards(
 } {
    const { request, pkgIndex, settings } = ctx;
    const paged = state.cards.slice(0, request.limit);
+   // Over ALL the matched cards, not the page: whether a source search matched
+   // one source or many does not depend on how many the caller asked to see.
+   const summaries = summaryViewFor(ctx.sourceSummaries, request, state.cards);
    const built = toSourceResults(
       paged.flatMap((card) => card.rows),
       pkgIndex.sourceContext,
@@ -698,6 +761,7 @@ function shapeCards(
       ),
       request.includeCode,
       pkgIndex.droppedSources,
+      summaries,
    );
    // toSourceResults folds a card's relevance from its rows. After rerank the
    // card's relevance is the reranker's score, which no row carries, so it is
@@ -1725,6 +1789,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   doc: docText(field.annotations),
                   embedDoc: docOnlyText(field.annotations),
                   relationship: field.relationship,
+                  ...joinTargetOf(topology.get(governanceKey), field.name),
                });
                // The join's own entity above says a relationship exists; the
                // fields below say what it reaches and under what path. Both
@@ -1846,6 +1911,17 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ),
       ),
    };
+}
+
+/** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
+function joinTargetOf(
+   reaches: readonly JoinReach[] | undefined,
+   alias: string,
+): { joinTarget?: string } {
+   const reach = reaches?.find(
+      (r) => r.path.length === 1 && r.path[0] === alias,
+   );
+   return reach ? { joinTarget: reach.targetSource } : {};
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -2770,6 +2846,14 @@ async function runContextQuery(
       }
       throw error;
    }
+   // Stored source summaries, read once for the response and the source match
+   // prompt. Only when the package has them on; none stored means no change.
+   ctx.sourceSummaries = await loadStoredSummaries(
+      environmentStore,
+      pkgIndex.pkg,
+      environmentName,
+      packageName,
+   );
    // With source match on, source targets are answered by the model, so the
    // retrievers rank only the other targets. With none left there is nothing
    // to retrieve; the response keeps the shape of the mode the server is in.
@@ -2884,6 +2968,39 @@ async function runContextQuery(
       ),
       ...traceFields(),
    });
+}
+
+/**
+ * The package's stored source summaries, or undefined when summaries are off
+ * for it (the package turned them off, or no LLM is configured) or none is
+ * stored. A read failure is logged and answered without them: a summary only
+ * adds to a card, and the sync, not this read, is where a failure is loud.
+ */
+async function loadStoredSummaries(
+   environmentStore: EnvironmentStore,
+   pkg: Package,
+   environmentName: string,
+   packageName: string,
+): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
+   if (!indexSettingsOf(pkg).sourceSummary) return undefined;
+   try {
+      const stored = await loadSourceSummaries(
+         environmentStore.storageManager.getDuckDbConnection(),
+         environmentName,
+         packageName,
+      );
+      return stored.size > 0 ? stored : undefined;
+   } catch (error) {
+      logger.warn(
+         "[MCP Tool getContext] Stored source summaries could not be read; answering without them",
+         {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return undefined;
+   }
 }
 
 /**

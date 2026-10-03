@@ -889,7 +889,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       [
          "an unknown retrieval key",
          JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
-         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, prompts\./,
+         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts\./,
       ],
       [
          "an invalid retrieval.refine.minLevel",
