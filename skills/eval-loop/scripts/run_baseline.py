@@ -178,6 +178,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -881,7 +882,18 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     envelope = json.loads(raw)
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
-    for chunk in (envelope.get("result") or {}).get("content") or []:
+    result = envelope.get("result") or {}
+    if result.get("isError"):
+        # A tool error is an ordinary reply whose text is the message, not
+        # JSON. Parsing it below reported "Expecting value: line 1 column 1"
+        # and hid what the server actually said (for example a rejected enum
+        # value in the arguments).
+        said = " ".join(
+            t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                        for ch in result.get("content") or []) if t)
+        raise ValueError(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
+    for chunk in result.get("content") or []:
         text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
         if not text:
             continue
@@ -1335,6 +1347,31 @@ def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
     hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
     ok = [c for c in hits if not c.get("error")]
     return next((c.get("modelPath") for c in reversed(ok or hits)), None)
+
+
+def as_givens(raw: Any) -> dict[str, Any] | None:
+    """A call's `givens` argument as a non-empty dict, else None.
+
+    A client may send the object as a JSON string; anything that does not
+    decode to an object is treated as absent rather than guessed at.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) and raw else None
+
+
+def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The givens of the call `_model_path_of` would pick for this query.
+
+    Same rule, same reason: the givens and the file are facts about ONE call,
+    so a probe's givens never get paired with the answer's query.
+    """
+    hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
+    ok = [c for c in hits if not c.get("error")]
+    return next((c.get("givens") for c in reversed(ok or hits)), None)
 
 
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
@@ -2116,7 +2153,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                             "query": q,
                                             "modelPath": (
                                                 c["input"].get("modelPath")
-                                                or c["input"].get("model_path"))}
+                                                or c["input"].get("model_path")),
+                                            # Runtime filters the answerer
+                                            # scoped this query with. They are
+                                            # an argument beside the text, so
+                                            # the text alone is a different
+                                            # (unfiltered) query.
+                                            "givens": as_givens(
+                                                c["input"].get("givens"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2206,6 +2250,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
 
     final_query, final_source, final_path = pick_final_query(
         queries, calls, text)
+    final_givens = _givens_of(final_query, [
+        c for c in calls if c.get("tool") == "execute_query" and c.get("query")
+    ]) if final_query else None
 
     return {
         "qid": qid,
@@ -2218,6 +2265,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,
+        "final_givens": final_givens,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2495,12 +2543,17 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
     holds is not a cache of that query.
     """
     q = att.get("final_query")
+    # Records made before givens were captured have none; they re-run as before.
+    givens = as_givens(att.get("final_givens"))
     cache = art / case["qid"] / "prediction.json"
     if cache.exists():
         c = json.loads(cache.read_text())
         # A file written before this key existed has no `query`, so it is not
         # reusable for any query: re-execute rather than trust it.
-        if "query" in c and c.get("query") == q:
+        # `givens` is part of the key for the same reason: rows cached from an
+        # unscoped run are not the rows of the scoped query.
+        if ("query" in c and c.get("query") == q
+                and (c.get("givens") or None) == givens):
             return c.get("rendered") or "(no prediction)"
 
     if not q:
@@ -2516,10 +2569,12 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         # that file. Then the case's, then the run default.
         mp = (att.get("final_model_path") or case.get("modelPath")
               or a.model_path)
-        rows, err = try_query(a.publisher, a.environment, a.package, mp, q)
+        rows, err = try_query(a.publisher, a.environment, a.package, mp, q,
+                              givens=givens)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"query": q, "rendered": rendered}, indent=2))
+    cache.write_text(json.dumps(
+        {"query": q, "givens": givens, "rendered": rendered}, indent=2))
     return rendered
 
 
@@ -2589,7 +2644,28 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
-def golden_for_judge(golden: dict[str, Any] | None) -> str:
+def rows_golden_problems(cases: list[dict[str, Any]],
+                         set_dir: pathlib.Path) -> list[str]:
+    """One line per `rows` golden whose `path` cannot be read.
+
+    Checked before any model call, so a missing or misplaced file stops the run
+    where it costs nothing instead of surfacing as a judge error per case.
+    """
+    out = []
+    for c in cases:
+        g = c.get("golden") or {}
+        if g.get("kind") != "rows":
+            continue
+        try:
+            golden_rows.load_rows(g, set_dir, c["qid"])
+        except golden_rows.GoldenRowsError as exc:
+            out.append(str(exc))
+    return out
+
+
+def golden_for_judge(golden: dict[str, Any] | None,
+                     set_dir: pathlib.Path | None = None,
+                     qid: str = "?") -> str:
     """The GOLDEN line of the judge prompt, rendered BY KIND.
 
     A golden holds its key in a different place depending on its kind, and one
@@ -2609,7 +2685,7 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     reason):
 
       scalar        golden.value, a dict
-      rows          golden.value, a list
+      rows          golden.value, a list, or the CSV golden.path names
       criteria      golden.rubric -- no value, ever
       unanswerable  nothing; the pass is a refusal
 
@@ -2633,6 +2709,13 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     value = g.get("value")
     if value is not None:
         return json.dumps(value)
+    if kind == "rows" and g.get("path"):
+        # Rows kept in a file beside the set. Read here, and raised rather than
+        # swallowed: "(unanswerable)" for a key that exists makes the judge
+        # mark a correct answer as one that should have declined.
+        rows = golden_rows.load_rows(g, set_dir, qid)
+        if rows is not None:
+            return golden_rows.render(rows)
     return "(unanswerable: the model cannot answer this)"
 
 
@@ -2768,7 +2851,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
-        golden=golden_for_judge(g),
+        golden=golden_for_judge(g, a.set_dir, case["qid"]),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(
             must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
@@ -3366,6 +3449,11 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
+    unreadable = rows_golden_problems(cases, a.set_dir)
+    if unreadable:
+        raise SystemExit(
+            "a rows golden names a file the run cannot read, so the judge "
+            "would be shown no key for it:\n  " + "\n  ".join(unreadable))
     if unscorable_goldens:
         print(f"  ! {len(unscorable_goldens)} of {len(cases)} cases will take "
               f"no verdict (no established golden): "

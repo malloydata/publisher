@@ -173,6 +173,37 @@ class SourcesMatchTheCsvs(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class RowsGoldenInAFile(unittest.TestCase):
+    """A rows golden kept in a CSV showed as unanswerable in the cases table."""
+
+    def test_the_cases_table_shows_the_rows_from_the_file(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            run, sset, out = tmp / "run1", tmp / "set", tmp / "pkg"
+            run.mkdir()
+            (sset / "gold").mkdir(parents=True)
+            (sset / "gold" / "q1.csv").write_text("region,total\nWest,12\n")
+            (run / "run.json").write_text(json.dumps(RUN_JSON))
+            (run / "events.jsonl").write_text(
+                "\n".join(json.dumps(e) for e in EVENTS) + "\n")
+            (sset / "set.json").write_text(json.dumps({"package": "x"}))
+            (sset / "cases.jsonl").write_text(json.dumps(
+                {"qid": "q1", "question": "q?",
+                 "golden": {"kind": "rows", "path": "gold/q1.csv"}}) + "\n")
+            p = subprocess.run(
+                [sys.executable, str(SCRIPT), "--run", str(run),
+                 "--set", str(sset), "--out", str(out), "--without-diagnosis"],
+                capture_output=True, text=True, timeout=300)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with (out / "data" / "cases.csv").open() as fh:
+                row = next(csv.DictReader(fh))
+            self.assertNotIn("unanswerable", row["golden_display"])
+            self.assertIn("1 rows", row["golden_display"])
+            self.assertIn("West", row["golden_value"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class RefusalsAndServing(unittest.TestCase):
     """The two ways a built report silently came out wrong, and its two URLs."""
 
