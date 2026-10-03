@@ -1015,7 +1015,8 @@ export function sanitize(query: string): string {
  * `orders.amount`; depth 2 reaches `order_items.inventory_items.cost`, the
  * depth the published shape's own `join_path` example uses. Deeper paths
  * exist and stay unindexed: each level multiplies the entity count by the
- * joined source's field count, against a hard cap of MAX_EMBEDDED_ENTITIES.
+ * joined source's field count, against the entity cap
+ * (`retrieval.indexing.maxEntities`).
  */
 const MAX_JOIN_PATH_DEPTH = 2;
 

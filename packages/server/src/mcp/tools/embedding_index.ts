@@ -56,9 +56,10 @@ export function setMaxEmbeddedEntities(cap: number): void {
    maxEmbeddedEntities = cap;
 }
 /**
- * After a provider failure the semantic path short-circuits to lexical
+ * After a provider failure the package's semantic path answers `cooldown`
  * for this long, so a down or misconfigured endpoint costs one timeout
- * per window, not one per call.
+ * per window, not one per call. get_context returns an error for it; there is
+ * no lexical ranking in its place while a provider is configured.
  */
 export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
 /**
@@ -70,7 +71,7 @@ export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
  * re-embedding the whole package once per cooldown window forever. With a
  * longer window a durably dims-inconsistent provider (e.g. mid-migration
  * replicas serving different dims under one model name) is throttled to
- * at most one re-embed per this interval, staying lexical between, while
+ * at most one re-embed per this interval, answering `cooldown` between, while
  * still re-adopting a genuinely-new stable dimensionality within the
  * window. Deliberately not "never re-purge": that would strand the cache
  * on the old dims if the provider later settles on a new one.
@@ -557,7 +558,7 @@ function desiredFingerprint(desired: DesiredFacet[]): string {
 // cool-down; and `synced`, the last sync that completed. The cool-down is
 // scoped per package, NOT global: a query timeout or dims-mismatch on
 // one package must not force every other healthy, correctly-cached
-// package to lexical for the window. If the endpoint is genuinely down,
+// package into cooldown for the window. If the endpoint is genuinely down,
 // each package cools itself on its own first failed probe (one wasted
 // probe per package per window, negligible at the entity counts a single
 // Publisher serves).
@@ -568,7 +569,7 @@ function desiredFingerprint(desired: DesiredFacet[]): string {
 // changed". The proxy is never wrong, but it is coarse: every reload
 // allocates a new instance (reload_package, REST ?reload=true, and each
 // watch-mode recompile all reach Package.create), so a reload that changed
-// nothing threw the fact away, and the next question was ranked lexically
+// nothing threw the fact away, and the next question was answered `indexing`
 // while the diff re-discovered that every hash still matched. Recording
 // the fingerprint of the desired row set makes the test exact instead: a
 // reload whose facet texts hash the same keeps the warm index.
@@ -1391,8 +1392,9 @@ export function enqueuePackageSync(args: {
 
 /**
  * Semantic retrieval for tier 4 of get_context. Returns ranked
- * hits, or a reason the semantic path is unavailable so the caller can
- * fall back to lexical. Never throws.
+ * hits, or a reason the semantic path is unavailable. The caller turns the
+ * reason into an `indexing` result or an error: there is no lexical fallback
+ * while an embedding provider is configured. Never throws.
  *
  * Cold-start contract: a call whose content has no completed sync kicks one
  * off in the background and reports `indexing`, so no call ever waits on a
@@ -1500,8 +1502,8 @@ export async function trySemanticSearch(args: {
    const providerKey = providerKeyFor(provider);
    const meta = metaFor(environmentName, packageName);
    // Per-package cool-down: a recent provider failure for THIS package
-   // (sync, query embed, or a dims-mismatch backoff) keeps it lexical for
-   // the window without touching any other package.
+   // (sync, query embed, or a dims-mismatch backoff) makes it unavailable
+   // for the window without touching any other package.
    if (inCooldown(meta)) {
       return { unavailable: "cooldown" };
    }
@@ -1868,7 +1870,7 @@ export async function trySemanticSearch(args: {
                // Backoff: at most one purge per suppression window. Within
                // it, a fresh mismatch means the endpoint is serving
                // inconsistent dimensionalities; re-purging would re-embed
-               // the whole package, so cool down and stay lexical instead.
+               // the whole package, so cool down instead.
                // lastPurgeAtMs is NOT advanced here: the window is measured
                // from the last real PURGE, and because the suppression
                // window is longer than the cooldown (see
@@ -1939,7 +1941,7 @@ export async function trySemanticSearch(args: {
       // rows snapshot above is unreliable (possibly empty because a
       // concurrent heal deleted mid-search), and an unreliable empty
       // result must never be served as semantic "nothing relevant here".
-      // Answer as indexing (marked lexical); the next call is consistent.
+      // Answer as indexing; the next call is consistent.
       if (meta.generation !== entryGeneration) {
          return { unavailable: "indexing" };
       }
