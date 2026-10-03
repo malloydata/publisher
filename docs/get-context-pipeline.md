@@ -1,7 +1,8 @@
 # get_context: a stage pipeline and a hosted-aligned retrieval design
 
-**Status:** Draft design, 2026-10-02. The first part is implemented in this pull request (section 2.3, the stage
-pipeline, and section 2.8, the embedding sync). The rest is the design that the follow-up pull requests build.
+**Status:** Implemented in this pull request, 2026-10-03: the stage pipeline (2.3), the embedding sync (2.8), the
+providers and settings (2.4, 2.6, 2.9), refine and rerank (2.10), source-target search (2.11) and source summaries
+(2.12). What was not built is listed in section 3.
 
 `get_context` is the MCP tool that finds the entities (sources, dimensions, measures, views) a question needs.
 A _stage_ is one step in its pipeline, such as "drop weak matches with an LLM". A _sync_ is the background step
@@ -13,14 +14,17 @@ that turns a package's entities into stored embedding vectors.
   embedding provider are configured. With no keys it is plain lexical search with no LLM steps. A small set of
   settings lets you tune the algorithm locally.
 - **This pull request** reshapes `get_context` into a short pipeline (resolve, retrieve, rank stages, card
-  stages, shape) with no stage registered and no change to lexical results, and makes the embedding sync
-  sturdier: it starts when a package loads, saves each batch as it goes, retries transient failures with
-  backoff, reports progress, and has a configurable cap. When an embedding provider is configured, a search
-  during a first index returns "indexing in progress" with progress, not a lexical answer.
+  stages, shape). With no embedding provider and no LLM configured, results are the lexical results as before.
+  With an embedding provider it changes behaviour: a search during a first index returns "indexing in progress"
+  with progress, and a failed index returns an error, never a lexical answer; semantic search covers direct
+  entities and joins are made at assembly; and the default representation is `single`. With an LLM, refine,
+  rerank, source matching and source summaries run by default and fail loudly. The embedding sync starts when a
+  package loads, saves each batch as it goes, retries transient failures with backoff, reports progress, and has
+  a configurable entity cap.
 - **The design** (sections 2.3 to 2.7) covers the settings (two files, no per-request overrides), one provider
   layer for OpenAI, Anthropic, Google (Gemini and Vertex) and Ollama built direct with no SDK, and how hosted
   behaviour maps onto the pipeline.
-- **Follow-ups** are listed in section 3.
+- **What was not built** is listed in section 3.
 
 ## 2. Design
 
@@ -62,21 +66,25 @@ default path (no stages) stays small and easy to pin with tests.
 
 ```
 resolve request
-  -> QueryStage*        (before retrieval; may rewrite the search texts. Rephrase goes here.)
+  -> QueryStage*        (before retrieval; may rewrite the search texts. No stage is registered today.)
   -> load package index
-  -> listing branch  |  Retriever: semantic, falling back to lexical
-  -> RankStage*         (after retrieval: refine/prune, rerank, value attach)
+  -> listing branch  |  Retriever: semantic when an embedding provider is configured, else lexical
+  -> RankStage*         (after retrieval: source match, refine/prune)
+  -> assemble cards
+  -> CardStage*         (rerank)
   -> window -> shape -> envelope
 
 index time (separate, in the embedding sync)
   -> IndexStage*        (keyphrase generation, source summary)
 ```
 
-- A stage is `{ name, enabled(ctx), run(...) }`. The runner in this pull request is minimal (if enabled, run). Later steps extend it so that one loop does the timing, the status and the trace for
-  every stage, so adding a stage means adding one file.
-- PR 1 registers zero stages. It moves code and changes no behaviour.
-- The retriever order stays as today: semantic if configured and ready, else lexical, with the same
-  fallback reasons.
+- A stage is `{ name, enabled(ctx), run(...) }`. One loop in the runner does the timing, the status and the
+  trace for every stage, so adding a stage means adding one file.
+- The first commits of this pull request registered zero stages and moved code without changing behaviour; the
+  stages (2.10 to 2.12) were added after.
+- There is no lexical fallback when an embedding provider is configured. The semantic retriever answers, or the
+  response says why it cannot (`indexing`, or an error with a reason). The lexical retriever is the mode only when
+  no embedding provider is configured.
 
 ### 2.4 Where settings live
 
@@ -88,8 +96,9 @@ Two files, two owners. No per-request overrides. The only environment variables 
   serves the package exactly as configured. Different packages can differ (a small package with short docs and
   a large one need different settings), and the settings travel with the package in git.
 
-A package cannot enable what the operator has not allowed. If a package turns on `refine` and the server has no
-LLM configured, the stage is skipped and the response and the status say so. A package can never make the
+A package cannot enable what the operator has not allowed. With `enabled: "auto"` a stage is simply off when the
+server has no LLM configured. If a package sets `enabled: true` on a stage and the server has no LLM, the package
+does not load, and the load error names the key. A package can never make the
 server send text to an endpoint the operator did not configure. That is why egress and credentials stay in the
 operator's file: otherwise a package published to someone else's server could switch on sending its docs to an
 LLM.
@@ -109,31 +118,32 @@ result.
 
 **Package settings (`publisher.json`):**
 
-| Key                                                                       | Values                                                                                                                          | Default                   |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `retrieval.representation`                                                | `single`, `facets`                                                                                                              | `single`                  |
-| `retrieval.keyphrases`                                                    | `auto`, `never`, `always`                                                                                                       | `auto`                    |
-| `retrieval.sourceSummary`                                                 | `enabled` (`auto`, `true`, `false`)                                                                                             | `auto`                    |
-| `retrieval.refine`                                                        | `enabled`, `minLevel`                                                                                                           | off, `MEDIUM`             |
-| `retrieval.rerank`                                                        | `enabled`, `topSources`                                                                                                         | off, 8                    |
-| `retrieval.sourceMatch`                                                   | `enabled`                                                                                                                       | `auto`                    |
-| `retrieval.rephrase`                                                      | `enabled`                                                                                                                       | off (stage not built yet) |
-| `retrieval.minSimilarity`, `perTargetLimit`, `maxEntitiesPerSourceTarget` | numbers                                                                                                                         | today's behaviour         |
-| `retrieval.prompts`                                                       | `refine`, `rerank`, `sourceMatch`, `rephrase`, `keyphrase`, `sourceSummary`: a file path inside the package (no inline strings) | built-in prompts          |
-| `retrieval.values`                                                        | `mode`, `include`, `exclude`                                                                                                    | off (feature deferred)    |
+| Key                        | Values                                                                                                              | Default          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `retrieval.representation` | `single`, `facets`                                                                                                  | `single`         |
+| `retrieval.keyphrases`     | `auto`, `never`, `always`                                                                                           | `auto`           |
+| `retrieval.sourceSummary`  | `enabled` (`auto`, `true`, `false`)                                                                                 | `auto`           |
+| `retrieval.refine`         | `enabled`, `minLevel`                                                                                               | `auto`, `MEDIUM` |
+| `retrieval.rerank`         | `enabled`, `topSources`                                                                                             | `auto`, 8        |
+| `retrieval.sourceMatch`    | `enabled`                                                                                                           | `auto`           |
+| `retrieval.prompts`        | `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`: a file path inside the package (no inline strings) | built-in prompts |
+
+`enabled` is `auto` (on when the server has an LLM), `true` (on, and the package does not load on a server with
+no LLM) or `false` (off). Any other key under `retrieval` fails the package load with a message that names the
+valid keys, so a typo does not silently do nothing. Rephrase, per-package similarity and window settings, and
+dimension values are not built, so their keys are not accepted.
 
 **Server settings (`publisher.config.json`):**
 
-| Key                   | Meaning                                                                                                                                                                                             |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `retrieval.llm`       | `baseUrl`, `model` (one model for every stage for now; per-stage models are added when a measurement asks for them), `timeoutMs`, `concurrency`. The key is the environment variable `LLM_API_KEY`. |
-| `retrieval.embedding` | `queryPrefix`, `documentPrefix` (tied to the embedding model, which is process-wide)                                                                                                                |
-| `retrieval.egress`    | `preset`                                                                                                                                                                                            |
-| `retrieval.indexing`  | `maxEntities` (the cap, replacing the 5,000 constant), `deadlineMs`                                                                                                                                 |
+| Key                   | Meaning                                                                                                                                                                                                                                                                           |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retrieval.llm`       | `provider`, `model` (one model for every stage for now; per-stage models are added when a measurement asks for them), `baseUrl`, `projectId`, `location`, `timeoutMs`, `concurrency`, `maxCallsPerSync`, `maxCallsPerRequest`. The key is the environment variable `LLM_API_KEY`. |
+| `retrieval.embedding` | `provider`, `model`, `dimensions`, `baseUrl`, `projectId`, `location`, `queryPrefix`, `documentPrefix` (tied to the embedding model, which is process-wide). The key is `EMBEDDING_API_KEY`.                                                                                      |
+| `retrieval.egress`    | `preset`                                                                                                                                                                                                                                                                          |
+| `retrieval.indexing`  | `maxEntities` (the entity cap, replacing the fixed 5,000; the default is still 5,000)                                                                                                                                                                                             |
 
-That is about 35 keys in all once the provider keys in 2.6 and the ceilings in 2.4.4 are counted, down from 103. Everything else is a constant in code: retry numbers, batch sizes,
-thresholds, scoring, temperature (0), JSON mode, breaker and cache tuning, `maxChars`, and hybrid
-ranking (cut).
+Everything else is a constant in code: retry numbers, batch sizes, thresholds, scoring, temperature (0), JSON
+mode, breaker and cache tuning, `maxChars`, and hybrid ranking (cut).
 
 #### 2.4.1 Representation and keyphrases are one question
 
@@ -168,8 +178,8 @@ are server settings. Changing the document prefix re-embeds.
 
 #### 2.4.3 Response size
 
-`response.maxChars` is a constant. `maxEntitiesPerSourceTarget` bounds response size and stays as
-package settings.
+`response.maxChars` is a constant (35,000 characters). The number of entities one source returns for one target is
+a constant too (`MAX_ENTITIES_PER_SOURCE_TARGET` in `get_context_tool.ts`); neither is a package setting.
 
 #### 2.4.4 Operator ceilings, egress and what a package may do
 
@@ -257,7 +267,9 @@ replace the adapters later without touching a stage.
   `google-auth-library` credentials; chat and embeddings).
 - **Shared code.** Retry with backoff, per-call timeout, JSON from text with schema validation and one repair
   retry (works for any model, including small Ollama ones; a vendor's native JSON mode is used only as an
-  optimisation), usage normalisation, a per-package cooldown (the pattern in `embedding_index.ts`), the
+  optimisation), usage normalisation, a cooldown on chat calls (process-wide, per provider: three failures in a
+  row that are rate limits, timeouts or server errors pause calls for 60 seconds, in the same spirit as the
+  per-package cooldown the embedding index keeps), the
   stored index-time LLM output keyed by prompt hash (no query-time cache: its hits would hide latency and nondeterminism when a request repeats), and OpenTelemetry metrics in the repo's `*_metrics.ts` style.
 - **Tests.** Every adapter is tested with a `fetch` stub and recorded request and response fixtures, the same
   seam `main` uses for embeddings. No real calls in CI. Optional live smoke tests sit behind an environment flag.
@@ -336,21 +348,24 @@ The goal is simple and predictable, not clever.
   endpoint takes about 100 inputs and Vertex about 250; `main` uses 512 per call.
 - **Save as you go.** Each batch is written in one transaction (multi-row insert) when it returns, so a failure
   keeps everything before it. A restart resumes by content hash.
-- **Retry.** Exponential backoff with jitter on 429, 5xx and timeouts, honouring `Retry-After`, with a fixed
-  maximum number of attempts. Auth and bad-request errors fail at once. After the attempts are used up the
-  state is `error`, and the existing per-package cooldown decides when the next try starts.
-- **Cap.** A hard cap, counted in vectors (rows), not entities, because `facets` multiplies them. Configurable
-  in `publisher.config.json`. The value comes from measurement: query latency against synthetic vectors at
-  10k, 50k and 100k rows (free), and first-sync time with one real key. Proposed targets: a first full index in
-  about 10 minutes or less, and p95 query under about 300 ms. Placeholder guess 20,000 to 30,000.
+- **Retry.** Exponential backoff with jitter on 429, 408, 5xx and timeouts, with 5 attempts. A `Retry-After`
+  longer than the computed wait is used instead, up to 30 seconds; a longer one, or a total wait past 90
+  seconds, stops the retries and the last error is returned. Auth and bad-request errors fail at once. After
+  the attempts are used up the state is `error`, and the existing per-package cooldown decides when the next
+  try starts; the next question after that time starts it (nothing retries on a timer).
+- **Cap.** A hard cap counted in entities, not vectors, so it does not move when `facets` multiplies the rows.
+  `retrieval.indexing.maxEntities` in `publisher.config.json` sets it; the default is 5,000, the cap `main`
+  had. A package over the cap reports `error` with reason `too-many-entities`. The default has not been
+  re-measured: query latency against synthetic vectors at 10k, 50k and 100k rows, and first-sync time with one
+  real key, are still to do before it is raised.
 - **Fingerprint.** Already computed once per package load and cached on `main`. This pull request only chunks that one-time
   computation so it yields to other requests.
-- **Tie order.** Equal semantic scores are ordered by name, not left to DuckDB.
+- **Tie order.** Equal semantic scores are ordered by source and then name, not left to DuckDB.
 
 Consequence: this pull request is not a pure refactor plus faster indexing. The behaviour change (indexing and
 error states instead of a lexical fallback) goes in its own commit, with only the affected golden entries updated.
 
-### 2.9 Providers, settings and keyphrases (built in the next step)
+### 2.9 Providers, settings and keyphrases
 
 This step builds the provider layer of 2.6 and the first LLM use. `providers/` holds a `ChatModel` and an
 `EmbeddingModel` interface with direct-`fetch` adapters for OpenAI-compatible servers (OpenAI, Ollama, anything that
@@ -410,8 +425,8 @@ fields in backticks) and a one-line summary (one sentence, at most 120 character
 keyed by environment, package and source. The model sees the source name, its `#(doc)` text (or "No source docs."), and
 a list of its fields grouped as Dimensions, Measures, Views and Joins, each as `name (type): doc`, with each joined
 source nested under it with its own fields. The list is bounded: at most 200 fields per source, 20 joined sources and
-3 joins deep, and the prompt says when it was cut. A source with no documentation must get the one-liner "The `<name>`
-source."; the validator enforces it and the single re-ask from the provider layer carries the reason.
+3 joins deep, and the prompt says when it was cut. A source with no documentation gets the one-liner "The `<name>`
+source."; the sync writes that exact line itself, whatever the model returned.
 
 A stored row is reused while its input hash (the exact message sent, the prompt text and the model) is unchanged, so
 a restart, reload or republish of an unchanged package makes no call, and a change rewrites exactly the sources it
@@ -427,19 +442,17 @@ prompt adds `Summary: <summary>` (whole, on one line) after each candidate's `Do
 With no stored summary, nothing changes, so the payloads of a server with no LLM are byte for byte what they were.
 Settings and the status fields (`sourceSummaryProgress`, `stage: "source_summary"`): [configuration.md](configuration.md).
 
-## 3. Pull request sequence
+## 3. What this pull request does not build
 
-1. **This pull request.** The pipeline, the sync, the configurable cap, and the indexing and error results.
-   A 40-entry payload test was added first, on unmodified code, and the refactor commits do not change it. Only
-   the seven fallback entries change, in one commit that says so.
-2. **Hosted retrieval core, no LLM.** Search direct entities only and expand joins at assembly with the
-   distance discount, the per-source candidate window, join depth, and the response budget.
-3. **Providers and configuration.** The provider layer and the `retrieval` blocks in both config files, with
-   no stages.
-4. **LLM stages.** Keyphrases, refine, rerank and source-target search, each on when an LLM is configured, with
-   prompts as files in the package.
-
-Each step is reviewable alone, and with no keys configured the result is identical to the step before.
+- **Rephrase.** A query stage that rewrites the search text. The pipeline has the place for it; no stage is
+  registered.
+- **Dimension values.** Indexing the distinct values of `#(index)` dimensions, and the cards that name the
+  unsearched dimensions of an access-gated source.
+- **A replay tool** that scores retrieval without an answering agent.
+- **Per-package similarity and window settings.** They stay constants.
+- **A capped keyphrase or summary sync resumes only on restart.** `retrieval.llm.maxCallsPerSync` can stop a
+  sync early; the status then reads `ready` with `done` below `total`. A package reload does not continue it,
+  because a reload of an unchanged package starts no sync work; the next restart does.
 
 ## 4. Risks
 
@@ -451,8 +464,10 @@ Each step is reviewable alone, and with no keys configured the result is identic
 
 ## 5. Not verified
 
-- The direct provider adapters against each real provider (not built yet).
-- Per-provider batch limits (Gemini about 100 inputs, Vertex about 250).
+- The direct provider adapters have `fetch`-stub tests, and the built server has been run against OpenAI chat
+  and embeddings and a Vertex AI model. The other adapters have only the stub tests.
+- Per-provider batch limits (Gemini about 100 inputs, Vertex about 250), the Vertex credential path, and the
+  OpenAI `max_completion_tokens` parameter against live APIs.
 - Embedding time for a package with tens of thousands of entities.
 
 ## Prior art
