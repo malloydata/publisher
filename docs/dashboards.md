@@ -731,7 +731,10 @@ original text. A file whose tag names no `kind` is edited as the kind its folder
 (`notebooks/` is a notebook). Save writes back through `PUT …/models/dashboards/<name>.malloy` (or
 `notebooks/<name>.malloy`), which compiles the text first, writes it atomically, reloads the package
 in place, and restores the previous text if the reload does not take it, or if the compiled file
-carries no `## artifact` tag (500; a tagged dashboard with no tiles still saves); a copy someone else changed since you opened it is refused (409),
+carries no `## artifact` tag (500; a tagged dashboard with no tiles still saves). A `dashboards/`
+file whose text has no `artifact` property on any `#` or `##` tag line is refused (400) before it
+compiles; one whose only tag is inside a block comment gets as far as that rollback. A copy someone
+else changed since you opened it is refused (409),
 never merged, and so is a dashboard whose name another file already holds. The
 check, the write, the reload and the restore all happen under one hold of the package lock, so two
 saves racing on one file cannot both pass the check, and a rollback cannot revert the other

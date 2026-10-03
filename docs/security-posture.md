@@ -62,9 +62,10 @@ Concretely:
   compiled model must carry the `## artifact` tag and no other file may hold the name, read as
   discovery reads it, off the compiled model (off the text only for a file that does not compile);
   a tagged dashboard with no tiles saves and is not served until it has one. An untagged
-  `dashboards/` file, one with no `# artifact` or `## artifact` line in its text, is refused with
-  400 before compiling. A write whose only `## artifact` sits inside a `/* */` comment or a string
-  passes that text check and compile and is then rolled back with a 500, so no untagged file lands in either folder; and
+  `dashboards/` file, one with no `# artifact` or `## artifact` tag in its text (an `artifact`
+  property anywhere on a tag line, outside a string), is refused with 400 before compiling. A write
+  whose only `## artifact` sits inside a `/* */` block comment passes that text check and compile
+  and is then rolled back with a 500, so no untagged file lands in either folder; and
   a dashboard whose name another file already holds is refused with 409 before anything is
   written, since the name is its URL and its `# drill` target. The compile-first gate is per file,
   and the reload verify checks only the written model, so a model that imports the written file is

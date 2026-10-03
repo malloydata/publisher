@@ -1724,8 +1724,9 @@ paths:
         A dashboard whose name (the file's basename) another file already holds
         is refused with 409 before anything is written, since the name is its
         URL and its `# drill` target. A `dashboards/` file whose text has no
-        `# artifact` or `## artifact` tag is refused with 400 before anything is
-        written; a tag inside a comment or a string passes that check but the
+        `# artifact` or `## artifact` tag (an `artifact` property anywhere on a
+        tag line, outside a string) is refused with 400 before anything is
+        written; a tag only inside a block comment passes that check but the
         compiled model carries none, so it is rolled back and answers 500. A
         tagged dashboard with no tiles saves but is not served until it has one.
 
