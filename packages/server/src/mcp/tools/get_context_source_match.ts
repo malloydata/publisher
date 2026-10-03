@@ -40,6 +40,7 @@ import {
    renderSourceMatchUserPrompt,
    type SourceMatchCandidate,
 } from "../../prompts/source_match";
+import { KEY_SEPARATOR } from "./embedding_index";
 import { compareRanked } from "./get_context_assembly";
 import { StageError, replyArray, runPooled } from "./get_context_llm";
 import { REFINE_BATCH_SIZE, REFINE_TOTAL } from "./get_context_refine";
@@ -99,11 +100,27 @@ export function selectSourceCandidates(ctx: PipelineContext): Entity[] {
    );
 }
 
-/** Names of the sources `e` joins, from the topology, else from its join entities. */
+/**
+ * Names of the sources `e` joins, from the topology, else from its join
+ * entities. A target that is a dropped (deny-all) source is left out, as the
+ * candidates are: the topology is built before the drop, so it can still name
+ * one, and the name must not reach the model through a source that joins it.
+ */
 function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
    const key = sourceContextKey(e.modelPath, e.name);
+   const droppedNames = new Set(
+      [...(ctx.pkgIndex.droppedSources ?? [])].map(
+         (k) => k.split(KEY_SEPARATOR)[1],
+      ),
+   );
    const reached = ctx.pkgIndex.topology?.get(key) ?? [];
-   const names = [...new Set(reached.map((r) => r.targetSource))];
+   const names = [
+      ...new Set(
+         reached
+            .map((r) => r.targetSource)
+            .filter((name) => !droppedNames.has(name)),
+      ),
+   ];
    if (names.length > 0) return names;
    return (ctx.pkgIndex.sourceContext?.get(key)?.joins ?? []).map(
       (j) => j.name,

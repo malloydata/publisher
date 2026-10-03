@@ -1820,6 +1820,20 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       }
    }
 
+   // A join to a dropped (deny-all) source keeps its alias, which is a field of
+   // the visible source, but not the target's real name: that name would reach
+   // the LLM in the source summary prompt. Done once every model has been
+   // walked, because a join can name a source from a later model file, and by
+   // name only, since the compiled join says nothing about the target's path.
+   const droppedNames = new Set(
+      [...droppedSources].map((key) => key.split(KEY_SEPARATOR)[1]),
+   );
+   for (const e of entities) {
+      if (e.kind === "join" && e.joinTarget && droppedNames.has(e.joinTarget)) {
+         delete e.joinTarget;
+      }
+   }
+
    // One model surfacing the same entity twice (a re-export, say) is a
    // duplicate. Two DIFFERENT models surfacing it is not: a source is queryable
    // at every path that resolves it, and each of those is its own card — so the

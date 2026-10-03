@@ -103,12 +103,25 @@ const GROUPS = [
 const isFieldKind = (kind: string): boolean =>
    (FIELD_KINDS as readonly string[]).includes(kind);
 
-/** `name (type): description`, leaving out the parts a field does not have. */
-function fieldLine(e: SummaryEntity): string {
+/**
+ * `name (type): description`, leaving out the parts a field does not have. A
+ * join names its target source only when that source is one the package
+ * indexes (`known`): a target that is not an entity is hidden or denied, and its
+ * name must not reach the model through the join that points at it.
+ */
+function fieldLine(
+   e: SummaryEntity,
+   known: ReadonlyMap<string, unknown>,
+): string {
    const doc = scrubForEgress(e.embedDoc ?? "");
    let type = e.dataType ?? "";
    if (e.kind === "join") {
-      type = [e.relationship, e.joinTarget ? `source ${e.joinTarget}` : ""]
+      type = [
+         e.relationship,
+         e.joinTarget && known.has(e.joinTarget)
+            ? `source ${e.joinTarget}`
+            : "",
+      ]
          .filter(Boolean)
          .join(", ");
    }
@@ -125,11 +138,14 @@ function renderGroups(
    fields: readonly SummaryEntity[],
    includeJoins: boolean,
    indent: string,
+   known: ReadonlyMap<string, unknown>,
 ): string[] {
    const groups = GROUPS.filter((g) => includeJoins || g.kind !== "join").map(
       (g) => ({
          title: g.title,
-         lines: fields.filter((f) => f.kind === g.kind).map(fieldLine),
+         lines: fields
+            .filter((f) => f.kind === g.kind)
+            .map((f) => fieldLine(f, known)),
       }),
    );
    const total = groups.reduce((n, g) => n + g.lines.length, 0);
@@ -208,7 +224,7 @@ export function renderSourceFields(
    root: SourceFields,
    byName: ReadonlyMap<string, SourceFields>,
 ): string {
-   const lines = renderGroups(root.fields, true, "");
+   const lines = renderGroups(root.fields, true, "", byName);
    const queue: Array<{
       from: SourceFields;
       path: string[];
@@ -231,7 +247,7 @@ export function renderSourceFields(
          lines.push(
             "",
             `Joined source ${target.source} as ${nextPath.join(".")}${join.relationship ? ` (${join.relationship})` : ""}:`,
-            ...renderGroups(target.fields, false, "  "),
+            ...renderGroups(target.fields, false, "  ", byName),
          );
          if (nextPath.length < SOURCE_SUMMARY_JOIN_DEPTH) {
             queue.push({

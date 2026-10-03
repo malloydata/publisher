@@ -74,11 +74,17 @@ source: inv is duckdb.sql("select 1 as id, 1 as cust_id, 'i' as rf") extend {
 /** Compile the fixture and return a Package-shaped stand-in over it. */
 export async function compileJoinFixture(
    modelPath: string = JOIN_FIXTURE_MODEL_PATH,
+   options: {
+      /** Replaces the fixture's model text. */
+      modelText?: string;
+      /** What `model.getSources()` reports: the compiled sources' gates. */
+      apiSources?: Array<{ name: string; authorize?: string[] }>;
+   } = {},
 ): Promise<{ pkg: unknown; modelDef: ModelDef }> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    const runtime = new Runtime({
       urlReader: new InMemoryURLReader(
-         new Map([[`${ROOT}${modelPath}`, MODEL_TEXT]]),
+         new Map([[`${ROOT}${modelPath}`, options.modelText ?? MODEL_TEXT]]),
       ),
       connections: new FixedConnectionMap(
          new Map<string, Connection>([["duckdb", duckdb]]),
@@ -98,6 +104,7 @@ export async function compileJoinFixture(
       getSourceInfos: () => sourceInfos,
       getQueries: () => [],
       getModelDef: () => modelDef,
+      ...(options.apiSources ? { getSources: () => options.apiSources } : {}),
    };
    await duckdb.close();
    return {
