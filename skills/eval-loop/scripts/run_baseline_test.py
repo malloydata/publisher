@@ -2125,5 +2125,59 @@ class FinalQueryGivens(unittest.TestCase):
         self.assertEqual(c["givens"], self.GIVENS)
 
 
+class McpCallToolErrors(unittest.TestCase):
+    """A tool error arrives as a normal reply with `isError: true` and the
+    message as plain text. Parsing that text as JSON reported a decode error
+    that read like an empty body, and the real message was lost."""
+
+    def reply(self, result, sse=True):
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+        raw = f"event: message\ndata: {body}\n\n" if sse else body
+
+        class Resp:
+            def read(self_): return raw.encode()
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+
+        return mock.patch.object(rb.urllib.request, "urlopen",
+                                 lambda req, timeout=None: Resp())
+
+    def call(self, result, **kw):
+        with self.reply(result, **kw):
+            return rb.mcp_call("http://x/mcp", "get_context", {})
+
+    def test_a_tool_error_raises_with_the_tools_own_text(self):
+        msg = ("MCP error -32602: Input validation error: Invalid enum value. "
+               "Expected 'source' | 'measure', received 'any'")
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": msg}],
+                       "isError": True})
+        self.assertIn("received 'any'", str(cm.exception))
+        self.assertNotIn("Expecting value", str(cm.exception))
+
+    def test_a_tool_error_is_raised_from_a_plain_json_reply_too(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": "no such package"}],
+                       "isError": True}, sse=False)
+        self.assertIn("no such package", str(cm.exception))
+
+    def test_a_long_error_is_trimmed(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": "x" * 5000}],
+                       "isError": True})
+        self.assertLess(len(str(cm.exception)), 1000)
+
+    def test_an_error_with_no_text_still_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [], "isError": True})
+        self.assertIn("isError", str(cm.exception))
+
+    def test_an_ordinary_reply_still_parses(self):
+        got = self.call({"content": [{"type": "text",
+                                      "text": json.dumps({"sources": []})}],
+                         "isError": False})
+        self.assertEqual(got, {"sources": []})
+
+
 if __name__ == "__main__":
     unittest.main()

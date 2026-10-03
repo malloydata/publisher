@@ -881,7 +881,18 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     envelope = json.loads(raw)
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
-    for chunk in (envelope.get("result") or {}).get("content") or []:
+    result = envelope.get("result") or {}
+    if result.get("isError"):
+        # A tool error is an ordinary reply whose text is the message, not
+        # JSON. Parsing it below reported "Expecting value: line 1 column 1"
+        # and hid what the server actually said (for example a rejected enum
+        # value in the arguments).
+        said = " ".join(
+            t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                        for ch in result.get("content") or []) if t)
+        raise ValueError(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
+    for chunk in result.get("content") or []:
         text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
         if not text:
             continue
