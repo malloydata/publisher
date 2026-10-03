@@ -53,6 +53,8 @@ export async function postJson(args: PostJsonArgs): Promise<unknown> {
             `${args.what} to ${where} failed: timed out after ${args.timeoutMs}ms`,
             undefined,
             true,
+            undefined,
+            `${args.what} failed: timed out after ${args.timeoutMs}ms`,
          );
       }
       if (name === "AbortError") {
@@ -66,22 +68,28 @@ export async function postJson(args: PostJsonArgs): Promise<unknown> {
          `${args.what} to ${where} failed: ${scrub((error as Error).message, args.secrets)}`,
          undefined,
          true,
+         undefined,
+         `${args.what} failed: the endpoint could not be reached`,
       );
    }
 
    if (!response.ok) {
       let detail: string;
+      let vendorMessage: string;
       if (response.status === 401 || response.status === 403) {
          detail = `authentication failed; check ${args.authHint}`;
+         vendorMessage = detail;
       } else {
          const text = await response.text().catch(() => "");
          detail = scrub(text, args.secrets).slice(0, 200);
+         vendorMessage = vendorErrorMessage(scrub(text, args.secrets));
       }
       throw new HttpRequestError(
          `${args.what} to ${where} failed (${response.status}): ${detail}`,
          response.status,
          isRetryableStatus(response.status),
          parseRetryAfterMs(response.headers.get("retry-after")),
+         `${args.what} failed (${response.status}): ${vendorMessage}`,
       );
    }
 
@@ -93,6 +101,32 @@ export async function postJson(args: PostJsonArgs): Promise<unknown> {
          response.status,
          false,
       );
+   }
+}
+
+/**
+ * The vendor's own error message from an error body: `error.message`, `error`
+ * as a string, or `message`, cut to 200 characters. A body that is not JSON is
+ * what a vendor that does not answer in JSON said, so it is shown as text, also
+ * cut. Nothing else of the body is passed on.
+ */
+function vendorErrorMessage(body: string): string {
+   const none = "the vendor gave no error message";
+   try {
+      const parsed = JSON.parse(body) as {
+         error?: { message?: unknown } | string;
+         message?: unknown;
+      } | null;
+      const found =
+         typeof parsed?.error === "string"
+            ? parsed.error
+            : (parsed?.error?.message ?? parsed?.message);
+      return typeof found === "string" && found.trim() !== ""
+         ? found.trim().slice(0, 200)
+         : none;
+   } catch {
+      const text = body.trim().slice(0, 200);
+      return text === "" ? none : text;
    }
 }
 

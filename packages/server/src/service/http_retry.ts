@@ -20,6 +20,13 @@ export class HttpRequestError extends Error {
       readonly retryable: boolean,
       /** The server's `Retry-After`, in ms, when it sent a usable one. */
       readonly retryAfterMs?: number,
+      /**
+       * The same failure worded for a caller of the MCP tool: the status and the
+       * vendor's own error message, without the endpoint (host, project path)
+       * that `message` carries for the server log. Absent when `message` is
+       * already safe to show.
+       */
+      readonly publicMessage?: string,
    ) {
       super(message);
       this.name = "HttpRequestError";
