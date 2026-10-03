@@ -3747,7 +3747,9 @@ components:
               description: >-
                 True when `retrieval.llm.maxCallsPerSync` stopped the step before
                 every entity had one. The status can be `ready` with `done` below
-                `total`; the next sync (a restart) continues from there.
+                `total`. The next sync continues from there; it starts on a
+                server restart or after the package's content changes, and
+                reloading an unchanged package does not start one.
         sourceSummaryProgress:
           type: object
           description: >-
@@ -3768,7 +3770,9 @@ components:
               description: >-
                 True when `retrieval.llm.maxCallsPerSync` stopped the step before
                 every source had one. The status can be `ready` with `done` below
-                `total`; the next sync (a restart) continues from there.
+                `total`. The next sync continues from there; it starts on a
+                server restart or after the package's content changes, and
+                reloading an unchanged package does not start one.
         lastError:
           type: object
           description: Present when `status` is `error`.

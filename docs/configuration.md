@@ -477,7 +477,9 @@ would ask for it. It is written at index time, once, and stored in the `entity_k
 
 `always` sends every entity to the LLM; `never` sends none. The keyphrase step runs before
 embedding, saves each batch as it returns and stops at `retrieval.llm.maxCallsPerSync` calls (the
-rest wait for the next sync; the package's status shows `keyphraseProgress.capped`).
+rest wait for the next sync, which starts on a server restart or after the package's content
+changes; reloading an unchanged package does not start one. The package's status shows
+`keyphraseProgress.capped`).
 
 A stored keyphrase is reused until the entity's inputs (name, kind, source, data type, doc text; plus
 code under `egress.preset: "full"`), the prompt text or the model change, so a restart, reload or
@@ -527,7 +529,8 @@ the field list and the reply format are added by the server.
 
 The step runs after keyphrases and before any vector is written. It makes one call per source, up to
 `retrieval.llm.concurrency` at a time, saves each summary as it returns, and shares
-`retrieval.llm.maxCallsPerSync` with the keyphrase step (sources left over wait for the next sync;
+`retrieval.llm.maxCallsPerSync` with the keyphrase step (sources left over wait for the next sync, which starts on a server restart or after the package's
+content changes; reloading an unchanged package does not start one;
 `embeddingIndex.sourceSummaryProgress.capped` says so, and a stored summary that is out of date and
 could not be rewritten is deleted, never served). If a call fails after its retries and re-ask, the
 sync stops: `GET .../packages/{pkg}` shows `embeddingIndex.status: "error"`, `stage: "source_summary"`
