@@ -219,6 +219,7 @@ describe("previewTileQuery", () => {
       expect(previewTileQuery(document, inherited, runnable)).toEqual({
          expression: "orders -> by_brand",
          givenNames: undefined,
+         reads: undefined,
       });
    });
 });
