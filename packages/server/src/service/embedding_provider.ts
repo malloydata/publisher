@@ -1,7 +1,22 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { EmbeddingConfig, getEmbeddingConfig } from "../config";
+import { EmbeddingConfig, getEmbeddingSettings } from "../config";
+import { createEmbeddingModel } from "../providers/registry";
+import { loadedRetrievalConfig } from "../retrieval_config";
+import {
+   DEFAULT_RETRY,
+   HttpRequestError,
+   isRetryableStatus,
+   parseRetryAfterMs,
+   RetryPolicy,
+   withRetry,
+} from "./http_retry";
+import type {
+   EmbeddingModel,
+   EmbedOptions,
+   ProviderName,
+} from "../providers/types";
 
 /** Timeout for bulk (index-build) embedding calls. */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
@@ -18,6 +33,24 @@ export const MAX_EMBED_INPUT_CHARS = 1_024;
 export const MAX_EMBED_BATCH_SIZE = 512;
 
 type FetchFn = typeof fetch;
+
+/**
+ * The retry machinery lives in ./http_retry so the chat adapters share it.
+ * The embedding names stay as aliases: callers and tests import them from
+ * here.
+ */
+export const EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRetryPolicy = RetryPolicy;
+export const DEFAULT_EMBEDDING_RETRY: RetryPolicy = DEFAULT_RETRY;
+
+/** Retry a bulk embedding call; see {@link withRetry}. */
+export function withEmbeddingRetry<T>(
+   attempt: () => Promise<T>,
+   policy: RetryPolicy,
+): Promise<T> {
+   return withRetry(attempt, policy, "Embedding request");
+}
 
 interface EmbeddingResponseItem {
    index?: number;
@@ -52,14 +85,39 @@ export function prepareEmbeddingInput(text: string): string {
  * the Authorization header and must never be logged; error messages carry
  * at most a 200-char body excerpt and never echo request headers.
  */
-export class EmbeddingProvider {
+export class EmbeddingProvider implements EmbeddingModel {
    constructor(
       private config: EmbeddingConfig,
       private fetchFn: FetchFn = fetch,
    ) {}
 
+   get provider(): ProviderName {
+      return this.config.provider ?? "openai-compatible";
+   }
+
    get model(): string {
       return this.config.model;
+   }
+
+   get maxBatch(): number {
+      return MAX_EMBED_BATCH_SIZE;
+   }
+
+   get queryPrefix(): string {
+      return this.config.queryPrefix ?? "";
+   }
+
+   get documentPrefix(): string {
+      return this.config.documentPrefix ?? "";
+   }
+
+   /** {@link embedBatch} with the bulk timeout and no retry unless given. */
+   embed(texts: string[], options: EmbedOptions = {}): Promise<number[][]> {
+      return this.embedBatch(
+         texts,
+         options.timeoutMs ?? EMBEDDING_BATCH_TIMEOUT_MS,
+         options.retry,
+      );
    }
 
    /**
@@ -80,15 +138,27 @@ export class EmbeddingProvider {
     * Embed `texts` in order. Inputs are prepared (whitespace-collapsed,
     * capped) and sent in batches of {@link MAX_EMBED_BATCH_SIZE}. Throws
     * on any HTTP, timeout, or malformed-response failure; callers own the
-    * fallback-to-lexical decision.
+    * fallback-to-lexical decision. With `retry`, each request is retried on
+    * the failures that can clear (see {@link EmbeddingRetryPolicy}).
     */
-   async embedBatch(texts: string[], timeoutMs: number): Promise<number[][]> {
+   async embedBatch(
+      texts: string[],
+      timeoutMs: number,
+      retry?: EmbeddingRetryPolicy,
+   ): Promise<number[][]> {
       const vectors: number[][] = [];
       for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
          const chunk = texts
             .slice(i, i + MAX_EMBED_BATCH_SIZE)
             .map(prepareEmbeddingInput);
-         vectors.push(...(await this.embedChunk(chunk, timeoutMs)));
+         vectors.push(
+            ...(retry
+               ? await withEmbeddingRetry(
+                    () => this.embedChunk(chunk, timeoutMs),
+                    retry,
+                 )
+               : await this.embedChunk(chunk, timeoutMs)),
+         );
       }
       return vectors;
    }
@@ -122,7 +192,12 @@ export class EmbeddingProvider {
             (error as Error)?.name === "TimeoutError"
                ? `timed out after ${timeoutMs}ms`
                : (error as Error).message;
-         throw new Error(`Embedding request to ${url} failed: ${reason}`);
+         // A network failure or timeout may clear on its own.
+         throw new EmbeddingRequestError(
+            `Embedding request to ${url} failed: ${reason}`,
+            undefined,
+            true,
+         );
       }
 
       if (!response.ok) {
@@ -141,8 +216,11 @@ export class EmbeddingProvider {
                .join("[REDACTED]")
                .slice(0, 200);
          }
-         throw new Error(
+         throw new EmbeddingRequestError(
             `Embedding request to ${url} failed (${response.status}): ${detail}`,
+            response.status,
+            isRetryableStatus(response.status),
+            parseRetryAfterMs(response.headers.get("retry-after")),
          );
       }
 
@@ -185,12 +263,12 @@ export class EmbeddingProvider {
    }
 }
 
-// Cached on a config fingerprint, never on null: a call after the env
+// Cached on a settings fingerprint, never on null: a call after the env
 // changes (tests, operator restarts with new vars are moot, but the
 // integration suite runs many specs in one process) always sees the
 // current configuration instead of a stale provider or a sticky "off".
-let cached: { fingerprint: string; provider: EmbeddingProvider } | null = null;
-let testOverride: { provider: EmbeddingProvider | null } | null = null;
+let cached: { fingerprint: string; provider: EmbeddingModel } | null = null;
+let testOverride: { provider: EmbeddingModel | null } | null = null;
 
 /**
  * Whether the operator has turned the embedding feature on at all.
@@ -203,43 +281,36 @@ export function embeddingConfigured(): boolean {
       return testOverride.provider !== null;
    }
    try {
-      return getEmbeddingConfig() !== null;
+      return getEmbeddingSettings(loadedRetrievalConfig()?.embedding) !== null;
    } catch {
       return true;
    }
 }
 
 /**
- * The process-wide provider for the current embedding configuration, or
- * null when `EMBEDDING_API_KEY` is unset. Throws on malformed companion
- * env vars (see getEmbeddingConfig); callers on the tool path catch and
- * degrade.
+ * The process-wide embedding model for the current configuration, or null
+ * when the feature is off (see getEmbeddingSettings). Throws on malformed
+ * companion env vars; callers on the tool path catch and degrade.
  */
-export function getEmbeddingProvider(): EmbeddingProvider | null {
+export function getEmbeddingProvider(): EmbeddingModel | null {
    if (testOverride) {
       return testOverride.provider;
    }
-   const config = getEmbeddingConfig();
-   if (!config) {
+   const settings = getEmbeddingSettings(loadedRetrievalConfig()?.embedding);
+   if (!settings) {
       cached = null;
       return null;
    }
-   const fingerprint = [
-      config.baseUrl,
-      config.model,
-      config.dimensions ?? "",
-      config.apiKey,
-      config.minSimilarity,
-   ].join("\u0000");
+   const fingerprint = JSON.stringify(settings);
    if (!cached || cached.fingerprint !== fingerprint) {
-      cached = { fingerprint, provider: new EmbeddingProvider(config) };
+      cached = { fingerprint, provider: createEmbeddingModel(settings) };
    }
    return cached.provider;
 }
 
 /** Test seam: force the provider (or null). Undo with _clear...(). */
 export function _setEmbeddingProviderForTests(
-   provider: EmbeddingProvider | null,
+   provider: EmbeddingModel | null,
 ): void {
    testOverride = { provider };
 }
