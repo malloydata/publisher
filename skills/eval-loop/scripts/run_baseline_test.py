@@ -2179,5 +2179,63 @@ class McpCallToolErrors(unittest.TestCase):
         self.assertEqual(got, {"sources": []})
 
 
+class RowsGoldenInAFile(unittest.TestCase):
+    """A `rows` golden may keep its rows in a CSV named by `golden.path`. Read
+    from `value` only, it fell through to "(unanswerable ...)" and the judge
+    marked a correct answer as one that should have declined."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q1.csv").write_text("region,total\nWest,12\nEast,7\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    G = {"kind": "rows", "path": "gold/q1.csv"}
+
+    def test_the_rows_in_the_file_reach_the_judge(self):
+        line = rb.golden_for_judge(self.G, self.tmp, "q1")
+        self.assertNotIn("unanswerable", line)
+        self.assertEqual(json.loads(line),
+                         [{"region": "West", "total": 12},
+                          {"region": "East", "total": 7}])
+
+    def test_value_wins_over_the_file(self):
+        g = {**self.G, "value": [{"region": "North", "total": 1}]}
+        self.assertEqual(json.loads(rb.golden_for_judge(g, self.tmp, "q1")),
+                         [{"region": "North", "total": 1}])
+
+    def test_a_long_file_is_cut_and_the_cut_is_stated(self):
+        rows = "".join(f"r{i},{i}\n" for i in range(600))
+        (self.tmp / "gold" / "big.csv").write_text("region,total\n" + rows)
+        line = rb.golden_for_judge({"kind": "rows", "path": "gold/big.csv"},
+                                   self.tmp, "big")
+        self.assertIn("first 500 of 600 rows", line)
+
+    def test_a_missing_file_is_an_error_naming_case_and_path(self):
+        with self.assertRaises(ValueError) as cm:
+            rb.golden_for_judge({"kind": "rows", "path": "gold/gone.csv"},
+                                self.tmp, "q9")
+        self.assertIn("q9", str(cm.exception))
+        self.assertIn("gold/gone.csv", str(cm.exception))
+
+    def test_a_path_outside_the_set_is_refused(self):
+        with self.assertRaises(ValueError):
+            rb.golden_for_judge({"kind": "rows", "path": "../x.csv"},
+                                self.tmp, "q1")
+
+    def test_a_rows_golden_with_neither_still_says_unanswerable(self):
+        self.assertIn("unanswerable",
+                      rb.golden_for_judge({"kind": "rows"}, self.tmp, "q1"))
+
+    def test_the_preflight_names_every_unreadable_file_before_any_spend(self):
+        cases = [{"qid": "q1", "golden": self.G},
+                 {"qid": "q2", "golden": {"kind": "rows", "path": "gold/no.csv"}}]
+        problems = rb.rows_golden_problems(cases, self.tmp)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("q2", problems[0])
+
+
 if __name__ == "__main__":
     unittest.main()

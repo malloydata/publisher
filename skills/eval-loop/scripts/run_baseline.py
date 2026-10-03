@@ -178,6 +178,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -2643,7 +2644,28 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
-def golden_for_judge(golden: dict[str, Any] | None) -> str:
+def rows_golden_problems(cases: list[dict[str, Any]],
+                         set_dir: pathlib.Path) -> list[str]:
+    """One line per `rows` golden whose `path` cannot be read.
+
+    Checked before any model call, so a missing or misplaced file stops the run
+    where it costs nothing instead of surfacing as a judge error per case.
+    """
+    out = []
+    for c in cases:
+        g = c.get("golden") or {}
+        if g.get("kind") != "rows":
+            continue
+        try:
+            golden_rows.load_rows(g, set_dir, c["qid"])
+        except golden_rows.GoldenRowsError as exc:
+            out.append(str(exc))
+    return out
+
+
+def golden_for_judge(golden: dict[str, Any] | None,
+                     set_dir: pathlib.Path | None = None,
+                     qid: str = "?") -> str:
     """The GOLDEN line of the judge prompt, rendered BY KIND.
 
     A golden holds its key in a different place depending on its kind, and one
@@ -2663,7 +2685,7 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     reason):
 
       scalar        golden.value, a dict
-      rows          golden.value, a list
+      rows          golden.value, a list, or the CSV golden.path names
       criteria      golden.rubric -- no value, ever
       unanswerable  nothing; the pass is a refusal
 
@@ -2687,6 +2709,13 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     value = g.get("value")
     if value is not None:
         return json.dumps(value)
+    if kind == "rows" and g.get("path"):
+        # Rows kept in a file beside the set. Read here, and raised rather than
+        # swallowed: "(unanswerable)" for a key that exists makes the judge
+        # mark a correct answer as one that should have declined.
+        rows = golden_rows.load_rows(g, set_dir, qid)
+        if rows is not None:
+            return golden_rows.render(rows)
     return "(unanswerable: the model cannot answer this)"
 
 
@@ -2822,7 +2851,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
-        golden=golden_for_judge(g),
+        golden=golden_for_judge(g, a.set_dir, case["qid"]),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(
             must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
@@ -3420,6 +3449,11 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
+    unreadable = rows_golden_problems(cases, a.set_dir)
+    if unreadable:
+        raise SystemExit(
+            "a rows golden names a file the run cannot read, so the judge "
+            "would be shown no key for it:\n  " + "\n  ".join(unreadable))
     if unscorable_goldens:
         print(f"  ! {len(unscorable_goldens)} of {len(cases)} cases will take "
               f"no verdict (no established golden): "

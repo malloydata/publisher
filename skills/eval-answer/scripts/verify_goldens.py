@@ -151,6 +151,7 @@ from typing import Any
 import config
 from check_must_not_use import candidate as must_not_use_candidate
 from json_scan import json_objects  # noqa: E402
+import golden_rows
 from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
@@ -206,6 +207,13 @@ def needs_value_check(case: dict[str, Any]) -> bool:
     """
     return (case.get("golden") or {}).get("kind") not in (
         "unanswerable", "criteria")
+
+
+def g_in_file(case: dict[str, Any]) -> bool:
+    """True for a rows golden whose rows live in `golden.path`, not `value`."""
+    g = case.get("golden") or {}
+    return (g.get("kind") == "rows" and g.get("value") is None
+            and bool(g.get("path")))
 
 
 def check_value(case: dict[str, Any], a: argparse.Namespace
@@ -273,6 +281,13 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         return "error", err[:160], None
 
     want = g.get("value")
+    if g.get("kind") == "rows" and want is None and g.get("path"):
+        # Rows kept in a file beside the set, as the judge reads them.
+        try:
+            want = golden_rows.load_rows(g, getattr(a, "set_dir", None),
+                                         case.get("qid", "?"))
+        except golden_rows.GoldenRowsError as exc:
+            return "error", str(exc)[:240], rows
     places = want.get("round") if isinstance(want, dict) else None
 
     if g.get("kind") == "rows":
@@ -1151,7 +1166,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         truth_package=meta.get("truthPackage"),
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)),
-        verify_figures=verify_figures_flag, figure_model=figure_model)
+        verify_figures=verify_figures_flag, figure_model=figure_model,
+        set_dir=set_dir)
     # Only the value check needs a truth server. Without one it does not happen,
     # and `skipped` carries that all the way out to the exit code -- but every
     # audit below still runs. Returning here skipped four checks that need no
@@ -1355,6 +1371,11 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                     f"rather than a new value -- check that the truth package "
                     f"loaded (a package serving nothing answers every query "
                     f"this way) before refreshing")
+            elif refresh and g_in_file(c):
+                findings.append(
+                    f"{c['qid']}: not refreshed: its rows live in "
+                    f"{c['golden']['path']}, which --refresh does not rewrite. "
+                    f"Replace that file with the fresh rows")
             elif refresh and rows is not None:
                 g = c["golden"]
                 if g.get("kind") == "rows":
