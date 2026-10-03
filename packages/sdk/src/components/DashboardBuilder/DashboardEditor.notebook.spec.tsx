@@ -123,6 +123,7 @@ mockServerProvider(
 );
 
 const { DashboardEditor } = await import("./DashboardEditor");
+const { NotebookEditor } = await import("./NotebookEditor");
 
 const button = (name: string | RegExp) =>
    screen.getByRole("button", { name, hidden: true });
@@ -181,6 +182,20 @@ describe("DashboardEditor as a notebook", () => {
 
    it("opens the file where the host says it is, not where its kind would put it", async () => {
       mount({ path: "dashboards/tour.malloy" });
+      expect(await screen.findByText("Tour")).toBeDefined();
+      expect(getModel.mock.calls[0][2]).toBe("dashboards/tour.malloy");
+   });
+
+   it("opens the file NotebookEditor is told it is at", async () => {
+      render(
+         <NotebookEditor
+            environmentName="env"
+            packageName="pkg"
+            notebookName="tour"
+            path="dashboards/tour.malloy"
+         />,
+         { wrapper: serverWrapper },
+      );
       expect(await screen.findByText("Tour")).toBeDefined();
       expect(getModel.mock.calls[0][2]).toBe("dashboards/tour.malloy");
    });
