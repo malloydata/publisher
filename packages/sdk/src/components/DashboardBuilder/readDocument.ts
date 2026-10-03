@@ -28,6 +28,7 @@ import {
    artifactTag as locateArtifactTag,
    descriptionNotes,
    readPath,
+   splitSourceLines,
    tagAnnotation,
    tileSteps,
 } from "./malloyText";
@@ -294,7 +295,7 @@ async function readDocumentText(
    modelPath: string | undefined,
 ): Promise<ReadResult> {
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
-   const lines = sourceText.split("\n");
+   const lines = splitSourceLines(sourceText);
 
    const parse = await parseMalloy(sourceText);
    if (parseRefused(parse))

@@ -9,6 +9,7 @@ import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 import { parseMalloy, parseRefused } from "./malloyTree";
 import { queryTile } from "./testing/fixtures";
 import { tileKey } from "./document";
+import { newNotebookSource } from "../DocumentCreate/newNotebook";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -729,6 +730,46 @@ source: a is one extend {
          dimension: "brand",
       });
    });
+});
+
+describe("readDashboardDocument: line endings", () => {
+   // A checkout with CRLF endings is the same document, so every field reads the same.
+   const SOURCES: Record<string, string> = {
+      "one-line tag, notes and tile tags": SIMPLE,
+      "a block tag and a text tile": newNotebookSource({
+         title: "Sales",
+         modelPath: "m.malloy",
+         source: "orders",
+         view: "by_brand",
+      }),
+      "a block description and a given contract": `##! experimental.givens
+##|"
+Block prose
+|##
+##| artifact { title="T"
+  tiles=["a -> x"]
+}
+|##
+import { one } from "../m.malloy"
+
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  # colspan=6
+  view: x is vx + { where: category ~ $CATEGORY }
+}`,
+   };
+   for (const [name, source] of Object.entries(SOURCES))
+      it(`reads ${name} the same with CRLF`, async () => {
+         const lf = await readDashboardDocument(source);
+         if (readFailed(lf)) throw new Error(lf.reason);
+         const crlf = await readDashboardDocument(
+            source.replace(/\n/g, "\r\n"),
+         );
+         if (readFailed(crlf)) throw new Error(crlf.reason);
+         expect(crlf.document).toEqual(lf.document);
+      });
 });
 
 describe("readDashboardDocument: what it refuses", () => {

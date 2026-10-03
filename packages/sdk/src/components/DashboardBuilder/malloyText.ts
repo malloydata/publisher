@@ -9,6 +9,10 @@
 
 const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 
+/** A file's lines, whatever its line endings: a CRLF line otherwise keeps a `\r` that a `$` anchor trips on. */
+export const splitSourceLines = (source: string): string[] =>
+   source.split(/\r\n|\r|\n/);
+
 export const isIdentifier = (text: string) =>
    new RegExp(`^${IDENT}$`).test(text);
 
