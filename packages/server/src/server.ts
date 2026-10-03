@@ -353,9 +353,25 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // server booted with; the host only, never the key.
 //
 // The `retrieval` block of publisher.config.json is read here, once, so an
-// invalid value stops the server with its fix rather than surfacing on the
-// first question. The provider getters read it back from module state.
-const retrievalConfig = getRetrievalConfig(SERVER_ROOT);
+// invalid value is reported with its fix rather than surfacing on the first
+// question. The provider getters read it back from module state.
+//
+// A config the server cannot read or parse must not kill the process: the
+// environment store reads the same file when it initializes, records the cause
+// as `initError`, prints PUBLISHER_INIT_FAILED and keeps the server up so
+// /status can name it. This read therefore logs and carries on with no
+// retrieval settings; the store reports the same failure right after.
+let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
+try {
+   retrievalConfig = getRetrievalConfig(SERVER_ROOT);
+} catch (error) {
+   retrievalConfig = undefined;
+   logger.error(
+      `Could not read the retrieval settings from publisher.config.json; retrieval runs with its defaults until this is fixed and the server restarted. ${
+         error instanceof Error ? error.message : String(error)
+      }`,
+   );
+}
 setRetrievalConfig(retrievalConfig);
 const embeddingConfig = getEmbeddingSettings(retrievalConfig?.embedding);
 if (embeddingConfig) {
