@@ -118,6 +118,43 @@ describe("notebook predicates", () => {
       expect(isArtifactNoteText("## title=artifact")).toBe(false);
    });
 
+   it("reads a dashboards/ file's kind off a tag whose artifact property is not first", () => {
+      const source = "## x {} artifact { kind=notebook }\nrun: x";
+      expect(
+         documentKind("dashboards/a.malloy", artifactKindInText(source)),
+      ).toBe("notebook");
+      expect(
+         documentKind(
+            "dashboards/a.malloy",
+            artifactKindInText("## 2024_q1 {} artifact { kind=notebook }"),
+         ),
+      ).toBe("notebook");
+   });
+
+   it("follows Malloy's route rule: a sigil glued to a word is a route, not a tag", () => {
+      expect(isArtifactNoteText("##artifact { kind=notebook }")).toBe(false);
+      expect(isArtifactNoteText("##|artifact { kind=notebook }")).toBe(false);
+      expect(ANY_ARTIFACT_NOTE.test("##artifact { kind=notebook }")).toBe(
+         false,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("#artifact { kind=dashboard }")).toBe(
+         false,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("# 2024 artifact { kind=dashboard }")).toBe(
+         true,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("#|\n  artifact { kind=dashboard }")).toBe(
+         true,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("# Áartifact {}")).toBe(false);
+      expect(
+         hasArtifactLineOutsideBlocks(
+            "##|artifact { kind=dashboard }\n|##\nrun: x",
+            ANY_ARTIFACT_NOTE,
+         ),
+      ).toBe(false);
+   });
+
    it("scans a megabyte of unclosed block openers in linear time", () => {
       const MB = 1024 * 1024;
       const flat = "##| x\n".repeat(MB / 6);

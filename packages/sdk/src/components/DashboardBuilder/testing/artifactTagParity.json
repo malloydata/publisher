@@ -134,6 +134,61 @@
          "tag": null
       },
       {
+         "name": "a first property whose name starts with a digit",
+         "source": "## 2024_q1 { } artifact { kind=notebook }\nrun: x",
+         "tag": ["## 2024_q1 { } artifact { kind=notebook }"]
+      },
+      {
+         "name": "a first property whose name starts with a Latin-extended letter",
+         "source": "## Área { } artifact { kind=notebook }\nrun: x",
+         "tag": ["## Área { } artifact { kind=notebook }"]
+      },
+      {
+         "name": "a Latin-extended letter joined to artifact makes another name",
+         "source": "## Áartifact { kind=notebook }\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact written as a backtick-quoted name",
+         "source": "## `artifact` { kind=notebook }\nrun: x",
+         "tag": ["## `artifact` { kind=notebook }"]
+      },
+      {
+         "name": "artifact as a backtick-quoted value is no tag",
+         "source": "## x=`artifact`\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "artifact after a deleted property",
+         "source": "## -x artifact { kind=notebook }\nrun: x",
+         "tag": ["## -x artifact { kind=notebook }"]
+      },
+      {
+         "name": "artifact after a -... that clears every property",
+         "source": "## -... artifact { kind=notebook }\nrun: x",
+         "tag": ["## -... artifact { kind=notebook }"]
+      },
+      {
+         "name": "a ##| block tag whose first line is a # comment",
+         "source": "##|\n  # layout\n  artifact { kind=notebook }\n|##\nrun: x",
+         "tag": ["##|", "# layout", "artifact { kind=notebook }"]
+      },
+      {
+         "name": "a ##| block tag whose opener line is a # comment",
+         "source": "##| # layout\n  artifact { kind=notebook }\n|##\nrun: x",
+         "tag": ["##| # layout", "artifact { kind=notebook }"]
+      },
+      {
+         "name": "##artifact with no space is routed, not a tag",
+         "source": "##artifact { kind=notebook }\nrun: x",
+         "tag": null
+      },
+      {
+         "name": "##|artifact with no space is routed, not a tag",
+         "source": "##|artifact { kind=notebook }\n|##\nrun: x",
+         "tag": null
+      },
+      {
          "name": "an untagged file",
          "source": "source: s is t\nrun: s -> v",
          "tag": null

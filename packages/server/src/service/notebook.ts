@@ -66,20 +66,39 @@ export interface LineTest {
  */
 const ARTIFACT_NOTE: LineTest = {
    test(note: string): boolean {
-      // A routed note (`##(markdown)`, `##"`) or a flag (`##!`) is never a tag.
-      const prefix = /^##(?:\|\s*|[ \t]*)(?=[A-Za-z_])/.exec(note);
+      // Malloy's route rule: a routed note (`##(markdown)`, `##"`, `##artifact`) or a flag (`##!`) is never a tag.
+      const prefix = /^##\|?(?:[ \t\r\n]|$)/.exec(note);
       if (!prefix) return false;
+      // The tag parser's bare-name characters: digits, ASCII and Latin-extended letters, `_`.
+      const bare = /[0-9A-Za-z_\u00C0-\u024F\u1E00-\u1EFF]+/y;
       let depth = 0;
       let before = "";
       for (let i = prefix[0].length; i < note.length; i++) {
          const c = note[i];
          if (/\s/.test(c)) continue;
+         // `-...` clears every property; its dots are no path for a name after it.
+         if (note.startsWith("-...", i)) {
+            i += 3;
+            before = "";
+            continue;
+         }
+         bare.lastIndex = i;
+         const word = bare.exec(note)?.[0];
          if (c === '"' || c === "'") {
             const fence = note.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
             i += fence.length;
             while (i < note.length && !note.startsWith(fence, i))
                i += note[i] === "\\" ? 2 : 1;
             i += fence.length - 1;
+         } else if (c === "`") {
+            // A backtick string is a name, so `` `artifact` `` sets the property.
+            let end = i + 1;
+            while (end < note.length && note[end] !== "`" && note[end] !== "\n")
+               end += note[end] === "\\" ? 2 : 1;
+            const name = note.slice(i + 1, end);
+            if (depth === 0 && name === "artifact" && !/[=.-]/.test(before))
+               return true;
+            i = end;
          } else if (c === "#") {
             const eol = note.indexOf("\n", i);
             if (eol < 0) return false;
@@ -87,8 +106,7 @@ const ARTIFACT_NOTE: LineTest = {
             continue;
          } else if (c === "{" || c === "[") depth++;
          else if (c === "}" || c === "]") depth--;
-         else if (/\w/.test(c)) {
-            const word = /^\w+/.exec(note.slice(i))?.[0] ?? c;
+         else if (word) {
             if (depth === 0 && word === "artifact" && !/[=.-]/.test(before))
                return true;
             i += word.length - 1;
@@ -106,7 +124,7 @@ const ARTIFACT_NOTE: LineTest = {
  * out untagged, and a false negative hides a real dashboard.
  */
 export const ANY_ARTIFACT_NOTE =
-   /^#{1,2}\|?[ \t]*(?=[A-Za-z_])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w.$-])artifact\b/;
+   /^#{1,2}\|?(?=[ \t\r\n])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w\u00C0-\u024F\u1E00-\u1EFF.$-])artifact(?![\w\u00C0-\u024F\u1E00-\u1EFF])/;
 
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
@@ -234,8 +252,7 @@ function findArtifactLineOutsideBlocks(
          if (end !== -1) {
             const block = [trimmed, ...lines.slice(i + 1, end)].join("\n");
             // An artifact tag may itself be written as a block, so the opener decides, not the body.
-            if (artifactLine.test(block.replace(/^(#{1,2})\|\s*/, "$1 ")))
-               return block;
+            if (artifactLine.test(block)) return block;
             i = end;
             continue;
          }
