@@ -4,6 +4,7 @@
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
+import type { GivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import {
    useDrill,
@@ -92,6 +93,19 @@ export function DashboardView({
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
 
+   // A given only a gate reads is in a tile's `givenNames` but not the row, so
+   // the host's value for it is sent as given: the row would drop it as undeclared.
+   const tileGivens = useMemo(() => {
+      const named = new Set(
+         (manifest.tiles ?? []).flatMap((tile) => tile.givenNames ?? []),
+      );
+      const hostOnly = Object.entries(givens ?? {}).filter(
+         ([name]) => named.has(name) && !declaredTypes.has(name),
+      );
+      if (hostOnly.length === 0) return applied;
+      return new Map<string, GivenValue>([...hostOnly, ...applied]);
+   }, [manifest, givens, declaredTypes, applied]);
+
    // The rows behind a clicked value, and a tile's query in the explorer —
    // the two ways past a number. Composite tiles only: each names its
    // source, which is what the rows are of and what the explorer opens on.
@@ -108,11 +122,11 @@ export function DashboardView({
       });
    }, []);
 
-   // The whole applied row: a source's own `where:` may read any of it, and a
+   // The whole applied row and any gate givens: a source's own `where:` may read any of it, and a
    // given the rows query does not reference is ignored by the server.
    const rowsGivens = useMemo(
-      () => givensToRequest(applied, declaredTypes),
-      [applied, declaredTypes],
+      () => givensToRequest(tileGivens, declaredTypes),
+      [tileGivens, declaredTypes],
    );
 
    // The explorer's controls take the URL-string form, not the request form.
@@ -220,7 +234,7 @@ export function DashboardView({
                         label={tile.label}
                         subtitle={tile.subtitle}
                         borderless={tile.borderless}
-                        givens={applied}
+                        givens={tileGivens}
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={height ?? TILE_MAX_HEIGHT}

@@ -164,3 +164,49 @@ describe("DashboardView chrome", () => {
       expect(screen.queryByText("ops")).toBeNull();
    });
 });
+
+describe("DashboardView gate givens", () => {
+   // ORG is read only by the source's `#(authorize)` gate: the tile names it,
+   // the control row does not declare it, and the host supplies it.
+   const gated = {
+      name: "ops",
+      path: "dashboards/ops.malloy",
+      givens: [{ name: "REGION", type: "string", label: "Region" }],
+      tiles: [
+         {
+            kind: "query",
+            query: "orders -> by_month",
+            givenNames: ["ORG", "REGION"],
+         },
+         { kind: "query", query: "orders -> by_year", givenNames: ["REGION"] },
+      ],
+   } as DashboardManifest;
+
+   const tileGivens = (query: string) =>
+      executeQueryModel.mock.calls
+         .map((call) => call[3] as { query?: string; givens?: unknown })
+         .filter((request) => request.query === `run: ${query}`)
+         .at(-1)?.givens;
+
+   it("sends a host-supplied gate given to the tiles that name it, with no control for it", async () => {
+      render(
+         <DashboardView
+            manifest={gated}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            givens={{ ORG: "1", REGION: "CA" }}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await waitFor(() =>
+         expect(tileGivens("orders -> by_month")).toEqual({
+            ORG: "1",
+            REGION: "CA",
+         }),
+      );
+      expect(tileGivens("orders -> by_year")).toEqual({ REGION: "CA" });
+      expect(screen.queryByText("ORG")).toBeNull();
+   });
+});
