@@ -35,7 +35,7 @@
    "fallback/cooldown": {
       "error": "Semantic search for this package is paused after an embedding failure: Embedding request to https://stub.example.com/v1/embeddings failed (500): down",
       "suggestions": [
-         "Try again after <retry-at>; the server retries then.",
+         "The next question after <retry-at> tries again; nothing retries on its own before then.",
          "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
          "A request with no search_text (a listing) still works; it needs no embeddings."
       ],
@@ -75,7 +75,7 @@
    "fallback/provider-error": {
       "error": "The embedding provider failed to embed the search text: Embedding request to https://stub.example.com/v1/embeddings failed (500): down",
       "suggestions": [
-         "Try again after <retry-at>; the server retries then.",
+         "The next question after <retry-at> tries again; nothing retries on its own before then.",
          "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
          "A request with no search_text (a listing) still works; it needs no embeddings."
       ],

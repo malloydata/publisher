@@ -3782,8 +3782,12 @@ components:
               type: string
               format: date-time
               description: >-
-                When the server will try again. Absent when no retry is
-                scheduled (for example `too-many-entities`).
+                The earliest time a retry can start. Nothing retries on a
+                timer: the first `get_context` question about this package
+                after this time starts the retry, so a package nobody asks
+                about stays in `error` and a status poll alone never sees it
+                recover. Absent when no retry can start (for example
+                `too-many-entities`).
         startedAt:
           type: string
           format: date-time
