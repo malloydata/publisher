@@ -2019,5 +2019,111 @@ class ExpectedEntityLint(unittest.TestCase):
         self.assertEqual(rb.expected_entity_lint(self.CASES, None, ""), (None, []))
 
 
+class FinalQueryGivens(unittest.TestCase):
+    """The answerer scopes a query with Publisher `givens`, passed beside the
+    query text. Re-running the text alone returns unfiltered rows, so the judge
+    compares the wrong rows with the golden."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.set_dir = self.tmp / "set"
+        self.set_dir.mkdir()
+        self.a = argparse.Namespace(
+            publisher="http://localhost:1", environment="e", package="p",
+            model_path="model.malloy", rebuild=True, target="local",
+            set_dir=self.set_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def attempt(self, calls, final_text):
+        d = self.tmp / "art" / "q1"
+        d.mkdir(parents=True)
+        blocks = []
+        for i, inp in enumerate(calls):
+            blocks.append(("assistant", [{
+                "type": "tool_use", "id": f"t{i}",
+                "name": "mcp__publisher__execute_query", "input": inp}]))
+            blocks.append(("user", [{
+                "type": "tool_result", "tool_use_id": f"t{i}",
+                "content": json.dumps({"rows": []}), "is_error": False}]))
+        blocks.append(("assistant", [{"type": "text", "text": final_text}]))
+        events = [{"type": k, "message": {"content": c}} for k, c in blocks]
+        events.append({"type": "result", "subtype": "success",
+                       "is_error": False, "usage": {}, "num_turns": 1})
+        (d / "answerer.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n")
+        return rb.run_answerer({"qid": "q1", "question": "how many?"},
+                               self.a, self.tmp / "art")
+
+    GIVENS = {"region": "West", "period": "2026-07-01 to 2026-10-01"}
+
+    def test_the_final_calls_givens_are_recorded(self):
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS}],
+            "Total is 5.\n\n```malloy\nrun: sales -> { aggregate: n }\n```")
+        self.assertEqual(got["final_givens"], self.GIVENS)
+        self.assertEqual(got["final_model_path"], "sales.malloy")
+
+    def test_givens_follow_the_chosen_call_not_the_last_probe(self):
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS},
+             {"query": "run: sales -> { aggregate: m }",
+              "modelPath": "sales.malloy", "givens": {"region": "East"}}],
+            "```malloy\nrun: sales -> { aggregate: n }\n```")
+        self.assertEqual(got["final_givens"], self.GIVENS)
+
+    def test_a_call_with_no_givens_records_none(self):
+        got = self.attempt([{"query": "run: sales -> { aggregate: n }"}],
+                           "no fence")
+        self.assertIsNone(got["final_givens"])
+
+    def test_the_rerun_sends_the_givens(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)) as tq:
+            rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_model_path": "sales.malloy",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        self.assertEqual(tq.call_args.kwargs.get("givens"), self.GIVENS)
+
+    def test_an_old_record_without_givens_reruns_as_before(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)) as tq:
+            rb.prediction_for(
+                {"qid": "q"}, {"final_query": "run: s -> { aggregate: n }"},
+                self.a, self.tmp, True)
+        self.assertIsNone(tq.call_args.kwargs.get("givens"))
+
+    def test_a_cached_unscoped_run_is_not_reused_once_givens_exist(self):
+        d = self.tmp / "q"
+        d.mkdir()
+        (d / "prediction.json").write_text(json.dumps(
+            {"query": "run: s -> { aggregate: n }", "rendered": "| unfiltered |"}))
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)):
+            got = rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        self.assertNotIn("unfiltered", got)
+
+    def test_the_cache_records_the_givens_it_ran_with(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)):
+            rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        c = json.loads((self.tmp / "q" / "prediction.json").read_text())
+        self.assertEqual(c["givens"], self.GIVENS)
+
+
 if __name__ == "__main__":
     unittest.main()

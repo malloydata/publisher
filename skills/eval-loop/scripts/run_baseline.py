@@ -1337,6 +1337,31 @@ def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
     return next((c.get("modelPath") for c in reversed(ok or hits)), None)
 
 
+def as_givens(raw: Any) -> dict[str, Any] | None:
+    """A call's `givens` argument as a non-empty dict, else None.
+
+    A client may send the object as a JSON string; anything that does not
+    decode to an object is treated as absent rather than guessed at.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) and raw else None
+
+
+def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The givens of the call `_model_path_of` would pick for this query.
+
+    Same rule, same reason: the givens and the file are facts about ONE call,
+    so a probe's givens never get paired with the answer's query.
+    """
+    hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
+    ok = [c for c in hits if not c.get("error")]
+    return next((c.get("givens") for c in reversed(ok or hits)), None)
+
+
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
                      answer_text: str
                      ) -> tuple[str | None, str | None, str | None]:
@@ -2116,7 +2141,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                             "query": q,
                                             "modelPath": (
                                                 c["input"].get("modelPath")
-                                                or c["input"].get("model_path"))}
+                                                or c["input"].get("model_path")),
+                                            # Runtime filters the answerer
+                                            # scoped this query with. They are
+                                            # an argument beside the text, so
+                                            # the text alone is a different
+                                            # (unfiltered) query.
+                                            "givens": as_givens(
+                                                c["input"].get("givens"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2206,6 +2238,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
 
     final_query, final_source, final_path = pick_final_query(
         queries, calls, text)
+    final_givens = _givens_of(final_query, [
+        c for c in calls if c.get("tool") == "execute_query" and c.get("query")
+    ]) if final_query else None
 
     return {
         "qid": qid,
@@ -2218,6 +2253,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,
+        "final_givens": final_givens,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2495,12 +2531,17 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
     holds is not a cache of that query.
     """
     q = att.get("final_query")
+    # Records made before givens were captured have none; they re-run as before.
+    givens = as_givens(att.get("final_givens"))
     cache = art / case["qid"] / "prediction.json"
     if cache.exists():
         c = json.loads(cache.read_text())
         # A file written before this key existed has no `query`, so it is not
         # reusable for any query: re-execute rather than trust it.
-        if "query" in c and c.get("query") == q:
+        # `givens` is part of the key for the same reason: rows cached from an
+        # unscoped run are not the rows of the scoped query.
+        if ("query" in c and c.get("query") == q
+                and (c.get("givens") or None) == givens):
             return c.get("rendered") or "(no prediction)"
 
     if not q:
@@ -2516,10 +2557,12 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         # that file. Then the case's, then the run default.
         mp = (att.get("final_model_path") or case.get("modelPath")
               or a.model_path)
-        rows, err = try_query(a.publisher, a.environment, a.package, mp, q)
+        rows, err = try_query(a.publisher, a.environment, a.package, mp, q,
+                              givens=givens)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"query": q, "rendered": rendered}, indent=2))
+    cache.write_text(json.dumps(
+        {"query": q, "givens": givens, "rendered": rendered}, indent=2))
     return rendered
 
 
