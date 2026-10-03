@@ -334,7 +334,7 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    // Keep this test LAST: the induced failure starts the provider
    // cool-down, which short-circuits the semantic path for its window.
    it(
-      "falls back to lexical, marked, when the embedding endpoint fails",
+      "returns an error, never lexical results, when the embedding endpoint fails",
       async () => {
          stubFailing = true;
          try {
@@ -342,12 +342,9 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
                targetType: "view",
                searchText: "top selling products",
             });
-            expect(payload.retrieval).toBe("lexical");
-            const entities = rankedEntities(payload);
-            expect(entities.length).toBeGreaterThan(0);
-            for (const entity of entities) {
-               expect(entity.relevance).toBeUndefined();
-            }
+            expect(payload.retrieval).toBe("error");
+            expect(payload.retrieval_reason).toBe("provider-error");
+            expect(rankedEntities(payload)).toEqual([]);
          } finally {
             stubFailing = false;
          }
