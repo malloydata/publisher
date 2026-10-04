@@ -125,9 +125,83 @@ describe("relevanceFromReply", () => {
       // Alone in its level: tiebreak 0.
       expect(out.get(2)).toBe(2);
    });
+
+   it("keeps the tiebreak under one however many sources share a score", () => {
+      // 0.1 per rank would give the first of 25 sources 2.4, which is past the
+      // next level: a source rated 1 would outrank one rated 2 or even 3.
+      const same = Array.from({ length: 25 }, (_, i) => ({
+         index: i + 1,
+         score: 1,
+      }));
+      const out = relevanceFromReply(same);
+      const values = same.map((s) => out.get(s.index) as number);
+      expect(Math.max(...values)).toBeLessThan(2);
+      expect(Math.min(...values)).toBe(1);
+      // The model's order inside the level is still strictly kept.
+      for (let i = 1; i < values.length; i++) {
+         expect(values[i]).toBeLessThan(values[i - 1]);
+      }
+   });
+
+   it("is unchanged for up to ten sources in a level", () => {
+      const out = relevanceFromReply(
+         Array.from({ length: 10 }, (_, i) => ({ index: i + 1, score: 2 })),
+      );
+      expect(out.get(1)).toBeCloseTo(2.9, 10);
+      expect(out.get(10)).toBe(2);
+   });
 });
 
 describe("rerank stage", () => {
+   it("prunes on the model's score, so a crowd of 1s cannot survive on tiebreak", async () => {
+      // 11 sources rated 1 and one rated 2. With a tiebreak of 0.1 per rank
+      // the first 1 reached 2.0, passed the cut at 2 and tied with the real 2.
+      const cards = Array.from({ length: 12 }, (_, i) =>
+         card(`s${String(i).padStart(2, "0")}`, 3.9 - i * 0.01),
+      );
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify(
+            numberedLines(prompt).map(([index]) => ({
+               index,
+               score: index === 12 ? 2 : 1,
+            })),
+         ),
+      );
+      const out = await rerankStage.run(
+         state(cards),
+         ctxFor(chat, { topSources: 12 }),
+      );
+      expect(out.cards.map((c) => c.source)).toEqual(["s11"]);
+   });
+
+   it("ranks every 3 above every 2 when many sources share a score", async () => {
+      const cards = Array.from({ length: 24 }, (_, i) =>
+         card(`s${String(i).padStart(2, "0")}`, 3.9 - i * 0.01),
+      );
+      // 20 rated 2 (listed first), then 4 rated 3.
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify(
+            numberedLines(prompt).map(([index]) => ({
+               index,
+               score: index <= 20 ? 2 : 3,
+            })),
+         ),
+      );
+      const out = await rerankStage.run(
+         state(cards),
+         ctxFor(chat, { topSources: 24 }),
+      );
+      const bySource = new Map(out.cards.map((c, i) => [c.source, i]));
+      const threes = ["s20", "s21", "s22", "s23"].map(
+         (s) => bySource.get(s) as number,
+      );
+      const twos = Array.from(
+         { length: 20 },
+         (_, i) => bySource.get(`s${String(i).padStart(2, "0")}`) as number,
+      );
+      expect(Math.max(...threes)).toBeLessThan(Math.min(...twos));
+   });
+
    it("is skipped for 0 or 1 cards and runs for 2", () => {
       const chat = scriptedChat(reply({}));
       const ctx = ctxFor(chat);

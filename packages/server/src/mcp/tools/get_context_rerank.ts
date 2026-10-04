@@ -15,9 +15,11 @@
  *   3. the model returns {index, score: 0..3} per source, best first;
  *   4. a card's new relevance is `score + tiebreak`, where the tiebreak is
  *      `(n_in_level - 1 - rank_in_level) * 0.1` in the order the model listed
- *      the cards of that level, and a card the model left out gets 0;
- *   5. a card whose relevance is below 2 is pruned, unless the request pins a
- *      source (then nothing is pruned: the caller already chose).
+ *      the cards of that level (the step shrinks past 10 cards in a level, so
+ *      the tiebreak stays under 1), and a card the model left out gets 0;
+ *   5. a card whose score from the model is below 2 is pruned, unless the
+ *      request pins a source (then nothing is pruned: the caller already
+ *      chose). The cut is on that score, never on the tiebreak.
  *
  * The entities' own relevances do not change. A failed call fails the stage
  * (StageError); there is no fallback.
@@ -89,10 +91,15 @@ function validateScores(size: number) {
    };
 }
 
+/** The largest tiebreak a card can get. Under 1, so it never reaches the next score. */
+const MAX_TIEBREAK = 0.9;
+
 /**
  * Relevance per index from the model's list: `score + tiebreak`. Within one
  * score the first listed gets the largest tiebreak, `(n - 1) * 0.1`, and the
- * last gets 0, so the model's order inside a level survives the sort.
+ * last gets 0, so the model's order inside a level survives the sort. With more
+ * than 10 cards in a level the step shrinks to `0.9 / (n - 1)`: a fixed 0.1
+ * let the first of 12 cards rated 1 reach 2.1, past a card the model rated 2.
  */
 export function relevanceFromReply(
    scores: ReadonlyArray<{ index: number; score: number }>,
@@ -105,8 +112,12 @@ export function relevanceFromReply(
    }
    const out = new Map<number, number>();
    for (const [level, indexes] of byLevel) {
+      const step =
+         indexes.length > 1
+            ? Math.min(0.1, MAX_TIEBREAK / (indexes.length - 1))
+            : 0;
       indexes.forEach((index, rank) => {
-         out.set(index, level + (indexes.length - 1 - rank) * 0.1);
+         out.set(index, level + (indexes.length - 1 - rank) * step);
       });
    }
    return out;
@@ -197,16 +208,21 @@ export const rerankStage: CardStage = {
       }
 
       const relevance = relevanceFromReply(scores);
+      // The model's own score per card, which is what the cut is made on.
+      const scored = new Map(scores.map((s) => [s.index, s.score]));
       const rescored = top.map((card, i) => {
          // A card the model left out gets 0.
          const raw = relevance.get(i + 1) ?? 0;
-         return { ...card, raw, relevance: mapRawScore(raw) };
+         return {
+            card: { ...card, raw, relevance: mapRawScore(raw) },
+            score: scored.get(i + 1) ?? 0,
+         };
       });
       // The caller pinned a source: it chose, so no card is pruned.
       const pinned = Boolean(request.sourceName);
       const kept = rescored
-         .filter((c) => pinned || Math.trunc(c.raw) >= RERANK_MIN_KEPT_LEVEL)
-         .map((card, at) => ({ card, at }))
+         .filter((c) => pinned || c.score >= RERANK_MIN_KEPT_LEVEL)
+         .map(({ card }, at) => ({ card, at }))
          .sort((a, b) => b.card.raw - a.card.raw || a.at - b.at)
          .map(({ card }) => card);
       return {
