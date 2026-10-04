@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
+## [0.9.2] — Console can edit notebooks, and create notebooks and dashboards
 
 A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
 `notebooks/*.malloy` notebook has an **Edit** button in the Console, and a dashboard and a notebook
@@ -140,7 +140,7 @@ came from the wrong field. It now keeps the full path, always quoted in the file
 now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
 the source had no such field.
 
-## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
+## [0.9.2] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
 
 **Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder` and `DashboardEditor` (and `NotebookEditor`, which wraps them) shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
 
@@ -153,7 +153,7 @@ Smaller changes in the same pass:
 - **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
 - **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
 
-## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
+## [0.9.2] — `#(authorize)` mentioned in markdown prose is no longer refused
 
 Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
 except where the tag sits inside the body of a `(markdown)` or `(text)` block note, or after the
@@ -162,7 +162,7 @@ gate can be previewed and saved. The same tag anywhere else, including a line no
 route, a block's opener or closer line, a comment or a string, is refused as before, and text the
 server cannot lex is judged the old way.
 
-## [Unreleased] — A query that reads a given with no default no longer keeps its package from loading
+## [0.9.2] — A query that reads a given with no default no longer keeps its package from loading
 
 A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload failed the same way but kept serving the model compiled before it, marked `stale`, so the package went missing only on a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
 
