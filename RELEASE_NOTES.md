@@ -31,7 +31,44 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — The Docker image runs the server as a non-root user
+## [0.9.1] — A refused filesystem access says why, and a local package zip is extracted into publisher_data
+
+0.9.0 runs the image as uid 1000, so a mount that only root can write fails in places that used to work. Those failures answered a bare `{"code":500,"message":"Internal server error."}`, and the `EACCES` that explained them reached only the server log. A refused access (`EACCES`, `EPERM`, `EROFS`) now answers HTTP 500 naming the errno, the operation and the path, for example `The server cannot access a path it needs (EACCES: permission denied, mkdir '/publisher/publisher_data/analytics/.temp_…')`. The same applies where a wrapper used to hide it: the environment README and `publisher.json` writes, and a package location that failed to mount at boot, whose `loadErrors` entry now carries the errno instead of only `Failed to mount local directory`. An unreadable package directory, which answered 404 `Package manifest … does not exist.`, now names the errno too.
+
+**A local `.zip` package location is extracted into `publisher_data/`, never beside the archive.** It used to be extracted into a directory next to the zip, named after it, after removing any directory already at that path. So a location like `/data/pkgs/sales.zip` deleted an operator's own `/data/pkgs/sales/` if one was there. It also made a package mount a write mount, which is how uid 1000 met it. A package mount, or a directory of zips, now only needs to be readable, including when bound read-only, and nothing beside the zip is created or removed. A `.zip` declared in `publisher.config.json` loads too, on a boot that mounts the environment from the config; a server restoring an environment it already holds keeps what it had until that package is reloaded. Before, it never did, whatever the uid: the boot path copied the archive file onto the package directory (`EISDIR` on the Bun runtime).
+
+`GET /api/v0/status` reports two failures it did not:
+
+- A package add through `POST /environments/{env}/packages` that fails on the server's side (any 5xx) is listed under `loadErrors`, like a configured package that did not load, with the same message the add was answered with. It clears when that package is later added successfully, or deleted. A rejection of the package's own content (4xx) is answered with its reason and is not listed.
+- A new `initError` field says why initialization failed, for example a config file the server cannot read, or a read-only server root it cannot create `publisher.db` in. Such a server stays up at `operationalState: "initializing"`, which used to be indistinguishable from one still starting; the reason was only on stderr. The field is absent when initialization succeeded. MCP `get_status` carries it too. It is an optional, additive field on `ServerStatus`: a client generated from an older copy of the spec ignores it, and one regenerated from this release's `api-doc.yaml` gains it.
+
+`GOOGLE_APPLICATION_CREDENTIALS` naming a directory, which is what a bind mount of a host path that does not exist produces, is now reported as a directory on a `gs://` package add and on a BigQuery connection test, rather than as a key file that "does not exist".
+
+The image also prepares `/publisher/ducklake_data`, owned by uid 1000, as the mount point for a DuckLake storage destination whose `bucketUrl` is a local path: a new named volume there is seeded writable, the way one on `/publisher/publisher_data` is, instead of starting root-owned. On Kubernetes, a volume is not seeded from the image the way a new Docker named volume is, so a volume on either path starts root-owned; set `fsGroup: 1000` in the pod's `securityContext`. `packages/server/README.docker.md` has a per-mount section on granting uid 1000 access.
+
+## [0.9.0] - The Docker image no longer ships Node or Python, and refreshes Debian packages daily
+
+`ms2data/malloy-publisher` no longer installs Node.js from the NodeSource repository, which also removes the Debian `python3.13` packages that NodeSource's `nodejs` package depends on. The server runs under Bun and does not use either. Removing Python also drops `netbase` and `media-types`, which only Python pulled in, so `/etc/services`, `/etc/protocols` and `/etc/mime.types` are no longer in the image and `getent services https` fails; the server reads none of them.
+
+A `node` command inside the image now resolves to the Bun-backed fallback that the `oven/bun` base provides, rather than `/usr/bin/node` (Node 20). That wrapper runs `node file.js` and `node -e`, but it rejects `node --version` and `node -v` ("does not support a repl"), so a healthcheck or script that calls those needs to change. `python3` is no longer present either. A `FROM ms2data/malloy-publisher` image or a `docker exec` script that calls `/usr/bin/node` or `python3` by path needs to install it; `/usr/bin/env node` still finds the fallback.
+
+Image builds also pick up Debian security updates the day they are published, instead of waiting for the ISO week to roll over.
+
+## [0.9.0] — Malloy 0.0.434: two security fixes, and changes that can break a model
+
+Publisher now builds on `@malloydata/*` 0.0.434, up from 0.0.432. Two of the changes are security fixes:
+
+- **An unsafe `timezone:` name is now a compile error** ([malloydata/malloy#3089](https://github.com/malloydata/malloy/pull/3089)). On 0.0.432 any ad-hoc query could put raw SQL in `timezone:`, and it ran past givens and `#(authorize)`. It now fails with `Invalid timezone`.
+- **The tag parser no longer writes onto `Object.prototype`** ([malloydata/malloy#3078](https://github.com/malloydata/malloy/pull/3078)). A model annotation such as `# __proto__ { a=b }` or `##! __proto__ { a=b }` used to write onto shared objects in the server process, after which every later tag parse failed, for every package on that worker. Publisher had a guard on the `#` annotations it reads itself. The parser fix makes it unnecessary, so it is removed. One effect: while anything had added an accessor to `Object.prototype`, the guard refused every given's filter control. That no longer happens.
+
+These can stop an existing model compiling, or change what a query returns:
+
+- **`select: *` leaves out private fields** ([malloydata/malloy#3051](https://github.com/malloydata/malloy/pull/3051)). A query that does `-> { select: * }` and then names a private field in a later stage stops compiling with `'<field>' is not defined`. A data-app page that read that column from the result now gets `undefined`, with no error.
+- **MySQL `TINYINT(1)` and `BOOLEAN` columns are integers, not booleans** ([malloydata/malloy#3058](https://github.com/malloydata/malloy/pull/3058)). A MySQL model with `where: is_active` stops compiling on reload; write `where: is_active = 1`. DECIMAL values are also cast differently.
+- **Generated SQL changes** for filtered joins, including how BigQuery packs them ([malloydata/malloy#3075](https://github.com/malloydata/malloy/pull/3075)), and for the ordering of multi-stage nests ([malloydata/malloy#3083](https://github.com/malloydata/malloy/pull/3083)). Results should not change; SQL you compare or cache will.
+- **The Trino driver moves to `@trinodb/trino-js-client`** ([malloydata/malloy#3066](https://github.com/malloydata/malloy/pull/3066)).
+
+## [0.9.0] — The Docker image runs the server as a non-root user
 
 `ms2data/malloy-publisher` now runs the server as `bun`, uid 1000 and gid 1000, instead of root. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`. The DuckDB CLI and the baked extensions move from `/root/.duckdb/` to `/home/bun/.duckdb/`, and the image sets `HOME=/home/bun`.
 
