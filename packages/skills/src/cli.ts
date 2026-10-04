@@ -3,20 +3,25 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `malloy-skills` -- read the agent skills, and install them, with nothing
+ * `malloy-skills` -- list the agent skills, and install them, with nothing
  * running.
  *
- * This exists so an agent meeting Publisher for the first time can get oriented
- * before it installs or starts anything. Every other route to these skills is
+ * This exists so an agent meeting Publisher for the first time can get the
+ * skills before it installs or starts anything. Every other route to them is
  * gated: the MCP prompt channel needs the server up, and the server is a large
- * install that clones its example packages over the network. A person can paste
- * one line into any agent, anywhere, and the agent can read what to do next.
+ * install that clones its example packages over the network.
+ *
+ * Reading one skill needs no command at all: the package ships the files, so
+ * unpkg serves each SKILL.md at a stable URL (`skillUrl`). That works in a chat
+ * with no shell, which `npx` cannot. This CLI covers what a URL cannot: listing
+ * what ships, and copying the whole tree, `reference/` files included, onto
+ * disk through the hardened copy in install.ts.
  *
  * Which is why this lives in @malloy-publisher/skills and not in the server or a
  * new package: this one already ships the skill files, has no runtime
  * dependencies and no native code, so `npx` is fast and cannot fail on a build
  * step or a platform binary. Adding a CLI framework here would cost that, for
- * four commands, so the argument parsing below is by hand.
+ * two commands, so the argument parsing below is by hand.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -26,34 +31,48 @@ import { listSkills } from "./index.js";
 import { installSkills, type SkillInstall } from "./install.js";
 import { skillsDir } from "./payload.js";
 
-/**
- * What `intro` prints. An alias rather than a skill named `intro`, so the
- * pasteable line stays short while the skill keeps the name every other channel
- * routes to -- the MCP prompt pointer and the index both name it. If it is ever
- * renamed or replaced, change it here and the pasteable line keeps working.
- */
-const INTRO_SKILL = "malloy-getting-started";
-
 /** Where each host looks for skills, relative to a project or to the home dir. */
 const TARGETS: Record<string, string> = {
    claude: path.join(".claude", "skills"),
    agents: path.join(".agents", "skills"),
 };
 
-const USAGE = `malloy-skills - read and install the Malloy Publisher agent skills
+/**
+ * What says a host is set up, per scope. The two differ because the hosts keep
+ * their user-level config in a directory rather than a top-level file: Claude
+ * Code reads `~/.claude/CLAUDE.md`, never `~/CLAUDE.md`, so the project markers
+ * would miss almost everyone who has Claude set up.
+ */
+const MARKERS: Record<"project" | "global", Record<string, string[]>> = {
+   project: { claude: ["CLAUDE.md"], agents: ["AGENTS.md", ".cursor"] },
+   global: { claude: [".claude"], agents: [".agents", ".cursor"] },
+};
+
+/**
+ * Where a skill can be read with nothing installed. `@latest` rather than this
+ * package's own version, so a link copied from an old cached copy of this CLI
+ * still serves the current skill.
+ */
+function skillUrl(name: string): string {
+   return `https://unpkg.com/@malloy-publisher/skills@latest/skills/${name}/SKILL.md`;
+}
+
+const USAGE = `malloy-skills - list and install the Malloy Publisher agent skills
 
 Usage:
-  npx -y @malloy-publisher/skills                 List every skill.
-  npx -y @malloy-publisher/skills intro           Print the orientation skill.
-  npx -y @malloy-publisher/skills <name>          Print one skill in full.
+  npx -y @malloy-publisher/skills [list]          List every skill.
   npx -y @malloy-publisher/skills install [host]  Copy the skills onto disk.
 
 Install targets:
   claude    .claude/skills/   (detected from a CLAUDE.md)
   agents    .agents/skills/   (detected from an AGENTS.md or .cursor/)
   --global  install into your home directory instead of this project
+            (detected from ~/.claude/, ~/.agents/, or ~/.cursor/)
 
-Nothing here needs a server, an account, or a network connection.`;
+Read one skill without installing anything:
+  ${skillUrl("<name>")}
+
+Nothing here needs a running server or an account.`;
 
 function fail(message: string): never {
    console.error(message);
@@ -73,34 +92,9 @@ function list(): void {
       console.log(skill.name);
       console.log(`  ${skill.description}`);
    }
-}
-
-/**
- * Print one skill's SKILL.md.
- *
- * A miss names the nearest candidates rather than only the bad name, because the
- * reader is usually an agent that guessed, and a bare "not found" makes it guess
- * again. Substring both ways so `dashboard` finds `malloy-dashboards` and
- * `malloy-analysis-report` finds `analysis`.
- */
-function print(name: string): void {
-   const skills = listSkills();
-   const match = skills.find((skill) => skill.name === name);
-   if (!match) {
-      const near = skills
-         .filter(
-            (skill) => skill.name.includes(name) || name.includes(skill.name),
-         )
-         .map((skill) => skill.name);
-      const suggestion =
-         near.length > 0
-            ? `Did you mean: ${near.join(", ")}?`
-            : `Run with no arguments to list all ${skills.length}.`;
-      fail(`No skill named '${name}'. ${suggestion}`);
-   }
-   process.stdout.write(
-      fs.readFileSync(path.join(match.dir, "SKILL.md"), "utf8"),
-   );
+   console.log("");
+   console.log(`Read one: ${skillUrl("<name>")}`);
+   console.log("Install them all: npx -y @malloy-publisher/skills install");
 }
 
 /**
@@ -111,16 +105,12 @@ function print(name: string): void {
  * picking one, because a skills directory in the wrong place is invisible: the
  * agent simply never loads them and nothing says why.
  */
-function detectTargets(root: string): string[] {
-   const found: string[] = [];
-   if (fs.existsSync(path.join(root, "CLAUDE.md"))) found.push("claude");
-   if (
-      fs.existsSync(path.join(root, "AGENTS.md")) ||
-      fs.existsSync(path.join(root, ".cursor"))
-   ) {
-      found.push("agents");
-   }
-   return found;
+function detectTargets(root: string, scope: keyof typeof MARKERS): string[] {
+   return Object.entries(MARKERS[scope])
+      .filter(([, markers]) =>
+         markers.some((marker) => fs.existsSync(path.join(root, marker))),
+      )
+      .map(([host]) => host);
 }
 
 /** Say what an install did, including what it cost. */
@@ -143,14 +133,16 @@ function report(target: string, dir: string, result: SkillInstall): void {
 
 function install(hosts: string[], global: boolean): void {
    const root = global ? os.homedir() : process.cwd();
+   const scope = global ? "global" : "project";
    let chosen = hosts;
    if (chosen.length === 0) {
-      chosen = detectTargets(root);
+      chosen = detectTargets(root, scope);
       if (chosen.length === 0) {
+         const looked = Object.values(MARKERS[scope]).flat().join(", ");
+         const flag = global ? " --global" : "";
          fail(
-            `Could not tell which agent to install for: no CLAUDE.md, ` +
-               `AGENTS.md, or .cursor/ in ${root}.\n` +
-               `Name one: malloy-skills install claude   (or: install agents)`,
+            `Could not tell which agent to install for: no ${looked} in ${root}.\n` +
+               `Name one: npx -y @malloy-publisher/skills install claude${flag}   (or: install agents${flag})`,
          );
       }
    }
@@ -163,13 +155,8 @@ function install(hosts: string[], global: boolean): void {
 function main(argv: string[]): void {
    const global = argv.includes("--global");
    const args = argv.filter((arg) => arg !== "--global");
+   const [command = "list", ...rest] = args;
 
-   if (args.length === 0) {
-      if (global) fail("--global only applies to install.");
-      return list();
-   }
-
-   const [command, ...rest] = args;
    if (command === "--help" || command === "-h" || command === "help") {
       console.log(USAGE);
       return;
@@ -185,17 +172,23 @@ function main(argv: string[]): void {
       }
       return install(rest, global);
    }
-   // Every remaining token has to be a skill name. An unrecognized flag is an
-   // error rather than something skipped: a silently ignored argument is how a
-   // typo turns into a command that looks like it worked.
-   if (command.startsWith("-")) {
-      fail(`Unknown option '${command}'.\n\n${USAGE}`);
+   // Anything else is refused rather than skipped: a silently ignored argument
+   // is how a typo turns into a command that looks like it worked.
+   if (command !== "list") {
+      // A skill name is the likeliest mistake, from an agent that expects this
+      // to print one, so it gets the URL that does.
+      const skill = listSkills().find((s) => s.name === command);
+      fail(
+         skill
+            ? `There is no command to print a skill. Read it at ${skillUrl(command)}`
+            : `Unknown command or option '${command}'.\n\n${USAGE}`,
+      );
    }
    if (rest.length > 0) {
-      fail(`Expected one skill name, got: ${args.join(" ")}.\n\n${USAGE}`);
+      fail(`'list' takes no arguments, got: ${rest.join(" ")}.`);
    }
    if (global) fail("--global only applies to install.");
-   return print(command === "intro" ? INTRO_SKILL : command);
+   return list();
 }
 
 // Only when run as the command, so importing this module for a test does not
@@ -215,4 +208,4 @@ function realpath(target: string): string {
    }
 }
 
-export { INTRO_SKILL, TARGETS, detectTargets, main };
+export { TARGETS, detectTargets, main, skillUrl };

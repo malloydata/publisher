@@ -2,37 +2,28 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { INTRO_SKILL, TARGETS, detectTargets, main } from "./cli.js";
+import { TARGETS, detectTargets, main, skillUrl } from "./cli.js";
 import { listSkills } from "./index.js";
 import { skillsDir } from "./payload.js";
 
 let tmp: string;
 let lines: string[];
 let errors: string[];
-let stdout: string;
 let exitCode: number | undefined;
 
 const realLog = console.log;
 const realError = console.error;
 const realExit = process.exit;
-const realWrite = process.stdout.write.bind(process.stdout);
 
 beforeEach(() => {
    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skills-cli-"));
    lines = [];
    errors = [];
-   stdout = "";
    exitCode = undefined;
-   // print() writes a whole SKILL.md straight to stdout; captured so the suite
-   // can assert the bytes rather than infer them, and so a passing run does not
-   // bury itself in skill text.
-   process.stdout.write = ((chunk: string) => {
-      stdout += chunk;
-      return true;
-   }) as typeof process.stdout.write;
    console.log = (...args: unknown[]) => void lines.push(args.join(" "));
    console.error = (...args: unknown[]) => void errors.push(args.join(" "));
    // fail() is typed `never` and really does exit, so the command surface can
@@ -48,7 +39,6 @@ afterEach(() => {
    console.log = realLog;
    console.error = realError;
    process.exit = realExit;
-   process.stdout.write = realWrite;
    fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -62,41 +52,6 @@ function run(...argv: string[]): void {
       }
    }
 }
-
-describe("intro", () => {
-   /**
-    * The one failure this alias can have: naming a skill that is not shipped.
-    * It is silent until someone pastes the line, and the paste is the whole
-    * reason the command exists. It has already happened once, when the alias
-    * named a skill that existed only on a branch.
-    */
-   test("names a skill that actually ships", () => {
-      expect(listSkills().map((skill) => skill.name)).toContain(INTRO_SKILL);
-   });
-
-   test("prints that skill's file, byte for byte", () => {
-      const intro = listSkills().find((skill) => skill.name === INTRO_SKILL);
-      expect(intro).toBeDefined();
-
-      run("intro");
-
-      expect(errors).toEqual([]);
-      expect(exitCode).toBeUndefined();
-      expect(stdout).toBe(
-         fs.readFileSync(path.join(intro!.dir, "SKILL.md"), "utf8"),
-      );
-   });
-
-   test("is the same output as naming the skill outright", () => {
-      run("intro");
-      const viaAlias = stdout;
-      stdout = "";
-      run(INTRO_SKILL);
-
-      expect(stdout).toBe(viaAlias);
-      expect(stdout.length).toBeGreaterThan(0);
-   });
-});
 
 describe("listing", () => {
    test("names every shipped skill", () => {
@@ -117,21 +72,51 @@ describe("listing", () => {
          expect(lines).toContain(`  ${skill.description}`);
       }
    });
-});
 
-describe("a name that is not a skill", () => {
-   test("exits non-zero and names the near miss", () => {
-      run("dashboard");
+   test("'list' is the same as no arguments", () => {
+      run();
+      const bare = [...lines];
+      lines = [];
+      run("list");
 
-      expect(exitCode).toBe(1);
-      expect(errors.join("\n")).toContain("malloy-dashboards");
+      expect(lines).toEqual(bare);
+      expect(exitCode).toBeUndefined();
    });
 
-   test("with nothing near, says how to see them all", () => {
-      run("zzzznope");
+   test("ends by saying how to read one and how to install", () => {
+      run();
+
+      expect(lines).toContain(
+         "Read one: https://unpkg.com/@malloy-publisher/skills@latest/skills/<name>/SKILL.md",
+      );
+      expect(lines).toContain(
+         "Install them all: npx -y @malloy-publisher/skills install",
+      );
+   });
+});
+
+describe("a skill name as the command", () => {
+   /**
+    * There is no print command; reading a skill is a URL. An agent that guesses
+    * otherwise gets that URL, rather than usage text it has to work back from.
+    */
+   test("exits non-zero and gives that skill's URL", () => {
+      run("malloy-getting-started");
 
       expect(exitCode).toBe(1);
-      expect(errors.join("\n")).toContain("Run with no arguments");
+      expect(errors.join("\n")).toContain(
+         "https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md",
+      );
+   });
+
+   test("the URL is where the package ships that skill's file", () => {
+      // unpkg serves the tarball's own layout, which is skillsDir's layout.
+      for (const skill of listSkills()) {
+         const tail = skillUrl(skill.name).split("@latest/")[1];
+         expect(path.join(skillsDir, "..", tail)).toBe(
+            path.join(skill.dir, "SKILL.md"),
+         );
+      }
    });
 });
 
@@ -150,44 +135,122 @@ describe("unknown input is refused, never ignored", () => {
       expect(errors.join("\n")).toContain("claude, agents");
    });
 
-   test("more than one skill name", () => {
-      run("malloy", "malloy-charts");
+   test("an unknown command", () => {
+      run("zzzznope");
 
       expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("zzzznope");
+   });
+
+   test("an argument to list", () => {
+      run("list", "malloy");
+
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("malloy");
    });
 
    test("--global outside install", () => {
-      run("--global", "malloy");
+      run("--global", "list");
 
       expect(exitCode).toBe(1);
       expect(errors.join("\n")).toContain("only applies to install");
    });
 });
 
-describe("detectTargets", () => {
+describe("detectTargets in a project", () => {
    test("a CLAUDE.md means claude", () => {
       fs.writeFileSync(path.join(tmp, "CLAUDE.md"), "");
-      expect(detectTargets(tmp)).toEqual(["claude"]);
+      expect(detectTargets(tmp, "project")).toEqual(["claude"]);
    });
 
    test("an AGENTS.md means agents", () => {
       fs.writeFileSync(path.join(tmp, "AGENTS.md"), "");
-      expect(detectTargets(tmp)).toEqual(["agents"]);
+      expect(detectTargets(tmp, "project")).toEqual(["agents"]);
    });
 
    test("a .cursor directory means agents", () => {
       fs.mkdirSync(path.join(tmp, ".cursor"));
-      expect(detectTargets(tmp)).toEqual(["agents"]);
+      expect(detectTargets(tmp, "project")).toEqual(["agents"]);
    });
 
    test("both markers means both, so neither host is silently skipped", () => {
       fs.writeFileSync(path.join(tmp, "CLAUDE.md"), "");
       fs.writeFileSync(path.join(tmp, "AGENTS.md"), "");
-      expect(detectTargets(tmp)).toEqual(["claude", "agents"]);
+      expect(detectTargets(tmp, "project")).toEqual(["claude", "agents"]);
    });
 
    test("nothing detected is empty, so install asks rather than guessing", () => {
-      expect(detectTargets(tmp)).toEqual([]);
+      expect(detectTargets(tmp, "project")).toEqual([]);
+   });
+});
+
+describe("detectTargets in the home directory", () => {
+   /**
+    * Hosts keep user-level config in a directory, not a top-level file: Claude
+    * Code reads ~/.claude/CLAUDE.md and never ~/CLAUDE.md. Checking the project
+    * markers here refused for nearly everyone who has Claude set up.
+    */
+   test("a ~/.claude directory means claude", () => {
+      fs.mkdirSync(path.join(tmp, ".claude"));
+      expect(detectTargets(tmp, "global")).toEqual(["claude"]);
+   });
+
+   test("a ~/.agents directory means agents", () => {
+      fs.mkdirSync(path.join(tmp, ".agents"));
+      expect(detectTargets(tmp, "global")).toEqual(["agents"]);
+   });
+
+   test("a ~/.cursor directory means agents", () => {
+      fs.mkdirSync(path.join(tmp, ".cursor"));
+      expect(detectTargets(tmp, "global")).toEqual(["agents"]);
+   });
+
+   test("a ~/CLAUDE.md alone is not a Claude setup", () => {
+      fs.writeFileSync(path.join(tmp, "CLAUDE.md"), "");
+      fs.writeFileSync(path.join(tmp, "AGENTS.md"), "");
+      expect(detectTargets(tmp, "global")).toEqual([]);
+   });
+});
+
+/**
+ * Run the real command in a child process with HOME pointed at the temp dir.
+ * A child because Bun reads HOME once at startup: setting process.env.HOME in
+ * this process does not move os.homedir().
+ */
+function runWithHome(...argv: string[]) {
+   return spawnSync(
+      process.execPath,
+      [path.join(import.meta.dir, "cli.ts"), ...argv],
+      {
+         env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
+         encoding: "utf8",
+      },
+   );
+}
+
+describe("install --global", () => {
+   test("with ~/.claude present, installs into ~/.claude/skills", () => {
+      fs.mkdirSync(path.join(tmp, ".claude"));
+
+      const result = runWithHome("install", "--global");
+
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(
+         fs.existsSync(path.join(tmp, TARGETS.claude, "malloy", "SKILL.md")),
+      ).toBe(true);
+      expect(fs.existsSync(path.join(tmp, TARGETS.agents))).toBe(false);
+   });
+
+   test("with nothing in HOME, refuses and names what it looked for", () => {
+      const result = runWithHome("install", "--global");
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(".claude, .agents, .cursor");
+      expect(result.stderr).toContain("install claude --global");
+      // Not "HOME is empty": Bun itself may create a cache dir there.
+      expect(fs.existsSync(path.join(tmp, ".claude"))).toBe(false);
+      expect(fs.existsSync(path.join(tmp, ".agents"))).toBe(false);
    });
 });
 
