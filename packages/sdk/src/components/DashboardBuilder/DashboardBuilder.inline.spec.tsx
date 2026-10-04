@@ -44,7 +44,13 @@ const catalog = {
    ],
 };
 
-const mount = async (options: { onSave?: (source: string) => void } = {}) => {
+const mount = async (
+   options: {
+      onSave?: (source: string) => void;
+      savesTo?: "package" | "browser" | "host";
+      saveLabel?: string;
+   } = {},
+) => {
    const document = await openDocument(SOURCE);
    return render(
       <DashboardBuilder
@@ -52,6 +58,8 @@ const mount = async (options: { onSave?: (source: string) => void } = {}) => {
          document={document}
          catalog={catalog}
          {...(options.onSave ? { onSave: options.onSave } : {})}
+         {...(options.savesTo ? { savesTo: options.savesTo } : {})}
+         {...(options.saveLabel ? { saveLabel: options.saveLabel } : {})}
       />,
    );
 };
@@ -294,6 +302,24 @@ describe("the save target", () => {
    it("is a caption under Save, not only a tooltip", async () => {
       await mount({ onSave: () => {} });
       expect(screen.getByText("Saves to the package file")).toBeDefined();
+   });
+
+   it("is the workspace's own words when it supplies them", async () => {
+      await mount({
+         onSave: () => {},
+         savesTo: "host",
+         saveLabel: "Saved to this draft",
+      });
+      expect(screen.getByText("Saved to this draft")).toBeDefined();
+      expect(screen.queryByText(/embedded in/)).toBeNull();
+   });
+
+   it("is a generic line, without the word host, when the workspace says nothing", async () => {
+      await mount({ onSave: () => {}, savesTo: "host" });
+      expect(
+         screen.getByText("Saves to the app this is embedded in"),
+      ).toBeDefined();
+      expect(screen.queryByText(/host/i)).toBeNull();
    });
 
    it("is absent when there is nowhere to save", async () => {

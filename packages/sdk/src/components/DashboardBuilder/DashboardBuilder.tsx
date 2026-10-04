@@ -195,6 +195,8 @@ export interface DashboardBuilderProps {
     * same event.
     */
    savesTo?: SavesTo;
+   /** The backend's own words for where Save writes, in place of the generic line for `savesTo`. */
+   saveLabel?: string;
    /** The file a save overwrites when `source` is a draft of it, so Undo save restores that file rather than the draft. */
    replaces?: string;
    /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
@@ -225,6 +227,7 @@ export function DashboardBuilder({
    onEvent,
    conversion,
    savesTo = "package",
+   saveLabel,
    replaces,
    modelPath,
 }: DashboardBuilderProps) {
@@ -697,6 +700,7 @@ export function DashboardBuilder({
                {...(catalog ? { onAddTile: () => openAdd() } : {})}
                onSettings={setSettingsAnchor}
                savesTo={savesTo}
+               {...(saveLabel ? { saveLabel } : {})}
             />
 
             {/* The ring's inset, minus the top: nothing at the top of this stack

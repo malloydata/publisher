@@ -364,9 +364,21 @@ describe("DashboardEditor, when the host's store is the record", () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, PACKAGE_FILE);
       mount(storage);
+      // Under Save as its caption, and under the tiles as the note.
       expect(
-         await screen.findByText("Saved to the draft branch"),
-      ).toBeDefined();
+         (await screen.findAllByText("Saved to the draft branch")).length,
+      ).toBe(2);
+   });
+
+   it("uses the workspace's description as the Save caption, with no generic host line", async () => {
+      const storage = new FakeStorage(RECORD);
+      storage.documents.set(PATH, PACKAGE_FILE);
+      mount(storage);
+      await screen.findByText("Storefront");
+      const captions = await screen.findAllByText("Saved to the draft branch");
+      expect(captions.some((el) => el.closest("button") === null)).toBe(true);
+      expect(screen.queryByText(/embedded in/)).toBeNull();
+      expect(screen.queryByText(/host app/)).toBeNull();
    });
 
    it("keeps a reader out when the record could not be read", async () => {

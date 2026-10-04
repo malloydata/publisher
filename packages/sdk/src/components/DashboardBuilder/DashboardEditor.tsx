@@ -733,6 +733,9 @@ export function DashboardEditor(props: DashboardEditorProps) {
                onDirtyChange={reportDirty}
                onSaveNoticeChange={setUndoOffered}
                savesTo={savesTo}
+               {...(savesTo === "host" && workspace?.description
+                  ? { saveLabel: workspace.description }
+                  : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                {...(onExit ? { onExit } : {})}
                note={
@@ -781,6 +784,7 @@ function Surface({
    onSaveNoticeChange,
    onEvent,
    savesTo,
+   saveLabel,
    onExit,
    note,
 }: {
@@ -804,6 +808,7 @@ function Surface({
    onSaveNoticeChange: (showing: boolean) => void;
    onEvent?: (event: BuilderEvent) => void;
    savesTo: SavesTo;
+   saveLabel?: string;
    onExit?: () => void;
    note: string;
 }) {
@@ -1077,6 +1082,7 @@ function Surface({
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}
+            {...(saveLabel ? { saveLabel } : {})}
             {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
          />

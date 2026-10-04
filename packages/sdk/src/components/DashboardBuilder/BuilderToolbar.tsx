@@ -27,7 +27,7 @@ import { MOD } from "./useBuilderShortcuts";
 export const SAVE_TARGET: Record<SavesTo, string> = {
    package: "Saves to the package file",
    browser: "Saves in this browser",
-   host: "Saves where the host app keeps it",
+   host: "Saves to the app this is embedded in",
 };
 
 /**
@@ -54,6 +54,8 @@ export interface BuilderToolbarProps {
    onSave?: () => void;
    /** Where Save writes, shown under the button. */
    savesTo?: SavesTo;
+   /** The backend's own words for where Save writes; replaces the generic line for `savesTo`. */
+   saveLabel?: string;
    /** The Save button, so focus can return to it after an Undo save. */
    saveButton?: Ref<HTMLButtonElement>;
    /** The host's own extra actions, beside Done. */
@@ -75,6 +77,7 @@ export function BuilderToolbar({
    saving,
    onSave,
    savesTo = "package",
+   saveLabel,
    saveButton,
    actions,
    onExit,
@@ -191,7 +194,7 @@ export function BuilderToolbar({
                      variant="caption"
                      sx={{ fontSize: 11, lineHeight: 1.2, opacity: 0.7 }}
                   >
-                     {SAVE_TARGET[savesTo]}
+                     {saveLabel ?? SAVE_TARGET[savesTo]}
                   </Typography>
                </Box>
             </>
