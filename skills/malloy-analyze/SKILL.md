@@ -184,7 +184,7 @@ view: analysis_summary is {
 
 Document insights as view descriptions: `#(doc) Top 10% of customers drive 62% of revenue.`
 
-Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps.
+Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps (unless your host's instructions say it shows follow-up suggestions of its own, which then carry them).
 
 **Ready to formalize?** Hand off to the modeling skill's "Starting from Analysis" workflow (`skill:malloy-model`).
 
