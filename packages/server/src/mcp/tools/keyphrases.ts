@@ -34,6 +34,7 @@ import {
    type KeyphrasePromptEntity,
 } from "../../prompts/keyphrase";
 import type { ChatModel } from "../../providers/types";
+import { publicMessage } from "../../service/http_retry";
 import type { EgressPreset } from "../../retrieval_config";
 import type { KeyphraseMode } from "../../service/package_retrieval";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -52,7 +53,12 @@ const MAX_CODE_CHARS = 500;
 /** The keyphrase step failed. The sync reports it with the stage name `keyphrase`. */
 export class KeyphraseStageError extends Error {
    readonly stage = "keyphrase" as const;
-   constructor(message: string, cause?: unknown) {
+   constructor(
+      message: string,
+      cause?: unknown,
+      /** The same failure worded for a caller: no endpoint. See publicMessage. */
+      readonly publicMessage?: string,
+   ) {
       super(message, { cause });
       this.name = "KeyphraseStageError";
    }
@@ -522,9 +528,11 @@ export async function resolveKeyphrases(args: {
    if (failure !== undefined) {
       const message =
          failure instanceof Error ? failure.message : String(failure);
+      const after = `Keyphrase generation failed after ${progress.done} of ${progress.total} entities`;
       throw new KeyphraseStageError(
-         `Keyphrase generation failed after ${progress.done} of ${progress.total} entities: ${message}`,
+         `${after}: ${message}`,
          failure,
+         `${after}: ${publicMessage(failure)}`,
       );
    }
    return { keyphrases, progress, calls: batches.length };

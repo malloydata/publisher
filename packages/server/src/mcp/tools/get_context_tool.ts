@@ -44,6 +44,7 @@ import {
    type Unavailable,
 } from "./get_context_pipeline";
 import { activeLlmSettings } from "../../providers/active";
+import { HttpRequestError } from "../../service/http_retry";
 import { LlmMeter, StageError } from "./get_context_llm";
 import { refineStage } from "./get_context_refine";
 import { rerankStage } from "./get_context_rerank";
@@ -3072,6 +3073,23 @@ const STAGE_SETTING: Readonly<Record<string, string>> = {
    rerank: "retrieval.rerank",
    source_match: "retrieval.sourceMatch",
 };
+/**
+ * The stage's reason as the MCP caller sees it. A vendor failure is worded
+ * without the endpoint (host, project path) and without the rest of the
+ * vendor's body: the caller gets the status and the vendor's own message, and
+ * the server log keeps the full text.
+ */
+function callerReason(error: StageError): string {
+   let cause: unknown = error.cause;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError && cause.publicMessage) {
+         return cause.publicMessage;
+      }
+      cause = cause.cause;
+   }
+   return error.reason;
+}
+
 function stageFailureError(
    uri: string,
    error: StageError,
@@ -3080,7 +3098,7 @@ function stageFailureError(
    return jsonToolError(
       uri,
       {
-         message: `get_context failed in the ${error.stage} step: ${error.reason}`,
+         message: `get_context failed in the ${error.stage} step: ${callerReason(error)}`,
          suggestions: [
             "Ask the same question again; a timeout or a malformed model reply is often transient.",
             "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +

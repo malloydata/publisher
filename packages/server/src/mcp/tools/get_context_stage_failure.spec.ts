@@ -18,6 +18,12 @@ import {
 } from "bun:test";
 import { _clearChatModelForTests } from "../../providers/active";
 import {
+   instantRetry,
+   jsonResponse,
+   stubFetch,
+} from "../../test_helpers/fetch_stub";
+import { createChatModel } from "../../providers/registry";
+import {
    callPayload,
    scriptedChat,
    semanticHarness,
@@ -183,4 +189,63 @@ describe("the advice in a stage failure", () => {
          }
       });
    }
+});
+
+describe("what a failed stage tells the caller about the vendor", () => {
+   const HOST = "llm.vendor-host.example";
+   const PATH = "projects/secret-proj/locations/eu-west9";
+   const realChat = (fetchFn: typeof fetch) =>
+      createChatModel(
+         {
+            provider: "openai-compatible",
+            model: "chat-1",
+            baseUrl: `https://${HOST}/v1/${PATH}`,
+            apiKey: "sk-secret-key-123",
+            timeoutMs: 5_000,
+            concurrency: 4,
+            maxCallsPerSync: 300,
+            maxCallsPerRequest: 20,
+         },
+         { fetchFn, retry: instantRetry() },
+      );
+
+   it("keeps the status and the vendor's message, and drops the host, the path and the rest of the body", async () => {
+      const { fetchFn } = stubFetch([
+         () =>
+            jsonResponse(
+               {
+                  error: { message: "The model is overloaded.", code: "x" },
+                  trace: "internal-trace-id-9f8e7d",
+               },
+               { status: 500 },
+            ),
+      ]);
+      useChat(realChat(fetchFn));
+      const handler = h.handlerFor(shopPackage());
+      const { isError, payload } = await untilSemantic(
+         handler,
+         params("vendor-500"),
+      );
+      expect(isError).toBe(true);
+      expect(payload.retrieval_stage).toBe("refine");
+      expect(payload.error).toContain("(500)");
+      expect(payload.error).toContain("The model is overloaded.");
+      const everything = JSON.stringify(payload);
+      expect(everything).not.toContain(HOST);
+      expect(everything).not.toContain("secret-proj");
+      expect(everything).not.toContain("internal-trace-id");
+      expect(everything).not.toContain("sk-secret-key-123");
+   });
+
+   it("says an authentication failure without the endpoint", async () => {
+      const { fetchFn } = stubFetch([
+         () => jsonResponse({ error: "bad key" }, { status: 401 }),
+      ]);
+      useChat(realChat(fetchFn));
+      const handler = h.handlerFor(shopPackage());
+      const { payload } = await untilSemantic(handler, params("vendor-401"));
+      expect(payload.error).toContain("(401)");
+      expect(payload.error).toContain("LLM_API_KEY");
+      expect(JSON.stringify(payload)).not.toContain(HOST);
+   });
 });

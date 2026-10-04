@@ -29,7 +29,7 @@ import {
    instantRetry,
    jsonResponse,
    stubFetch,
-} from "../../providers/fetch_stub";
+} from "../../test_helpers/fetch_stub";
 import { createChatModel } from "../../providers/registry";
 import type { ChatModel, JsonChatRequest } from "../../providers/types";
 import { setRetrievalConfig } from "../../retrieval_config";
@@ -664,6 +664,52 @@ describe("the sync", () => {
       _clearProviderCooldownForTests();
       await search(provider, pkg);
       expect((await status(provider, pkg)).status).toBe("ready");
+   });
+
+   it("an LLM failure in the sync does not name the LLM endpoint in the status", async () => {
+      // The server log keeps the full text; the status is shown to callers.
+      const { fetchFn } = stubFetch([
+         () => new Response("boom from the vendor", { status: 500 }),
+      ]);
+      const chat = createChatModel(
+         {
+            provider: "openai-compatible",
+            model: "m",
+            baseUrl: "https://secret-llm-host.example.com/v1",
+            apiKey: "fake-key",
+            timeoutMs: 5_000,
+            concurrency: 1,
+            maxCallsPerSync: 10,
+            maxCallsPerRequest: 5,
+         },
+         { fetchFn, retry: { ...instantRetry(), maxAttempts: 1 } },
+      );
+      _setChatModelForTests(chat, { concurrency: 1 });
+      const { provider } = recordingEmbedder();
+      const pkg = pkgWith();
+      for (let i = 0; i < 400; i++) {
+         const result = await trySemanticSearch({
+            db,
+            provider,
+            pkg,
+            environmentName: "env",
+            packageName: "sync",
+            entities: SYNC_ENTITIES,
+            queries: [
+               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
+            ],
+            perSourceWindow: 10,
+         });
+         if ("unavailable" in result && result.unavailable === "cooldown")
+            break;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const s = await status(provider, pkg);
+      expect(s.stage).toBe("keyphrase");
+      expect(s.lastError?.message).toContain("Keyphrase generation failed");
+      expect(s.lastError?.message).toContain("(500)");
+      expect(s.lastError?.message).toContain("boom from the vendor");
+      expect(s.lastError?.message).not.toContain("secret-llm-host");
    });
 
    it("with no LLM configured, auto acts as never: no chat call, embeds the doc or the name", async () => {

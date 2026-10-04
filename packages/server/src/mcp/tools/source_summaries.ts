@@ -36,6 +36,7 @@ import {
    undocumentedOneLine,
 } from "../../prompts/source_summary";
 import type { ChatModel } from "../../providers/types";
+import { publicMessage } from "../../service/http_retry";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { EmbeddableEntity } from "./embedding_index";
 import { runPooled } from "./get_context_llm";
@@ -55,7 +56,12 @@ const SOURCE_SUMMARY_MAX_TOKENS = 1000;
 /** The source summary step failed. The sync reports it with the stage name `source_summary`. */
 export class SourceSummaryStageError extends Error {
    readonly stage = "source_summary" as const;
-   constructor(message: string, cause?: unknown) {
+   constructor(
+      message: string,
+      cause?: unknown,
+      /** The same failure worded for a caller: no endpoint. See publicMessage. */
+      readonly publicMessage?: string,
+   ) {
       super(message, { cause });
       this.name = "SourceSummaryStageError";
    }
@@ -649,9 +655,11 @@ export async function resolveSourceSummaries(args: {
    } catch (failure) {
       const message =
          failure instanceof Error ? failure.message : String(failure);
+      const after = `Source summary generation failed after ${progress.done} of ${progress.total} sources`;
       throw new SourceSummaryStageError(
-         `Source summary generation failed after ${progress.done} of ${progress.total} sources: ${message}`,
+         `${after}: ${message}`,
          failure,
+         `${after}: ${publicMessage(failure)}`,
       );
    }
    return { progress, calls };
