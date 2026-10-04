@@ -406,7 +406,7 @@ describe("refine stage", () => {
       expect(shared.targetScores?.get(0)).toBe(mapRawScore(2.6));
    });
 
-   it("puts a source-target row on the knots without rating it", async () => {
+   it("scores a source-target row nobody rated as MEDIUM plus its cosine, without rating it", async () => {
       const rows = [
          row("s", "s", 0.5, { kind: "source", target: 1 }),
          row("s", "f", 0.5),
@@ -421,10 +421,38 @@ describe("refine stage", () => {
          ctxFor(chat, { searches }),
       );
       const source = out.rows.find((r) => r.kind === "source") as ResultEntity;
-      expect(source.raw).toBe(0.5);
-      expect(source.score).toBe(0.2);
+      expect(source.raw).toBe(2.5);
+      expect(source.score).toBe(mapRawScore(2.5));
+      expect(source.targetScores?.get(1)).toBe(mapRawScore(2.5));
       expect(source.level).toBeUndefined();
       expect(chat.prompts).toHaveLength(1);
+   });
+
+   it("an unrated source row does not drop a card whose fields rated HIGH below a LOW rating", async () => {
+      // With source matching off, the source target's row is never rated. On
+      // the knots as a bare cosine it published at 0.4 or less, below even a
+      // LOW rating, and it sets its card's relevance outright, so a card of
+      // HIGH fields could fall out of rerank's top 8 without the model seeing
+      // it. MEDIUM plus cosine puts it in the MEDIUM band, above LOW.
+      const rows = [
+         row("s", "s", 0.3, { kind: "source", target: 1 }),
+         row("s", "f", 0.5),
+      ];
+      const searches = [
+         search(0, "dimension", "a field"),
+         search(1, "source", "a source"),
+      ];
+      const out = await refineStage.run(
+         state(rows),
+         ctxFor(scriptedChat(rateAll("HIGH")), { searches }),
+      );
+      const source = out.rows.find((r) => r.kind === "source") as ResultEntity;
+      const field = out.rows.find(
+         (r) => r.kind === "dimension",
+      ) as ResultEntity;
+      // The MEDIUM band is 0.7 to 0.9. A bare cosine of 0.3 was 0.12.
+      expect(source.score as number).toBeGreaterThanOrEqual(0.7);
+      expect(field.score as number).toBeGreaterThan(source.score as number);
    });
 });
 

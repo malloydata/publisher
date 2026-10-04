@@ -305,17 +305,35 @@ function mapTargets(raw: Map<number, number>): Map<number, number> {
 }
 
 /**
- * A source-target row is not rated, but its score is published on the same
- * scale as everything else once refine ran: its cosine is the raw score.
+ * A source-target row that no stage rated (source matching is off) is scored as
+ * MEDIUM plus its cosine, the same form as a rated row, so it is published on
+ * the same scale as everything else once refine ran. It is not a rating: nobody
+ * asked a model about it, and `level` stays unset.
+ *
+ * Its cosine alone is the wrong raw score. On the knots a raw score under 1
+ * publishes at 0.4 or less, below even a LOW rating, and a source row sets its
+ * card's relevance outright (see foldRelevance). A card whose fields rated
+ * HIGH would then rank last, and could fall out of rerank's top cut without the
+ * model seeing it. MEDIUM plus cosine puts the row in the MEDIUM band, 0.7 to
+ * 0.9, ordered by cosine inside it.
  */
 function sourceRowOnKnots(row: ResultEntity): ResultEntity {
    // Source match already rated this row on the knots: its raw score is a level.
    if (row.score === undefined || row.raw !== undefined) return row;
-   const targetRaw = row.targetScores ? new Map(row.targetScores) : undefined;
+   const medium = LEVEL_VALUE.MEDIUM;
+   const targetRaw = row.targetScores
+      ? new Map(
+           [...row.targetScores].map(([target, cosine]) => [
+              target,
+              medium + cosine,
+           ]),
+        )
+      : undefined;
+   const raw = medium + row.score;
    return {
       ...row,
-      raw: row.score,
-      score: mapRawScore(row.score),
+      raw,
+      score: mapRawScore(raw),
       ...(targetRaw ? { targetRaw, targetScores: mapTargets(targetRaw) } : {}),
    };
 }
