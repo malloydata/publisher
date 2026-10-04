@@ -89,6 +89,10 @@ Use the Compose form under Compose. Compose names the volume `<project>_publishe
 
 A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it from the image, ownership included. It is the only writable mount point the image prepares. A new named volume anywhere else, such as a local DuckLake `bucketUrl`, starts root-owned and must be chowned to uid 1000 first; DuckDB reports that case as `No such file or directory`, not `EACCES`. A bind mount the server writes to must be writable by uid 1000. A read-only mount, such as the config file, only has to be readable. Until you can change the ownership, `--user 0` runs the server as root, as before. [`packages/server/README.docker.md`](packages/server/README.docker.md#the-server-runs-as-a-non-root-user) has the details.
 
+## [Unreleased] — A `where:` on a composite source is served again
+
+Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again. Rebinding a field such a filter reads is still refused. Upgrading is enough. See #1277.
+
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
 `@malloy-publisher/sdk/client` (the generated axios client) moves from generator 7.13.0 to 7.25.0, so axios 1.20 typechecks without a patched template. Three fields are now typed nullable, matching the OpenAPI 3.1 spec: `queryMetadata` on `Package`, `PackageMaterializationConfig` and `PersistSourcePlan` (`{ [key: string]: string } | null`). Code that reads them under `strict` must handle `null`. `Configuration` gains an optional `awsv4`, and `Set` values serialize as arrays.
