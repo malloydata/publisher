@@ -441,6 +441,8 @@ describe("getPackageEmbeddingStatus", () => {
       expect(status.reason).toBe("cooldown");
       expect(status.lastError?.message).toContain("authentication failed");
       expect(status.lastError?.message).not.toContain("sk-secret-key-123");
+      // The status is shown to callers, so it never names the endpoint.
+      expect(status.lastError?.message).not.toContain("stub.example.com");
       expect(Date.parse(status.lastError!.retryAt!)).toBeGreaterThan(before);
       expect(status.embeddedRows).toBe(0);
    });

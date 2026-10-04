@@ -3,6 +3,7 @@
 
 import type { RawChat, RawChatRequest } from "./chat_model";
 import { checkVectors, type EmbedChunkFn } from "./embedding_http";
+import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
 
@@ -58,8 +59,10 @@ export function parseGeminiReply(reply: unknown, url: string): ChatResult {
       ? parts.map((p) => (typeof p?.text === "string" ? p.text : "")).join("")
       : "";
    if (text === "") {
-      throw new Error(
-         `Chat response from ${url} malformed: no candidates[0].content.parts text`,
+      throw malformedReply(
+         "Chat response",
+         url,
+         "no candidates[0].content.parts text",
       );
    }
    return {

@@ -12,6 +12,7 @@ import {
 } from "../service/embedding_provider";
 import {
    HttpRequestError,
+   malformedReply,
    type RetryPolicy,
    withRetry,
 } from "../service/http_retry";
@@ -39,8 +40,10 @@ export function checkVectors(
    where: string,
 ): number[][] {
    if (!Array.isArray(vectors) || vectors.length !== expected) {
-      throw new Error(
-         `Embedding response from ${where} malformed: expected ${expected} embeddings, got ${Array.isArray(vectors) ? vectors.length : "none"}`,
+      throw malformedReply(
+         "Embedding response",
+         where,
+         `expected ${expected} embeddings, got ${Array.isArray(vectors) ? vectors.length : "none"}`,
       );
    }
    vectors.forEach((v, i) => {
@@ -49,9 +52,7 @@ export function checkVectors(
          v.length === 0 ||
          !v.every((n) => typeof n === "number" && Number.isFinite(n))
       ) {
-         throw new Error(
-            `Embedding response from ${where} malformed at item ${i}`,
-         );
+         throw malformedReply("Embedding response", where, `bad item ${i}`);
       }
    });
    return vectors as number[][];

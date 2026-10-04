@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { RawChat, RawChatRequest } from "./chat_model";
 import type { ChatResult, FetchFn, ProviderName } from "./types";
@@ -76,8 +77,10 @@ export class OpenAiCompatibleChat implements RawChat {
 
       const content = reply?.choices?.[0]?.message?.content;
       if (typeof content !== "string") {
-         throw new Error(
-            `Chat response from ${url} malformed: no choices[0].message.content`,
+         throw malformedReply(
+            "Chat response",
+            url,
+            "no choices[0].message.content",
          );
       }
       return {

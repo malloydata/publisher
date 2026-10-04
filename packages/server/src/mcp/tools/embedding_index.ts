@@ -16,6 +16,7 @@ import {
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
+import { publicMessage } from "../../service/http_retry";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
@@ -1334,7 +1335,9 @@ async function runTrackedSync(
          return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      markProviderFailure(meta, message);
+      // The log keeps the full message; what the status and an error result
+      // show a caller never names the endpoint.
+      markProviderFailure(meta, publicMessage(error));
       logger.warn(
          "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
          { environmentName, packageName, error: message },
@@ -1568,7 +1571,9 @@ export async function trySemanticSearch(args: {
       );
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      markProviderFailure(meta, message);
+      // The log keeps the full message; what the status and an error result
+      // show a caller never names the endpoint.
+      markProviderFailure(meta, publicMessage(error));
       logger.warn(
          "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },

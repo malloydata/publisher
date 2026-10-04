@@ -8,6 +8,7 @@ import {
    DEFAULT_RETRY,
    HttpRequestError,
    isRetryableStatus,
+   malformedReply,
    parseRetryAfterMs,
    RetryPolicy,
    withRetry,
@@ -197,6 +198,10 @@ export class EmbeddingProvider implements EmbeddingModel {
             `Embedding request to ${url} failed: ${reason}`,
             undefined,
             true,
+            undefined,
+            (error as Error)?.name === "TimeoutError"
+               ? `Embedding request failed: timed out after ${timeoutMs}ms`
+               : "Embedding request failed: the endpoint could not be reached",
          );
       }
 
@@ -221,6 +226,7 @@ export class EmbeddingProvider implements EmbeddingModel {
             response.status,
             isRetryableStatus(response.status),
             parseRetryAfterMs(response.headers.get("retry-after")),
+            `Embedding request failed (${response.status}): ${detail}`,
          );
       }
 
@@ -229,8 +235,10 @@ export class EmbeddingProvider implements EmbeddingModel {
       };
       const data = json?.data;
       if (!Array.isArray(data) || data.length !== inputs.length) {
-         throw new Error(
-            `Embedding response from ${url} malformed: expected ${inputs.length} embeddings, got ${Array.isArray(data) ? data.length : "none"}`,
+         throw malformedReply(
+            "Embedding response",
+            url,
+            `expected ${inputs.length} embeddings, got ${Array.isArray(data) ? data.length : "none"}`,
          );
       }
 
@@ -253,9 +261,7 @@ export class EmbeddingProvider implements EmbeddingModel {
             idx >= inputs.length ||
             vectors[idx] !== undefined
          ) {
-            throw new Error(
-               `Embedding response from ${url} malformed at item ${i}`,
-            );
+            throw malformedReply("Embedding response", url, `bad item ${i}`);
          }
          vectors[idx] = item.embedding;
       }

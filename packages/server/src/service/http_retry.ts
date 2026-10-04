@@ -20,10 +20,49 @@ export class HttpRequestError extends Error {
       readonly retryable: boolean,
       /** The server's `Retry-After`, in ms, when it sent a usable one. */
       readonly retryAfterMs?: number,
+      /**
+       * The same failure worded for a caller of the MCP tool: the status and the
+       * vendor's own error message, without the endpoint (host, project path)
+       * that `message` carries for the server log. Absent when `message` is
+       * already safe to show.
+       */
+      readonly publicMessage?: string,
    ) {
       super(message);
       this.name = "HttpRequestError";
    }
+}
+
+/**
+ * The wording of a failure that is safe to show an MCP caller or return from
+ * the status API: the public wording of a vendor failure, and the message of
+ * anything else. The server log keeps `error.message`, which names the
+ * endpoint.
+ */
+export function publicMessage(error: unknown): string {
+   if (error instanceof HttpRequestError && error.publicMessage) {
+      return error.publicMessage;
+   }
+   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A reply that arrived but cannot be used (the wrong number of vectors, no
+ * text). Not retryable, because it would come back the same. The log message
+ * names where it came from; the public one does not.
+ */
+export function malformedReply(
+   what: string,
+   where: string,
+   detail: string,
+): HttpRequestError {
+   return new HttpRequestError(
+      `${what} from ${where} malformed: ${detail}`,
+      undefined,
+      false,
+      undefined,
+      `${what} malformed: ${detail}`,
+   );
 }
 
 /**

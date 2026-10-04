@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { RawChat, RawChatRequest } from "./chat_model";
+import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
 
@@ -64,9 +65,7 @@ export class AnthropicChat implements RawChat {
          .map((b) => b.text as string)
          .join("");
       if (!Array.isArray(reply?.content) || text === "") {
-         throw new Error(
-            `Chat response from ${url} malformed: no text content block`,
-         );
+         throw malformedReply("Chat response", url, "no text content block");
       }
       return {
          text,
