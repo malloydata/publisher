@@ -39,6 +39,18 @@ export interface ChatRequest {
    prompt: string;
    maxTokens?: number;
    signal?: AbortSignal;
+   /**
+    * Replaces the model's own retry policy for this call. A caller with a
+    * person waiting passes a short one; the index sync keeps the model's.
+    */
+   retry?: RetryPolicy;
+   /**
+    * Called before every HTTP request this call sends: the first attempt, each
+    * retry and the re-ask that repairs a JSON reply. It may throw to refuse
+    * the request, which is how a spend ceiling stops one before it is sent.
+    * A model that sends no HTTP (a test double) calls it once per call.
+    */
+   onRequest?: () => void;
 }
 
 export interface ChatResult {

@@ -9,9 +9,26 @@
 
 import type {
    ChatModel,
+   ChatRequest,
    JsonChatRequest,
    JsonChatResult,
 } from "../../providers/types";
+import { DEFAULT_RETRY, type RetryPolicy } from "../../service/http_retry";
+
+/**
+ * How a chat call made while a person waits retries: once, after at most a
+ * second. The index sync keeps the model's own ladder (5 attempts, waits of up
+ * to 30 seconds), which is right for work nobody is waiting on and wrong here,
+ * where one 429 would hold a get_context request for minutes. A `Retry-After`
+ * longer than this fails the call at once. The question can be asked again.
+ */
+export const REQUEST_RETRY: RetryPolicy = {
+   ...DEFAULT_RETRY,
+   maxAttempts: 2,
+   baseDelayMs: 250,
+   maxDelayMs: 1_000,
+   maxTotalDelayMs: 1_000,
+};
 
 /** A stage failed after the provider layer's retries. get_context returns an error result. */
 export class StageError extends Error {
@@ -26,21 +43,22 @@ export class StageError extends Error {
 }
 
 export interface LlmUsage {
+   /** HTTP requests sent to the vendor, retries and JSON repairs included. */
    calls: number;
    inputTokens: number;
    outputTokens: number;
 }
 
 /**
- * The request has already made as many chat calls as
- * `retrieval.llm.maxCallsPerRequest` allows, and a stage tried for one more.
- * The stage that hit it wraps this in a StageError, so the caller's message
- * names the stage.
+ * The request has already sent as many chat requests as
+ * `retrieval.llm.maxCallsPerRequest` allows, and a stage tried to send one
+ * more. The stage that hit it wraps this in a StageError, so the caller's
+ * message names the stage.
  */
 export class LlmCallLimitError extends Error {
    constructor(readonly limit: number) {
       super(
-         `this request already made the ${limit} LLM ${limit === 1 ? "call" : "calls"} that retrieval.llm.maxCallsPerRequest allows, ` +
+         `this request already sent the ${limit} LLM ${limit === 1 ? "request" : "requests"} that retrieval.llm.maxCallsPerRequest allows, ` +
             `and it needs another. Fix: raise retrieval.llm.maxCallsPerRequest in publisher.config.json, ` +
             `or ask with fewer search targets.`,
       );
@@ -49,23 +67,28 @@ export class LlmCallLimitError extends Error {
 }
 
 /**
- * Counts the chat calls and tokens of ONE get_context request, across every
- * stage, and refuses a call past `limit`. A "call" is one `completeJson` (or
- * `complete`); the provider layer's own retries and its single JSON repair
- * happen inside it and are not counted separately. The check runs before the
- * call, so the call that would pass the limit is never sent.
+ * Counts the chat requests and tokens of ONE get_context request, across every
+ * stage, and refuses a request past `limit`. A "request" is one HTTP call to
+ * the vendor: the provider layer reports each one before it is sent, so a
+ * retry after a 429 and the re-ask that repairs a JSON reply count, and a
+ * `completeJson` that retries five times is five requests, not one. The check
+ * runs before the request, so the request that would pass the limit is never
+ * sent. The chat model this wraps also gets {@link REQUEST_RETRY}.
  */
 export class LlmMeter {
    private used: LlmUsage = { calls: 0, inputTokens: 0, outputTokens: 0 };
 
    /** `limit` of null means no ceiling. */
-   constructor(private readonly limit: number | null = null) {}
+   constructor(
+      private readonly limit: number | null = null,
+      private readonly requestRetry: RetryPolicy = REQUEST_RETRY,
+   ) {}
 
    snapshot(): LlmUsage {
       return { ...this.used };
    }
 
-   /** Count one call, or throw if the limit is already reached. Synchronous, so concurrent callers cannot slip past it. */
+   /** Count one request, or throw if the limit is already reached. Synchronous, so concurrent callers cannot slip past it. */
    private admit(): void {
       if (this.limit !== null && this.used.calls >= this.limit) {
          throw new LlmCallLimitError(this.limit);
@@ -78,22 +101,37 @@ export class LlmMeter {
       this.used.outputTokens += usage.outputTokens ?? 0;
    }
 
-   /** A chat model whose calls are counted, and limited, here. */
+   /** What a metered call adds to the caller's own request. */
+   private metered(req: ChatRequest): Pick<ChatRequest, "retry" | "onRequest"> {
+      return {
+         retry: req.retry ?? this.requestRetry,
+         onRequest: () => {
+            req.onRequest?.();
+            this.admit();
+         },
+      };
+   }
+
+   /** A chat model whose requests are counted, and limited, here. */
    wrap(chat: ChatModel): ChatModel {
       return {
          provider: chat.provider,
          model: chat.model,
          complete: async (req) => {
-            this.admit();
-            const result = await chat.complete(req);
+            const result = await chat.complete({
+               ...req,
+               ...this.metered(req),
+            });
             this.addUsage(result.usage);
             return result;
          },
          completeJson: async <T>(
             req: JsonChatRequest<T>,
          ): Promise<JsonChatResult<T>> => {
-            this.admit();
-            const result = await chat.completeJson(req);
+            const result = await chat.completeJson({
+               ...req,
+               ...this.metered(req),
+            });
             this.addUsage(result.usage);
             return result;
          },

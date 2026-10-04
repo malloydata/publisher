@@ -132,6 +132,9 @@ export class ChatModelImpl implements ChatModel {
 
    private async call(req: ChatRequest, json: boolean): Promise<ChatResult> {
       const started = Date.now();
+      // An error `onRequest` threw is a refusal by the caller, not a failure
+      // of the vendor: it is not counted as one.
+      let refusal: unknown;
       try {
          this.cooldown.check();
          const system = json
@@ -139,6 +142,12 @@ export class ChatModelImpl implements ChatModel {
             : req.system;
          const result = await withRetry(
             () => {
+               try {
+                  req.onRequest?.();
+               } catch (error) {
+                  refusal = error;
+                  throw error;
+               }
                const timeout = AbortSignal.timeout(this.options.timeoutMs);
                return this.raw.send({
                   system,
@@ -151,7 +160,7 @@ export class ChatModelImpl implements ChatModel {
                      : timeout,
                });
             },
-            this.retry,
+            req.retry ?? this.retry,
             "Chat request",
             () => recordLlmRetry(this.provider, "chat"),
          );
@@ -165,6 +174,7 @@ export class ChatModelImpl implements ChatModel {
          // a rejected key or a reply that is not usable JSON (one package's bad
          // prompt) must not stop every other package's LLM steps. A refused
          // call must not extend its own cooldown either.
+         if (error === refusal) throw error;
          if (error instanceof HttpRequestError && error.retryable) {
             this.cooldown.failure();
          }

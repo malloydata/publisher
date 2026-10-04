@@ -44,10 +44,15 @@ describe("stage runner trace", () => {
          provider: "openai-compatible",
          model: "m",
          complete: async () => ({ text: "", usage: {} }),
-         completeJson: async (req) => ({
-            value: req.validate([]),
-            usage: { inputTokens: 7, outputTokens: 3 },
-         }),
+         // A model reports each HTTP request it sends; this double sends one
+         // per call.
+         completeJson: async (req) => {
+            req.onRequest?.();
+            return {
+               value: req.validate([]),
+               usage: { inputTokens: 7, outputTokens: 3 },
+            };
+         },
       });
       const stage: RankStage = {
          name: "halve",
