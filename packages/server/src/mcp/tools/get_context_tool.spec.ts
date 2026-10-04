@@ -1623,11 +1623,7 @@ describe("get_context semantic retrieval", () => {
     */
    function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
       const facetsPkg = Object.assign(pkg as object, {
-         getRetrievalSettings: () => ({
-            representation: "facets",
-            keyphrases: "never",
-            prompts: {},
-         }),
+         getRetrievalSettings: () => ({ representation: "facets" }),
       });
       return {
          getEnvironment: async () => envWith(async () => facetsPkg),
@@ -2576,17 +2572,18 @@ describe("get_context semantic retrieval", () => {
       expect(first.retrieval).toBe("indexing");
       expect(first).not.toHaveProperty("below_cutoff_count");
 
-      // order_items and its join are orthogonal to this query, so they are
-      // dropped by the floor and counted rather than silently missing. The
-      // field reached through the join is not weighed: joined copies are made
-      // after the search, from the field they copy.
+      // order_items, its join and the field reached through the join are
+      // orthogonal to this query, so they are dropped by the floor and counted
+      // rather than silently missing. The joined field is weighed because this
+      // stand-in has no compiled model: nothing can rebuild it from a source
+      // of its own, so it stays in the semantic index (see directEntitiesOf).
       const payload = await callUntilSemantic(handler, params);
       expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
-      expect(payload.below_cutoff_count).toBe(2);
+      expect(payload.below_cutoff_count).toBe(3);
       // The denominator ships with it. Without it the count is a bare number
-      // an agent cannot scale: 2 rejected is a tight match out of 3 and a
+      // an agent cannot scale: 3 rejected is a tight match out of 4 and a
       // catastrophe out of 200, and nothing else in the response says which.
-      expect(payload.total_entities).toBe(3);
+      expect(payload.total_entities).toBe(4);
    });
 
    it("fills a measure target's window with measures, not with nearer dimensions", async () => {

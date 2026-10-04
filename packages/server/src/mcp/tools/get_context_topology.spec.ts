@@ -104,15 +104,30 @@ describe("join topology", () => {
       ).toBe(false);
    });
 
-   it("leaves out joined copies from the direct entities", async () => {
+   it("leaves out the joined copies assembly rebuilds from the direct entities", async () => {
       const index = await indexOfFixture();
-      expect(index.directEntities.some((e) => e.joinPath)).toBe(false);
+      const joined = (source: string) =>
+         index.directEntities
+            .filter((e) => e.source === source && e.joinPath)
+            .map((e) => e.name);
+      // `cust.name` and `cust.customer_count` are rebuilt through every join
+      // that reaches `cust`, so no copy of them is embedded.
+      for (const [source, path] of [
+         ["ord", "buyer"],
+         ["ord", "seller"],
+         ["inv", "customer"],
+         ["reg", "c"],
+      ]) {
+         expect(joined(source)).not.toContain(`${path}.name`);
+         expect(joined(source)).not.toContain(`${path}.customer_count`);
+      }
       expect(index.retrievalEntities.length).toBeGreaterThan(
          index.directEntities.length,
       );
       // Same entities, same order, minus the copies.
+      const direct = new Set(index.directEntities);
       expect(index.directEntities).toEqual(
-         index.retrievalEntities.filter((e) => !e.joinPath),
+         index.retrievalEntities.filter((e) => direct.has(e)),
       );
    });
 

@@ -1295,17 +1295,47 @@ interface CompiledJoin {
 }
 
 /**
- * The name of the source a compiled join points at. The IR join entry's own
- * `name` is the underlying table or SQL, not the source; the source is in
- * `sourceID`, written "sourceName@modelURL". Undefined for a join with no
- * such id (an inline table), which has no source to reach.
+ * The name of the source a compiled join points at, and the URL of the file
+ * that defines it. The IR join entry's own `name` is the underlying table or
+ * SQL, not the source; the source is in `sourceID`, written
+ * "sourceName@modelURL". Undefined for a join with no such id (an inline
+ * table), which has no source to reach.
  */
-function joinTargetSource(join: CompiledJoin): string | undefined {
+function joinTargetSource(
+   join: CompiledJoin,
+): { source: string; url: string } | undefined {
    const id = join.sourceID ?? join.referenceID;
    if (typeof id !== "string") return undefined;
    // Greedy, so a name containing "@" still splits at the URL's own "@".
-   const match = /^(.+)@[a-z][a-z0-9+.-]*:\/\//i.exec(id);
-   return match?.[1];
+   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
+   return match ? { source: match[1], url: match[2] } : undefined;
+}
+
+/**
+ * The package-relative path of the model file a URL names: the longest model
+ * path the URL ends with, at a directory boundary. Undefined when the URL is
+ * not one of the package's models (an import from outside the package).
+ */
+export function modelPathOfUrl(
+   url: string,
+   modelPaths: readonly string[],
+): string | undefined {
+   let pathname: string;
+   try {
+      pathname = decodeURIComponent(new URL(url).pathname);
+   } catch {
+      return undefined;
+   }
+   let best: string | undefined;
+   for (const modelPath of modelPaths) {
+      if (pathname !== modelPath && !pathname.endsWith(`/${modelPath}`)) {
+         continue;
+      }
+      if (best === undefined || modelPath.length > best.length) {
+         best = modelPath;
+      }
+   }
+   return best;
 }
 
 /**
@@ -1314,16 +1344,20 @@ function joinTargetSource(join: CompiledJoin): string | undefined {
  * the same SourceInfo join tree `collectJoinedFields` walks; the target
  * source's name is not in that tree (#1100), so it is read from the compiled
  * join entry with the same alias (`compiled`). A join with no readable target
- * records nothing, and its nested joins are still followed.
+ * records nothing, and its nested joins are still followed. A target is
+ * recorded with the package-relative path of the file that defines it, so two
+ * files that each define a source of the same name stay two targets; a target
+ * whose file is not one of the package's models records nothing.
  */
 function buildJoinReaches(args: {
    fields: JoinSchemaField[];
    compiled: unknown[] | undefined;
    from?: { joinPath: string; fanout: Relationship };
    path?: string[];
+   modelPaths: readonly string[];
    out: JoinReach[];
 }): void {
-   const { fields, compiled, from, path = [], out } = args;
+   const { fields, compiled, from, path = [], modelPaths, out } = args;
    for (const field of fields) {
       if (field.kind !== "join") continue;
       const entry = (compiled as CompiledJoin[] | undefined)?.find(
@@ -1339,9 +1373,17 @@ function buildJoinReaches(args: {
               fanout: field.relationship as Relationship,
            };
       const hopPath = [...path, field.name];
-      const targetSource = entry ? joinTargetSource(entry) : undefined;
-      if (targetSource) {
-         out.push({ targetSource, path: hopPath, fanout: here.fanout });
+      const target = entry ? joinTargetSource(entry) : undefined;
+      const targetModelPath = target
+         ? modelPathOfUrl(target.url, modelPaths)
+         : undefined;
+      if (target && targetModelPath !== undefined) {
+         out.push({
+            targetSource: target.source,
+            targetModelPath,
+            path: hopPath,
+            fanout: here.fanout,
+         });
       }
       if (hopPath.length >= JOIN_TOPOLOGY_MAX_DEPTH) continue;
       buildJoinReaches({
@@ -1349,6 +1391,7 @@ function buildJoinReaches(args: {
          compiled: entry?.fields,
          from: here,
          path: hopPath,
+         modelPaths,
          out,
       });
    }
@@ -1467,6 +1510,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       comparePaths(a.path ?? "", b.path ?? ""),
    );
 
+   const modelPaths = models.flatMap((m) => (m.path ? [m.path] : []));
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
    // Names of every source dropped for an unconditional deny-all gate, package-
@@ -1597,6 +1641,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             buildJoinReaches({
                fields: (sourceInfo.schema.fields ?? []) as JoinSchemaField[],
                compiled: findSourceDef(modelDef, sourceName)?.fields,
+               modelPaths,
                out: reaches,
             });
             if (reaches.length > 0) topology.set(governanceKey, reaches);
@@ -1709,11 +1754,39 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
+   // A join is only a route to a source's fields when that source is itself
+   // indexed: a target that was dropped (a deny-all gate) or never listed has
+   // no direct fields to copy, so the join reaches nothing.
+   const indexedSources = new Set(
+      deduped
+         .filter((e) => e.kind === "source")
+         .map((e) => sourceContextKey(e.modelPath, e.name)),
+   );
+   for (const [root, reaches] of topology) {
+      const kept = reaches.filter((reach) =>
+         indexedSources.has(
+            sourceContextKey(reach.targetModelPath, reach.targetSource),
+         ),
+      );
+      if (kept.length > 0) topology.set(root, kept);
+      else topology.delete(root);
+   }
+   const collapsed = collapseAliases(deduped);
+   const kept = new Set(collapsed);
    return {
-      entities: collapseAliases(deduped),
+      entities: collapsed,
       governance,
       droppedSources,
       topology,
+      aliasedAway: new Set(
+         deduped
+            .filter((e) => !kept.has(e))
+            .map((e) =>
+               [e.modelPath, e.source ?? "", e.kind, e.name].join(
+                  KEY_SEPARATOR,
+               ),
+            ),
+      ),
    };
 }
 
@@ -1733,6 +1806,13 @@ interface CollectedModel {
    droppedSources: Set<string>;
    /** Joins each source reaches, keyed by sourceContextKey. */
    topology: Map<string, JoinReach[]>;
+   /**
+    * Fields the index folded into another spelling of the same column (see
+    * collapseAliases), as modelPath, source, kind and name joined on
+    * KEY_SEPARATOR. A joined copy of one is a copy of a spelling nobody
+    * searches for.
+    */
+   aliasedAway: Set<string>;
 }
 
 /**
@@ -1885,12 +1965,14 @@ function collapseAliases(entities: Entity[]): Entity[] {
 
 /** One source reachable from a root source by joins. */
 export interface JoinReach {
-   /**
-    * Name of the source the fields live on. Not a sourceContextKey: the
-    * compiled join names its target source and the file that defines it, but
-    * not the package-relative path of that file, so a name is all there is.
-    */
+   /** Name of the source the fields live on. */
    targetSource: string;
+   /**
+    * The package-relative path of the file that defines that source. Together
+    * with `targetSource` it is the source's identity: two files can each
+    * define a source of the same name, and a join reaches only one of them.
+    */
+   targetModelPath: string;
    /** Join names from the root, root not included. Aliases, not source names. */
    path: string[];
    /** Widest relationship on the path; "many" anywhere means fan-out. */
@@ -2050,6 +2132,49 @@ export function embeddedEntitiesOf(
       : pkgIndex.retrievalEntities;
 }
 
+/**
+ * What the semantic index embeds when joined copies are made at assembly: every
+ * entity except a joined copy that assembly will rebuild from the topology.
+ *
+ * Assembly rebuilds a joined copy from a direct field of the join's target
+ * source, so a copy is left out only when the topology reaches a target source
+ * of that file and the target has a direct field of that name, or folded that
+ * name into another spelling of the same column (`aliasedAway`). A joined
+ * field assembly cannot rebuild stays in, so it stays searchable. Two cases:
+ *  - the join has no source to copy from (an inline table or SQL), or its
+ *    target is not indexed;
+ *  - the join adds the field to its target (`join_one: c is cust extend {...}`),
+ *    so the target has no such field of its own.
+ */
+function directEntitiesOf(
+   retrievalEntities: readonly Entity[],
+   topology: JoinTopology,
+   aliasedAway: ReadonlySet<string>,
+): readonly Entity[] {
+   const directFields = new Set([
+      ...retrievalEntities
+         .filter((e) => !e.joinPath)
+         .map((e) =>
+            [e.modelPath, e.source ?? "", e.kind, e.name].join(KEY_SEPARATOR),
+         ),
+      ...aliasedAway,
+   ]);
+   const rebuilt = (e: Entity): boolean => {
+      if (!e.joinPath) return false;
+      const reach = topology
+         .get(sourceContextKey(e.modelPath, e.source ?? ""))
+         ?.find((r) => r.path.join(".") === e.joinPath);
+      if (!reach) return false;
+      const field = e.name.slice(e.joinPath.length + 1);
+      return directFields.has(
+         [reach.targetModelPath, reach.targetSource, e.kind, field].join(
+            KEY_SEPARATOR,
+         ),
+      );
+   };
+   return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
+}
+
 /** Get, or lazily build and cache, the lunr entity index for a package. */
 export async function getPackageIndex(
    environmentStore: EnvironmentStore,
@@ -2086,8 +2211,10 @@ export async function getPackageIndex(
       pkg,
       byId,
       retrievalEntities,
-      directEntities: Object.freeze(
-         retrievalEntities.filter((e) => !e.joinPath),
+      directEntities: directEntitiesOf(
+         retrievalEntities,
+         collected.topology,
+         collected.aliasedAway,
       ),
       topology: collected.topology,
       index,

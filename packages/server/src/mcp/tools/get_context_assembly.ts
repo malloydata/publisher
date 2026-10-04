@@ -79,9 +79,11 @@ interface Reacher {
 const reachersCache = new WeakMap<JoinTopology, Map<string, Reacher[]>>();
 
 /**
- * The topology turned around: for each target source name, the roots that
- * reach it. The topology is keyed by root; assembly starts from a ranked
- * target field and asks "who can reach this?". Built once per topology.
+ * The topology turned around: for each target source, the roots that reach
+ * it. The topology is keyed by root; assembly starts from a ranked target
+ * field and asks "who can reach this?". A source is identified by the file
+ * that defines it and its name, so two files that each define `cust` have
+ * different reachers. Built once per topology.
  */
 function reachersOf(topology: JoinTopology): Map<string, Reacher[]> {
    const cached = reachersCache.get(topology);
@@ -92,9 +94,13 @@ function reachersOf(topology: JoinTopology): Map<string, Reacher[]> {
       const modelPath = rootKey.slice(0, at);
       const source = rootKey.slice(at + KEY_SEPARATOR.length);
       for (const reach of reaches) {
-         const list = byTarget.get(reach.targetSource) ?? [];
+         const target = sourceContextKey(
+            reach.targetModelPath,
+            reach.targetSource,
+         );
+         const list = byTarget.get(target) ?? [];
          list.push({ source, modelPath, reach });
-         byTarget.set(reach.targetSource, list);
+         byTarget.set(target, list);
       }
    }
    reachersCache.set(topology, byTarget);
@@ -120,12 +126,13 @@ interface JoinedCopy {
  * cannot tell which kind it got.
  */
 function joinedCopiesOf(
-   base: { kind: string; name: string; source?: string },
+   base: { kind: string; name: string; source?: string; modelPath: string },
    topology: JoinTopology,
    maxDepth: number,
 ): JoinedCopy[] {
    if (!isJoinable(base.kind) || base.source === undefined) return [];
-   return (reachersOf(topology).get(base.source) ?? []).flatMap((reacher) => {
+   const target = sourceContextKey(base.modelPath, base.source);
+   return (reachersOf(topology).get(target) ?? []).flatMap((reacher) => {
       const hops = reacher.reach.path.length;
       if (hops > maxDepth) return [];
       const joinPath = reacher.reach.path.join(".");

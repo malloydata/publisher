@@ -109,6 +109,67 @@ export async function compileJoinFixture(
    };
 }
 
+/**
+ * Compile several model files with the real compiler and return a
+ * Package-shaped stand-in that serves all of them. For a test that needs the
+ * same source name defined in two files, or a join the single fixture does
+ * not have.
+ */
+export async function compileModelFiles(
+   files: Record<string, string>,
+): Promise<{ pkg: unknown; modelDefs: Record<string, ModelDef> }> {
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   const runtime = new Runtime({
+      urlReader: new InMemoryURLReader(
+         new Map(
+            Object.entries(files).map(([path, text]) => [
+               `${ROOT}${path}`,
+               text,
+            ]),
+         ),
+      ),
+      connections: new FixedConnectionMap(
+         new Map<string, Connection>([["duckdb", duckdb]]),
+         "duckdb",
+      ),
+   });
+   const models = new Map<
+      string,
+      {
+         getSourceInfos: () => unknown[];
+         getQueries: () => never[];
+         getModelDef: () => ModelDef;
+      }
+   >();
+   const modelDefs: Record<string, ModelDef> = {};
+   for (const path of Object.keys(files)) {
+      const compiled = await runtime
+         .loadModel(new URL(`${ROOT}${path}`), {
+            importBaseURL: new URL(ROOT),
+         })
+         .getModel();
+      const modelDef = (compiled as unknown as { _modelDef: ModelDef })
+         ._modelDef;
+      const sourceInfos = modelDefToModelInfo(modelDef).entries.filter(
+         (entry) => entry.kind === "source",
+      );
+      modelDefs[path] = modelDef;
+      models.set(path, {
+         getSourceInfos: () => sourceInfos,
+         getQueries: () => [],
+         getModelDef: () => modelDef,
+      });
+   }
+   await duckdb.close();
+   return {
+      pkg: {
+         listModels: async () => Object.keys(files).map((path) => ({ path })),
+         getModel: (path: string) => models.get(path),
+      },
+      modelDefs,
+   };
+}
+
 /** An EnvironmentStore stand-in that serves one package. */
 export function storeServing(
    pkg: unknown,

@@ -309,3 +309,35 @@ describe("assembleCards: scope", () => {
       expect(bySource("reg")).toEqual([]);
    });
 });
+
+describe("assembleCards: a pinned dotted entity_name", () => {
+   // entity_name pins one field by its full name. A joined field's name is the
+   // dotted path, so a caller pins `buyer.name`, not `name`. This is the same
+   // on the semantic path as on the lexical one.
+   it("searches the target field a dotted name reaches", () => {
+      const keys = scopeKeysWithJoins(
+         index.directEntities,
+         index.topology,
+         request({ sourceName: "ord", entityName: "buyer.name" }),
+         10,
+      );
+      expect(
+         keys.filter((k) => k.source === "cust").map((k) => k.name),
+      ).toEqual(["name"]);
+   });
+
+   it("returns that joined field and no other copy of the target field", () => {
+      const state = assemble([ranked("cust", "name", 0.5)], {
+         request: { sourceName: "ord", entityName: "buyer.name" },
+      });
+      expect(state.cards.map((c) => c.source)).toEqual(["ord"]);
+      expect(Object.keys(cardScores(state, "ord"))).toEqual(["buyer.name"]);
+   });
+
+   it("does not match a joined field by its bare name", () => {
+      const state = assemble([ranked("cust", "name", 0.5)], {
+         request: { sourceName: "ord", entityName: "name" },
+      });
+      expect(state.cards).toEqual([]);
+   });
+});
