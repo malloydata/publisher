@@ -1623,7 +1623,11 @@ describe("get_context semantic retrieval", () => {
     */
    function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
       const facetsPkg = Object.assign(pkg as object, {
-         getRetrievalSettings: () => ({ representation: "facets" }),
+         getRetrievalSettings: () => ({
+            representation: "facets",
+            keyphrases: "never",
+            prompts: {},
+         }),
       });
       return {
          getEnvironment: async () => envWith(async () => facetsPkg),

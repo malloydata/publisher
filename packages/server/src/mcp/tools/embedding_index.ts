@@ -89,6 +89,8 @@ export interface EmbeddableEntity {
    // the response `doc`, which can fall back to raw annotation lines and
    // would leak #(authorize) predicates to the embedding provider.
    embedDoc: string;
+   /** Malloy type of a dimension or measure; absent on other kinds. */
+   dataType?: string;
 }
 
 export interface SemanticHit {
@@ -345,26 +347,37 @@ export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
 
 /** The only row an entity has under the `single` representation. */
 export const SINGLE_FACET = "single";
+/** An LLM-written (or short-description) search phrase, as an extra `facets` row. */
+export const KEYPHRASE_FACET = "keyphrase";
 
 /**
  * The rows one entity is embedded as, by representation.
  *
- * `facets`: the name, then the doc chunks.
+ * `facets`: today's rows (the name, then the doc chunks), plus one `keyphrase`
+ * row when the entity has a keyphrase.
  *
- * `single`: ONE row whose text is the doc text, else the humanized name. The
- * name is left out when there is a doc: the text stands for what the entity
- * means, and mixing the identifier into it dilutes that. A doc is capped at
- * the provider's input limit (1,024 characters) when the row is prepared, so a
- * long doc is cut, not chunked. Rows are keyed by the facet name, so switching
- * representation deletes one set of rows and adds the other.
+ * `single`: ONE row whose text is the keyphrase if there is one, else the doc
+ * text, else the humanized name. The name is left out when there is a doc or a
+ * keyphrase: the text stands for what the entity means, and mixing the
+ * identifier into it dilutes that. A doc is capped at the provider's input
+ * limit (1,024 characters) when the row is prepared, so a long doc is cut, not
+ * chunked. Rows are keyed by the facet name, so switching representation
+ * deletes one set of rows and adds the other, and changing only a keyphrase
+ * changes only that entity's `single` text, which the content-hash diff
+ * re-embeds alone.
  */
 export function entityRows(
    entity: EmbeddableEntity,
    representation: PackageRepresentation,
+   keyphrase?: string,
 ): EntityFacet[] {
-   if (representation === "facets") return entityFacets(entity);
+   if (representation === "facets") {
+      const rows = entityFacets(entity);
+      if (keyphrase) rows.push({ facet: KEYPHRASE_FACET, text: keyphrase });
+      return rows;
+   }
    const doc = entity.embedDoc.replace(/\s+/g, " ").trim();
-   const text = doc || humanizeName(entity.name) || entity.name;
+   const text = keyphrase || doc || humanizeName(entity.name) || entity.name;
    return [{ facet: SINGLE_FACET, text }];
 }
 
@@ -479,12 +492,14 @@ export function facetRowKey(
 }
 
 /**
- * What decides an entity's rows: the package's representation. The readiness
- * fingerprint covers it through {@link IndexSettings.key} as well, so a changed
- * setting makes the package `indexing` until the sync has applied it.
+ * What decides an entity's rows: the package's representation and, once they
+ * exist, its keyphrases by entity key. The readiness fingerprint is computed
+ * with no keyphrases (they come from a store and a model, and the search path
+ * must not wait on either); {@link IndexSettings.key} stands in for them.
  */
 interface RowPlan {
    representation: PackageRepresentation;
+   keyphrases?: ReadonlyMap<string, string>;
 }
 
 /** One desired embedding row: an entity's facet, its text, and that text's hash. */
@@ -513,7 +528,13 @@ function desiredFacets(
    plan: RowPlan,
 ): DesiredFacet[] {
    return entities.flatMap((entity) =>
-      entityRows(entity, plan.representation).map(({ facet, text: raw }) => {
+      entityRows(
+         entity,
+         plan.representation,
+         plan.keyphrases?.get(
+            entityRowKey(entity.kind, sourceColumn(entity.source), entity.name),
+         ),
+      ).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
       }),
@@ -780,6 +801,7 @@ async function computeDesiredSummary(
 ): Promise<DesiredSummary> {
    const unique = uniqueByEntityKey(entities);
    const desired: DesiredFacet[] = [];
+   // No keyphrases here: see RowPlan.
    const plan: RowPlan = { representation: settings.representation };
    for (let i = 0; i < unique.length; i += FINGERPRINT_CHUNK_ENTITIES) {
       desired.push(
