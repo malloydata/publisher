@@ -326,6 +326,39 @@ What to know before turning it on:
   join to an inline table or SQL, or a field a join adds to its target) is indexed directly.
 - Response size: a ranked response is capped at 35,000 characters. Whole source cards are dropped, never
   cut, and a warning says how many.
+- Providers and the `retrieval` block of `publisher.config.json`: chat and embedding models are set
+  in one place. The API keys stay in environment variables (`LLM_API_KEY`, `EMBEDDING_API_KEY`).
+
+  ```json
+  {
+    "retrieval": {
+      "llm": { "provider": "openai", "model": "gpt-5-mini" },
+      "embedding": { "provider": "openai", "model": "text-embedding-3-small" },
+      "egress": { "preset": "default" },
+      "indexing": { "maxEntities": 5000 }
+    }
+  }
+  ```
+
+  `provider` is one of `openai`, `openai-compatible`, `ollama`, `anthropic`, `google`, `vertex`
+  (Anthropic has no embeddings). `vertex` also needs `projectId` and `location` and uses Application
+  Default Credentials. Under `llm`, `timeoutMs` (default 30000), `concurrency` (4),
+  `maxCallsPerSync` (300) and `maxCallsPerRequest` (20) bound the spend: `maxCallsPerRequest` counts
+  HTTP requests to the vendor for one `get_context` call, retries and JSON repairs included, and a
+  call made while a person waits retries once, after at most one second. Under `embedding`,
+  `queryPrefix` and `documentPrefix` are text put before a query or before indexed text; changing
+  `documentPrefix` re-embeds. `egress.preset` says what may leave the machine for a chat model:
+  `default` is entity names, `#(doc)` text and schema context, `full` adds code. Access predicates
+  (`#(access_filter)`, `#(authorize)`) never leave. A bad value stops the server at startup with a
+  message that names the key and a fix.
+- Errors from a vendor: a failed call shows the caller the status and the vendor's own message, never
+  the endpoint or project path; the server log keeps the full text. Three failures in a row that look
+  like an outage (429, 408, 5xx, a timeout) pause chat calls for 60 seconds, process-wide.
+- Retrieval trace: send `X-Publisher-Retrieval-Trace: summary` to add a `retrieval_trace` block to a
+  ranked response, or start the server with `PUBLISHER_MCP_TRACE=retrieval` to write the same summary to
+  the server log, one line per ranked call, without changing any response. Per stage it holds the name,
+  status, milliseconds, rows in and out, chat requests and tokens. It holds counts and timings, not the
+  ranked entities.
 - Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
   rather than returned as a weak hit, which is what lets an empty result mean "this package models
   nothing like that". The right value is a property of the embedding model, not of Publisher —
