@@ -612,6 +612,26 @@ export function DashboardEditor(props: DashboardEditorProps) {
       setAccepted(held);
    };
 
+   const saveLabel =
+      savesTo === "host" && workspace?.description
+         ? workspace.description
+         : undefined;
+   const caption =
+      !authoritative && mutable === undefined
+         ? isLoadingStatus
+            ? "Checking whether this server takes writes."
+            : "This server did not say whether it takes writes, so Save is off."
+         : saveCaption({
+              authoritative,
+              mutable: takesWrites,
+              pinnedPackageSave,
+              ...(workspace ? { workspace } : {}),
+              ...(readFailure !== undefined ? { readFailure } : {}),
+              ...(versionId !== undefined ? { versionId } : {}),
+           });
+   // The description is already the Save caption, so the note does not repeat it.
+   const note = caption === saveLabel ? "" : caption;
+
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.
    if (!uriNamesBoth && "resourceUri" in props)
@@ -733,25 +753,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
                onDirtyChange={reportDirty}
                onSaveNoticeChange={setUndoOffered}
                savesTo={savesTo}
-               {...(savesTo === "host" && workspace?.description
-                  ? { saveLabel: workspace.description }
-                  : {})}
+               {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                {...(onExit ? { onExit } : {})}
-               note={
-                  !authoritative && mutable === undefined
-                     ? isLoadingStatus
-                        ? "Checking whether this server takes writes."
-                        : "This server did not say whether it takes writes, so Save is off."
-                     : saveCaption({
-                          authoritative,
-                          mutable: takesWrites,
-                          pinnedPackageSave,
-                          ...(workspace ? { workspace } : {}),
-                          ...(readFailure !== undefined ? { readFailure } : {}),
-                          ...(versionId !== undefined ? { versionId } : {}),
-                       })
-               }
+               note={note}
             />
          )}
       </Stack>

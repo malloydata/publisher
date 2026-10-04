@@ -360,25 +360,27 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(opens[0]).toMatchObject({ from: "record" });
    });
 
-   it("says where the record is, in the workspace's own words", async () => {
-      const storage = new FakeStorage(RECORD);
-      storage.documents.set(PATH, PACKAGE_FILE);
-      mount(storage);
-      // Under Save as its caption, and under the tiles as the note.
-      expect(
-         (await screen.findAllByText("Saved to the draft branch")).length,
-      ).toBe(2);
-   });
-
-   it("uses the workspace's description as the Save caption, with no generic host line", async () => {
+   it("says where the record is once, as the Save caption", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, PACKAGE_FILE);
       mount(storage);
       await screen.findByText("Storefront");
-      const captions = await screen.findAllByText("Saved to the draft branch");
-      expect(captions.some((el) => el.closest("button") === null)).toBe(true);
+      expect(
+         (await screen.findAllByText("Saved to the draft branch")).length,
+      ).toBe(1);
       expect(screen.queryByText(/embedded in/)).toBeNull();
       expect(screen.queryByText(/host app/)).toBeNull();
+   });
+
+   it("keeps the generic Save caption, once, when the workspace says nothing", async () => {
+      const { description: _omitted, ...bare } = RECORD;
+      const storage = new FakeStorage(bare as Workspace);
+      storage.documents.set(PATH, PACKAGE_FILE);
+      mount(storage);
+      await screen.findByText("Storefront");
+      expect(
+         screen.getAllByText("Saves to the app this is embedded in").length,
+      ).toBe(1);
    });
 
    it("keeps a reader out when the record could not be read", async () => {
