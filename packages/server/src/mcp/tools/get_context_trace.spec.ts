@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../logger";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { LlmMeter } from "./get_context_llm";
 import {
@@ -236,5 +237,79 @@ describe("X-Publisher-Retrieval-Trace header", () => {
          requestInfo: { headers: { "x-publisher-retrieval-trace": "full" } },
       });
       expect("retrieval_trace" in payload).toBe(false);
+   });
+});
+
+describe("PUBLISHER_MCP_TRACE=retrieval", () => {
+   // The eval loop's serve.py sets this variable for a local run. It writes the
+   // trace to the server log and never adds it to a response, so the agent that
+   // answers the questions sees the same results as without it.
+   const saved = process.env.PUBLISHER_MCP_TRACE;
+   beforeEach(() => {
+      _setEmbeddingProviderForTests(null);
+      _resetEmbeddingIndexStateForTests();
+   });
+   afterEach(() => {
+      if (saved === undefined) delete process.env.PUBLISHER_MCP_TRACE;
+      else process.env.PUBLISHER_MCP_TRACE = saved;
+   });
+
+   const traceLines = (info: ReturnType<typeof spyOn>) =>
+      info.mock.calls.filter(
+         (c: unknown[]) => c[0] === "[MCP Tool getContext] Retrieval trace",
+      );
+
+   it("logs the stage trace for each ranked call", async () => {
+      process.env.PUBLISHER_MCP_TRACE = "retrieval";
+      const info = spyOn(logger, "info");
+      try {
+         await run();
+         const lines = traceLines(info);
+         expect(lines).toHaveLength(1);
+         expect(lines[0][1]).toEqual({
+            environmentName: "trace",
+            packageName: "pkg",
+            retrieval_trace: { stages: [] },
+         });
+      } finally {
+         info.mockRestore();
+      }
+   });
+
+   it("does not change the response", async () => {
+      const plain = await run();
+      process.env.PUBLISHER_MCP_TRACE = "retrieval";
+      const traced = await run();
+      expect("retrieval_trace" in traced).toBe(false);
+      expect(JSON.stringify(traced)).toBe(JSON.stringify(plain));
+   });
+
+   it("is off when the variable is unset or has another value", async () => {
+      const info = spyOn(logger, "info");
+      try {
+         delete process.env.PUBLISHER_MCP_TRACE;
+         await run();
+         process.env.PUBLISHER_MCP_TRACE = "all";
+         await run();
+         expect(traceLines(info)).toHaveLength(0);
+      } finally {
+         info.mockRestore();
+      }
+   });
+
+   it("with the header too: the log line and the response block", async () => {
+      process.env.PUBLISHER_MCP_TRACE = "retrieval";
+      const info = spyOn(logger, "info");
+      try {
+         const payload = await run({
+            requestInfo: {
+               headers: { "x-publisher-retrieval-trace": "summary" },
+            },
+         });
+         expect(payload.retrieval_trace).toEqual({ stages: [] });
+         expect(traceLines(info)).toHaveLength(1);
+      } finally {
+         info.mockRestore();
+      }
    });
 });

@@ -2645,23 +2645,32 @@ async function runContextQuery(
    };
    const warningsFor = makeWarningsFor(ctx);
    // Spread into a ranked payload. Without the request header it is {}, so
-   // the payload is the one every caller already gets.
-   const traceFields = () =>
-      traceSummary
-         ? {
-              retrieval_trace: {
-                 stages: (ctx.trace ?? []).map((t) => ({
-                    name: t.name,
-                    status: t.status,
-                    ms: t.ms,
-                    in: t.in,
-                    out: t.out,
-                    llm_calls: t.llmCalls,
-                    tokens: t.tokens,
-                 })),
-              },
-           }
-         : {};
+   // the payload is the one every caller already gets. With
+   // PUBLISHER_MCP_TRACE=retrieval the same summary is also written to the
+   // server log, which no caller sees.
+   const traceFields = () => {
+      const logTrace = traceToLog();
+      if (!traceSummary && !logTrace) return {};
+      const retrieval_trace = {
+         stages: (ctx.trace ?? []).map((t) => ({
+            name: t.name,
+            status: t.status,
+            ms: t.ms,
+            in: t.in,
+            out: t.out,
+            llm_calls: t.llmCalls,
+            tokens: t.tokens,
+         })),
+      };
+      if (logTrace) {
+         logger.info("[MCP Tool getContext] Retrieval trace", {
+            environmentName,
+            packageName,
+            retrieval_trace,
+         });
+      }
+      return traceSummary ? { retrieval_trace } : {};
+   };
 
    // Query stages may rewrite what is searched for; none is registered yet.
    ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
@@ -2982,6 +2991,18 @@ function wantsTrace(extra: RequestExtra | undefined): boolean {
    const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
    const value = Array.isArray(raw) ? raw[0] : raw;
    return value?.trim().toLowerCase() === "summary";
+}
+
+/**
+ * `PUBLISHER_MCP_TRACE=retrieval` in the server's environment writes the same
+ * summary to the server log, one line per ranked call, and adds nothing to any
+ * response. The eval loop's `serve.py --trace-retrieval` sets it. It is read on
+ * each call so a test can change it.
+ */
+export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
+
+function traceToLog(): boolean {
+   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
 }
 
 export function registerGetContextTool(
