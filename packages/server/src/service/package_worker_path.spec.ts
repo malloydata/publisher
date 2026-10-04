@@ -886,6 +886,16 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          `["pkg"]`,
          /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
       ],
+      [
+         "an unknown retrieval key",
+         JSON.stringify({ name: "pkg", retrieval: { refine: true } }),
+         /retrieval: unknown key 'refine'\. Valid keys: representation\./,
+      ],
+      [
+         "an invalid retrieval.representation",
+         JSON.stringify({ name: "pkg", retrieval: { representation: "x" } }),
+         /retrieval\.representation: expected one of single, facets/,
+      ],
    ])(
       "answers %s in publisher.json with a 424, not a 503",
       async (_label, manifest, message) => {
@@ -918,6 +928,42 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          }
       },
    );
+
+   it("reads the retrieval block at load and again on reload", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { representation: "facets" },
+         }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "trivial.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getRetrievalSettings().representation).toBe("facets");
+
+         // A package with no block takes the defaults.
+         fs.writeFileSync(
+            path.join(tempDir, "publisher.json"),
+            JSON.stringify({ name: "pkg" }),
+         );
+         const plain = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(plain.getRetrievalSettings()).toEqual({
+            representation: "single",
+         });
+      } finally {
+         await duckdb.close();
+      }
+   });
 
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap
