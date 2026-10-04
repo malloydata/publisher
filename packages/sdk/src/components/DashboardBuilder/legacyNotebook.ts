@@ -35,7 +35,7 @@ import {
    setsArtifactProperty,
 } from "./malloyText";
 import { parseTagLines } from "./tagParse";
-import { loadMalloy } from "./loadMalloy";
+import { loadMalloy, loadMalloyTag } from "./loadMalloy";
 
 export type { Span };
 
@@ -734,7 +734,7 @@ export async function convertLegacyNotebook(
    if (typeof vocabulary?.getSymbolicName !== "function")
       return refuse(0, "Malloy's token stream is not available.");
    const malloy = await loadMalloy();
-   const { parseAnnotation } = await import("@malloydata/malloy-tag");
+   const { parseAnnotation } = await loadMalloyTag();
    const symbolOf = (token: Token) => vocabulary.getSymbolicName(token.type);
    const r = new Reader(text);
    const comments = commentIndex(r, stream as TokenStream);

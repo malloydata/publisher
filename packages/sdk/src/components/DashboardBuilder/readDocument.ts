@@ -15,6 +15,7 @@ import type {
    LocalGiven,
 } from "./document";
 import { isTextTile } from "./document";
+import { loadMalloyTag } from "./loadMalloy";
 import { parseTagLines } from "./tagParse";
 import {
    parseMalloy,
@@ -296,7 +297,7 @@ async function readDocumentText(
    sourceText: string,
    modelPath: string | undefined,
 ): Promise<ReadResult> {
-   const { parseAnnotation } = await import("@malloydata/malloy-tag");
+   const { parseAnnotation } = await loadMalloyTag();
    const lines = splitSourceLines(sourceText);
 
    const parse = await parseMalloy(sourceText);

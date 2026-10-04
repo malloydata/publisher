@@ -37,6 +37,7 @@ import {
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
 import type { DrillClickPayload } from "../drill/resolveDrill";
+import { loadMalloyTag } from "../DashboardBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -177,7 +178,7 @@ async function extractChartThemeOverride(parsed: unknown) {
 
    let parseAnnotation: typeof import("@malloydata/malloy-tag").parseAnnotation;
    try {
-      ({ parseAnnotation } = await import("@malloydata/malloy-tag"));
+      ({ parseAnnotation } = await loadMalloyTag());
    } catch {
       // Missing peer dep is an acceptable fallback. Charts render with the
       // shell theme only.
