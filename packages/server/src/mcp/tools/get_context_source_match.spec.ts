@@ -67,7 +67,10 @@ interface CtxOptions {
    sourceName?: string;
    concurrency?: number;
    dropped?: string[];
-   topology?: Map<string, Array<{ targetSource: string }>>;
+   topology?: Map<
+      string,
+      Array<{ targetSource: string; targetModelPath: string }>
+   >;
    joins?: Record<string, string[]>;
    /** Stored LLM summaries by source name. */
    summaries?: Record<string, string>;
@@ -110,7 +113,7 @@ function ctxFor(o: CtxOptions): PipelineContext {
          ? {
               sourceSummaries: new Map(
                  Object.entries(o.summaries).map(([name, summary]) => [
-                    name,
+                    `m.malloy\u0000${name}`,
                     { summary, oneLineSummary: "one line" },
                  ]),
               ),
@@ -312,9 +315,9 @@ describe("source match stage", () => {
             [
                "m.malloy\u0000orders",
                [
-                  { targetSource: "customers" },
-                  { targetSource: "products" },
-                  { targetSource: "customers" },
+                  { targetSource: "customers", targetModelPath: "m.malloy" },
+                  { targetSource: "products", targetModelPath: "m.malloy" },
+                  { targetSource: "customers", targetModelPath: "m.malloy" },
                ],
             ],
          ]),

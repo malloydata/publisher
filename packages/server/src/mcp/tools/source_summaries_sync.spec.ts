@@ -49,6 +49,7 @@ import {
    trySemanticSearch,
 } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { KEY_SEPARATOR } from "./embedding_index";
 import { loadSourceSummaries } from "./source_summaries";
 
 let tempDir: string;
@@ -223,7 +224,13 @@ const status = (
    ents: readonly EmbeddableEntity[] = entities(),
 ) => getEmbeddingIndexStatus(db, provider, "env", "sync", ents, pkg);
 
-const rows = () => loadSourceSummaries(db, "env", "sync");
+/** The stored summaries by source name; every source here is in one file. */
+const rows = async () =>
+   new Map(
+      [...(await loadSourceSummaries(db, "env", "sync"))].map(
+         ([key, value]) => [key.split(KEY_SEPARATOR)[1], value],
+      ),
+   );
 
 // ---------------------------------------------------------------------------
 

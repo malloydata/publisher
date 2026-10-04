@@ -112,12 +112,16 @@ function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
    const indexed = new Set(
       ctx.pkgIndex.directEntities
          .filter((c) => c.kind === "source")
-         .map((c) => c.name),
+         .map((c) => sourceContextKey(c.modelPath, c.name)),
    );
    const reached = ctx.pkgIndex.topology?.get(key) ?? [];
    const names = [
       ...new Set(
-         reached.map((r) => r.targetSource).filter((name) => indexed.has(name)),
+         reached
+            .filter((r) =>
+               indexed.has(sourceContextKey(r.targetModelPath, r.targetSource)),
+            )
+            .map((r) => r.targetSource),
       ),
    ];
    if (names.length > 0) return names;
@@ -212,7 +216,9 @@ export function sourceDescription(ctx: PipelineContext, e: Entity): string {
  * documentation above it is cut to SOURCE_MATCH_DOC_MAX_CHARS; this is not.
  */
 function summaryOf(ctx: PipelineContext, e: Entity): { summary?: string } {
-   const stored = ctx.sourceSummaries?.get(e.name);
+   const stored = ctx.sourceSummaries?.get(
+      sourceContextKey(e.modelPath, e.name),
+   );
    const text = scrubForEgress(stored?.summary ?? "");
    return text === "" ? {} : { summary: text };
 }

@@ -20,6 +20,8 @@ import {
 } from "bun:test";
 import { _clearChatModelForTests } from "../../providers/active";
 import { shopPackage } from "../../test_helpers/get_context_llm_fixture";
+import { summaryViewFor } from "./get_context_tool";
+import { summaryKey } from "./source_summaries";
 import {
    callPayload,
    keywordReply,
@@ -227,6 +229,110 @@ describe("source_info summary fields", () => {
             expect(one_line_summary).toBe(docs?.split("\n")[0]);
          }
       }
+   });
+
+   it("does not show a stored summary that no longer matches its source", async () => {
+      // A reload changed the sources and the sync has not rewritten their
+      // summaries yet. A request with only source targets does not wait for the
+      // index, so it reads whatever is stored; each row is stamped with the hash
+      // of the source as it was, which is not the source now.
+      const marked = (prompt: string) => {
+         if (!prompt.includes("Source name: ")) return keywordReply(prompt);
+         const reply = JSON.parse(keywordReply(prompt));
+         return JSON.stringify({
+            summary: `STORED-BEFORE-THE-EDIT ${reply.summary}`,
+            one_line_summary: `LLM: ${reply.one_line_summary}`,
+         });
+      };
+      const chat = scriptedChat(marked);
+      installChat(chat.model, { concurrency: 1 });
+      const handler = h.handlerFor(shopPackage(ON));
+      const scopes = [{ environment: "llm", package: "stale-read" }];
+      await warm(handler, scopes);
+      const written = await h.db.all("SELECT 1 FROM source_summaries");
+      expect(written.length).toBeGreaterThan(0);
+      await h.db.run(
+         "UPDATE source_summaries SET input_hash = 'the-source-before-the-edit'",
+      );
+
+      chat.prompts.length = 0;
+      const { payload } = await callPayload(handler, {
+         search_targets: [target("source", "one row per shipment")],
+         scopes,
+      });
+      const cards = payload.sources as Card[];
+      expect(cards.length).toBeGreaterThan(0);
+      for (const card of cards) {
+         expect(card.source_info.summary).toBeUndefined();
+         expect(card.source_info.one_line_summary).not.toStartWith("LLM: ");
+      }
+      // Nor does the model that picks sources see it.
+      for (const prompt of chat.prompts.filter(isSourceMatchPrompt)) {
+         expect(prompt).not.toContain("STORED-BEFORE-THE-EDIT");
+      }
+   });
+
+   it("shows the stored summary again once it matches", async () => {
+      const marked = (prompt: string) => {
+         if (!prompt.includes("Source name: ")) return keywordReply(prompt);
+         const reply = JSON.parse(keywordReply(prompt));
+         return JSON.stringify({
+            ...reply,
+            one_line_summary: `LLM: ${reply.one_line_summary}`,
+         });
+      };
+      const chat = scriptedChat(marked);
+      installChat(chat.model, { concurrency: 1 });
+      const handler = h.handlerFor(shopPackage(ON));
+      const scopes = [{ environment: "llm", package: "fresh-read" }];
+      await warm(handler, scopes);
+      const { payload } = await callPayload(handler, {
+         search_targets: [target("source", "one row per shipment")],
+         scopes,
+      });
+      const cards = payload.sources as Card[];
+      expect(cards.length).toBeGreaterThan(0);
+      for (const card of cards) {
+         expect(card.source_info.one_line_summary).toStartWith("LLM: ");
+      }
+   });
+});
+
+describe("a source defined in two files", () => {
+   const stored = new Map([
+      [summaryKey("a.malloy", "orders"), { summary: "A", oneLineSummary: "a" }],
+      [summaryKey("b.malloy", "orders"), { summary: "B", oneLineSummary: "b" }],
+   ]);
+   const card = (modelPath: string, withSourceRow: boolean) => ({
+      key: summaryKey(modelPath, "orders"),
+      source: "orders",
+      rows: withSourceRow
+         ? [{ kind: "source" } as unknown as { kind: string }]
+         : [],
+   });
+
+   it("a pinned source name opens the full summary on both files' cards", () => {
+      const view = summaryViewFor(stored, { sourceName: "orders" }, [
+         card("a.malloy", false),
+         card("b.malloy", false),
+      ] as never);
+      expect([...(view?.full ?? [])].sort()).toEqual([
+         summaryKey("a.malloy", "orders"),
+         summaryKey("b.malloy", "orders"),
+      ]);
+   });
+
+   it("a card is looked up by file and name, so each file shows its own", () => {
+      const view = summaryViewFor(stored, {}, [
+         card("a.malloy", true),
+         card("b.malloy", true),
+      ] as never);
+      expect(view?.stored.get(summaryKey("a.malloy", "orders"))?.summary).toBe(
+         "A",
+      );
+      expect(view?.stored.get(summaryKey("b.malloy", "orders"))?.summary).toBe(
+         "B",
+      );
    });
 });
 

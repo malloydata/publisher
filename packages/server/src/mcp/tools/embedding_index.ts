@@ -119,6 +119,10 @@ export interface EmbeddableEntity {
     * Read by the source summary to nest a joined source's fields.
     */
    joinTarget?: string;
+   /** The file that defines `joinTarget`: the name alone is not an identity. */
+   joinTargetModelPath?: string;
+   /** On a joined copy of a field: the join path that reaches it (`buyer.origin`). */
+   joinPath?: string;
 }
 
 export interface SemanticHit {

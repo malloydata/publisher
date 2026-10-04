@@ -31,18 +31,22 @@ import {
 } from "../../test_helpers/get_context_llm_harness";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createSourceSummariesTable } from "../../storage/duckdb/schema";
-import type { EmbeddableEntity } from "./embedding_index";
+import { KEY_SEPARATOR, type EmbeddableEntity } from "./embedding_index";
 import {
    SOURCE_SUMMARY_JOIN_DEPTH,
    SOURCE_SUMMARY_MAX_CHARS,
+   SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS,
    SOURCE_SUMMARY_MAX_FIELDS,
    SOURCE_SUMMARY_MAX_JOINED_SOURCES,
+   SOURCE_SUMMARY_MAX_PROMPT_CHARS,
    SourceSummaryStageError,
    buildSourceSummaryInputs,
    countSummarizableSources,
+   currentSummaryHashes,
    loadSourceSummaries,
    resolveSourceSummaries,
    sourceSummaryInputsDigest,
+   summaryKey,
    validateSourceSummary,
    type SourceSummarySettings,
 } from "./source_summaries";
@@ -153,7 +157,14 @@ const resolve = (
       ...extra,
    });
 
-const stored = () => loadSourceSummaries(db, "env", "pkg");
+/** The stored summaries by source name; for specs with one model file. */
+const stored = async () =>
+   new Map(
+      [...(await loadSourceSummaries(db, "env", "pkg"))].map(([key, value]) => [
+         key.split(KEY_SEPARATOR)[1],
+         value,
+      ]),
+   );
 
 /** Names of the sources a chat received prompts for, in order. */
 const sourcesAsked = (chat: ScriptedChat) =>
@@ -718,5 +729,341 @@ describe("sourceSummaryInputsDigest", () => {
       expect(
          sourceSummaryInputsDigest(shop(), { ...settings, modelId: "m2" }),
       ).not.toBe(base);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// A source is identified by its file as well as its name
+// ---------------------------------------------------------------------------
+
+/**
+ * Two model files that each define `orders`, and each a `cust` that `orders`
+ * joins, with different documentation and different fields.
+ */
+function twoModels(): EmbeddableEntity[] {
+   const inModel = (
+      modelPath: string,
+      e: Omit<EmbeddableEntity, "modelPath">,
+   ): EmbeddableEntity => ({ ...e, modelPath });
+   const retail = (e: Omit<EmbeddableEntity, "modelPath">) =>
+      inModel("retail.malloy", e);
+   const wholesale = (e: Omit<EmbeddableEntity, "modelPath">) =>
+      inModel("wholesale.malloy", e);
+   return [
+      retail({
+         kind: "source",
+         name: "orders",
+         source: "orders",
+         embedDoc: "Retail orders.",
+      }),
+      retail({
+         kind: "dimension",
+         name: "state",
+         source: "orders",
+         embedDoc: "State shipped to.",
+         dataType: "string",
+      }),
+      retail({
+         kind: "join",
+         name: "buyer",
+         source: "orders",
+         embedDoc: "",
+         relationship: "one",
+         joinTarget: "cust",
+         joinTargetModelPath: "retail.malloy",
+      }),
+      retail({
+         kind: "source",
+         name: "cust",
+         source: "cust",
+         embedDoc: "Retail customers.",
+      }),
+      retail({
+         kind: "dimension",
+         name: "loyalty_tier",
+         source: "cust",
+         embedDoc: "Loyalty programme tier.",
+         dataType: "string",
+      }),
+      wholesale({
+         kind: "source",
+         name: "orders",
+         source: "orders",
+         embedDoc: "Wholesale orders.",
+      }),
+      wholesale({
+         kind: "dimension",
+         name: "po_number",
+         source: "orders",
+         embedDoc: "Purchase order number.",
+         dataType: "string",
+      }),
+      wholesale({
+         kind: "join",
+         name: "buyer",
+         source: "orders",
+         embedDoc: "",
+         relationship: "one",
+         joinTarget: "cust",
+         joinTargetModelPath: "wholesale.malloy",
+      }),
+      wholesale({
+         kind: "source",
+         name: "cust",
+         source: "cust",
+         embedDoc: "Trade accounts.",
+      }),
+      wholesale({
+         kind: "dimension",
+         name: "account_manager",
+         source: "cust",
+         embedDoc: "Account manager.",
+         dataType: "string",
+      }),
+   ];
+}
+
+describe("a source name defined in two model files", () => {
+   const inputs = () => buildSourceSummaryInputs(twoModels());
+   const promptOf = (modelPath: string, name: string) =>
+      inputs().find((i) => i.modelPath === modelPath && i.source === name)
+         ?.prompt ?? "";
+
+   it("is summarized once per file, each from its own fields and docs", () => {
+      expect(
+         inputs()
+            .map((i) => `${i.modelPath}:${i.source}`)
+            .sort(),
+      ).toEqual([
+         "retail.malloy:cust",
+         "retail.malloy:orders",
+         "wholesale.malloy:cust",
+         "wholesale.malloy:orders",
+      ]);
+      expect(promptOf("retail.malloy", "orders")).toContain("Retail orders.");
+      expect(promptOf("retail.malloy", "orders")).toContain("state");
+      expect(promptOf("retail.malloy", "orders")).not.toContain("po_number");
+      expect(promptOf("wholesale.malloy", "orders")).toContain(
+         "Wholesale orders.",
+      );
+      expect(promptOf("wholesale.malloy", "orders")).toContain("po_number");
+   });
+
+   it("nests the joined source from the file the join names, not the first file with that name", () => {
+      const retail = promptOf("retail.malloy", "orders");
+      const wholesale = promptOf("wholesale.malloy", "orders");
+      expect(retail).toContain("loyalty_tier");
+      expect(retail).not.toContain("account_manager");
+      expect(wholesale).toContain("account_manager");
+      expect(wholesale).not.toContain("loyalty_tier");
+   });
+
+   it("stores and reads a summary per file", async () => {
+      const chat = scriptedChat(summaryReply);
+      await resolve(twoModels(), settingsFor(chat));
+      expect(chat.prompts).toHaveLength(4);
+      const rows = await loadSourceSummaries(db, "env", "pkg");
+      expect(rows.size).toBe(4);
+      const retail = rows.get(summaryKey("retail.malloy", "orders"));
+      const wholesale = rows.get(summaryKey("wholesale.malloy", "orders"));
+      expect(retail?.oneLineSummary).toBe("Retail orders.");
+      expect(wholesale?.oneLineSummary).toBe("Wholesale orders.");
+      expect(retail?.summary).toContain("loyalty_tier");
+      expect(wholesale?.summary).toContain("account_manager");
+   });
+
+   it("an unchanged package makes no call, and a change to one file rewrites only that file's source", async () => {
+      await resolve(twoModels(), settingsFor(scriptedChat(summaryReply)));
+      const quiet = scriptedChat(summaryReply);
+      await resolve(twoModels(), settingsFor(quiet));
+      expect(quiet.prompts).toHaveLength(0);
+
+      const changed = twoModels().map((e) =>
+         e.modelPath === "wholesale.malloy" && e.name === "po_number"
+            ? { ...e, embedDoc: "The buyer's purchase order." }
+            : e,
+      );
+      const chat = scriptedChat(summaryReply);
+      await resolve(changed, settingsFor(chat));
+      expect(chat.prompts).toHaveLength(1);
+      expect(chat.prompts[0]).toContain("Wholesale orders.");
+   });
+
+   it("removing one file removes only its rows", async () => {
+      await resolve(twoModels(), settingsFor(scriptedChat(summaryReply)));
+      const onlyRetail = twoModels().filter(
+         (e) => e.modelPath === "retail.malloy",
+      );
+      const chat = scriptedChat(summaryReply);
+      await resolve(onlyRetail, settingsFor(chat));
+      expect(chat.prompts).toHaveLength(0);
+      const rows = await loadSourceSummaries(db, "env", "pkg");
+      expect([...rows.keys()].sort()).toEqual([
+         summaryKey("retail.malloy", "cust"),
+         summaryKey("retail.malloy", "orders"),
+      ]);
+   });
+
+   it("resolves a join with no file recorded only when the name is unambiguous", () => {
+      const without = twoModels().map((e) => {
+         const { joinTargetModelPath: _drop, ...rest } = e;
+         return rest as EmbeddableEntity;
+      });
+      // `cust` exists in both files, so a bare name cannot say which: it is not
+      // expanded, rather than guessed.
+      const prompt =
+         buildSourceSummaryInputs(without).find(
+            (i) => i.modelPath === "retail.malloy" && i.source === "orders",
+         )?.prompt ?? "";
+      expect(prompt).not.toContain("loyalty_tier");
+      expect(prompt).not.toContain("account_manager");
+   });
+});
+
+// ---------------------------------------------------------------------------
+// A stored summary is served only while it matches the inputs now
+// ---------------------------------------------------------------------------
+
+describe("reading stored summaries against the current inputs", () => {
+   const settings = {
+      promptHash: sourceSummaryPromptHash(DEFAULT_SOURCE_SUMMARY_INSTRUCTIONS),
+      modelId: "openai-compatible/scripted",
+   };
+
+   it("serves a row whose input hash is the current one", async () => {
+      await resolve(shop(), settingsFor(scriptedChat(summaryReply)));
+      const rows = await loadSourceSummaries(
+         db,
+         "env",
+         "pkg",
+         currentSummaryHashes(shop(), settings),
+      );
+      expect(rows.size).toBe(3);
+   });
+
+   it("drops a row whose source changed since the sync, until the sync rewrites it", async () => {
+      await resolve(shop(), settingsFor(scriptedChat(summaryReply)));
+      // A reload changed a field of `orders`; the sync has not run yet.
+      const reloaded = shop().map((e) =>
+         e.name === "state" ? { ...e, embedDoc: "Where it ships." } : e,
+      );
+      const rows = await loadSourceSummaries(
+         db,
+         "env",
+         "pkg",
+         currentSummaryHashes(reloaded, settings),
+      );
+      expect(rows.has(summaryKey(MODEL, "orders"))).toBe(false);
+      // The sources the change did not reach are still served.
+      expect(rows.has(summaryKey(MODEL, "bare"))).toBe(true);
+   });
+
+   it("drops every row when the prompt or the model changed", async () => {
+      await resolve(shop(), settingsFor(scriptedChat(summaryReply)));
+      for (const changed of [
+         { ...settings, promptHash: "another-prompt" },
+         { ...settings, modelId: "another/model" },
+      ]) {
+         const rows = await loadSourceSummaries(
+            db,
+            "env",
+            "pkg",
+            currentSummaryHashes(shop(), changed),
+         );
+         expect(rows.size).toBe(0);
+      }
+   });
+
+   it("drops the row of a source that is no longer summarized", async () => {
+      await resolve(shop(), settingsFor(scriptedChat(summaryReply)));
+      const without = shop().filter((e) => e.source !== "bare");
+      const rows = await loadSourceSummaries(
+         db,
+         "env",
+         "pkg",
+         currentSummaryHashes(without, settings),
+      );
+      expect(rows.has(summaryKey(MODEL, "bare"))).toBe(false);
+   });
+
+   it("computes the current hashes once for one entity list and one setting", () => {
+      const list = Object.freeze(shop());
+      expect(currentSummaryHashes(list, settings)).toBe(
+         currentSummaryHashes(list, settings),
+      );
+   });
+});
+
+// ---------------------------------------------------------------------------
+// The prompt has a size
+// ---------------------------------------------------------------------------
+
+describe("the size of the prompt", () => {
+   const big = (n: number) => "w".repeat(n);
+
+   it("cuts one field's doc to a fixed length", () => {
+      const entities = [
+         source("wide", "Short."),
+         field("dimension", "wide", "essay", big(5_000), {
+            dataType: "string",
+         }),
+      ];
+      const prompt = buildSourceSummaryInputs(entities)[0].prompt;
+      const line = prompt.split("\n").find((l) => l.startsWith("- essay"));
+      expect(line).toBeDefined();
+      expect((line as string).length).toBeLessThan(
+         SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS + 60,
+      );
+      expect(line).toContain("...");
+   });
+
+   it("cuts the source's own doc too", () => {
+      const entities = [
+         source("wide", big(9_000)),
+         field("dimension", "wide", "one", "", { dataType: "string" }),
+      ];
+      const prompt = buildSourceSummaryInputs(entities)[0].prompt;
+      expect(prompt.length).toBeLessThan(SOURCE_SUMMARY_MAX_PROMPT_CHARS);
+      expect(prompt).not.toContain(
+         big(SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS + 50),
+      );
+   });
+
+   it("keeps a source with 200 long fields and 20 joined sources under the total cap, and says so", () => {
+      const entities: EmbeddableEntity[] = [source("hub", "The hub.")];
+      for (let i = 0; i < SOURCE_SUMMARY_MAX_FIELDS; i++) {
+         entities.push(
+            field("dimension", "hub", `f${i}`, big(900), {
+               dataType: "string",
+            }),
+         );
+      }
+      for (let j = 0; j < SOURCE_SUMMARY_MAX_JOINED_SOURCES; j++) {
+         entities.push(
+            field("join", "hub", `j${j}`, "", {
+               relationship: "one",
+               joinTarget: `t${j}`,
+               joinTargetModelPath: MODEL,
+            }),
+            source(`t${j}`, "A joined source."),
+         );
+         for (let i = 0; i < SOURCE_SUMMARY_MAX_FIELDS; i++) {
+            entities.push(
+               field("dimension", `t${j}`, `g${i}`, big(900), {
+                  dataType: "string",
+               }),
+            );
+         }
+      }
+      const prompt = buildSourceSummaryInputs(entities).find(
+         (i) => i.source === "hub",
+      )?.prompt as string;
+      expect(prompt.length).toBeLessThanOrEqual(
+         SOURCE_SUMMARY_MAX_PROMPT_CHARS,
+      );
+      // What was left out is said, so the model does not take it for the whole.
+      expect(prompt).toMatch(/not shown|Showing/);
+      // The source's own fields come first and are what survives.
+      expect(prompt).toContain("- f0 ");
    });
 });

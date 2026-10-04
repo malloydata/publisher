@@ -56,6 +56,7 @@ import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 import { indexSettingsOf } from "./index_settings";
 import {
+   currentSummaryHashes,
    loadSourceSummaries,
    type StoredSourceSummary,
 } from "./source_summaries";
@@ -85,6 +86,10 @@ export interface Entity {
    // compiled IR does not). Read by the source summary to nest a joined
    // source's fields; never serialized.
    joinTarget?: string;
+   // On `kind: "join"` entities: the package-relative path of the file that
+   // defines `joinTarget`. Together they identify the source; the name alone
+   // cannot when two files define a source of the same name.
+   joinTargetModelPath?: string;
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
@@ -511,7 +516,7 @@ function toSourceResults(
       let entry = bySource.get(key);
       if (!entry) {
          const ctx = sourceContext.get(key);
-         const stored = summaries?.stored.get(name);
+         const stored = summaries?.stored.get(key);
          const oneLine = stored?.oneLineSummary ?? ctx?.oneLineSummary;
          entry = {
             source_info: {
@@ -522,7 +527,7 @@ function toSourceResults(
                   source: name,
                },
                ...(oneLine ? { one_line_summary: oneLine } : {}),
-               ...(stored && summaries?.full.has(name)
+               ...(stored && summaries?.full.has(key)
                   ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
@@ -575,9 +580,9 @@ function toSourceResults(
  * has no stored summary, which leaves every card as it always was.
  */
 interface SummaryView {
-   /** Every stored summary of the package, by source name. */
+   /** Every current stored summary of the package, by sourceContextKey. */
    stored: ReadonlyMap<string, StoredSourceSummary>;
-   /** Source names whose card carries `summary`, not just `one_line_summary`. */
+   /** Keys of the cards that carry `summary`, not just `one_line_summary`. */
    full: ReadonlySet<string>;
 }
 
@@ -590,18 +595,31 @@ interface SummaryView {
 export function summaryViewFor(
    stored: ReadonlyMap<string, StoredSourceSummary> | undefined,
    request: Pick<ResolvedRequest, "sourceName">,
-   cards: ReadonlyArray<{ source: string; rows: readonly ResultEntity[] }>,
+   cards: ReadonlyArray<{
+      key: string;
+      source: string;
+      rows: readonly ResultEntity[];
+   }>,
 ): SummaryView | undefined {
    if (!stored || stored.size === 0) return undefined;
    const full = new Set<string>();
-   if (request.sourceName) full.add(request.sourceName);
-   // A source row is there only because a source target matched it.
+   if (request.sourceName) {
+      for (const card of cards) {
+         if (card.source === request.sourceName) full.add(card.key);
+      }
+   }
+   // A source row is there only because a source target matched it. Counted by
+   // source name: the same source resolved from two files is one answer.
    const matched = new Set(
       cards
          .filter((card) => card.rows.some((r) => r.kind === "source"))
          .map((card) => card.source),
    );
-   if (matched.size <= 1) for (const name of matched) full.add(name);
+   if (matched.size <= 1) {
+      for (const card of cards) {
+         if (matched.has(card.source)) full.add(card.key);
+      }
+   }
    return { stored, full };
 }
 
@@ -1883,28 +1901,27 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // which is a field of the visible source, but not the target's real name:
    // that name would reach the LLM in the source summary prompt and the source
    // match prompt. Done once every model has been walked, because a join can
-   // name a source from a later model file, and by name only, since a join
-   // entity records no path for its target.
-   const indexedSourceNames = new Set(
-      deduped.filter((e) => e.kind === "source").map((e) => e.name),
-   );
-   for (const e of deduped) {
-      if (
-         e.kind === "join" &&
-         e.joinTarget &&
-         !indexedSourceNames.has(e.joinTarget)
-      ) {
-         delete e.joinTarget;
-      }
-   }
-   // A join is only a route to a source's fields when that source is itself
-   // indexed: a target that was dropped (a deny-all gate) or never listed has
-   // no direct fields to copy, so the join reaches nothing.
+   // name a source from a later model file.
    const indexedSources = new Set(
       deduped
          .filter((e) => e.kind === "source")
          .map((e) => sourceContextKey(e.modelPath, e.name)),
    );
+   for (const e of deduped) {
+      if (
+         e.kind === "join" &&
+         e.joinTarget &&
+         !indexedSources.has(
+            sourceContextKey(e.joinTargetModelPath ?? "", e.joinTarget),
+         )
+      ) {
+         delete e.joinTarget;
+         delete e.joinTargetModelPath;
+      }
+   }
+   // A join is only a route to a source's fields when that source is itself
+   // indexed: a target that was dropped (a deny-all gate) or never listed has
+   // no direct fields to copy, so the join reaches nothing.
    for (const [root, reaches] of topology) {
       const kept = reaches.filter((reach) =>
          indexedSources.has(
@@ -1937,11 +1954,16 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 function joinTargetOf(
    reaches: readonly JoinReach[] | undefined,
    alias: string,
-): { joinTarget?: string } {
+): { joinTarget?: string; joinTargetModelPath?: string } {
    const reach = reaches?.find(
       (r) => r.path.length === 1 && r.path[0] === alias,
    );
-   return reach ? { joinTarget: reach.targetSource } : {};
+   return reach
+      ? {
+           joinTarget: reach.targetSource,
+           joinTargetModelPath: reach.targetModelPath,
+        }
+      : {};
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -2868,7 +2890,7 @@ async function runContextQuery(
    // prompt. Only when the package has them on; none stored means no change.
    ctx.sourceSummaries = await loadStoredSummaries(
       environmentStore,
-      pkgIndex.pkg,
+      pkgIndex,
       environmentName,
       packageName,
    );
@@ -2989,23 +3011,29 @@ async function runContextQuery(
 }
 
 /**
- * The package's stored source summaries, or undefined when summaries are off
- * for it (the package turned them off, or no LLM is configured) or none is
- * stored. A read failure is logged and answered without them: a summary only
- * adds to a card, and the sync, not this read, is where a failure is loud.
+ * The package's stored source summaries that still describe its sources, or
+ * undefined when summaries are off for it (the package turned them off, or no
+ * LLM is configured) or none is current. A summary is served only if its input
+ * hash is the hash of the source as it is now: a reload that changed a source
+ * leaves the old summary in the table until the next sync rewrites it, and a
+ * request with only source targets does not wait for that sync. A read failure
+ * is logged and answered without them: a summary only adds to a card, and the
+ * sync, not this read, is where a failure is loud.
  */
 async function loadStoredSummaries(
    environmentStore: EnvironmentStore,
-   pkg: Package,
+   pkgIndex: PackageIndex,
    environmentName: string,
    packageName: string,
 ): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
-   if (!indexSettingsOf(pkg).sourceSummary) return undefined;
+   const settings = indexSettingsOf(pkgIndex.pkg).sourceSummary;
+   if (!settings) return undefined;
    try {
       const stored = await loadSourceSummaries(
          environmentStore.storageManager.getDuckDbConnection(),
          environmentName,
          packageName,
+         currentSummaryHashes(pkgIndex.directEntities, settings),
       );
       return stored.size > 0 ? stored : undefined;
    } catch (error) {
