@@ -2354,3 +2354,102 @@ describe("the entity cap is the configured value", () => {
       expect(message).toContain("publisher.config.json");
    });
 });
+
+describe("deleting a package stops its running sync", () => {
+   // A REST delete does not wait for the cleanup of a package's vectors (the
+   // caller does not await it), but the cleanup queues on the package's sync
+   // mutex. A boot-time sync holds that mutex for as long as it runs, retries
+   // included, so the cleanup used to wait behind a sync that kept embedding a
+   // package nobody can query any more, and spent the provider's calls on it.
+   // The sync now stops at the next batch or the next retry after the package
+   // is deleted.
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const args = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "doomed",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+   const rowsFor = async () =>
+      (
+         await db.all(
+            "SELECT 1 FROM entity_embeddings WHERE package_name = 'doomed'",
+         )
+      ).length;
+   const until = async (done: () => boolean) => {
+      for (let i = 0; i < 400 && !done(); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(done()).toBe(true);
+   };
+
+   it("does not request the batches after the one in flight", async () => {
+      _setSyncRetryForTests({ batchSize: 2 });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+         gate: { forText: "alpha", until: held },
+      });
+      await trySemanticSearch(args(provider));
+      await until(() => requests >= 1);
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      release();
+      await deleted;
+      // Time for a sync that ignored the delete to ask for its second batch.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
+   });
+
+   it("does not retry a failed request after the package is deleted", async () => {
+      let sleeping!: () => void;
+      const asleep = new Promise<void>((resolve) => (sleeping = resolve));
+      let wake!: () => void;
+      const woken = new Promise<void>((resolve) => (wake = resolve));
+      _setSyncRetryForTests({
+         batchSize: 2,
+         policy: {
+            maxAttempts: 5,
+            sleep: async () => {
+               sleeping();
+               await woken;
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await trySemanticSearch(args(provider));
+      await asleep;
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      wake();
+      await deleted;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
+   });
+});

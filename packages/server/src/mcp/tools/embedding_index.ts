@@ -552,6 +552,11 @@ interface PackageSyncMeta {
    lastError?: string;
    /** When the sync now running began, absent while none is running. */
    syncStartedAtMs?: number;
+   /**
+    * Set when the package's delete starts, before it has the mutex. A running
+    * sync stops at its next request or retry instead of finishing first.
+    */
+   deleting?: boolean;
    synced?: SyncedFact;
 }
 /** A sync in flight for one Package instance, keyed by what it covers. */
@@ -585,6 +590,18 @@ let syncBatchSize = MAX_EMBED_BATCH_SIZE;
 
 function metaKey(environmentName: string, packageName: string): string {
    return `${environmentName}\x00${packageName}`;
+}
+
+/**
+ * Thrown inside a sync to stop it because its package is being deleted. It is
+ * not a provider failure, so the caller starts no cool-down and reports no
+ * error.
+ */
+class SyncAbandonedError extends Error {
+   constructor() {
+      super("the package was deleted while its embedding sync was running");
+      this.name = "SyncAbandonedError";
+   }
 }
 
 function metaFor(
@@ -796,6 +813,11 @@ interface ExistingRow {
  * package) and `--init` reclaims it. Runs under the package mutex so it
  * cannot tear an in-flight sync, and bumps the generation so any live
  * instance memo stops trusting its rows.
+ *
+ * Before it waits for the mutex it marks the package as being deleted. A sync
+ * that is running stops at its next request or retry, so the cleanup waits for
+ * the request in flight and not for a whole sync with its retries, which can
+ * take minutes and would go on embedding a package nobody can query.
  */
 export async function deletePackageEmbeddings(
    db: DuckDBConnection,
@@ -803,6 +825,7 @@ export async function deletePackageEmbeddings(
    packageName: string,
 ): Promise<void> {
    const meta = metaFor(environmentName, packageName);
+   meta.deleting = true;
    await meta.mutex.runExclusive(async () => {
       // Same orphan guard as every other mutexed writer: a second delete
       // queued on the old meta must not run again (its map removal would
@@ -1044,13 +1067,30 @@ async function syncPackageEmbeddings(
          // Each batch is saved as soon as it returns, so a failure on batch k
          // keeps batches 1..k-1, and a restart resumes through the hash diff
          // above. Failing transient errors are retried inside embedBatch.
+         //
+         // A package being deleted stops this sync: before each request and
+         // write, and around each retry's wait. Without that, the delete's
+         // cleanup (which queues on this mutex) waited out the whole sync,
+         // retries included, while the sync kept spending the provider's
+         // calls on a package nobody can query any more.
+         const abandoned = () => meta.deleting === true;
+         const retry: EmbeddingRetryPolicy = {
+            ...syncRetryPolicy,
+            sleep: async (ms) => {
+               if (abandoned()) throw new SyncAbandonedError();
+               await syncRetryPolicy.sleep(ms);
+               if (abandoned()) throw new SyncAbandonedError();
+            },
+         };
          for (let start = 0; start < toEmbed.length; start += syncBatchSize) {
+            if (abandoned()) throw new SyncAbandonedError();
             const batch = toEmbed.slice(start, start + syncBatchSize);
             const vectors = await provider.embedBatch(
                batch.map((d) => d.text),
                EMBEDDING_BATCH_TIMEOUT_MS,
-               syncRetryPolicy,
+               retry,
             );
+            if (abandoned()) throw new SyncAbandonedError();
             await upsertEmbeddingRows(
                db,
                environmentName,
@@ -1187,6 +1227,15 @@ async function runTrackedSync(
       );
       meta.lastError = undefined;
    } catch (error: unknown) {
+      if (error instanceof SyncAbandonedError) {
+         // Not a provider failure: the package is going away, so there is
+         // nothing to cool down and nothing to report.
+         logger.debug(
+            "[MCP Tool getContext] Stopped an embedding sync for a deleted package",
+            { environmentName, packageName },
+         );
+         return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       markProviderFailure(meta, message);
       logger.warn(
