@@ -79,6 +79,12 @@ export async function compileJoinFixture(
       modelText?: string;
       /** What `model.getSources()` reports: the compiled sources' gates. */
       apiSources?: Array<{ name: string; authorize?: string[] }>;
+      /**
+       * Sources the model compiles but does not list, as a package that exports
+       * only some of its sources does: they stay joinable and never reach the
+       * index.
+       */
+      hiddenSources?: string[];
    } = {},
 ): Promise<{ pkg: unknown; modelDef: ModelDef }> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
@@ -98,7 +104,9 @@ export async function compileJoinFixture(
       .getModel();
    const modelDef = (compiled as unknown as { _modelDef: ModelDef })._modelDef;
    const sourceInfos = modelDefToModelInfo(modelDef).entries.filter(
-      (entry) => entry.kind === "source",
+      (entry) =>
+         entry.kind === "source" &&
+         !(options.hiddenSources ?? []).includes(entry.name),
    );
    const model = {
       getSourceInfos: () => sourceInfos,

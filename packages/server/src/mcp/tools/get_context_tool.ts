@@ -1867,20 +1867,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       }
    }
 
-   // A join to a dropped (deny-all) source keeps its alias, which is a field of
-   // the visible source, but not the target's real name: that name would reach
-   // the LLM in the source summary prompt. Done once every model has been
-   // walked, because a join can name a source from a later model file, and by
-   // name only, since the compiled join says nothing about the target's path.
-   const droppedNames = new Set(
-      [...droppedSources].map((key) => key.split(KEY_SEPARATOR)[1]),
-   );
-   for (const e of entities) {
-      if (e.kind === "join" && e.joinTarget && droppedNames.has(e.joinTarget)) {
-         delete e.joinTarget;
-      }
-   }
-
    // One model surfacing the same entity twice (a re-export, say) is a
    // duplicate. Two DIFFERENT models surfacing it is not: a source is queryable
    // at every path that resolves it, and each of those is its own card — so the
@@ -1892,6 +1878,25 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
+   // A join to a source that is not in the index (dropped for a deny-all gate,
+   // or never listed because the package does not export it) keeps its alias,
+   // which is a field of the visible source, but not the target's real name:
+   // that name would reach the LLM in the source summary prompt and the source
+   // match prompt. Done once every model has been walked, because a join can
+   // name a source from a later model file, and by name only, since a join
+   // entity records no path for its target.
+   const indexedSourceNames = new Set(
+      deduped.filter((e) => e.kind === "source").map((e) => e.name),
+   );
+   for (const e of deduped) {
+      if (
+         e.kind === "join" &&
+         e.joinTarget &&
+         !indexedSourceNames.has(e.joinTarget)
+      ) {
+         delete e.joinTarget;
+      }
+   }
    // A join is only a route to a source's fields when that source is itself
    // indexed: a target that was dropped (a deny-all gate) or never listed has
    // no direct fields to copy, so the join reaches nothing.

@@ -305,7 +305,8 @@ describe("source match stage", () => {
 
    it("builds a line from the joins when a source has no doc", () => {
       const ctx = ctxFor({
-         entities: [],
+         // The joined sources are in the index, so their names may be shown.
+         entities: [source("customers"), source("products")],
          chat: scriptedChat(() => "[]"),
          topology: new Map([
             [

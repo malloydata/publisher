@@ -101,4 +101,118 @@ describe("a deny-all source joined under an alias", () => {
       } as unknown as PipelineContext;
       expect(sourceDescription(withReach, orders)).not.toContain(HIDDEN);
    });
+
+   it("is not sent when the topology reaches a source that is not in the index", async () => {
+      // The same belt-and-braces check for a name the topology records but no
+      // source entity backs, whatever the reason the source is not indexed.
+      const idx = await indexWithHiddenJoinTarget();
+      const orders = idx.directEntities.find(
+         (e) => e.kind === "source" && e.name === "orders",
+      )!;
+      const withReach = {
+         pkgIndex: {
+            ...idx,
+            topology: new Map([
+               [
+                  `m.malloy\u0000orders`,
+                  [
+                     {
+                        targetSource: "not_in_the_index",
+                        targetModelPath: "m.malloy",
+                        path: ["vault"],
+                        fanout: "one",
+                     },
+                  ],
+               ],
+            ]),
+         },
+      } as unknown as PipelineContext;
+      expect(sourceDescription(withReach, orders)).not.toContain(
+         "not_in_the_index",
+      );
+   });
+});
+
+describe("a source the package does not export, joined under an alias", () => {
+   // Not a deny-all source: it has no gate at all. It is simply not listed, as
+   // a source outside a package's exports is not. Its name is no more the
+   // model's to see than a gated one's.
+   const UNLISTED = "raw_ledger_tbl";
+   const MODEL = `
+source: ${UNLISTED} is duckdb.sql("select 1 as id, 9 as amount") extend {
+  dimension: amt is amount
+}
+
+source: ok_country is duckdb.sql("select 1 as id, 'US' as code") extend {
+  dimension: code_name is code
+}
+
+source: orders is duckdb.sql("select 1 as id, 1 as ledger_id, 1 as c_id") extend {
+  dimension: status is 's'
+  join_one: ledger is ${UNLISTED} on ledger.id = ledger_id
+  join_one: shipping is ok_country on shipping.id = c_id
+}
+`;
+
+   async function index() {
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: MODEL,
+         hiddenSources: [UNLISTED],
+      });
+      return getPackageIndex(storeServing(pkg), "env", "pkg");
+   }
+
+   it("is not named by the join entity, the summary prompt or the match description", async () => {
+      const idx = await index();
+      expect(idx.directEntities.some((e) => e.name === UNLISTED)).toBe(false);
+      const ledger = idx.directEntities.find(
+         (e) => e.kind === "join" && e.name === "ledger",
+      );
+      expect(ledger).toBeDefined();
+      expect(ledger?.joinTarget).toBeUndefined();
+
+      const orders = idx.directEntities.find(
+         (e) => e.kind === "source" && e.name === "orders",
+      )!;
+      const inputs = buildSourceSummaryInputs(idx.directEntities);
+      expect(inputs.find((i) => i.source === "orders")?.prompt).not.toContain(
+         UNLISTED,
+      );
+      const ctx = { pkgIndex: idx } as unknown as PipelineContext;
+      expect(sourceDescription(ctx, orders)).not.toContain(UNLISTED);
+      expect(sourceDescription(ctx, orders)).toContain("ok_country");
+   });
+
+   it("is not named by the description even if the topology reaches it", async () => {
+      const idx = await index();
+      const orders = idx.directEntities.find(
+         (e) => e.kind === "source" && e.name === "orders",
+      )!;
+      const withReach = {
+         pkgIndex: {
+            ...idx,
+            topology: new Map([
+               [
+                  `m.malloy\u0000orders`,
+                  [
+                     {
+                        targetSource: UNLISTED,
+                        targetModelPath: "m.malloy",
+                        path: ["ledger"],
+                        fanout: "one",
+                     },
+                     {
+                        targetSource: "ok_country",
+                        targetModelPath: "m.malloy",
+                        path: ["shipping"],
+                        fanout: "one",
+                     },
+                  ],
+               ],
+            ]),
+         },
+      } as unknown as PipelineContext;
+      expect(sourceDescription(withReach, orders)).not.toContain(UNLISTED);
+      expect(sourceDescription(withReach, orders)).toContain("ok_country");
+   });
 });
