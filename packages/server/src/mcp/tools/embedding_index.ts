@@ -16,7 +16,7 @@ import {
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
-import { publicMessage } from "../../service/http_retry";
+import { HttpRequestError, publicMessage } from "../../service/http_retry";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
@@ -680,6 +680,12 @@ interface PackageSyncMeta {
     * sync stops at its next request or retry instead of finishing first.
     */
    deleting?: boolean;
+   /**
+    * The content and settings of a sync that failed with a client error the
+    * vendor will not change its answer to. While the package is still this
+    * content under this model it is not synced again; see isClientError.
+    */
+   permanentFailure?: { fingerprint: string; providerKey: string };
    synced?: SyncedFact;
 }
 /** A sync in flight for one Package instance, keyed by what it covers. */
@@ -757,6 +763,46 @@ function markProviderFailure(
 
 function inCooldown(meta: PackageSyncMeta): boolean {
    return Date.now() - meta.failureAtMs < cooldownMs;
+}
+
+/**
+ * Whether a failure is a 4xx that waiting does not fix: the vendor refused the
+ * request itself (a prompt past the context window, a bad model name), not the
+ * moment. 408 and 429 can clear and are not this. 401 and 403 are not this
+ * either: a credential can be refreshed or rotated without the package
+ * changing, so an auth failure keeps its cool-down and its retry. Looks through
+ * the cause chain, because a failed LLM step wraps the HTTP failure.
+ */
+function isClientError(error: unknown): boolean {
+   let cause: unknown = error;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError) {
+         return (
+            !cause.retryable &&
+            cause.status !== undefined &&
+            cause.status >= 400 &&
+            cause.status < 500 &&
+            cause.status !== 401 &&
+            cause.status !== 403
+         );
+      }
+      cause = cause.cause;
+   }
+   return false;
+}
+
+/** The last sync failed with a client error, and the package has not changed since. */
+function isPermanentlyFailed(
+   meta: PackageSyncMeta,
+   fingerprint: string,
+   providerKey: string,
+): boolean {
+   const failed = meta.permanentFailure;
+   return (
+      failed !== undefined &&
+      failed.fingerprint === fingerprint &&
+      failed.providerKey === providerKey
+   );
 }
 
 /**
@@ -1467,6 +1513,7 @@ async function runTrackedSync(
       );
       meta.lastError = undefined;
       meta.lastErrorStage = undefined;
+      meta.permanentFailure = undefined;
    } catch (error: unknown) {
       if (error instanceof SyncAbandonedError) {
          // Not a provider failure: the package is going away, so there is
@@ -1487,6 +1534,15 @@ async function runTrackedSync(
       // The log keeps the full message; what the status and an error result
       // show a caller never names the endpoint.
       markProviderFailure(meta, publicMessage(error), stage);
+      // The same request would fail the same way, so no question after the
+      // cool-down starts this sync again. A change to the package's content or
+      // settings is a different request and does, as does a restart.
+      if (isClientError(error)) {
+         meta.permanentFailure = {
+            fingerprint: tracked.fingerprint,
+            providerKey: tracked.providerKey,
+         };
+      }
       logger.warn(
          stage === "keyphrase"
             ? "[MCP Tool getContext] Keyphrase generation failed; semantic ranking cooling down"
@@ -1551,8 +1607,15 @@ export function enqueuePackageSync(args: {
          indexSettingsOf(pkg),
       );
       // Already current (a restart over rows that still match), cooling down
-      // from a recent failure, or already queued by a search: nothing to do.
-      if (isSynced(meta, fingerprint, providerKey) || inCooldown(meta)) return;
+      // from a recent failure, failed with an error a retry cannot fix, or
+      // already queued by a search: nothing to do.
+      if (
+         isSynced(meta, fingerprint, providerKey) ||
+         inCooldown(meta) ||
+         isPermanentlyFailed(meta, fingerprint, providerKey)
+      ) {
+         return;
+      }
       const inFlight = syncState.get(pkg);
       if (
          inFlight &&
@@ -1698,6 +1761,9 @@ export async function trySemanticSearch(args: {
       args.entities,
       indexSettingsOf(pkg),
    );
+   if (isPermanentlyFailed(meta, fingerprint, providerKey)) {
+      return { unavailable: "cooldown" };
+   }
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -2332,6 +2398,19 @@ export async function getEmbeddingIndexStatus(
          status: "error",
          reason: "too-many-entities",
          lastError: { message: tooManyEntitiesMessage(entityCount) },
+      };
+   } else if (
+      meta &&
+      isPermanentlyFailed(meta, summary.fingerprint, providerKeyFor(provider))
+   ) {
+      // No retryAt: nothing is scheduled, and a question will not start one.
+      state = {
+         status: "error",
+         reason: "cooldown",
+         ...(meta.lastErrorStage ? { stage: meta.lastErrorStage } : {}),
+         lastError: {
+            message: `${meta.lastError ?? "The embedding provider failed"}. The vendor refused the request itself, so it will not be retried until the package or its retrieval settings change, or the server restarts.`,
+         },
       };
    } else if (meta && inCooldown(meta)) {
       state = {

@@ -3188,7 +3188,11 @@ function semanticUnavailableError(uri: string, result: Unavailable) {
                ? // No timer fires at retryAt: the retry starts when a question
                  // arrives after it (see kickSync in embedding_index.ts).
                  `The next question after ${retryAt} tries again; nothing retries on its own before then.`
-               : "Try again in a minute.",
+               : reason === "cooldown"
+                 ? // A cool-down always has a retryAt, so none means the vendor
+                   // refused the request itself and nothing will retry it.
+                   "Asking again will not help: this failure is not retried until the package or its retrieval settings change, or the server restarts. The operator should read the server log."
+                 : "Try again in a minute.",
             "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
             listing,
          ];
