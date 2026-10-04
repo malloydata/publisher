@@ -13,6 +13,7 @@ import { Package } from "../../service/package";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
+   type EmbeddingProvider,
 } from "../../service/embedding_provider";
 import { referencedGivenNames } from "../../service/authorize";
 import { InvalidArgumentError } from "../../errors";
@@ -2621,8 +2622,9 @@ export function registerGetContextTool(
 }
 
 /**
- * The semantic index state for one package, or undefined when this server has
- * no embedding provider and therefore no index to describe.
+ * The semantic index state for one package. With no embedding provider the
+ * status is `lexical`: the server ranks by words only, by design, and there is
+ * no index to describe.
  *
  * Composed here rather than in the controller because `totalEntities` means
  * "entities this package exposes to retrieval", which is exactly what
@@ -2635,10 +2637,27 @@ export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
-): Promise<EmbeddingIndexStatus | undefined> {
-   if (!embeddingConfigured()) return undefined;
-   const provider = getEmbeddingProvider();
-   if (!provider) return undefined;
+): Promise<EmbeddingIndexStatus> {
+   const empty = {
+      embeddedRows: 0,
+      totalRows: 0,
+      totalEntities: 0,
+      embeddedEntities: 0,
+   };
+   if (!embeddingConfigured()) return { status: "lexical", ...empty };
+   let provider: EmbeddingProvider | null;
+   try {
+      provider = getEmbeddingProvider();
+   } catch (error) {
+      return {
+         status: "error",
+         lastError: {
+            message: error instanceof Error ? error.message : String(error),
+         },
+         ...empty,
+      };
+   }
+   if (!provider) return { status: "lexical", ...empty };
    const pkgIndex = await getPackageIndex(
       environmentStore,
       environmentName,

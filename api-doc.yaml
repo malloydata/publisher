@@ -3680,8 +3680,8 @@ components:
           description: >-
             Server-computed, read-only: the state of this package's semantic
             discovery index, which is what `get_context` ranks against
-            when an embedding provider is configured. Absent when the server
-            has no provider, because there is no index to describe.
+            when an embedding provider is configured. `status: lexical` when
+            the server has no provider, because there is no index to describe.
 
     PackageEmbeddingIndex:
       type: object
@@ -3690,57 +3690,65 @@ components:
         State of a package's semantic discovery index. The server builds the
         index in the background when the package loads (and reloads), one
         package at a time across the whole server, saving each batch of vectors
-        as it goes. Poll `status` until `ready` to know retrieval is warm; no
-        question is needed first. While `indexing`, `embeddedRows` rises toward
-        `totalRows`. A restart starts every package's index again, but vectors
-        already stored for unchanged content are reused, so a restart over an
-        unchanged package embeds nothing new.
+        as it goes. Poll `status` until `ready` to know retrieval is warm.
+        While `indexing`, `embeddedRows` rises toward `totalRows`. A restart
+        starts every package's index again, but vectors already stored for
+        unchanged content are reused, so a restart over an unchanged package
+        embeds nothing new.
         Every count is scoped to the embedding model currently configured, so
-        rows left behind by an earlier model are never counted. Read `status` for readiness and the counts for
-        progress: they answer different questions, and only `status` tracks
-        what the search path will do. The first read after a package loads or
-        reloads builds the package's entity index and its content
-        fingerprint, which is work a metadata read would not otherwise do.
-        After that a read is two row counts and never waits on a sync, so
-        polling is cheap.
+        rows left behind by an earlier model are never counted. Read `status`
+        for readiness and the counts for progress: they answer different
+        questions, and only `status` tracks what the search path will do. The
+        first read after a package loads builds the package's entity index and
+        its content fingerprint, which is work a metadata read would not
+        otherwise do. After that a read is two row counts and never waits on a
+        sync, so polling is cheap.
       properties:
         status:
           type: string
           enum:
+            - lexical
             - indexing
             - ready
+            - error
             - cooldown
             - too-many-entities
           description: >-
-            `ready` = the index is warm, so the next `get_context` question
-            about this package is ranked semantically rather than lexically.
-            (It is a statement about the index, not a promise about the next
-            response: a question whose own query embedding fails still falls
-            back, reporting `retrieval_reason: provider-error`.) It is decided
-            by the same completed sync the search path gates on, not by
-            whether cached rows happen to cover the current entity names.
-            Those two differ exactly where it matters - the rows outlive a
-            restart and a reload, so a coverage test called an index warm
-            while the next question was still answered lexically.
-            `indexing` = no completed sync covers the package's current
-            content under the current model, so retrieval answers lexically
-            meanwhile. A reload whose files did not change stays `ready`,
-            because the vectors still describe that content. Four things move
-            a package to `indexing`: an edit, a new package, a changed
-            `EMBEDDING_MODEL`, and a server restart - the sync is recorded in
-            memory, so a restart reports `indexing` until the package's turn in
-            the queue has checked its stored vectors, which is quick when
-            nothing changed. It clears on its own: the server starts the sync
-            when the package loads.
-            `cooldown` = the provider failed recently, so the semantic path is
-            short-circuited for a window. `too-many-entities` = the package has
-            more entities than the embedding cap, so it stays lexical
-            permanently rather than transiently. The same vocabulary as
-            `get_context`'s `retrieval_reason`, deliberately.
+            `lexical` = no embedding provider is configured, so `get_context`
+            ranks by words only. That is a mode of the server, not a failure.
+            `indexing` = vectors for this package are being built or are
+            queued behind another package's; while this lasts and a provider is
+            configured, `get_context` answers a search with an "indexing"
+            message and no results, not a lexical ranking. `ready` = the index
+            is warm, so the next `get_context` question about this package is
+            ranked semantically. (It is a statement about the index, not a
+            promise about the next response: a question whose own query
+            embedding fails returns an error naming the provider failure.) It
+            is decided by the same completed sync the search path gates on, not
+            by whether cached rows happen to cover the current entity names.
+            `error` = the index cannot serve now; `reason` and `lastError`
+            say why. A changed `EMBEDDING_MODEL` or a changed package moves a
+            `ready` package back to `indexing`.
+            `cooldown` and `too-many-entities` are deprecated. Earlier versions
+            reported them as the `status` itself; they are now the `reason` of
+            an `error`. They stay in this list so a client generated from an
+            earlier spec still understands every value, and they are never sent.
+        reason:
+          type: string
+          enum:
+            - cooldown
+            - too-many-entities
+          description: >-
+            Present when `status` is `error` for one of two reasons that earlier
+            versions reported as the `status` itself. `cooldown` = the provider
+            failed (after retries) and the package is waiting out a window
+            before the next try; `lastError.retryAt` says when. `too-many-entities`
+            = the package has more entities than the embedding cap, which no
+            retry fixes. Absent for other errors, such as an invalid embedding
+            configuration, which `lastError.message` describes.
         lastError:
           type: object
-          description: >-
-            Present when `status` is `cooldown` or `too-many-entities`.
+          description: Present when `status` is `error`.
           properties:
             message:
               type: string

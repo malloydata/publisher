@@ -300,7 +300,7 @@ describe("startPackageEmbeddingSync", () => {
       held.release();
       await embeddingSyncQueue.idle();
 
-      const status = await statusOf(store, "env", "loaded");
+      const status = await getPackageEmbeddingStatus(store, "env", "loaded");
       expect(status.status).toBe("ready");
       expect(status.embeddedRows).toBe(3);
       expect(status.totalRows).toBe(3);
@@ -331,7 +331,7 @@ describe("startPackageEmbeddingSync", () => {
       expect(held.requests.length).toBe(1);
       expect(
          (await getPackageEmbeddingStatus(reloadedStore, "env", "reloaded"))
-            ?.status,
+            .status,
       ).toBe("ready");
    });
 
@@ -355,7 +355,7 @@ describe("startPackageEmbeddingSync", () => {
 
       startPackageEmbeddingSync(store, "env", pkg as unknown as Package);
       await held.arrived(1);
-      let status = await statusOf(store, "env", "progress");
+      let status = await getPackageEmbeddingStatus(store, "env", "progress");
       expect(status.status).toBe("indexing");
       expect(status.embeddedRows).toBe(0);
       expect(status.totalRows).toBe(3);
@@ -363,36 +363,37 @@ describe("startPackageEmbeddingSync", () => {
 
       held.release(); // batch 1 returns and is saved
       await held.arrived(2);
-      status = await statusOf(store, "env", "progress");
+      status = await getPackageEmbeddingStatus(store, "env", "progress");
       expect(status.status).toBe("indexing");
       expect(status.embeddedRows).toBe(2);
       expect(status.totalRows).toBe(3);
 
       held.release();
       await embeddingSyncQueue.idle();
-      status = await statusOf(store, "env", "progress");
+      status = await getPackageEmbeddingStatus(store, "env", "progress");
       expect(status.status).toBe("ready");
       expect(status.embeddedRows).toBe(3);
    });
 });
 
-/** The status of a package that has a provider, so it is never undefined. */
-const statusOf = async (
-   ...args: Parameters<typeof getPackageEmbeddingStatus>
-) => (await getPackageEmbeddingStatus(...args))!;
-
 describe("getPackageEmbeddingStatus", () => {
-   it("has nothing to describe when no provider is configured", async () => {
+   it("is lexical, by design, when no provider is configured", async () => {
       _setEmbeddingProviderForTests(null);
       const status = await getPackageEmbeddingStatus(
          storeHolding({}),
          "env",
          "any",
       );
-      expect(status).toBeUndefined();
+      expect(status).toEqual({
+         status: "lexical",
+         embeddedRows: 0,
+         totalRows: 0,
+         totalEntities: 0,
+         embeddedEntities: 0,
+      });
    });
 
-   it("throws the configuration error when the embedding configuration is invalid", async () => {
+   it("is an error with the reason when the embedding configuration is invalid", async () => {
       const saved = {
          key: process.env.EMBEDDING_API_KEY,
          base: process.env.EMBEDDING_API_BASE,
@@ -401,9 +402,13 @@ describe("getPackageEmbeddingStatus", () => {
       process.env.EMBEDDING_API_BASE = "not a url";
       _clearEmbeddingProviderForTests();
       try {
-         await expect(
-            getPackageEmbeddingStatus(storeHolding({}), "env", "any"),
-         ).rejects.toThrow("EMBEDDING_API_BASE");
+         const status = await getPackageEmbeddingStatus(
+            storeHolding({}),
+            "env",
+            "any",
+         );
+         expect(status.status).toBe("error");
+         expect(status.lastError?.message).toContain("EMBEDDING_API_BASE");
       } finally {
          if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
          else process.env.EMBEDDING_API_KEY = saved.key;
@@ -413,7 +418,7 @@ describe("getPackageEmbeddingStatus", () => {
       }
    });
 
-   it("is a cooldown naming the cause, and when the next try is, after the provider fails", async () => {
+   it("is an error naming the cause, and when the next try is, after the provider fails", async () => {
       const failing = new EmbeddingProvider(
          {
             apiKey: "sk-secret-key-123",
@@ -431,8 +436,9 @@ describe("getPackageEmbeddingStatus", () => {
       startPackageEmbeddingSync(store, "env", pkg as unknown as Package);
       await embeddingSyncQueue.idle();
 
-      const status = await statusOf(store, "env", "failing");
-      expect(status.status).toBe("cooldown");
+      const status = await getPackageEmbeddingStatus(store, "env", "failing");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("cooldown");
       expect(status.lastError?.message).toContain("authentication failed");
       expect(status.lastError?.message).not.toContain("sk-secret-key-123");
       expect(Date.parse(status.lastError!.retryAt!)).toBeGreaterThan(before);

@@ -923,7 +923,7 @@ describe("trySemanticSearch", () => {
       expect(status.embeddedEntities).toBe(1);
    });
 
-   it("reports a package past the cap as too-many-entities, not as indexing", async () => {
+   it("reports a package past the cap as an error, not as indexing", async () => {
       // A permanent condition an operator must act on, not a transient one to
       // wait out: reporting it as "indexing" would poll forever.
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -936,7 +936,8 @@ describe("trySemanticSearch", () => {
             entity(`e${i}`, "src"),
          ),
       );
-      expect(status.status).toBe("too-many-entities");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("too-many-entities");
       expect(status.lastError?.message).toContain(
          `${getMaxEmbeddedEntities() + 1} entities`,
       );
@@ -2346,7 +2347,8 @@ describe("the entity cap is the configured value", () => {
          "capped",
          args(provider, 4).entities,
       );
-      expect(status.status).toBe("too-many-entities");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("too-many-entities");
       const message = status.lastError?.message ?? "";
       expect(message).toContain("4 entities");
       expect(message).toContain("cap of 3");

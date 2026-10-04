@@ -1852,14 +1852,18 @@ export async function trySemanticSearch(args: {
 /** What a package's semantic index is currently doing. */
 export interface EmbeddingIndexStatus {
    /**
+    * - `lexical`: no embedding provider is configured. A mode, not a fallback.
     * - `indexing`: vectors are being built (or are queued to be).
     * - `ready`: the next question is ranked semantically.
-    * - `cooldown`: the provider failed recently and the package is waiting out
-    *   the window before the next try. `lastError` says why and when.
-    * - `too-many-entities`: the package is over the entity cap, which no retry
-    *   fixes.
+    * - `error`: the index cannot serve now. `reason` and `lastError` say why.
     */
-   status: "indexing" | "ready" | "cooldown" | "too-many-entities";
+   status: "lexical" | "indexing" | "ready" | "error";
+   /**
+    * Why `status` is `error`: `cooldown` (the provider failed and the package
+    * is waiting out the window before the next try) or `too-many-entities`
+    * (over the cap, which no retry fixes).
+    */
+   reason?: "cooldown" | "too-many-entities";
    lastError?: { message: string; retryAt?: string };
    /** When the sync now running began. Absent when none is running. */
    startedAt?: string;
@@ -1993,15 +1997,17 @@ export async function getEmbeddingIndexStatus(
    const meta = syncMeta.get(metaKey(environmentName, packageName));
    const summary = await desiredSummaryFor(allEntities);
 
-   let state: Pick<EmbeddingIndexStatus, "status" | "lastError">;
+   let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
    if (entityCount > maxEmbeddedEntities) {
       state = {
-         status: "too-many-entities",
+         status: "error",
+         reason: "too-many-entities",
          lastError: { message: tooManyEntitiesMessage(entityCount) },
       };
    } else if (meta && inCooldown(meta)) {
       state = {
-         status: "cooldown",
+         status: "error",
+         reason: "cooldown",
          lastError: {
             message: meta.lastError ?? "The embedding provider failed",
             retryAt: new Date(meta.failureAtMs + cooldownMs).toISOString(),
