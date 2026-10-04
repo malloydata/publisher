@@ -38,6 +38,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
+   WriteVerifyError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -285,6 +286,9 @@ async function denyHiddenAsNotQueryable(
    }
 }
 
+/** Cap on runtime add failures kept per environment for /status. */
+const MAX_RECORDED_ADD_FAILURES = 100;
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
@@ -315,6 +319,8 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /** Runtime add failures recorded in {@link mountErrors}, oldest first. */
+   private recordedAddFailures: string[] = [];
    /**
     * Why a SERVING package's most recent reload failed to compile, keyed by
     * package name.
@@ -441,7 +447,7 @@ export class Environment {
          );
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
-         throw new Error(`Failed to update environment README`);
+         throw new Error(`Failed to update environment README`, { cause: err });
       }
    }
 
@@ -707,6 +713,19 @@ export class Environment {
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            // Checked again where the compiler reads it: a saved model ending in an open block note re-lexes the caller's prose.
+            // Both checks are load-bearing: this in-context form accepts text the stand-alone check above refuses.
+            if (source !== undefined && modelContent) {
+               try {
+                  assertNoCallerAuthorizeAnnotation(
+                     source,
+                     `${modelContent}\n`,
+                  );
+               } catch (err) {
+                  recordAuthorizeGuardRejection("compile_source");
+                  throw err;
+               }
+            }
             callerRegion = {
                kind: "span",
                url: virtualUri,
@@ -1798,7 +1817,8 @@ export class Environment {
     * for, and neither is visible to the caller that lost.
     *
     * `check` refuses by throwing, and runs against the file's current text
-    * (undefined when there is none) — so two saves racing on one file cannot
+    * (undefined when there is none) and the package as loaded before the
+    * write (undefined when it is not) — so two saves racing on one file cannot
     * both pass their precondition. `verify` runs against the reloaded package
     * and likewise refuses by throwing; a refusal puts the previous text back
     * (or removes the file, when it is new), reloads again, and raises
@@ -1812,7 +1832,7 @@ export class Environment {
       packageName: string,
       modelPath: string,
       source: string,
-      check: (current: string | undefined) => void,
+      check: (current: string | undefined, loaded: Package | undefined) => void,
       verify: (reloaded: Package) => Promise<T>,
    ): Promise<{ previous: string | undefined; verified: T }> {
       assertSafePackageName(packageName);
@@ -1824,7 +1844,7 @@ export class Environment {
             modelPath,
          );
          const previous = await this._readModelFileLocked(target);
-         check(previous);
+         check(previous, this.packages.get(packageName));
          await this._writeModelFileLocked(target, source);
          try {
             // The locked form, because this whole callback already holds the
@@ -1846,9 +1866,14 @@ export class Environment {
                modelPath,
                error,
             });
+            // Only a refusal worded for the caller is echoed; anything else can carry a server path.
+            const reason =
+               error instanceof WriteVerifyError ? error.message : undefined;
             throw new WriteRolledBackError(
-               `The package did not reload with the new \`${modelPath}\`, so ` +
-                  `the previous text was put back and nothing changed.`,
+               `The package did not reload with the new \`${modelPath}\`` +
+                  `${reason ? ` (${reason})` : ""}, so the previous text was ` +
+                  `put back and nothing changed.`,
+               { cause: error },
             );
          }
       });
@@ -2935,7 +2960,7 @@ export class Environment {
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`);
+         throw new Error(`Failed to update package manifest`, { cause: error });
       }
    }
 
@@ -3131,14 +3156,43 @@ export class Environment {
       this.mountErrors.set(packageName, message);
    }
 
+   /**
+    * Record a runtime add that failed before the package could serve, so
+    * /status reports it the way it reports a configured package whose location
+    * never mounted. Skipped while the name has any status: a failed re-install
+    * rolls back to the previous tree, which is not a failed package. Cleared
+    * like every other load failure, by a later successful add or install of
+    * the name, or by deleting it.
+    *
+    * Names are the caller's, so the record is bounded: past
+    * MAX_RECORDED_ADD_FAILURES the oldest recorded add failure is dropped.
+    * Boot-time mount errors are not subject to the cap.
+    */
+   public recordPackageAddFailure(packageName: string, message: string): void {
+      if (this.packageStatuses.has(packageName)) return;
+      if (!this.mountErrors.has(packageName)) {
+         this.recordedAddFailures.push(packageName);
+         while (this.recordedAddFailures.length > MAX_RECORDED_ADD_FAILURES) {
+            const evicted = this.recordedAddFailures.shift();
+            if (evicted !== undefined) this.mountErrors.delete(evicted);
+         }
+      }
+      this.mountErrors.set(packageName, message);
+   }
+
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      const recorded = this.recordedAddFailures.indexOf(packageName);
+      if (recorded !== -1) this.recordedAddFailures.splice(recorded, 1);
       this.staleCompileErrors.delete(packageName);
    }
 
-   /** Packages configured for this environment that did not load, and why. */
+   /**
+    * Packages configured for, or added to, this environment that did not load,
+    * and why.
+    */
    public getFailedPackages(): ReadonlyMap<string, string> {
       if (this.mountErrors.size === 0) return this.failedPackages;
       // Mount errors last, so the specific cause overwrites the generic

@@ -122,7 +122,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-All model `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet). Notebooks are the exception: they live under `notebooks/`.
+All model `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet). Notebooks are the exception: they live under `notebooks/` (and dashboards under `dashboards/`).
 
 ```
 <package-name>/
@@ -138,7 +138,7 @@ All model `.malloy` files must be in the package root (flat layout: the publishe
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `notebooks/*.malloy` files with an `## artifact { kind=notebook }` tag - Notebooks for exploration/documentation (see `skill:malloy-notebooks`). An existing `.malloynb` is still served; never write a new one.
+- `notebooks/*.malloy` files with an `## artifact { kind=notebook … }` tag - Notebooks for exploration/documentation, written as a one-column layout of tiles or as older `run:` cells (see `skill:malloy-notebooks`). The tag's `kind=` decides whether a file is a notebook or a dashboard, not its folder. An existing `.malloynb` is still served; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management

@@ -1,20 +1,30 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import AddIcon from "@mui/icons-material/Add";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { Box, IconButton, Typography } from "@mui/material";
-import type { PointerEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
-import { TileCard, TileHeading } from "../Dashboard/TileCard";
-import { tileKey, type DashboardTile } from "./document";
+import {
+   TileCard,
+   TileHeading,
+   type TileHeadingSlots,
+} from "../Dashboard/TileCard";
+import {
+   tileKey,
+   tileLabel,
+   type DashboardTile,
+   type QueryTile,
+} from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the grip,
- * the menu button, the resize badge and the handle at the right edge. The tile
+ * the menu button and, in a notebook, the insert button. The tile
  * itself is `children` — the host's real `DashboardTile`, or a placeholder
  * saying what the tile will run.
  */
@@ -22,29 +32,24 @@ export function TileFrame({
    tile,
    index,
    selected,
+   flash = false,
    menuOpen,
-   resizeSpan,
-   columns,
+   onInsertAfter,
    onSelect,
    onOpenMenu,
-   onResizeStart,
-   onResizeMove,
-   onResizeEnd,
    children,
 }: {
    tile: DashboardTile;
    index: number;
    selected: boolean;
+   /** Briefly lit: the tile an undo or redo just changed. */
+   flash?: boolean;
    /** Whether this tile's menu is open, which keeps its button showing. */
    menuOpen: boolean;
-   /** The width being previewed while THIS tile is resized. */
-   resizeSpan: number | undefined;
-   columns: number;
+   /** Offers a "+" on the bottom edge that adds a tile after this one; set where tiles stack in one column. */
+   onInsertAfter?: () => void;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
-   onResizeStart: (event: PointerEvent<HTMLDivElement>) => void;
-   onResizeMove: (event: PointerEvent<HTMLDivElement>) => void;
-   onResizeEnd: (event: PointerEvent<HTMLDivElement>) => void;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
@@ -62,8 +67,10 @@ export function TileFrame({
                }}
                aria-label={`Tile ${tile.name}`}
                aria-current={selected}
+               data-tile-key={tileKey(tile)}
+               data-flash={flash || undefined}
                sx={{
-                  // Anchors the resize and drag handles to
+                  // Anchors the grip, menu and insert buttons to
                   // this tile.
                   position: "relative",
                   // Same again: this wrapper sits BETWEEN
@@ -94,6 +101,10 @@ export function TileFrame({
                      ? `2px solid ${theme.drillLink}`
                      : `2px solid transparent`,
                   outlineOffset: 2,
+                  ...(flash && {
+                     outlineColor: theme.drillLink,
+                     boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.drillLink} 25%, transparent)`,
+                  }),
                   transition:
                      "outline-color 120ms, opacity 120ms, box-shadow 120ms",
                   // The handles, grip and menu are invisible
@@ -152,7 +163,7 @@ export function TileFrame({
                <Box
                   ref={handleRef}
                   className="builder-affordance"
-                  aria-label={`Move ${tile.label ?? tile.name}`}
+                  aria-label={`Move ${tileLabel(tile)}`}
                   sx={{
                      position: "absolute",
                      top: "2px",
@@ -181,118 +192,67 @@ export function TileFrame({
                   <DragIndicatorIcon sx={{ fontSize: 16 }} />
                </Box>
 
-               {/* The tile's menu: its title and subtitle.
-                Hidden while a resize badge sits in the same
-                corner. A press here is never the start of a
-                drag: the sensor refuses to activate from a
-                button. */}
-               {resizeSpan === undefined && (
+               {/* The tile's menu: its chart, width and drill-through.
+                A press here is never the start of a drag: the
+                sensor refuses to activate from a button. */}
+               <IconButton
+                  className="builder-affordance"
+                  size="small"
+                  aria-label={`Settings for ${tileLabel(tile)}`}
+                  onClick={(event) => {
+                     event.stopPropagation();
+                     onOpenMenu(event.currentTarget);
+                  }}
+                  sx={{
+                     position: "absolute",
+                     top: "2px",
+                     right: "2px",
+                     width: 22,
+                     height: 22,
+                     zIndex: 2,
+                     color: theme.tileTitle,
+                     bgcolor: theme.tile,
+                     opacity: selected || menuOpen ? 0.9 : 0,
+                     transition: "opacity 120ms",
+                     "&:hover": {
+                        opacity: 1,
+                        bgcolor: theme.tile,
+                     },
+                  }}
+               >
+                  <MoreVertIcon sx={{ fontSize: 16 }} />
+               </IconButton>
+
+               {onInsertAfter && (
                   <IconButton
                      className="builder-affordance"
                      size="small"
-                     aria-label={`Settings for ${tile.label ?? tile.name}`}
+                     aria-label={`Insert tile after ${tileLabel(tile)}`}
                      onClick={(event) => {
                         event.stopPropagation();
-                        onOpenMenu(event.currentTarget);
+                        onInsertAfter();
                      }}
                      sx={{
                         position: "absolute",
-                        top: "2px",
-                        right: "2px",
-                        width: 22,
-                        height: 22,
-                        zIndex: 2,
+                        bottom: "-18px",
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        width: 20,
+                        height: 20,
+                        zIndex: 3,
                         color: theme.tileTitle,
                         bgcolor: theme.tile,
-                        opacity: selected || menuOpen ? 0.9 : 0,
+                        border: theme.cardBorder,
+                        opacity: 0,
                         transition: "opacity 120ms",
-                        "&:hover": {
+                        "&:hover, &:focus-visible": {
                            opacity: 1,
                            bgcolor: theme.tile,
                         },
                      }}
                   >
-                     <MoreVertIcon sx={{ fontSize: 16 }} />
+                     <AddIcon sx={{ fontSize: 14 }} />
                   </IconButton>
-               )}
-
-               {/* A tile's width and share of the dashboard,
-                reported while you drag it, as the best builders do.
-                Height is not ours to show, but the span and
-                its share are exactly what a flow grid leaves
-                you guessing at. */}
-               {resizeSpan !== undefined && (
-                  <Box
-                     aria-hidden
-                     sx={{
-                        position: "absolute",
-                        top: "6px",
-                        right: "6px",
-                        px: 0.75,
-                        py: 0.25,
-                        borderRadius: "4px",
-                        bgcolor: theme.drillLink,
-                        color: theme.tile,
-                        fontSize: 11,
-                        fontVariantNumeric: "tabular-nums",
-                        zIndex: 4,
-                        pointerEvents: "none",
-                     }}
-                  >
-                     {resizeSpan} of {columns} ·{" "}
-                     {Math.round((resizeSpan / columns) * 100)}%
-                  </Box>
-               )}
-
-               {/* The right edge, draggable — but only on a
-                tile whose tags this file owns. An inherited
-                tile's tags live on the model's view, which
-                the builder does not write, so a drag here
-                could not be saved. Its own pointer handling
-                stops the press reaching the sortable, and
-                the sensor refuses a separator regardless. */}
-               {tile.declaration.kind !== "inherited" && (
-                  <Box
-                     className="builder-affordance"
-                     role="separator"
-                     aria-orientation="vertical"
-                     aria-label={`Resize ${tile.label ?? tile.name}`}
-                     onPointerDown={onResizeStart}
-                     onPointerMove={onResizeMove}
-                     onPointerUp={onResizeEnd}
-                     onPointerCancel={onResizeEnd}
-                     sx={{
-                        position: "absolute",
-                        top: 0,
-                        bottom: 0,
-                        // Straddles the edge, so the target
-                        // is a usable width without eating
-                        // into the tile's content.
-                        right: "-5px",
-                        width: "10px",
-                        cursor: "col-resize",
-                        touchAction: "none",
-                        zIndex: 1,
-                        // Invisible until wanted: a rule down
-                        // every tile edge would read as a
-                        // table, and the tile already draws
-                        // an edge of its own.
-                        opacity: resizeSpan !== undefined || selected ? 1 : 0,
-                        transition: "opacity 120ms",
-                        "&:hover": { opacity: 1 },
-                        "&::after": {
-                           content: '""',
-                           position: "absolute",
-                           top: "50%",
-                           left: "50%",
-                           transform: "translate(-50%, -50%)",
-                           width: "4px",
-                           height: "28px",
-                           borderRadius: "2px",
-                           bgcolor: theme.drillLink,
-                        },
-                     }}
-                  />
                )}
             </Box>
          )}
@@ -304,14 +264,28 @@ export function TileFrame({
  * No host-supplied tile: say what this one will run, so the surface is still
  * legible without a server.
  */
-export function TilePlaceholder({ tile }: { tile: DashboardTile }) {
+export function TilePlaceholder({
+   tile,
+   heading,
+   note,
+}: {
+   tile: QueryTile;
+   heading?: TileHeadingSlots;
+   /** Why there is no preview, in place of an empty body. */
+   note?: string;
+}) {
    const { theme } = usePublisherTheme();
    return (
       <TileCard sx={{ minHeight: 140 }}>
          <TileHeading
-            title={tile.label ?? tile.name}
-            subtitle={tile.subtitle}
+            title={heading?.title ?? tile.label ?? tile.name}
+            subtitle={heading ? heading.subtitle : tile.subtitle}
          />
+         {note && (
+            <Typography variant="body2" sx={{ color: theme.tileTitle, py: 2 }}>
+               {note}
+            </Typography>
+         )}
          <Typography
             variant="caption"
             sx={{ display: "block", color: theme.tileTitle, opacity: 0.7 }}

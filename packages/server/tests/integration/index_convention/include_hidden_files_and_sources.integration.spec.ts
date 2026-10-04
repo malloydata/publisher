@@ -42,9 +42,9 @@ describe("includeHiddenFilesAndSources on the model routes", () => {
       expect(res.status).toBe(200);
       const models = (await res.json()) as {
          path?: string;
-         onSurface?: boolean;
+         isHidden?: boolean;
       }[];
-      return Object.fromEntries(models.map((m) => [m.path, m.onSurface]));
+      return Object.fromEntries(models.map((m) => [m.path, m.isHidden]));
    };
 
    beforeAll(async () => {
@@ -87,14 +87,14 @@ describe("includeHiddenFilesAndSources on the model routes", () => {
    });
 
    it("lists only the surface by default, and every file when asked", async () => {
-      expect(await listing()).toEqual({ "index.malloy": true });
+      expect(await listing()).toEqual({ "index.malloy": false });
       expect(await listing("?includeHiddenFilesAndSources=false")).toEqual({
-         "index.malloy": true,
+         "index.malloy": false,
       });
       expect(await listing("?includeHiddenFilesAndSources=true")).toEqual({
-         "index.malloy": true,
-         "internal.malloy": false,
-         "orders.malloy": false,
+         "index.malloy": false,
+         "internal.malloy": true,
+         "orders.malloy": true,
       });
    });
 

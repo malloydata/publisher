@@ -55,7 +55,7 @@ See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher
 | `/publisher/packages/server/dist/` | The bundled server (built by `bun run build` in CI). |
 | `/publisher/packages/app/dist/` | The static SPA the server serves. |
 | `/publisher/publisher_data/` | Per-environment package clones, DuckDB extension cache, and per-package sandbox DBs. Created at runtime; **persist this as a named volume if you want first-run sample clones to survive a container restart.** |
-| `/root/.duckdb/` | DuckDB CLI + extension install dir. Bundled into the image. |
+| `/home/bun/.duckdb/` | DuckDB CLI + extension install dir. Bundled into the image. |
 
 To keep `publisher_data/` across restarts:
 
@@ -72,6 +72,90 @@ The first request after a fresh start clones sample packages from GitHub — a n
 
 For the same pattern as a complete Compose file (with a healthcheck against `/api/v0/status` and both ports mapped), see [`docker-compose.example.yml`](../../docker-compose.example.yml) at the repo root.
 
+## The server runs as a non-root user
+
+The image runs the server as `bun`, uid 1000 and gid 1000, the user the `oven/bun` base image ships. Its `USER` is the numeric `1000:1000`, so a Kubernetes pod with `runAsNonRoot: true` starts without also setting `runAsUser`.
+
+Every application file is root-owned, so the server cannot modify one in place. It writes to three places, all owned by uid 1000:
+
+- `/publisher/`, the server root, where it creates `publisher.db`. Because it owns this directory, the server can also rename aside and replace any of its top-level entries: `package.json`, `bun.lock`, and the `packages/` and `node_modules/` directories. Such a change lasts as long as the container. Some storage drivers, Docker's default overlayfs among them, refuse to rename a directory that comes from an image layer, but that is the driver's limit, not the image's.
+- `/publisher/publisher_data/`.
+- `/publisher/ducklake_data/`, when a DuckLake storage destination's `bucketUrl` points there.
+- `/home/bun/.duckdb/extensions/`, for an extension the image did not bake.
+
+What you mount has to be writable by uid 1000 too. Per kind of mount:
+
+| Mount | The server | What to do |
+| --- | --- | --- |
+| A new named volume on `/publisher/publisher_data` or `/publisher/ducklake_data` | writes | Nothing: Docker seeds it from the image, owned by uid 1000. |
+| A new named volume anywhere else | writes | `docker run --rm --user 0 --entrypoint chown -v <volume>:/path ms2data/malloy-publisher -R 1000:1000 /path`, once. |
+| A volume an older, root-run image wrote to | writes | The same `chown`, once, before starting the new image. With Compose, `docker compose run --rm --no-deps --user 0 --entrypoint chown publisher -R 1000:1000 /publisher/publisher_data`. |
+| A bind of a host directory the server writes | writes | `sudo chown -R 1000:1000 <dir>`, or keep your ownership and add an ACL, which needs no `sudo` on a directory you own: `setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>`. |
+| A bind of a host directory the server only reads (a package `location`, a directory of zips) | reads | Readable by others, `chmod -R o+rX <dir>`, or group-readable with `sudo chgrp -R 1000 <dir> && chmod -R g+rX <dir>`. Mount it `:ro`. |
+| A single bound file (the config, a key file) | reads | Readable by others or by gid 1000; a `0600` file is not. See the key-file recipes below. Mount it `:ro`. |
+| A Kubernetes PersistentVolume | writes | `fsGroup: 1000` and `fsGroupChangePolicy: OnRootMismatch` in the pod's `securityContext`. |
+| A Kubernetes Secret or projected token | reads | `fsGroup: 1000` makes a `0600`-mounted file readable by the group. |
+
+Before starting the server, the probe at the end of this section confirms a mount is usable as uid 1000. The detail behind each row:
+
+- **A new named volume on `/publisher/publisher_data` or `/publisher/ducklake_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and those are the two writable mount points the image prepares: `publisher_data` for packages and per-package sandboxes, `ducklake_data` for a DuckLake storage destination whose `bucketUrl` is a local path.
+- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0`, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`. The one-time chown names the mount path twice, as the mount target and as chown's argument:
+
+  ```bash
+  docker run --rm --user 0 --entrypoint chown \
+    -v <volume>:/data/lake \
+    ms2data/malloy-publisher -R 1000:1000 /data/lake
+  ```
+
+- **A named volume an older, root-run image already wrote to** holds root-owned files, and the server cannot write to them. It still reaches `serving`, but each environment it cannot write is missing from the catalog, and `GET /api/v0/status` lists it under `loadErrors` with an `EACCES: permission denied` message. Chown the volume once, before starting the new image. With `docker run`, name the volume you mount:
+
+  ```bash
+  docker run --rm --user 0 --entrypoint chown \
+    -v publisher_data:/publisher/publisher_data \
+    ms2data/malloy-publisher -R 1000:1000 /publisher/publisher_data
+  ```
+
+  With Compose, do not use that command: Compose prefixes the volume with the project name (`<project>_publisher_data`), so `-v publisher_data:` creates a new, empty volume, chowns it, and exits 0 while the real one stays root-owned. Run it through Compose instead, from the directory holding your `docker-compose.yml`, so the service's own volume is mounted:
+
+  ```bash
+  docker compose run --rm --no-deps --user 0 --entrypoint chown \
+    publisher -R 1000:1000 /publisher/publisher_data
+  ```
+
+  `docker volume ls` shows the volume's full name if you would rather use the `docker run` form.
+
+- **A bind mount** keeps the host directory's ownership. On Linux, `sudo chown -R 1000:1000` the host directory, or keep it yours and grant uid 1000 through a POSIX ACL, which also covers files created later and, unlike `chown`, needs no `sudo` on a directory you own:
+
+  ```bash
+  setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>
+  ```
+
+  Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
+- **A Kubernetes PersistentVolume** is not seeded from the image, so even a new one on `/publisher/publisher_data` starts owned by root (an `emptyDir` is world-writable and needs nothing). Set `fsGroup: 1000` in the pod's `securityContext`, which makes the volume group-writable by gid 1000, and `fsGroupChangePolicy: OnRootMismatch` so the kubelet does not re-chown a large volume on every start. `fsGroup` is also what makes a mounted Secret key file, or a projected service-account token, readable by uid 1000 where the platform mounts them `0600`.
+- **A read-only mount** only needs to be readable by uid 1000. That covers the config file, a package `location`, a directory of package zips (a `.zip` location is extracted into `publisher_data/`, never beside the archive), and the key file `GOOGLE_APPLICATION_CREDENTIALS` names. A key file bound from a host path that does not exist arrives as a directory, and the server says so. The usual trap is the key file itself: a `gcloud` application-default credentials file is `0600` and owned by you, so uid 1000 cannot read it through a bind on Linux, unless your own uid is 1000 (the first user on most Ubuntu installs), in which case nothing is needed. Otherwise bind a copy it can read, or grant the group. Both need root, because only root can hand a file to another uid or to a group you are not in:
+
+  ```bash
+  sudo install -o 1000 -g 1000 -m 0400 ~/.config/gcloud/application_default_credentials.json ./secrets/key.json
+  # or, keeping the original in place:
+  sudo chgrp 1000 key.json && chmod 0640 key.json
+  ```
+
+  For a directory you own, `chmod -R o+rX <dir>` needs no root; the `chgrp 1000` / `g+rX` equivalent does.
+- **Ownership is right and the server still reports `EACCES`:** on SELinux hosts (Fedora, RHEL) a bind mount needs the `:z` (shared) or `:Z` (private) option, or every access is refused whatever the owner. Under rootless Docker, Podman, or `userns-remap`, uid 1000 in the container is a subordinate uid on the host, so a host `chown 1000` names the wrong owner; use `podman unshare chown -R 1000:1000 <dir>`, or the remapped uid.
+
+To check a mount before starting the server, run the probe as the image's user:
+
+```bash
+docker run --rm --entrypoint sh -v <mount> ms2data/malloy-publisher \
+  -c 'id; touch <path>/.probe && rm <path>/.probe && echo writable'
+```
+
+For a read-only mount, the same with `cat <file> >/dev/null && echo readable`.
+
+When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot start at all, for example on a read-only root filesystem or with a config file it cannot read, `/api/v0/status` stays `initializing` and `initError` says why.
+
+If you cannot change the ownership yet, `--user 0` runs the server as root, as earlier images did. The image sets `HOME=/home/bun`, so a root run still finds the baked DuckDB extensions.
+
 ## Configuration via environment variables
 
 All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, so they're easy to set from `docker run -e` or compose:
@@ -83,7 +167,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `MCP_HOST` | `--mcp_host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
 | `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
-| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a root-owned file, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
+| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a file there, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
 | `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<SERVER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
 | `INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |

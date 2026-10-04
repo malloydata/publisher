@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { DashboardDocument } from "../document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type QueryTile,
+} from "../document";
 import { readDashboardDocument, readFailed } from "../readDocument";
 import {
    spliceDashboardDocument,
@@ -45,4 +49,15 @@ export async function refused(
    const result = await splice(source, edit);
    if (!spliceFailed(result)) throw new Error("expected the writer to refuse");
    return result.reason;
+}
+
+/** The query tile at `index`, for a spec that edits or reads query-only fields. */
+export function queryTile(
+   document: DashboardDocument,
+   index: number,
+): QueryTile {
+   const tile = document.tiles[index];
+   if (!tile || !isQueryTile(tile))
+      throw new Error(`tile ${index} is not a query tile`);
+   return tile;
 }

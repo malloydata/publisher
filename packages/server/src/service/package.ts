@@ -97,9 +97,14 @@ import {
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import {
+   ANY_ARTIFACT_NOTE,
+   artifactKindInText,
    claimsToBeANotebook,
+   documentKind,
    hasArtifactLineOutsideBlocks,
+   isDocumentModelPath,
    isNotebookModelPath,
+   type DocumentKind,
 } from "./notebook";
 import { lintNotebookText } from "./notebook_lint";
 import {
@@ -107,13 +112,13 @@ import {
    COMPONENT_FILE_SUFFIXES,
    DASHBOARDS_DIR,
    dashboardSlug,
-   isDashboardModelPath,
    matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
    lintUndiscoveredDashboard,
+   queryTiles,
    type DashboardManifest,
    type DashboardModelFacts,
    factsCarryArtifactTag,
@@ -288,6 +293,8 @@ export class Package {
    // a property of the compiled model, so it can only change when the models do.
    // A dashboard file that failed to compile has no readable tag, so it lands
    // here as a slug-titled entry carrying its error rather than disappearing.
+   // Notebooks written as a tile layout, by path: they are not listed as dashboards, but are linted as one.
+   private layoutNotebooks = new Map<string, DashboardManifest>();
    private dashboards: Map<string, DashboardManifest & { error?: string }> =
       new Map();
    /**
@@ -794,6 +801,10 @@ export class Package {
             }
             throw new ServiceUnavailableError(
                `Package-load worker pool unavailable: ${realError.message}`,
+               // The worker's failure may be a refused filesystem access on
+               // the package's own files, which the error mapper reads from
+               // the cause; a bare 503 would read as "retry".
+               { cause: realError },
             );
          });
       const [outcome, databases] = await Promise.all([
@@ -2586,6 +2597,7 @@ export class Package {
          }
          throw new ServiceUnavailableError(
             `Package-load worker pool unavailable: ${realError.message}`,
+            { cause: realError },
          );
       }
 
@@ -2724,11 +2736,11 @@ export class Package {
       // unaffected (see listNotebooks) — they are always public.
       //
       // `includeHiddenFilesAndSources` lists the hidden files too, each marked
-      // `onSurface: false`. Running them takes the same option on the query
+      // `isHidden: true`. Running them takes the same option on the query
       // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
-      const onSurface = (modelPath: string) =>
-         !exploreSet || exploreSet.has(modelPath);
+      const isHidden = (modelPath: string) =>
+         !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
@@ -2758,7 +2770,7 @@ export class Package {
                   environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
-                  onSurface: onSurface(modelPath),
+                  isHidden: isHidden(modelPath),
                   error,
                };
             }),
@@ -2805,7 +2817,7 @@ export class Package {
     * wrong tool; its comment says so.
     *
     * Deliberately textual and deliberately generous: it looks for an `artifact`
-    * annotation at the start of a line. Note the cost of a false positive is
+    * property anywhere on a `#` or `##` annotation line. Note the cost of a false positive is
     * NOT the same on every path. On the original one it lists a broken file
     * that was never a dashboard, which is merely noisy. On the drop paths it
     * emits an `error` finding claiming a dashboard should exist and registers
@@ -2819,31 +2831,41 @@ export class Package {
             safeJoinUnderRoot(this.packagePath, modelPath),
             "utf8",
          );
-         return hasArtifactLineOutsideBlocks(source, /^##?[ \t]*artifact\b/);
+         return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
       } catch {
          return false;
       }
    }
 
    /**
-    * Whether a candidate under `notebooks/` is a served notebook: it carries a
-    * model-level `## artifact` note, read off the compiled model or, for a file
-    * that did not compile, off its text. Never throws.
+    * What a `.malloy` at the top of `dashboards/` or `notebooks/` is. The
+    * artifact tag's `kind` decides, read off the compiled model or, for a file
+    * that did not compile, off its text; the folder decides only when the tag
+    * names none. A file with no model-level `## artifact` is a shared include
+    * under `notebooks/`, and under `dashboards/` still a candidate (a query can
+    * carry the tag). Never throws.
     */
-   private async claimsToBeAServedNotebook(
+   private async classifyDocument(
       model: Model,
       modelPath: string,
-   ): Promise<boolean> {
+   ): Promise<DocumentKind | "include"> {
+      const untagged = isNotebookModelPath(modelPath) ? "include" : "dashboard";
       try {
-         if (model.getModelDef()) return model.carriesNotebookArtifactNote();
-         if (!model.getCompilationError()) return false;
+         if (model.getModelDef()) {
+            return model.carriesNotebookArtifactNote()
+               ? documentKind(modelPath, model.artifactKind())
+               : untagged;
+         }
+         if (!model.getCompilationError()) return untagged;
          const source = await fs.readFile(
             safeJoinUnderRoot(this.packagePath, modelPath),
             "utf8",
          );
-         return claimsToBeANotebook(source);
+         return claimsToBeANotebook(source)
+            ? documentKind(modelPath, artifactKindInText(source))
+            : untagged;
       } catch {
-         return false;
+         return untagged;
       }
    }
 
@@ -2885,13 +2907,16 @@ export class Package {
       // `# drill { to=... }` into "not a dashboard in this package".
       const dashboardSlugs = new Set<string>();
       const notebookPaths: string[] = [];
+      const layoutNotebooks = new Map<string, DashboardManifest>();
+      // Dashboards whose slug an earlier file already holds; the slug is the URL and the drill target.
+      const shadowed: { modelPath: string; name: string; by: string }[] = [];
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
          if (!model) continue;
 
          let facts: DashboardModelFacts | undefined;
          try {
-            facts = model.getDashboardModelFacts();
+            facts = await model.getCompiledDashboardModelFacts();
             if (facts) allFacts.set(modelPath, facts);
          } catch (err) {
             logger.warn("Reading a model's dashboard facts failed", {
@@ -2901,13 +2926,27 @@ export class Package {
             });
          }
 
-         if (isNotebookModelPath(modelPath)) {
-            if (await this.claimsToBeAServedNotebook(model, modelPath)) {
-               notebookPaths.push(modelPath);
+         if (!isDocumentModelPath(modelPath)) continue;
+         const kind = await this.classifyDocument(model, modelPath);
+         if (kind === "include") continue;
+         if (kind === "notebook") {
+            notebookPaths.push(modelPath);
+            // A notebook written as a tile layout is linted like a dashboard.
+            try {
+               const layout = facts && buildDashboardManifest(facts);
+               if (facts && layout?.kind === "notebook" && layout.tiles) {
+                  layoutNotebooks.set(modelPath, layout);
+                  factsByPath.set(modelPath, facts);
+               }
+            } catch (err) {
+               logger.warn("Notebook layout discovery failed", {
+                  packageName: this.packageName,
+                  modelPath,
+                  error: errMessage(err),
+               });
             }
             continue;
          }
-         if (!isDashboardModelPath(modelPath)) continue;
          const name = dashboardSlug(modelPath);
 
          // Establish that the file IS a dashboard before any of the checks
@@ -3002,6 +3041,7 @@ export class Package {
             }
             manifest = {
                name,
+               kind: "dashboard",
                title: name,
                autorun: true,
                entryFile: modelPath,
@@ -3015,6 +3055,12 @@ export class Package {
          // what its tiles may read, not whether it is listed (see
          // applyQueryBoundaryToModels and lintTilesAgainstSurface).
          dashboardSlugs.add(name);
+
+         const holder = discovered.get(name);
+         if (holder) {
+            shadowed.push({ modelPath, name, by: holder.entryFile });
+            continue;
+         }
 
          // A name outside the documented `dashboardName` pattern is served and
          // only noted. Measured rather than assumed: the route is a plain
@@ -3032,6 +3078,7 @@ export class Package {
          if (facts) factsByPath.set(modelPath, facts);
       }
       this.dashboards = discovered;
+      this.layoutNotebooks = layoutNotebooks;
       // Which files are dashboards changes what the query boundary admits, so
       // it is re-applied now, before the lint asks it about each tile.
       const dashboardFileText = new Map<string, string>();
@@ -3078,6 +3125,7 @@ export class Package {
          unconventionalSlugs,
          dashboardSlugs,
          droppedByError,
+         shadowed,
       };
       await this.relintDashboards();
    }
@@ -3128,11 +3176,7 @@ export class Package {
       for (const [modelPath, model] of Array.from(this.models).sort(
          ([a], [b]) => (a < b ? -1 : 1),
       )) {
-         if (
-            !this.isServedNotebook(modelPath) &&
-            !isDashboardModelPath(modelPath)
-         )
-            continue;
+         if (!isDocumentModelPath(modelPath)) continue;
          let text = this.notebookFileText.get(modelPath);
          if (text === undefined) {
             try {
@@ -3173,6 +3217,7 @@ export class Package {
       unconventionalSlugs: readonly { modelPath: string; name: string }[];
       dashboardSlugs: ReadonlySet<string>;
       droppedByError: readonly { modelPath: string; name: string }[];
+      shadowed: readonly { modelPath: string; name: string; by: string }[];
    };
 
    /**
@@ -3189,6 +3234,7 @@ export class Package {
          inputs.unconventionalSlugs,
          inputs.dashboardSlugs,
          inputs.droppedByError,
+         inputs.shadowed,
       );
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
@@ -3244,11 +3290,11 @@ export class Package {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
       }[] = [];
-      for (const tile of manifest.tiles ?? []) {
+      for (const tile of queryTiles(manifest.tiles)) {
          checks.push({
             request: { query: `run: ${tile.query}` },
             describe: (source) =>
-               `Tile ${tile.query} on dashboard ${manifest.name} reads ` +
+               `Tile ${tile.query} on ${manifest.kind} ${manifest.name} reads ` +
                `${source}, ${unexported}, so it won't load.`,
          });
       }
@@ -3310,9 +3356,21 @@ export class Package {
       unconventionalSlugs: readonly { modelPath: string; name: string }[],
       knownSlugs: ReadonlySet<string>,
       droppedByError: readonly { modelPath: string; name: string }[],
+      shadowed: readonly { modelPath: string; name: string; by: string }[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
       try {
+         for (const { modelPath, name, by } of shadowed) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `"${modelPath}" is not served: "${by}" already holds the ` +
+                  `dashboard name "${name}", which is the URL and the \`# drill\` ` +
+                  `target. Fix: rename one of the files.`,
+               severity: "error",
+            });
+         }
          // First because it cannot throw, so these survive a truncation that
          // costs everything after them, and a dashboard that vanished with no
          // explanation is the worst thing on this surface to lose. A manifest
@@ -3346,7 +3404,7 @@ export class Package {
             });
          }
          for (const [modelPath, facts] of factsByPath) {
-            const manifest = this.dashboards.get(dashboardSlug(modelPath));
+            const manifest = this.manifestAt(modelPath);
             const findings = manifest
                ? lintDashboard(facts, manifest)
                : lintUndiscoveredDashboard(facts);
@@ -3479,6 +3537,14 @@ export class Package {
       return warnings;
    }
 
+   /** The manifest the file at `modelPath` produced, a dashboard's or a layout notebook's. */
+   private manifestAt(modelPath: string): DashboardManifest | undefined {
+      const dashboard = this.dashboards.get(dashboardSlug(modelPath));
+      return dashboard?.entryFile === modelPath
+         ? dashboard
+         : this.layoutNotebooks.get(modelPath);
+   }
+
    public listDashboards(): ApiDashboard[] {
       // Every dashboard is listed whatever the surface is; the surface limits
       // what its tiles may read.
@@ -3502,6 +3568,7 @@ export class Package {
          packageName: this.packageName,
          name: manifest.name,
          path: manifest.entryFile,
+         kind: manifest.kind,
          title: manifest.title,
          description: manifest.description,
          error: manifest.error,
@@ -3627,7 +3694,12 @@ export class Package {
       );
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+      } catch (error) {
+         // A missing manifest, or a package path that is not a directory,
+         // is "does not exist". Anything else, an EACCES on the package
+         // directory above all, is rethrown so it is reported as what it is.
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
          throw new PackageNotFoundError(
             `Package manifest for ${packagePath} does not exist.`,

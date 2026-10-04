@@ -72,6 +72,8 @@ describe("reading raw annotations", () => {
    it("takes a chart tag and ignores every other tag", () => {
       expect(chartOf(["# bar_chart\n"])).toBe("bar_chart");
       expect(chartOf(["# shape_map\n"])).toBe("shape_map");
+      expect(chartOf(["# -bar_chart\n"])).toBeUndefined();
+      expect(chartOf(["# -bar_chart -viz line_chart\n"])).toBe("line_chart");
       expect(chartOf(["# colspan=6\n", '# label="x"\n'])).toBeUndefined();
    });
 });

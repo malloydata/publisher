@@ -292,6 +292,18 @@ export interface SerializedError {
    isCompilationError?: boolean;
    /** Set when the error originated as `PackageManifestError`. */
    isManifestError?: boolean;
+   /**
+    * A Node errno error's `code`, `syscall` and `path`, which `name` and
+    * `message` do not carry. Lets the receiving side recognize a refused
+    * filesystem access (see `filesystemAccessFailure`) by its fields.
+    */
+   errno?: SerializedErrno;
+}
+
+export interface SerializedErrno {
+   code: string;
+   syscall?: string;
+   path?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────

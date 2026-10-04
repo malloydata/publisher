@@ -78,15 +78,23 @@ class TheSeal(unittest.TestCase):
 class WhatAnImportedKeyMayClaim(unittest.TestCase):
     def test_a_verified_value_needs_to_say_what_verified_it(self):
         got = findings(case(golden={"status": "verified", "kind": "scalar",
-                                    "value": 4200000}))
+                                    "value": {"answer": 4200000}}))
         self.assertEqual(len(got), 1)
         self.assertIn("Nothing an import can do makes a value verified", got[0])
 
     def test_a_value_of_zero_is_still_a_value(self):
         # `if golden.get("value")` would have let 0 through as no key at all.
         got = findings(case(golden={"status": "verified", "kind": "scalar",
-                                    "value": 0}))
+                                    "value": {"answer": 0}}))
         self.assertEqual(len(got), 1)
+
+    def test_a_bare_scalar_is_refused_with_the_shape_to_use(self):
+        # verify_goldens can only pair a value with a query column by name;
+        # a bare number failed there, after both servers were up.
+        got = findings(case(golden={"status": "provisional", "kind": "scalar",
+                                    "value": 1830000}))
+        self.assertEqual(len(got), 1)
+        self.assertIn('Fix: `"value": {"answer": 1830000}`', got[0])
 
     def test_an_explicit_null_value_is_not_a_value(self):
         # How the ecommerce set's four refusal cases say "no number".
@@ -101,7 +109,7 @@ class WhatAnImportedKeyMayClaim(unittest.TestCase):
 
     def test_criteria_holding_a_number_must_be_split(self):
         got = findings(case(golden={
-            "status": "verified", "kind": "criteria", "value": 4200000,
+            "status": "verified", "kind": "criteria", "value": {"answer": 4200000},
             "rubric": "Should be about 4.2M, broken out by region."}))
         self.assertTrue(any("split it" in f for f in got))
 
@@ -112,19 +120,19 @@ class WhatAnImportedKeyMayClaim(unittest.TestCase):
 
     def test_an_authored_query_claim_needs_the_query(self):
         got = findings(case(golden={"status": "provisional", "kind": "scalar",
-                                    "value": 12, "verifiedBy": "authored_query"}))
+                                    "value": {"answer": 12}, "verifiedBy": "authored_query"}))
         self.assertEqual(len(got), 1)
         self.assertIn("canonicalQuery", got[0])
 
     def test_a_provisional_value_is_the_normal_import(self):
         self.assertEqual(findings(case(golden={
-            "status": "provisional", "kind": "scalar", "value": 12,
+            "status": "provisional", "kind": "scalar", "value": {"answer": 12},
             "canonicalQuery": "run: orders -> late_count",
             "verifiedBy": "authored_query"})), [])
 
     def test_an_unknown_status_is_a_finding(self):
         got = findings(case(golden={"status": "trusted", "kind": "scalar",
-                                    "value": 1}))
+                                    "value": {"answer": 1}}))
         self.assertTrue(any("golden.status" in f for f in got))
 
 
@@ -137,7 +145,7 @@ class WhatIsReportedNotFailed(unittest.TestCase):
         # Whether a required id exists is a question about the model, which
         # this script never reads. Warning anyway fired on 45 of 49 cases of a
         # mature set; verify_goldens.py check 5 takes --model and can answer.
-        c = case(golden={"status": "provisional", "kind": "scalar", "value": 1},
+        c = case(golden={"status": "provisional", "kind": "scalar", "value": {"answer": 1}},
                  expectedEntities={"required": ["field:orders:late_count"]})
         self.assertEqual(findings(c), [])
         self.assertEqual(review(c), [])
@@ -201,9 +209,9 @@ class Counting(unittest.TestCase):
             case(qid="a", golden={"status": "verified", "kind": "criteria",
                                   "rubric": "x"}),
             case(qid="b", golden={"status": "provisional", "kind": "scalar",
-                                  "value": 1, "canonicalQuery": "run: x"}),
+                                  "value": {"answer": 1}, "canonicalQuery": "run: x"}),
             case(qid="c", golden={"status": "provisional", "kind": "scalar",
-                                  "value": 2}),
+                                  "value": {"answer": 2}}),
             case(qid="d"),
         ]
         out = ic.summarize(cases, lines=4)
@@ -244,7 +252,7 @@ class VerifiedNeedsMoreThanTheirOwnQuery(unittest.TestCase):
         return f
 
     def test_their_query_agreeing_does_not_make_it_verified(self):
-        f = self.check({"status": "verified", "kind": "scalar", "value": 42,
+        f = self.check({"status": "verified", "kind": "scalar", "value": {"answer": 42},
                         "verifiedBy": "authored_query",
                         "canonicalQuery": "run: a"})
         self.assertTrue(f)
@@ -252,7 +260,7 @@ class VerifiedNeedsMoreThanTheirOwnQuery(unittest.TestCase):
 
     def test_a_bare_verified_claim_is_still_caught(self):
         self.assertTrue(
-            self.check({"status": "verified", "kind": "scalar", "value": 42}))
+            self.check({"status": "verified", "kind": "scalar", "value": {"answer": 42}}))
 
     def test_a_truth_package_promotion_validates(self):
         # A mature set whose keys were promoted has to keep validating, or the
@@ -262,11 +270,11 @@ class VerifiedNeedsMoreThanTheirOwnQuery(unittest.TestCase):
             with self.subTest(by):
                 self.assertFalse(
                     self.check({"status": "verified", "kind": "scalar",
-                                "value": 42, "verifiedBy": by}))
+                                "value": {"answer": 42}, "verifiedBy": by}))
 
     def test_provisional_with_their_query_is_the_right_shape(self):
         self.assertFalse(
-            self.check({"status": "provisional", "kind": "scalar", "value": 42,
+            self.check({"status": "provisional", "kind": "scalar", "value": {"answer": 42},
                         "verifiedBy": "authored_query",
                         "canonicalQuery": "run: a"}))
 
@@ -306,12 +314,12 @@ class TheSummarySums(unittest.TestCase):
 
     def test_every_status_lands_on_exactly_one_line(self):
         cases = [
-            self._case({"status": "verified", "kind": "scalar", "value": 1,
+            self._case({"status": "verified", "kind": "scalar", "value": {"answer": 1},
                         "verifiedBy": "truth_package"}),
-            self._case({"status": "provisional", "kind": "scalar", "value": 2}),
+            self._case({"status": "provisional", "kind": "scalar", "value": {"answer": 2}}),
             self._case({"status": "invalid"}),
             self._case({"status": "ambiguous"}),
-            self._case({"status": "verified_wrong", "kind": "scalar", "value": 3}),
+            self._case({"status": "verified_wrong", "kind": "scalar", "value": {"answer": 3}}),
             self._case({"status": "bogus"}),
             self._case(None),
         ]
@@ -328,7 +336,7 @@ class TheSummarySums(unittest.TestCase):
 
     def test_verified_wrong_validates_on_an_established_set(self):
         f, _ = ic.check_case(self._case({"status": "verified_wrong",
-                                         "kind": "scalar", "value": 3}), "x:1")
+                                         "kind": "scalar", "value": {"answer": 3}}), "x:1")
         self.assertEqual([x for x in f if "golden.status" in x], [])
 
 if __name__ == "__main__":

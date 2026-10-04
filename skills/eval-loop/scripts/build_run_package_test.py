@@ -21,14 +21,18 @@ import csv
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE / "build_run_package.py"
+sys.path.insert(0, str(HERE))
+import build_run_package  # noqa: E402
 MALLOY = (HERE.parent / "templates" / "eval-run-package" / "eval_run.malloy")
 
 # `source: <name> is duckdb.table('data/<file>.csv')` then an `include { ... }`
@@ -71,7 +75,7 @@ class SourcesMatchTheCsvs(unittest.TestCase):
             json.dumps({"qid": "q1", "question": "how many?"}) + "\n")
         p = subprocess.run(
             [sys.executable, str(SCRIPT), "--run", str(run),
-             "--set", str(sset), "--out", str(out)],
+             "--set", str(sset), "--out", str(out), "--without-diagnosis"],
             capture_output=True, text=True, timeout=300)
         assert p.returncode == 0, p.stderr
         cls.data = out / "data"
@@ -155,7 +159,8 @@ class SourcesMatchTheCsvs(unittest.TestCase):
                 json.dumps({"qid": "q1", "question": "q?"}) + "\n")
             p = subprocess.run(
                 [sys.executable, str(SCRIPT), "--run", str(run),
-                 "--set", str(sset), "--out", str(out)],
+                 "--set", str(sset), "--out", str(out),
+                 "--without-diagnosis"],
                 capture_output=True, text=True, timeout=300)
             self.assertEqual(p.returncode, 0, p.stderr)
             head, first = self.rows("runs", out / "data")[:2]
@@ -166,6 +171,140 @@ class SourcesMatchTheCsvs(unittest.TestCase):
                 self.assertEqual(row[col], "")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class RefusalsAndServing(unittest.TestCase):
+    """The two ways a built report silently came out wrong, and its two URLs."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.run, self.sset = self.tmp / "run1", self.tmp / "set"
+        self.run.mkdir()
+        self.sset.mkdir()
+        (self.run / "run.json").write_text(json.dumps(RUN_JSON))
+        (self.run / "events.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in EVENTS) + "\n")
+        (self.sset / "set.json").write_text(json.dumps({"name": "s"}))
+        (self.sset / "cases.jsonl").write_text(
+            json.dumps({"qid": "q1", "question": "q?"}) + "\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def build(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--run", str(self.run),
+             "--set", str(self.sset), *extra],
+            capture_output=True, text=True, timeout=300)
+
+    def test_a_run_without_a_diagnosis_is_refused(self):
+        p = self.build("--out", str(self.tmp / "pkg"))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("no clusters.jsonl", p.stderr)
+        self.assertIn("--without-diagnosis", p.stderr)
+        self.assertFalse((self.tmp / "pkg").exists())
+
+    def test_an_out_inside_a_malloy_package_is_refused(self):
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "publisher.json").write_text("{}")
+        p = self.build("--out", str(self.tmp / "model" / "evals" / "pkg"),
+                       "--without-diagnosis")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(f"inside the Malloy package {self.tmp.resolve() / 'model'}",
+                      p.stderr)
+
+    def test_both_urls_are_printed_and_written_on_the_truth_server(self):
+        (self.run / "clusters.jsonl").write_text("")
+        (self.sset / "eval.toml").write_text("[truth]\nport = 4881\n")
+        out = self.tmp / "pkg"
+        p = self.build("--out", str(out), "--no-register")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        want = ["# case matrix: http://localhost:4881/environments/truth/packages/pkg/",
+                "# notebook:    http://localhost:4881/truth/pkg/notebooks/eval_run"]
+        for line in want:
+            self.assertIn(line, p.stdout)
+            self.assertIn(line, (out / "README.md").read_text())
+
+    def test_with_no_truth_section_it_registers_nowhere(self):
+        # Not a guessed truth port, and not the model server: the package
+        # holds the answer key, and the model server is the answerer's.
+        (self.run / "clusters.jsonl").write_text("")
+        (self.sset / "eval.toml").write_text("[model]\nport = 4000\n")
+        p = self.build("--out", str(self.tmp / "pkg"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("# not registered: ", p.stdout)
+        self.assertIn("--on-model-server", p.stdout)
+        self.assertNotIn("curl", p.stdout)
+        self.assertNotIn("4881", p.stdout)
+
+    def test_on_model_server_prints_the_delete_that_must_follow(self):
+        (self.run / "clusters.jsonl").write_text("")
+        (self.run / "run.json").write_text(json.dumps(
+            {"publisher": "http://localhost:4000", "environment": "examples"}))
+        (self.sset / "eval.toml").write_text("[model]\nport = 4000\n")
+        p = self.build("--out", str(self.tmp / "pkg"), "--on-model-server")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("# this is the MODEL server: the package holds the answer key",
+                      p.stdout)
+        self.assertIn("curl -sS -X POST http://localhost:4000/api/v0/environments/"
+                      "examples/packages", p.stdout)
+        self.assertIn("curl -sS -X DELETE http://localhost:4000/api/v0/"
+                      "environments/examples/packages/pkg", p.stdout)
+
+    def test_the_registration_body_survives_a_quote_in_the_path(self):
+        cfg = mock.Mock()
+        cfg.truth_publisher.return_value = "http://localhost:4881"
+        cfg.get.return_value = "truth"
+        run = self.tmp / "r"
+        run.mkdir()
+        (run / "run.json").write_text("{}")
+        out = self.tmp / "o'brien" / "pkg"
+        lines = build_run_package.serving_lines(cfg, [run], out)
+        body = shlex.split(lines[1].strip())[-1]
+        self.assertEqual(json.loads(body)["location"], str(out.resolve()))
+
+
+class Register(unittest.TestCase):
+    """`package` registers the report on the truth server itself."""
+
+    def serve(self, status):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers["content-length"])
+                seen.append((self.path, json.loads(self.rfile.read(n))))
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}", seen
+
+    def test_it_posts_the_built_package(self):
+        base, seen = self.serve(200)
+        out = pathlib.Path(tempfile.mkdtemp()) / "eval-r1"
+        self.assertIsNone(build_run_package.register(base, "truth", out))
+        self.assertEqual(seen, [("/api/v0/environments/truth/packages",
+                                 {"name": "eval-r1",
+                                  "location": str(out.resolve())})])
+
+    def test_a_refusal_is_returned_with_its_status(self):
+        base, _ = self.serve(500)
+        got = build_run_package.register(base, "truth", pathlib.Path("/x/eval-r1"))
+        self.assertTrue(got.startswith("HTTP 500"), got)
+
+    def test_no_server_is_returned_not_raised(self):
+        got = build_run_package.register("http://127.0.0.1:9", "truth",
+                                         pathlib.Path("/x/eval-r1"))
+        self.assertIsNotNone(got)
 
 
 if __name__ == "__main__":

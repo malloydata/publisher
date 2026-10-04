@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// A notebook: prose and queries in reading order, over the storefront model.
-// The `## artifact` tag below is what makes this file a notebook rather than a
-// shared include, and `notebooks/` is the directory that decides it.
+// A notebook in the cell format: prose and queries in reading order, over the storefront model.
+// The `## artifact` tag below makes this file a notebook rather than a shared include,
+// and its `kind=` decides that, not the directory. A new notebook is a layout of tiles
+// instead (see the malloy-notebooks skill); the Console converts this one when it is saved.
 ##! experimental.givens
 ##" One category at a time: how it sells across the year, which brands carry it, and the products that lead it.
 ## artifact { kind=notebook title="Category review" }

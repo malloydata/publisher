@@ -25,7 +25,7 @@ import { expect, Page, test } from "@playwright/test";
  *   1. Click through Home → malloy-samples → faa-givens-demo →
  *      carriers_with_parameters.malloynb (don't direct-navigate;
  *      the breadcrumb chips are part of the contract too).
- *   2. Assert the Parameters panel renders both givens.
+ *   2. Assert the Filters panel renders both givens.
  *   3. Default (no override) shows WN's numbers.
  *   4. Type carrier="WN" + Tab → same numbers (explicit override
  *      matches default).
@@ -187,7 +187,7 @@ test.describe("Notebook givens (faa-givens-demo)", () => {
       timeout: 30_000,
     });
 
-    // ── 2. Parameters panel renders with both declared givens ──
+    // ── 2. Filters panel renders with both declared givens ──
     await expect(
       page.getByRole("heading", { name: /^parameters$/i }).first(),
     ).toBeVisible({ timeout: 30_000 });

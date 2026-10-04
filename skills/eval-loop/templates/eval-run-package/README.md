@@ -5,12 +5,14 @@ A finished run as a Malloy package you can open: the semantic model in
 `public/`, and CSV under `data/` written by `../../scripts/build_run_package.py`.
 
 ```bash
-python skills/eval-loop/scripts/build_run_package.py \
-  --run results/2026-08-30-sonnet \
-  --run results/2026-08-30-opus \
-  --set evals/ecommerce \
-  --out target/eval-run
+python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
+# an A/B: name each run
+python3 skills/eval-loop/scripts/build_run_package.py --set <set-dir> \
+  --run <workdir>/runs/sonnet-01 --run <workdir>/runs/opus-01
 ```
+
+The package's own README (written by the builder) holds the exact `curl`
+that registers it, and on which server.
 
 Two `--run` flags build both arms into one package, which is what makes an A/B a
 `group_by` rather than a diff of two reports.
@@ -35,7 +37,8 @@ Both, and the split is not stylistic.
 **`notebooks/eval_run.malloy`** holds the analytical tables: pass rate, cost, effort,
 where the failures are, retrieval, the backlog. Publisher renders it natively, so
 these are Malloy reading the model directly with no JavaScript in between and
-nothing to drift.
+nothing to drift. It is written as `run:` cells, a form Publisher still reads and
+converts to the notebook tile layout if someone saves it in the Console.
 
 **`public/index.html`** leads with the score and where every question landed,
 then the diagnosis backlog (failures grouped by shared cause), an effort strip
@@ -117,6 +120,11 @@ hole -- that exact bug is why the tables are cross-checked rather than trusted.
 `needs_human` is neither a pass nor a failure and is attributed to nothing.
 
 ## Serving it
+
+`eval.py package` registers this package on the set's truth server, and
+writes the `curl` that does it into the README.md it builds, for serving it
+again later. The
+rest of this section is for serving it on a Publisher of its own.
 
 ```bash
 publisher --server_root <parent-of-package> --mcp_port 4049

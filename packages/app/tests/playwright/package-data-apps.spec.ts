@@ -4,6 +4,7 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { getPublisherStatus } from "./helpers/publisherStatus";
 
 /**
  * The only coverage of the data-app click-through. Three things have to agree
@@ -27,7 +28,11 @@ test.describe("package-data-apps", () => {
 
    test("the renamed section labels are the ones rendered", async ({
       page,
+      baseURL,
    }) => {
+      const { mutable } = await getPublisherStatus(
+         baseURL ?? "http://localhost:4000",
+      );
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.dataApp);
@@ -35,8 +40,8 @@ test.describe("package-data-apps", () => {
       // Anchor on a positive assertion first. toHaveCount(0) is satisfied the
       // instant the page is blank, so a bare absence check here passes before
       // any section has rendered and pins nothing. "Data Apps" rather than
-      // "Notebooks": an empty section no longer renders, and this package has
-      // no notebooks.
+      // "Artifacts": an empty section no longer renders, and this package has
+      // no dashboards or notebooks.
       await expect(
          page.getByRole("heading", { name: "Data Apps" }),
       ).toBeVisible();
@@ -47,10 +52,11 @@ test.describe("package-data-apps", () => {
       await expect(
          page.getByRole("heading", { name: "Governed Reports" }),
       ).toHaveCount(0);
-      // The section this package has nothing for is absent rather than empty.
+      // The section this package has nothing for is absent rather than empty,
+      // except where the reader can create one: then it carries the action.
       await expect(
-         page.getByRole("heading", { name: "Notebooks" }),
-      ).toHaveCount(0);
+         page.getByRole("heading", { name: "Artifacts" }),
+      ).toHaveCount(mutable ? 1 : 0);
       await expect(page.getByRole("heading", { name: "Pages" })).toHaveCount(0);
    });
 

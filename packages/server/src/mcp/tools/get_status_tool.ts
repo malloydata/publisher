@@ -17,7 +17,8 @@ A JSON object with:
 - version: this server's release version.
 - environments: each environment's name with its loaded package names.
 - emptyReason (only present when the server found no config at startup, or the --config path was missing): why environments is empty, and the path it checked. The server still reports serving in that state.
-- loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.
+- initError (only present when startup failed): why. The server stays at "initializing" and never serves; the cause is usually a config file it cannot read or parse, or a server root it cannot write (publisher.db). A package or environment that failed to load is under loadErrors instead.
+- loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments; that includes a package add that failed on the server's side. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.
 
 No loadErrors key means everything configured loaded and nothing is stale.`;
 
@@ -30,8 +31,9 @@ No loadErrors key means everything configured loaded and nothing is stale.`;
  *
  * SECURITY: parity with the unauthenticated REST /status endpoint, minus
  * detail. Emits names, states, and (already-redacted) load-error messages;
- * never connection attributes or row data. The one location it carries is the
- * config path in emptyReason, the same text REST /status returns.
+ * never connection attributes or row data. The locations it carries, the
+ * config path in emptyReason and any path named in initError or a loadErrors
+ * message, are the same text REST /status returns.
  */
 export function registerGetStatusTool(
    mcpServer: McpServer,
@@ -56,6 +58,9 @@ export function registerGetStatusTool(
             })),
             ...(status.emptyReason !== undefined && {
                emptyReason: status.emptyReason,
+            }),
+            ...(status.initError !== undefined && {
+               initError: status.initError,
             }),
             ...(status.loadErrors !== undefined && {
                loadErrors: status.loadErrors,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import lunr from "lunr";
 import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";

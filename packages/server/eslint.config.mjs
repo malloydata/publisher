@@ -30,6 +30,7 @@ export default [
          "**/*.egg-info/**",
          "**/.env",
          "**/*.log",
+         "packages/sdk/src/client/**",
       ],
    },
    ...fixupConfigRules(

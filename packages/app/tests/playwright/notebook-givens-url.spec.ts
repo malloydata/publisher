@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 
 /**
- * The notebook's Parameters panel, now that its values live in the URL.
+ * The notebook's Filters panel, now that its values live in the URL.
  *
  * Runs against `governed-analytics`, which is the only shipped package whose
  * model declares `given:`, `REGION :: filter<string>` and
@@ -86,7 +86,7 @@ async function resultsText(page: Page): Promise<string> {
 /** The panel is only rendered once the notebook's sources have loaded. */
 async function openNotebook(page: Page, search = "") {
    await page.goto(`${NOTEBOOK}${search}`);
-   await expect(page.getByText("Parameters", { exact: true })).toBeVisible({
+   await expect(page.getByText("Filters", { exact: true })).toBeVisible({
       timeout: 60_000,
    });
 }
@@ -237,7 +237,7 @@ test.describe("notebook givens are URL-addressable", () => {
       // the reader had arrived on. Browser-level, so it is pinned here rather
       // than in a unit test.
       await page.goto(`${NOTEBOOK}#cell-2`);
-      await expect(page.getByText("Parameters", { exact: true })).toBeVisible({
+      await expect(page.getByText("Filters", { exact: true })).toBeVisible({
          timeout: 60_000,
       });
 

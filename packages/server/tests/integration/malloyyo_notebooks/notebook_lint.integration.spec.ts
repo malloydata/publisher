@@ -224,7 +224,7 @@ describe("notebook lint through the real server (E2E)", () => {
             "notebook-comment-not-shown",
          ]);
          expect(lintOf(problems, WRONG_KIND).map((p) => p.code)).toEqual([
-            "notebook-kind-under-dashboards",
+            "notebook-other-folder",
          ]);
       });
 
@@ -237,6 +237,55 @@ describe("notebook lint through the real server (E2E)", () => {
                .filter((p) => p.model === model && p.severity === "error")
                .map((p) => [p.code, p.at?.range.start.line]),
          ).toEqual([["notebook-statement-above-artifact", 0]]);
+      });
+
+      describe("a notebook written as tiles", () => {
+         const SOURCE_LINE = `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }\n`;
+         const BLOCK = "##|(markdown) intro\nHello\n|##\n";
+         const findings = async (model: string, source: string) => {
+            const { status, problems } = await compile(model, "file", source);
+            expect(status).toBe("success");
+            return lintOf(problems, model).map((p) => [
+               p.code,
+               p.at?.range.start.line,
+            ]);
+         };
+
+         it("warns of a run: that no tile shows", async () => {
+            expect(
+               await findings(
+                  "notebooks/tiles_run.malloy",
+                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}\nrun: a -> v\n`,
+               ),
+            ).toEqual([["notebook-layout-run", 6]]);
+         });
+
+         it("warns that a grid width other than one is ignored", async () => {
+            expect(
+               await findings(
+                  "notebooks/tiles_columns.malloy",
+                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] } dashboard { columns=12 }\n${SOURCE_LINE}${BLOCK}`,
+               ),
+            ).toEqual([["notebook-columns-ignored", 0]]);
+         });
+
+         it("warns that colspan and break on a tile entry are ignored", async () => {
+            expect(
+               await findings(
+                  "notebooks/tiles_layout.malloy",
+                  `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}`,
+               ),
+            ).toEqual([["notebook-tile-layout-ignored", 0]]);
+         });
+
+         it("says a dashboard served from notebooks/ works, and where the kinds are created", async () => {
+            expect(
+               await findings(
+                  "notebooks/tiles_dashboard.malloy",
+                  `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE_LINE}`,
+               ),
+            ).toEqual([["notebook-other-folder", 0]]);
+         });
       });
 
       it("returns nothing for a clean notebook", async () => {
