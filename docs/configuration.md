@@ -311,6 +311,21 @@ What to know before turning it on:
   chunk of its documentation, so the number of provider calls on a first index is a small multiple
   of the cap. A higher cap makes that first index take longer in proportion. The server reads the
   value once, at startup.
+- What a vector is made from (`retrieval.representation` in a package's `publisher.json`): `single`
+  (the default) embeds one vector per entity, from its `#(doc)` text, or its name when it has none;
+  `facets` embeds a name vector plus one per chunk of the documentation. Changing it re-embeds the
+  package on the next load. Any other value, or any other key in the `retrieval` block, stops the
+  package from loading (HTTP 424) with a message that names the valid keys:
+
+  ```json
+  { "name": "shop", "retrieval": { "representation": "single" } }
+  ```
+
+- Joined fields: the index holds each source's own fields. A joined copy such as `buyer.name` is made
+  when the answer is assembled, from the field it copies. A joined field with nothing to copy from (a
+  join to an inline table or SQL, or a field a join adds to its target) is indexed directly.
+- Response size: a ranked response is capped at 35,000 characters. Whole source cards are dropped, never
+  cut, and a warning says how many.
 - Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
   rather than returned as a weak hit, which is what lets an empty result mean "this package models
   nothing like that". The right value is a property of the embedding model, not of Publisher —

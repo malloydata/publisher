@@ -1,7 +1,8 @@
 # get_context: a stage pipeline and LLM-assisted retrieval design
 
-**Status:** Draft design, 2026-10-02. The first part is implemented in this pull request (section 2.3, the stage
-pipeline, and section 2.8, the embedding sync). The rest is the design that the follow-up pull requests build.
+**Status:** Draft design, 2026-10-02. The stage pipeline (section 2.3), the embedding sync (section 2.8), the
+direct-field index with joins made at assembly, and the `indexing` and `error` answers are implemented. The rest
+(providers, settings, keyphrases and the LLM stages) is the design that the follow-up pull requests build.
 
 `get_context` is the MCP tool that finds the entities (sources, dimensions, measures, views) a question needs.
 A _stage_ is one step in its pipeline, such as "drop weak matches with an LLM". A _sync_ is the background step
