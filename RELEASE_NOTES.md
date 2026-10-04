@@ -104,6 +104,7 @@ and one column.
 - `useServer().mutable` is `boolean | undefined`: `undefined` while `/status` loads or when it failed, and the editor offers no package Save until it is `true`.
 - `NewDocumentDialog` is exported from the main entry, with new props `allowKindChange`, `savedAs`, `modelsLoading`, `modelsError` and `onRetryModels`. It names a model it could not read and offers Retry only when `canRetryRequest` (also exported; `useDocumentChoices` returns its answer as the `canRetry` boolean) says a second attempt can succeed, which is never after a 401, 403 or 404. A disabled Create says why in its tooltip and accessible name; a blank title no longer disables it and is reported on press. It reads "Creating dashboard…" while it writes, and Escape or a backdrop click does not close it then. A picked view that leaves the list stays unpicked rather than being swapped for another.
 - `@malloy-publisher/sdk/text` is a new entry with no dependencies, exporting `artifactTag`, its `ArtifactTag` type, `splitSourceLines` and `canRetryRequest`, for a host that reads a file's tag without loading MUI or the Malloy parser. `artifactTag` finds `artifact` anywhere among a `##` tag's properties (`## dashboard { columns=2 } artifact { … }`), as the server does. The builder opens such a file read-only, with the reason, until `artifact { … }` is moved first on the tag.
+- The builder's file reader works when a host's bundler turns the CommonJS `@malloydata/malloy` import into a default-only module (Vite's dev server did, and the reader threw `n is not a constructor`).
 - `NotebookEditor` takes `path`, as `DashboardEditor` does.
 - The builder reads a CRLF file as it reads the same file with LF endings; a `##|"` description block used to be dropped. Saving one writes CRLF throughout, where the lines it inserted or rewrote used to come out LF.
 - Save and exit in the leave prompt no longer leaves an Undo save offer, since the editor closes.
@@ -367,7 +368,7 @@ the parts whose text changed.
 **`embeddingIndex.status` keeps its name and changes its basis, so read this if
 you poll it.** On the package resource
 (`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
-from whether cached rows covered the package's current entity *names*. Vectors
+from whether cached rows covered the package's current entity _names_. Vectors
 outlive a restart and a reload, so that reported `ready` immediately — while the
 next question was still answered lexically. Anything following the documented
 "poll until `ready` before measuring retrieval quality" could therefore measure a
@@ -394,7 +395,7 @@ anything never sees `ready`.
 **If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
 now match reality.** The `dims` column records the length the provider actually
 returned, and some providers (Ollama among them) ignore the requested value.
-`embeddedRows` and `embeddedEntities` were counted against the *configured*
+`embeddedRows` and `embeddedEntities` were counted against the _configured_
 value instead, so for those providers they read 0 while retrieval was reading
 those same vectors happily — and that also pinned `status` at `indexing`. Both
 now count on the same rule the sync uses to decide a row is current: the current
@@ -528,14 +529,14 @@ they live. The one change is a tagged dashboard it lists, which reads the surfac
 it (see above). A root `index.malloy` with no keys, the recommended shape, gets no warning at all. Each other warning says what is wrong in
 this package, then `Fix:` and the one edit:
 
-| `publisher.json` | Warning |
-| --- | --- |
-| `explores` naming files | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement. |
-| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`. |
-| `explores: []` alone | Does nothing. Delete it. |
-| `queryableSources: "declared"` | Does nothing. Delete it. |
-| `queryableSources: "all"` | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
-| `Index.malloy` (any other case) | Ignored: only a root file named exactly `index.malloy` decides what is published. |
+| `publisher.json`                     | Warning                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `explores` naming files              | Deprecated. Fix: import those files into `index.malloy`, export what you publish, delete `explores`. Entries for `index.malloy` and dashboards need no replacement.                                         |
+| `explores: []` beside `index.malloy` | Deprecated. To publish everything, rename `index.malloy`, point any import of it at the new name, and delete `explores`.                                                                                    |
+| `explores: []` alone                 | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "declared"`       | Does nothing. Delete it.                                                                                                                                                                                    |
+| `queryableSources: "all"`            | No warning, as in 0.7.0. The key is still deprecated, but nothing replaces `"all"`: it is the one way to hide an `#(authorize)`-gated source from listings while authorized callers still query it by name. |
+| `Index.malloy` (any other case)      | Ignored: only a root file named exactly `index.malloy` decides what is published.                                                                                                                           |
 
 Renaming `index.malloy` is now the way to leave a package uncurated. The caveat from 0.7.0 still
 holds: a file that imports `"index.malloy"` fails to compile after the rename, and the compile error
@@ -708,7 +709,6 @@ and the terms its binding re-applies. It is optional and additive: the key is ab
 declares such a join, so no existing plan changes shape. A consumer generating a strict client from
 `api-doc.yaml` rejects the field until it regenerates.
 
-
 ## [0.8.0] — a refused persist source is skipped, and no longer fails the whole run
 
 **Before:** a materialization run stopped at the first persist source the eligibility gate refused. It built nothing, including every source the gate admitted, and ended `FAILED` with that one source's message. A single ineligible source therefore left the rest of its package unrefreshed on every run and every scheduled fire, until someone edited the model.
@@ -792,7 +792,7 @@ deprecation warning. An explicit `explores` always wins, and a package with both
 `explores` that omits it carries a warning rather than the server guessing.
 
 **`index.malloy` does not replace `queryableSources: "all"`**, so `"all"` gets no deprecation
-warning. `"all"` is the only way to curate listings *without* refusing queries, and a
+warning. `"all"` is the only way to curate listings _without_ refusing queries, and a
 surface derived from an `index.malloy` always enforces the boundary, because `queryableSources`
 defaults to `"declared"`. If you want listings-only curation, keep both keys.
 
@@ -836,7 +836,7 @@ is visible in `loadErrors` where a silently-uncurated one is not. This restores 
 had before the convention, when a non-string entry threw out of path normalization.
 
 **A broken surface explains the 404s it causes.** A package whose surface files all fail to compile
-exposes nothing, so *every* model in it, including the ones that compiled, is refused by name with a
+exposes nothing, so _every_ model in it, including the ones that compiled, is refused by name with a
 404 that reads as "does not exist". It now carries a warning naming the broken files and how many
 working models they took down. This is a narrow case by design: a compile error at first load fails
 the package outright, and a failed reload from the watcher, `reload_package` or `?reload=true` keeps
@@ -868,7 +868,6 @@ now carries a package warning with severity `error`, on every load and reload, i
 A tile whose source cannot be read from its text is not reported rather than guessed at.
 
 ## [0.6.0] (BREAKING) — `#(authorize)` is the lock and answers 403, `#(access_filter)` is the row filter, and `#(partition)` is gone
-
 
 **Two annotations, one question each, and two different answers when they say no.**
 
@@ -1231,7 +1230,7 @@ The refusal was aimed at the right danger and drawn in the wrong place. A persis
 
 **Serving change:** the transient serve-shape model now declares the author model's givens (defaults included), and a routed query no longer has its given values withheld. That withholding was correct only while the shape was built from given-free sources; a re-emitted `where:` that reads a given needs the value to reach it.
 
-**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely *reached* a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
+**One refusal narrowed.** The old gate walked the whole compiled source, so it refused a persist source that merely _reached_ a given-filtered source through a join the persisted query never read. Malloy prunes such a join from the build SQL, so nothing given-derived was in the artifact; that shape is now admitted. A join the query **does** read still bakes the given's value into its `ON` condition and is still refused.
 
 **A refused `#@ persist` now reaches its author.** A refusal was computed, recorded on the build plan and read by nobody: the package published, the source was served live, and whoever wrote the annotation was told nothing. Each one is now a package warning carrying the gate's own message — the same list the package page's notices surface. It is the one materialization finding the build plan cannot also be read for, since a refused `storage`/`colocated` source is absent from `sources` entirely, so nothing there records that the annotation was written at all.
 

@@ -21,6 +21,7 @@
  */
 
 import { blockSpans, markdownLines, textBlockOpener } from "./malloyText";
+import { loadMalloy } from "./loadMalloy";
 
 /** A half-open range of UTF-16 offsets into the source text. */
 export interface Span {
@@ -872,7 +873,7 @@ export async function translate(
    // Imported dynamically, never statically: `builder-entry.ts` installs the
    // `process.env` shim the parser's dependencies read at module scope, and a
    // static import would be evaluated before that shim runs.
-   const { MalloyTranslator } = await import("@malloydata/malloy");
+   const { MalloyTranslator } = await loadMalloy();
    const translator = new MalloyTranslator(url, null, {
       urls: { [url]: text },
    }) as unknown as {

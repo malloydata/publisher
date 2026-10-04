@@ -35,6 +35,7 @@ import {
    setsArtifactProperty,
 } from "./malloyText";
 import { parseTagLines } from "./tagParse";
+import { loadMalloy } from "./loadMalloy";
 
 export type { Span };
 
@@ -167,7 +168,7 @@ export async function readNotebookSource(
    try {
       translation = await translate(text, PARSE_URL);
       // The same dynamic import as `translate`, for Malloy's own note routing.
-      malloy = await import("@malloydata/malloy");
+      malloy = await loadMalloy();
    } catch (error) {
       return refuse(0, `Malloy could not read this notebook: ${error}`);
    }
@@ -732,7 +733,7 @@ export async function convertLegacyNotebook(
    const tokens = (stream?.getTokens?.() ?? []) as Token[];
    if (typeof vocabulary?.getSymbolicName !== "function")
       return refuse(0, "Malloy's token stream is not available.");
-   const malloy = await import("@malloydata/malloy");
+   const malloy = await loadMalloy();
    const { parseAnnotation } = await import("@malloydata/malloy-tag");
    const symbolOf = (token: Token) => vocabulary.getSymbolicName(token.type);
    const r = new Reader(text);

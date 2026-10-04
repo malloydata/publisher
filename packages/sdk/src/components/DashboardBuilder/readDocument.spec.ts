@@ -938,11 +938,14 @@ describe("every composite dashboard in the repository opens", () => {
  */
 describe("the compiler stays lazy", () => {
    it("is never imported statically", () => {
-      const source = fs.readFileSync(
-         path.join(import.meta.dir, "malloyTree.ts"),
-         "utf8",
+      const read = (file: string) =>
+         fs.readFileSync(path.join(import.meta.dir, file), "utf8");
+      const staticImport = /^\s*import\s[^(]*@malloydata\/malloy"/m;
+      expect(read("malloyTree.ts")).not.toMatch(staticImport);
+      expect(read("legacyNotebook.ts")).not.toMatch(staticImport);
+      expect(read("malloyTree.ts")).toContain("await loadMalloy()");
+      expect(read("loadMalloy.ts")).toContain(
+         'await import("@malloydata/malloy")',
       );
-      expect(source).not.toMatch(/^\s*import\s[^(]*@malloydata\/malloy/m);
-      expect(source).toContain('await import("@malloydata/malloy")');
    });
 });
