@@ -16,10 +16,12 @@ SPDX-License-Identifier: MIT
 2. **Install.** If your agent has a shell, copy every skill to where it loads them:
 
    ```bash
-   npx -y @malloy-publisher/skills install           # into this project
-   npx -y @malloy-publisher/skills install --global  # into your home directory
-   npx -y @malloy-publisher/skills list              # every skill, with a description
+   npx -y @malloy-publisher/skills@latest install           # into this project
+   npx -y @malloy-publisher/skills@latest install --global  # into your home directory
+   npx -y @malloy-publisher/skills@latest list              # every skill, with a description
    ```
+
+   Keep the `@latest`. Without it, npx may reuse an old cached copy and install old skills.
 
    `install` picks the agent from what it finds. A `CLAUDE.md` means `.claude/skills/`. An
    `AGENTS.md` or `.cursor/` means `.agents/skills/`. With `--global` it looks for `~/.claude/`,

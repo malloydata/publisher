@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 
 Goal: go from "connected" to a correct, grounded answer without guessing any names.
 
-If you are reading this from a URL and have a shell, run `npx -y @malloy-publisher/skills install` to put every Malloy skill on disk, `reference/` files included, so the skills named below are there when you need them. It needs no server. If it cannot tell which agent you are, it says so; name one (`install claude` or `install agents`).
+If you are reading this from a URL and have a shell, run `npx -y @malloy-publisher/skills@latest install` to put every Malloy skill on disk, `reference/` files included, so the skills named below are there when you need them. It needs no server. Keep the `@latest`: without it npx may reuse an old cached copy. If it cannot tell which agent you are, it says so; name one (`install claude` or `install agents`).
 
 ## 0. Confirm the tools are reachable
 

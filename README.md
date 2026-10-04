@@ -14,7 +14,7 @@ One data model, served over MCP and REST to AI agents, applications, and BI tool
 
 <p align="center"><sub><strong>AI agents:</strong> read <a href="AGENTS.md">AGENTS.md</a> first (raw: <code>https://raw.githubusercontent.com/malloydata/publisher/main/AGENTS.md</code>).<br>
 It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.<br>
-To learn the skills with nothing installed, read <code>https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md</code>. With a shell, <code>npx -y @malloy-publisher/skills install</code> copies them all into this project.</sub></p>
+To learn the skills with nothing installed, read <code>https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md</code>. With a shell, <code>npx -y @malloy-publisher/skills@latest install</code> copies them all into this project.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>

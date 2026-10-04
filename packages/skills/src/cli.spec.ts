@@ -90,7 +90,7 @@ describe("listing", () => {
          "Read one: https://unpkg.com/@malloy-publisher/skills@latest/skills/<name>/SKILL.md",
       );
       expect(lines).toContain(
-         "Install them all: npx -y @malloy-publisher/skills install",
+         "Install them all: npx -y @malloy-publisher/skills@latest install",
       );
    });
 });

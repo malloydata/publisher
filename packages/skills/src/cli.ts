@@ -60,8 +60,10 @@ function skillUrl(name: string): string {
 const USAGE = `malloy-skills - list and install the Malloy Publisher agent skills
 
 Usage:
-  npx -y @malloy-publisher/skills [list]          List every skill.
-  npx -y @malloy-publisher/skills install [host]  Copy the skills onto disk.
+  npx -y @malloy-publisher/skills@latest [list]          List every skill.
+  npx -y @malloy-publisher/skills@latest install [host]  Copy the skills onto disk.
+
+Keep the @latest: without it npx may reuse an old cached copy.
 
 Install targets:
   claude    .claude/skills/   (detected from a CLAUDE.md)
@@ -94,7 +96,9 @@ function list(): void {
    }
    console.log("");
    console.log(`Read one: ${skillUrl("<name>")}`);
-   console.log("Install them all: npx -y @malloy-publisher/skills install");
+   console.log(
+      "Install them all: npx -y @malloy-publisher/skills@latest install",
+   );
 }
 
 /**
@@ -142,7 +146,7 @@ function install(hosts: string[], global: boolean): void {
          const flag = global ? " --global" : "";
          fail(
             `Could not tell which agent to install for: no ${looked} in ${root}.\n` +
-               `Name one: npx -y @malloy-publisher/skills install claude${flag}   (or: install agents${flag})`,
+               `Name one: npx -y @malloy-publisher/skills@latest install claude${flag}   (or: install agents${flag})`,
          );
       }
    }

@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 **To use these skills without cloning this repo:**
 
 1. **Learn.** Read the getting-started skill. Nothing to install, no server: <https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md>. Every skill reads the same way; put its name in place of `malloy-getting-started`.
-2. **Install.** With a shell, run `npx -y @malloy-publisher/skills install` to copy every skill into this project, or add `--global` for your home directory. `npx -y @malloy-publisher/skills list` shows what ships. [`packages/skills/README.md`](../packages/skills/README.md) says how `install` picks the agent.
+2. **Install.** With a shell, run `npx -y @malloy-publisher/skills@latest install` to copy every skill into this project, or add `--global` for your home directory. `npx -y @malloy-publisher/skills@latest list` shows what ships. [`packages/skills/README.md`](../packages/skills/README.md) says how `install` picks the agent.
 
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
