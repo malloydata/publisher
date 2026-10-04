@@ -889,12 +889,20 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       [
          "an unknown retrieval key",
          JSON.stringify({ name: "pkg", retrieval: { refine: true } }),
-         /retrieval: unknown key 'refine'\. Valid keys: representation\./,
+         /retrieval: unknown key 'refine'\. Valid keys: representation, keyphrases, prompts\./,
       ],
       [
          "an invalid retrieval.representation",
          JSON.stringify({ name: "pkg", retrieval: { representation: "x" } }),
          /retrieval\.representation: expected one of single, facets/,
+      ],
+      [
+         "a retrieval prompt path that climbs out of the package",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { prompts: { keyphrase: "../p.md" } },
+         }),
+         /resolves outside the package directory/,
       ],
    ])(
       "answers %s in publisher.json with a 424, not a 503",
@@ -929,12 +937,18 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       },
    );
 
-   it("reads the retrieval block at load and again on reload", async () => {
+   it("reads the retrieval block, prompt file included, at load and again on reload", async () => {
+      fs.mkdirSync(path.join(tempDir, "prompts"));
+      fs.writeFileSync(path.join(tempDir, "prompts", "k.md"), "first prompt");
       fs.writeFileSync(
          path.join(tempDir, "publisher.json"),
          JSON.stringify({
             name: "pkg",
-            retrieval: { representation: "facets" },
+            retrieval: {
+               representation: "facets",
+               keyphrases: "never",
+               prompts: { keyphrase: "prompts/k.md" },
+            },
          }),
       );
       fs.writeFileSync(
@@ -944,7 +958,10 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(pkg.getRetrievalSettings().representation).toBe("facets");
+         const settings = pkg.getRetrievalSettings();
+         expect(settings.representation).toBe("facets");
+         expect(settings.keyphrases).toBe("never");
+         expect(settings.prompts.keyphrase?.text).toBe("first prompt");
 
          // A package with no block takes the defaults.
          fs.writeFileSync(
@@ -959,6 +976,8 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          );
          expect(plain.getRetrievalSettings()).toEqual({
             representation: "single",
+            keyphrases: "auto",
+            prompts: {},
          });
       } finally {
          await duckdb.close();
