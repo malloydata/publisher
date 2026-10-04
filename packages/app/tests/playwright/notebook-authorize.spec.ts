@@ -16,7 +16,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * The gate is a LOCK: `#(authorize)` asks whether the caller may reach the
  * source at all, so every way of not satisfying it is a 403 and the cell
  * renders no result. `role` has no default, so on load the lock is unsatisfied
- * and grants once the user supplies `role = analyst` in the Parameters panel.
+ * and grants once the user supplies `role = analyst` in the Filters panel.
  * The query spotlights a single product in the Jeans category ("Cobalt Bootcut
  * Jean"), the visible signal that the lock admitted.
  *

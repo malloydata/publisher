@@ -1,42 +1,53 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DashboardManifest, Given } from "../../client";
+import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
-import {
-   now,
-   type DashboardEvent,
-   type DashboardEventHandler,
-} from "../Dashboard/telemetry";
+import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
+import type { BuilderEvent } from "./telemetry";
+import { now } from "../../utils/clock";
+import { encodeResourceUri } from "../../utils/formatting";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
-import { parseResourceUri } from "../../utils/formatting";
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
-   type DocumentLocator,
    type Workspace,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
-import { SecondaryButton } from "../buttons";
 import { DashboardBar } from "../Dashboard/DashboardBar";
+import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import {
    buildCatalog,
+   isDashboardModel,
    visibleToDashboard,
    type PackageCatalog,
 } from "./catalog";
+import { locatorFor } from "../DocumentCreate/documentPath";
 import { DashboardBuilder } from "./DashboardBuilder";
-import type { DashboardDocument } from "./document";
-import { previewGivens, previewTileQuery } from "./preview";
-import { readDashboardDocument, readFailed } from "./readDocument";
-import { sha256Hex } from "../../utils/sha256";
+import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
+import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   chooseWorkspace,
+   expectedHashFor,
+   resolveEditorTarget,
+   saveCaption,
+   saveTarget,
+   storageErrorMessage,
+   withWorkspace,
+   writePackageFile,
+   type SavesTo,
+} from "./documentSession";
+import { readForEditor } from "./readForEditor";
+import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -75,13 +86,25 @@ export type DashboardEditorProps = (
         dashboardName: string;
      }
 ) & {
-   /** Leave the editor: the host's "Done editing". Absent, no such button. */
+   /** Leave the editor: its "Close", which asks first when edits are unsaved. Absent, no such button. */
    onExit?: () => void;
    /**
     * What the editor does — opened, saved, refused — for the host to log or
-    * count; see `DashboardEvent`.
+    * count; see `DashboardEvent`. A notebook reports `NotebookEvent`s instead.
     */
-   onEvent?: DashboardEventHandler;
+   onEvent?: (event: BuilderEvent) => void;
+   /**
+    * What the document is to the host: its storage locator and event names.
+    * Default `dashboard`. A notebook is a dashboard with one column, and is
+    * read with the authoring flag and served through the notebook endpoint.
+    */
+   kind?: DocumentKind;
+   /**
+    * The document's file within the package, when it is not where its kind
+    * puts a new one (`dashboards/<slug>.malloy`, `notebooks/<slug>.malloy`):
+    * the kind comes from the file's own tag, so a document may sit in either.
+    */
+   path?: string;
    /**
     * Whether there are edits the record does not have, on every change and
     * whenever the editor opens a document.
@@ -93,53 +116,30 @@ export type DashboardEditorProps = (
    onDirtyChange?: (dirty: boolean) => void;
 };
 
-/** The Console's key for a dashboard's copy; see the storage seam's locator rule. */
-const dashboardLocator = (
-   workspace: string,
-   environmentName: string,
-   packageName: string,
-   modelPath: string,
-): DocumentLocator => ({
-   workspace,
-   type: "dashboard",
-   path: `${environmentName}/${packageName}/${modelPath}`,
-});
+const LEGACY_REFUSAL =
+   "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` notebook under notebooks/ to edit it here.";
+
+const WITHHELD_REFUSAL =
+   "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";
 
 export function DashboardEditor(props: DashboardEditorProps) {
-   const { onExit, onEvent, onDirtyChange } = props;
-   // Resolved once, so the rest of the body reads these locals and never the
-   // union directly. Degraded, not thrown, on a bad URI: see `Dashboard`'s
-   // note on the same call — a throw in a render body takes the host's whole
-   // tree down, which is a white screen instead of a message. The deprecated
-   // form cannot be malformed the same way, so it always names both.
-   // `parseResourceUri` THROWS on a string that is not a `publisher://` URI at
-   // all, which a render body must not do; only its missing-name case returns.
-   const parsed = (() => {
-      if (!("resourceUri" in props)) return undefined;
-      try {
-         return parseResourceUri(props.resourceUri);
-      } catch {
-         return undefined;
-      }
-   })();
-   const environmentName =
-      "resourceUri" in props
-         ? (parsed?.environmentName ?? "")
-         : props.environmentName;
-   const packageName =
-      "resourceUri" in props ? (parsed?.packageName ?? "") : props.packageName;
+   const { onExit, onEvent, onDirtyChange, kind = "dashboard", path } = props;
+   const notebook = kind === "notebook";
+   // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      namesBoth: uriNamesBoth,
+   } = resolveEditorTarget(props);
    const dashboardName =
       "resourceUri" in props ? props.dashboard : props.dashboardName;
-   const versionId = parsed?.versionId;
-   // Keyed on the prop form, not on `parsed`: a URI that failed to parse at all
-   // also leaves `parsed` undefined, and reading that as "no URI to check" would
-   // skip the error display and run the editor against empty names.
-   const uriNamesBoth =
-      "resourceUri" in props
-         ? !!parsed?.environmentName && !!parsed?.packageName
-         : true;
+   const noun = notebook ? "notebook" : "dashboard";
+   const refusedEvent = notebook
+      ? ("notebook.open_refused" as const)
+      : ("dashboard.open_refused" as const);
 
-   const { apiClients, mutable } = useServer();
+   const { apiClients, mutable, isLoadingStatus } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -150,7 +150,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    const storage = useOptionalDocumentStorage()?.documentStorage;
-   const modelPath = `dashboards/${dashboardName}.malloy`;
+   const legacyFormat = notebook && /\.malloynb$/i.test(dashboardName);
+   const modelPath = path ?? `${kind}s/${dashboardName}.malloy`;
 
    // The file as the package has it. `sourceText` rides on the compiled model.
    const modelQuery = useQueryWithApiError({
@@ -160,15 +161,18 @@ export function DashboardEditor(props: DashboardEditorProps) {
          packageName,
          modelPath,
          versionId,
+         notebook,
       ],
+      // A curated package otherwise withholds the text of a notebook reading an off-surface source.
       queryFn: () =>
          apiClients.models.getModel(
             environmentName,
             packageName,
             modelPath,
             versionId,
+            notebook ? true : undefined,
          ),
-      enabled: uriNamesBoth,
+      enabled: uriNamesBoth && !legacyFormat,
    });
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
@@ -198,18 +202,15 @@ export function DashboardEditor(props: DashboardEditorProps) {
             // Asking for writeable only would hide it and fall back to the
             // package, which on a server that takes writes means publishing a
             // deploy of the record over the record.
-            const all = await storage.listWorkspaces(false);
-            // The record when one declares itself, and otherwise the first
-            // writeable one, which is what the editor has always taken.
-            const chosen =
-               all.find((candidate) => candidate.authoritative) ??
-               all.find((candidate) => candidate.writeable);
+            const chosen = chooseWorkspace(await storage.listWorkspaces(false));
             if (stale) return;
             setWorkspace(chosen);
-            if (chosen !== undefined) {
+            // Only a notebook's record is read: a copy beside the package is never offered back.
+            if (chosen !== undefined && (!notebook || chosen.authoritative)) {
                const text = await storage
                   .getDocument(
-                     dashboardLocator(
+                     locatorFor(
+                        kind,
                         chosen.name,
                         environmentName,
                         packageName,
@@ -234,7 +235,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       return () => {
          stale = true;
       };
-   }, [storage, environmentName, packageName, modelPath]);
+   }, [storage, kind, notebook, environmentName, packageName, modelPath]);
 
    // The host's copy is the record: the editor opens it, writes back to it,
    // and never offers to "resume" it, because a record is not a pending edit.
@@ -251,10 +252,19 @@ export function DashboardEditor(props: DashboardEditorProps) {
       ? draft !== undefined
       : resume === true && draft !== undefined;
    const [opened, setOpened] = useState<
-      | { source: string; document: DashboardDocument; generation: number }
+      | {
+           source: string;
+           document: DashboardDocument;
+           conversion?: { from: string; to: string };
+           /** The package file when this opened, which a draft's save overwrites. */
+           packageText?: string;
+           generation: number;
+        }
       | undefined
    >(undefined);
-   const [openError, setOpenError] = useState<string | undefined>(undefined);
+   const [openError, setOpenError] = useState<string | undefined>(
+      legacyFormat ? LEGACY_REFUSAL : undefined,
+   );
    // The package's hash after this editor's last write, as the server computed
    // it: the base the next save is spliced against.
    const savedHashRef = useRef<string | undefined>(undefined);
@@ -287,6 +297,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // Whether the builder holds edits the record does not have, and the version
    // being held back because of them.
    const [dirty, setDirty] = useState(false);
+   // A save that can still be undone is held like an edit, until the next edit: remounting on a newer version would drop the offer silently.
+   const [undoOffered, setUndoOffered] = useState(false);
    const [accepted, setAccepted] = useState<string | undefined>(undefined);
    // The text on this channel the editor has already reckoned with: what it
    // opened, and what it wrote. Compared against the CHANNEL rather than
@@ -300,7 +312,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // save rather than the text the builder was opened with.
    const current = opened?.source;
    const holding =
-      incoming && dirty && current !== undefined && latest !== accepted;
+      incoming &&
+      (dirty || undoOffered) &&
+      current !== undefined &&
+      latest !== accepted;
    const opening = holding ? current : incoming ? latest : (current ?? latest);
    const held = holding ? latest : undefined;
 
@@ -325,46 +340,101 @@ export function DashboardEditor(props: DashboardEditorProps) {
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readDashboardDocument(opening).then((result) => {
-         if (stale) return;
-         if (readFailed(result)) {
-            const reason = result.line
-               ? `${result.reason} (line ${result.line})`
-               : result.reason;
+      void readForEditor(opening, modelPath)
+         .then((result) => {
+            if (stale) return;
+            if (result.ok === false) {
+               setOpenError(result.reason);
+               onEventRef.current?.({
+                  type: refusedEvent,
+                  reason: result.reason,
+               });
+               return;
+            }
+            setOpenError(undefined);
+            // A different document is open, so what this editor wrote before is
+            // no longer the base anything is spliced against; the package file
+            // the reader is now answering for is the one current at this open.
+            savedHashRef.current = undefined;
+            packageBaseRef.current = packageAtOpen;
+            setWrote(undefined);
+            setAccepted(undefined);
+            setSeen(latestAtOpen);
+            setOpened((previous) => ({
+               source: opening,
+               document: result.document,
+               ...(result.conversion ? { conversion: result.conversion } : {}),
+               ...(packageAtOpen !== undefined
+                  ? { packageText: packageAtOpen }
+                  : {}),
+               generation: (previous?.generation ?? 0) + 1,
+            }));
+            onEventRef.current?.(
+               notebook || result.document.kind === "notebook"
+                  ? {
+                       type: "notebook.opened",
+                       from:
+                          fromRef.current === "package" ? "package" : "record",
+                       cells: result.document.tiles.length,
+                       durationMs: now() - startedAt.current,
+                    }
+                  : {
+                       type: "dashboard.opened",
+                       from: fromRef.current,
+                       tiles: result.document.tiles.length,
+                       durationMs: now() - startedAt.current,
+                    },
+            );
+         })
+         .catch((error: unknown) => {
+            if (stale) return;
+            const reason = `Could not read the ${noun}: ${error instanceof Error ? error.message : String(error)}`;
             setOpenError(reason);
-            onEventRef.current?.({ type: "dashboard.open_refused", reason });
-            return;
-         }
-         setOpenError(undefined);
-         // A different document is open, so what this editor wrote before is
-         // no longer the base anything is spliced against; the package file
-         // the reader is now answering for is the one current at this open.
-         savedHashRef.current = undefined;
-         packageBaseRef.current = packageAtOpen;
-         setWrote(undefined);
-         setAccepted(undefined);
-         setSeen(latestAtOpen);
-         setOpened((previous) => ({
-            source: opening,
-            document: result.document,
-            generation: (previous?.generation ?? 0) + 1,
-         }));
-         onEventRef.current?.({
-            type: "dashboard.opened",
-            from: fromRef.current,
-            tiles: result.document.tiles.length,
-            durationMs: now() - startedAt.current,
+            onEventRef.current?.({ type: refusedEvent, reason });
          });
-      });
       return () => {
          stale = true;
       };
-   }, [opening, draftChecked, blockedOnRecord]);
+   }, [
+      opening,
+      modelPath,
+      draftChecked,
+      blockedOnRecord,
+      notebook,
+      noun,
+      refusedEvent,
+   ]);
+
+   useEffect(() => {
+      if (legacyFormat)
+         onEventRef.current?.({
+            type: "notebook.open_refused",
+            reason: LEGACY_REFUSAL,
+         });
+   }, [legacyFormat]);
+
+   const withheld =
+      notebook &&
+      !opened &&
+      draftChecked &&
+      !fromDraft &&
+      modelQuery.isSuccess &&
+      !modelQuery.isFetching &&
+      packageText === undefined;
+   useEffect(() => {
+      if (!withheld) return;
+      setOpenError(WITHHELD_REFUSAL);
+      onEventRef.current?.({
+         type: "notebook.open_refused",
+         reason: WITHHELD_REFUSAL,
+      });
+   }, [withheld]);
 
    const locator =
       workspace === undefined
          ? undefined
-         : dashboardLocator(
+         : locatorFor(
+              kind,
               workspace.name,
               environmentName,
               packageName,
@@ -408,75 +478,82 @@ export function DashboardEditor(props: DashboardEditorProps) {
          // editing moves the fetch past that file, and a hash taken from it
          // would match, be accepted, and overwrite the change the reader was
          // just told about.
-         const base = packageBaseRef.current;
-         const expectedHash =
-            savedHashRef.current ??
-            (base === undefined ? undefined : await sha256Hex(base));
+         const expectedHash = await expectedHashFor(
+            savedHashRef.current,
+            packageBaseRef.current,
+         );
          if (expectedHash === undefined)
             throw new Error("The package file is still loading; try again.");
-         let result;
-         try {
-            result = await apiClients.models.updateModelSource(
-               environmentName,
-               packageName,
-               modelPath,
-               { source, expectedHash },
-            );
-         } catch (error) {
-            // A refused write usually means the file moved. Fetch it, so the
-            // reader is offered that version rather than left re-saving
-            // against a base the server will go on rejecting.
-            void queryClient.invalidateQueries({
-               queryKey: [
-                  "dashboard-editor-model",
-                  environmentName,
-                  packageName,
-                  modelPath,
-                  versionId,
-               ],
-            });
-            throw new Error(apiErrorMessage(error));
-         }
-         setOpened((previous) => previous && { ...previous, source });
-         setWrote({ text: source, onFetch: fetchedAtRef.current });
-         setSeen(source);
-         savedHashRef.current = result.data.contentHash;
-         setSupersedeFailure(undefined);
-         if (storage && locator) {
-            try {
-               await storage.deleteDocument(locator);
-               setDraft(undefined);
-               setOffered(false);
-            } catch (error) {
-               // Only absence means the copy is gone. Any other rejection
-               // leaves it there, so the state must keep saying so.
-               if (isDocumentNotFound(error)) {
-                  setDraft(undefined);
-                  setOffered(false);
-               } else setSupersedeFailure(storageErrorMessage(error));
-            }
-         }
-         // The package is what is open now, even if the copy beside it
-         // survived the supersede: reading the channel off a stale copy would
-         // put the builder back on the text this save replaced.
-         setResume(false);
-         // The package changed: the file, the manifest the live view reads,
-         // the package's dashboards list, and the dashboard the reader sees.
-         await queryClient.invalidateQueries({
-            queryKey: [
-               "dashboard-editor-model",
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
+         const modelKey = [
+            "dashboard-editor-model",
+            environmentName,
+            packageName,
+            modelPath,
+            versionId,
+            notebook,
+         ];
+         await writePackageFile({
+            apiClients,
+            queryClient,
+            environmentName,
+            packageName,
+            modelPath,
+            source,
+            expectedHash,
+            // A refused write usually means the file moved: fetching it offers the reader that version instead of re-saving against a base the server keeps rejecting.
+            invalidateOnError: [modelKey],
+            afterWrite: async (contentHash) => {
+               setOpened((previous) => previous && { ...previous, source });
+               setWrote({ text: source, onFetch: fetchedAtRef.current });
+               setSeen(source);
+               savedHashRef.current = contentHash;
+               setSupersedeFailure(undefined);
+               if (storage && locator) {
+                  try {
+                     await storage.deleteDocument(locator);
+                     setDraft(undefined);
+                     setOffered(false);
+                  } catch (error) {
+                     // Only absence means the copy is gone; any other rejection leaves it there, so the state must keep saying so.
+                     if (isDocumentNotFound(error)) {
+                        setDraft(undefined);
+                        setOffered(false);
+                     } else setSupersedeFailure(storageErrorMessage(error));
+                  }
+               }
+               // The package is what is open now even if the copy survived the supersede; reading the channel off a stale copy would put the builder back on the text this save replaced.
+               setResume(false);
+            },
+            invalidate: [
+               { queryKey: modelKey, wait: true },
+               // A cached result is keyed on the query text, not the file, so a changed chart would otherwise be drawn from the old rows.
+               {
+                  queryKey: modelResultsKey({
+                     environmentName,
+                     packageName,
+                     versionId,
+                     modelPath,
+                  }),
+               },
+               { queryKey: ["dashboard-editor-manifest"] },
+               { queryKey: ["dashboards"] },
+               { queryKey: ["dashboard"] },
+               // The notebook viewer keys its read on the resource URI.
+               ...(notebook
+                  ? [
+                       {
+                          queryKey: [
+                             encodeResourceUri({
+                                environmentName,
+                                packageName,
+                                modelPath,
+                             }),
+                          ],
+                       },
+                    ]
+                  : []),
             ],
          });
-         for (const key of [
-            "dashboard-editor-manifest",
-            "dashboards",
-            "dashboard",
-         ])
-            void queryClient.invalidateQueries({ queryKey: [key] });
       },
       [
          apiClients,
@@ -484,53 +561,37 @@ export function DashboardEditor(props: DashboardEditorProps) {
          packageName,
          modelPath,
          versionId,
+         notebook,
          storage,
          locator,
          queryClient,
       ],
    );
-   // `authoritative` wins outright rather than breaking a tie: a host whose
-   // store is the record may well sit on a server that reports itself
-   // writable, and writing the package there would edit a deploy of the
-   // record instead of the record.
-   const savesTo = authoritative ? "host" : mutable ? "package" : "browser";
    const canWriteWorkspace = workspace?.writeable === true;
-   // A version is an immutable checkpoint, and `updateModelSource` cannot be
-   // told to write against one (the server answers 501). Without this guard,
-   // `expectedHash` would be the hash of the pinned text, the server would
-   // refuse every save against the current file, and the catch would refetch
-   // the same pinned text, so the "changed since you opened it" banner would
-   // never fire either: a dead end with no way out. Storage-backed saves are
-   // unaffected, since they never touch the package's compare-and-swap.
-   const pinnedPackageSave = versionId !== undefined && savesTo === "package";
-   const writer = authoritative
-      ? storage && locator && canWriteWorkspace
+   // Unknown while `/status` loads, and a package write needs a yes.
+   const takesWrites = mutable === true;
+   const { savesTo, pinnedPackageSave, writer } = saveTarget({
+      authoritative,
+      mutable: takesWrites,
+      ...(versionId !== undefined ? { versionId } : {}),
+      // A notebook reads back only the record, so a copy anywhere else would be a write nobody sees.
+      canStore:
+         !!storage &&
+         !!locator &&
+         canWriteWorkspace &&
+         (!notebook || authoritative),
+      readFailed: readFailure !== undefined,
+   });
+   const save =
+      writer === "storage"
          ? saveToStorage
-         : undefined
-      : pinnedPackageSave
-        ? undefined
-        : mutable
-          ? saveToPackage
-          : storage && locator && canWriteWorkspace
-            ? saveToStorage
-            : undefined;
-   // A copy that could not be read is not a copy that is not there. Saving on
-   // that belief is what rewinds the record, so Save is off until a reader can
-   // be told what actually happened.
-   const save = readFailure === undefined ? writer : undefined;
+         : writer === "package"
+           ? saveToPackage
+           : undefined;
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
-      (event: DashboardEvent) => {
-         // Only where a workspace actually took the write: a save into the
-         // package was not taken by one, and naming it there would say the
-         // record moved somewhere it did not.
-         onEventRef.current?.(
-            event.type === "dashboard.saved" &&
-               event.where !== "package" &&
-               workspaceName !== undefined
-               ? { ...event, workspace: workspaceName }
-               : event,
-         );
+      (event: BuilderEvent) => {
+         onEventRef.current?.(withWorkspace(event, workspaceName));
       },
       [workspaceName],
    );
@@ -551,30 +612,57 @@ export function DashboardEditor(props: DashboardEditorProps) {
       setAccepted(held);
    };
 
+   const saveLabel =
+      savesTo === "host" && workspace?.description
+         ? workspace.description
+         : undefined;
+   const caption =
+      !authoritative && mutable === undefined
+         ? isLoadingStatus
+            ? "Checking whether this server takes writes."
+            : "This server did not say whether it takes writes, so Save is off."
+         : saveCaption({
+              authoritative,
+              mutable: takesWrites,
+              pinnedPackageSave,
+              ...(workspace ? { workspace } : {}),
+              ...(readFailure !== undefined ? { readFailure } : {}),
+              ...(versionId !== undefined ? { versionId } : {}),
+           });
+   // The description is already the Save caption, so the note does not repeat it.
+   const note = caption === saveLabel ? "" : caption;
+
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.
    if (!uriNamesBoth && "resourceUri" in props)
       return (
          <Alert severity="error" sx={{ m: 2 }}>
-            A dashboard resource URI must name an environment and a package.
+            A {noun} resource URI must name an environment and a package.
             Received: {props.resourceUri}
          </Alert>
       );
-   if (modelQuery.isError)
+   if (openError)
+      return (
+         <Alert severity="error" sx={{ m: 2 }}>
+            This {noun} cannot be opened in the builder: {openError}
+         </Alert>
+      );
+   // Only before an open: after one, a failed refetch is a banner above the builder so unsaved edits survive it.
+   if (modelQuery.isError && !opened)
       return (
          <ApiErrorDisplay
             error={modelQuery.error}
-            context="Opening the dashboard"
+            context={`Opening the ${noun}`}
          />
       );
-   if (!packageText || !draftChecked)
+   if (!opened && (!packageText || !draftChecked))
       // The bar first, so the page it is opening into is already the right
       // shape: the reader's view had a bar in this spot, and a spinner where
       // the bar was made the switch look like a page reload.
       return (
          <Stack sx={{ gap: 2 }}>
             <DashboardBar />
-            <Loading text="Opening the dashboard…" />
+            <Loading text={`Opening the ${noun}…`} />
          </Stack>
       );
    // Where the host's copy IS the document, a copy that could not be read
@@ -583,37 +671,40 @@ export function DashboardEditor(props: DashboardEditorProps) {
    if (blockedOnRecord)
       return (
          <Alert severity="error" sx={{ m: 2 }}>
-            This dashboard cannot be opened: {readFailure}
+            This {noun} cannot be opened: {readFailure}
          </Alert>
       );
-   if (openError)
-      return (
-         <Alert severity="error" sx={{ m: 2 }}>
-            This dashboard cannot be opened in the builder: {openError}
-         </Alert>
-      );
-
    const draftDiffers = draft !== undefined && draft !== packageText;
    return (
       <Stack sx={{ gap: 2 }}>
-         {!authoritative && offered && draftDiffers && resume === undefined && (
-            <Alert
-               severity="info"
-               action={
-                  <Stack direction="row" sx={{ gap: 1 }}>
-                     <Button size="small" onClick={() => choose(true)}>
-                        Resume
-                     </Button>
-                     <Button size="small" onClick={() => choose(false)}>
-                        Start from the package
-                     </Button>
-                  </Stack>
-               }
-            >
-               You have edits to this dashboard saved in this browser that the
-               package does not have.
+         {modelQuery.isError && (
+            <Alert severity="warning">
+               The {noun} could not be re-read from the server:{" "}
+               {modelQuery.error?.message}. Your edits are still here.
             </Alert>
          )}
+         {!notebook &&
+            !authoritative &&
+            offered &&
+            draftDiffers &&
+            resume === undefined && (
+               <Alert
+                  severity="info"
+                  action={
+                     <Stack direction="row" sx={{ gap: 1 }}>
+                        <Button size="small" onClick={() => choose(true)}>
+                           Resume
+                        </Button>
+                        <Button size="small" onClick={() => choose(false)}>
+                           Start from the package
+                        </Button>
+                     </Stack>
+                  }
+               >
+                  You have edits to this dashboard saved in this browser that
+                  the package does not have.
+               </Alert>
+            )}
          {held !== undefined && (
             <Alert
                severity="warning"
@@ -623,11 +714,13 @@ export function DashboardEditor(props: DashboardEditorProps) {
                   </Button>
                }
             >
-               {savesTo === "package"
-                  ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
-                  : savesTo === "host"
-                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
-                    : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
+               {!dirty
+                  ? "This dashboard changed since you opened it. Loading the new version drops Undo save."
+                  : savesTo === "package"
+                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
+                    : savesTo === "host"
+                      ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
+                      : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
             </Alert>
          )}
          {supersedeFailure !== undefined && (
@@ -640,72 +733,34 @@ export function DashboardEditor(props: DashboardEditorProps) {
          {opened && (
             <Surface
                key={opened.generation}
+               kind={kind}
                environmentName={environmentName}
                packageName={packageName}
                modelPath={modelPath}
                slug={dashboardName}
+               modelGivens={
+                  (modelQuery.data?.data as { givens?: Given[] } | undefined)
+                     ?.givens
+               }
                {...(versionId !== undefined ? { versionId } : {})}
                opened={opened}
+               {...(fromDraft &&
+               writer === "package" &&
+               opened.packageText !== undefined
+                  ? { replaces: opened.packageText }
+                  : {})}
                onSave={save}
                onDirtyChange={reportDirty}
+               onSaveNoticeChange={setUndoOffered}
                savesTo={savesTo}
+               {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
-               toolbar={
-                  onExit && (
-                     <SecondaryButton
-                        label="Done editing"
-                        icon={<CheckIcon />}
-                        onClick={onExit}
-                     />
-                  )
-               }
-               note={caption({
-                  authoritative,
-                  mutable,
-                  pinnedPackageSave,
-                  ...(workspace ? { workspace } : {}),
-                  ...(readFailure !== undefined ? { readFailure } : {}),
-                  ...(versionId !== undefined ? { versionId } : {}),
-               })}
+               {...(onExit ? { onExit } : {})}
+               note={note}
             />
          )}
       </Stack>
    );
-}
-
-/**
- * What the toolbar says about where Save goes, in the backend's own words
- * wherever it has any: a workspace carries a `description` precisely so the
- * editor does not have to guess, and "this browser" is one host's answer
- * rather than the interface's.
- */
-function caption({
-   authoritative,
-   mutable,
-   pinnedPackageSave,
-   workspace,
-   readFailure,
-   versionId,
-}: {
-   authoritative: boolean;
-   mutable: boolean;
-   pinnedPackageSave: boolean;
-   workspace?: Workspace;
-   readFailure?: string;
-   versionId?: string;
-}): string {
-   if (readFailure !== undefined)
-      return `The saved copy could not be read, so Save is off: ${readFailure}`;
-   if (authoritative && workspace)
-      return workspace.writeable
-         ? workspace.description
-         : `${workspace.description}: you cannot save into it.`;
-   if (pinnedPackageSave)
-      return `Reading version ${versionId}: a version is a fixed point in history, so Save is off.`;
-   if (mutable) return "Save writes the file into the package.";
-   if (workspace)
-      return `${workspace.description}: this server does not take writes.`;
-   return "This server does not take writes.";
 }
 
 /**
@@ -720,66 +775,113 @@ function caption({
  * a literal, so it works the moment it is added.
  */
 function Surface({
+   kind,
+   modelGivens,
    environmentName,
    packageName,
    modelPath,
    slug,
    versionId,
    opened,
+   replaces,
    onSave,
    onDirtyChange,
+   onSaveNoticeChange,
    onEvent,
    savesTo,
-   toolbar,
+   saveLabel,
+   onExit,
    note,
 }: {
+   kind: DocumentKind;
+   /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
+   modelGivens?: Given[];
    environmentName: string;
    packageName: string;
    modelPath: string;
    slug: string;
    versionId?: string;
-   opened: { source: string; document: DashboardDocument; generation: number };
+   opened: {
+      source: string;
+      document: DashboardDocument;
+      conversion?: { from: string; to: string };
+      generation: number;
+   };
+   replaces?: string;
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
-   onEvent?: DashboardEventHandler;
-   savesTo: "package" | "browser" | "host";
-   toolbar: React.ReactNode;
+   onSaveNoticeChange: (showing: boolean) => void;
+   onEvent?: (event: BuilderEvent) => void;
+   savesTo: SavesTo;
+   saveLabel?: string;
+   onExit?: () => void;
    note: string;
 }) {
    const { apiClients } = useServer();
+   const notebook = kind === "notebook";
 
-   const { data, isSuccess } = useQueryWithApiError({
+   // The server serves a dashboard only once the package file has a tile, so
+   // an empty start becomes servable when a save puts the first one there.
+   const [served, setServed] = useState(opened.document.tiles.length > 0);
+   useEffect(
+      () => setServed(opened.document.tiles.length > 0),
+      [opened.generation, opened.document],
+   );
+
+   const { data, isSuccess, isError } = useQueryWithApiError({
       queryKey: [
          "dashboard-editor-manifest",
          environmentName,
          packageName,
          slug,
          versionId,
+         kind,
       ],
-      queryFn: () =>
-         apiClients.dashboards.getDashboard(
-            environmentName,
-            packageName,
-            slug,
-            versionId,
-         ),
+      // A layout notebook's manifest rides on its notebook read; one in the cell format has only the tag's starting values until it is saved.
+      queryFn: async (): Promise<DashboardManifest> => {
+         if (!notebook)
+            return (
+               await apiClients.dashboards.getDashboard(
+                  environmentName,
+                  packageName,
+                  slug,
+                  versionId,
+               )
+            ).data;
+         const read = (
+            await apiClients.notebooks.getNotebook(
+               environmentName,
+               packageName,
+               modelPath,
+               versionId,
+            )
+         ).data;
+         return (
+            read.dashboard ?? {
+               ...(read.startingGivens
+                  ? { startingGivens: read.startingGivens }
+                  : {}),
+               ...(read.autorun === undefined ? {} : { autorun: read.autorun }),
+            }
+         );
+      },
+      // The server does not serve a dashboard with no tiles, so asking would 404.
+      enabled: served,
    });
-   const manifest = data?.data;
+   const manifest = data;
 
    // The package's other dashboards, by slug: where a clicked cell can go.
    const { data: dashboardList } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-dashboards",
-         environmentName,
-         packageName,
-         versionId,
-      ],
+      // Shares the listing the page's location lookup already fetches.
+      queryKey: ["dashboards", environmentName, packageName, versionId],
+      staleTime: 60_000,
       queryFn: () =>
          apiClients.dashboards.listDashboards(
             environmentName,
             packageName,
             versionId,
          ),
+      enabled: !notebook,
    });
    const otherDashboards = useMemo(
       () =>
@@ -818,7 +920,14 @@ function Surface({
                packageName,
                versionId,
             )
-         ).data.filter((m) => m.path && !m.error);
+         ).data.filter(
+            // The catalog leaves dashboards out, and this file's own text is already fetched above.
+            (m) =>
+               m.path &&
+               !m.error &&
+               !isDashboardModel(m.path) &&
+               !m.path.startsWith("notebooks/"),
+         );
          // One model that fails to load (a reload racing this fetch, say)
          // costs the catalog that model's sources, not every suggestion.
          const settled = await Promise.allSettled(
@@ -838,7 +947,25 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
-   const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
+   // Only a package write can make the package serve it; a copy in the host's store does not.
+   const saveThenServe = useMemo<SaveHandler<DashboardDocument> | undefined>(
+      () =>
+         onSave && savesTo === "package"
+            ? async (
+                 source: string,
+                 context: SaveContext<DashboardDocument>,
+              ) => {
+                 await onSave(source);
+                 // An undone first save writes back a file with no tile, which the server stops serving.
+                 setServed(context.document.tiles.length > 0);
+              }
+            : onSave,
+      [onSave, savesTo],
+   );
+   const modelSpecs = useMemo(
+      () => manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : []),
+      [manifest, opened.conversion, modelGivens],
+   );
    const runnable = useMemo(
       () =>
          new Set(
@@ -856,7 +983,7 @@ function Surface({
       specs,
       loaded: isSuccess,
       startingValues: manifest?.startingGivens,
-      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${slug}/edit`,
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${notebook ? "notebook/" : ""}${slug}/edit`,
       autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
@@ -865,10 +992,33 @@ function Surface({
       documentName: slug,
    });
 
+   const manifestSettled = !served || isSuccess || isError;
+   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
+   const servedReads = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.givenNames
+                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
    const renderTile = useMemo(
       () =>
-         function LiveTile(tile: DashboardDocument["tiles"][number]) {
-            const query = previewTileQuery(doc, tile, runnable, applied);
+         function LiveTile(tile: QueryTile, heading?: TileHeadingSlots) {
+            // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
+            if (!manifestSettled) return <Loading text="Running…" />;
+            const query = previewTileQuery(
+               doc,
+               tile,
+               runnable,
+               applied,
+               servedReads.get(
+                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
+               ),
+            );
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -876,27 +1026,35 @@ function Surface({
                   versionId={versionId}
                   modelPath={modelPath}
                   tile={query.expression}
+                  {...(query.annotation
+                     ? { annotation: query.annotation }
+                     : {})}
                   label={
                      tile.label ?? tileTitle(`${tile.source} -> ${tile.name}`)
                   }
                   subtitle={tile.subtitle}
+                  {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
                   givens={applied}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
+                  ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   height={TILE_MAX_HEIGHT}
                />
             );
          },
       [
          doc,
+         manifestSettled,
          runnable,
+         servedReads,
          environmentName,
          packageName,
          versionId,
          modelPath,
          applied,
          declaredTypes,
+         specs,
       ],
    );
 
@@ -918,15 +1076,20 @@ function Surface({
                }))}
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
+            onSaveNoticeChange={onSaveNoticeChange}
+            {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
-            toolbar={toolbar}
+            {...(onExit ? { onExit } : {})}
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }
-            {...(onSave ? { onSave } : {})}
+            {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}
+            {...(saveLabel ? { saveLabel } : {})}
+            {...(replaces !== undefined ? { replaces } : {})}
+            modelPath={modelPath}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>
@@ -935,17 +1098,4 @@ function Surface({
          </Box>
       </Stack>
    );
-}
-
-/** What a storage backend said went wrong, for a reader who has to act on it. */
-function storageErrorMessage(error: unknown): string {
-   return error instanceof Error ? error.message : String(error);
-}
-
-/** The server's own reason for a refused write, when it gave one. */
-function apiErrorMessage(error: unknown): string {
-   const data = (error as { response?: { data?: { message?: string } } })
-      .response?.data;
-   if (data?.message) return data.message;
-   return error instanceof Error ? error.message : String(error);
 }

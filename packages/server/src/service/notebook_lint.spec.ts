@@ -295,7 +295,7 @@ describe("notebook lint", () => {
             line: 3,
             code: "notebook-markdown-block-unreferenced",
             message:
-               "Line 3: the `(markdown)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.",
+               "Line 3: the `(markdown)` block `intro` is not named by any entry in `tiles=[…]`, so it is not shown on the dashboard. Fix: delete the block, or list `intro { kind=text }` in `tiles`.",
          },
       ]);
    });
@@ -311,7 +311,7 @@ describe("notebook lint", () => {
             line: 3,
             code: "notebook-markdown-block-unnamed",
             message:
-               "Line 3: an unnamed `(markdown)` block is not shown on a dashboard, whose text tiles are named blocks listed in `tiles=[…]` (text tiles do not render yet). Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`, or delete the block.",
+               "Line 3: an unnamed `(markdown)` block is not shown on a dashboard, whose text tiles are named blocks listed in `tiles=[…]`. Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`, or delete the block.",
          },
       ]);
    });
@@ -327,7 +327,7 @@ describe("notebook lint", () => {
             line: 2,
             code: "notebook-markdown-block-unnamed",
             message:
-               "Line 2: `##(markdown) hi` is a floating `(markdown)` line, which a dashboard does not show, since its text tiles are named blocks listed in `tiles=[…]` (text tiles do not render yet). Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`, or delete the line.",
+               "Line 2: `##(markdown) hi` is a floating `(markdown)` line, which a dashboard does not show, since its text tiles are named blocks listed in `tiles=[…]`. Fix: write `##|(markdown) name` and list `name { kind=text }` in `tiles`, or delete the line.",
          },
       ]);
    });
@@ -643,20 +643,128 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it("flags tiles under notebooks", () => {
-      expect(
-         lint(`## artifact { kind=notebook tiles=[a] }\n${SOURCE}`),
-      ).toEqual([
-         {
-            line: 1,
-            code: "notebook-tiles",
-            message:
-               "Line 1: `tiles` builds a dashboard grid and does nothing under notebooks/; a notebook's cells are the statements in the file. Fix: remove `tiles`, or move the file to dashboards/.",
-         },
-      ]);
+   describe("a notebook written as tiles", () => {
+      const TILES = `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] }\n`;
+      const BLOCK = "##|(markdown) intro\nhi\n|##\n";
+      const TILES_12 = TILES.replace("\n", " dashboard { columns=12 }\n");
+      const TILES_1 = TILES.replace("\n", " dashboard { columns=1 }\n");
+
+      it("is read like a dashboard: a listed block is a tile, not a cell", () => {
+         expect(lint(`${TILES}${SOURCE}${BLOCK}`)).toEqual([]);
+      });
+
+      it("warns about a block no entry names, in notebook words", () => {
+         expect(
+            lint(`${TILES}${SOURCE}${BLOCK}##|(markdown) extra\nmore\n|##\n`),
+         ).toEqual([
+            {
+               line: 6,
+               code: "notebook-markdown-block-unreferenced",
+               message:
+                  "Line 6: the `(markdown)` block `extra` is not named by any entry in `tiles=[…]`, so it is not shown on the notebook. Fix: delete the block, or list `extra { kind=text }` in `tiles`.",
+            },
+         ]);
+      });
+
+      it("reports a run:, which no tile shows", () => {
+         expect(lint(`${TILES}${SOURCE}${BLOCK}${RUN}`)).toEqual([
+            {
+               line: 6,
+               code: "notebook-layout-run",
+               message:
+                  "Line 6: a `run:` is never shown in a notebook written as tiles, whose cells are the entries in `tiles=[…]`. Fix: define the query as a `view:` on a source, list `source -> view` in `tiles`, and delete the `run:`.",
+            },
+         ]);
+      });
+
+      it("ignores a grid width other than one", () => {
+         expect(lint(`${TILES_12}${SOURCE}${BLOCK}`)).toEqual([
+            {
+               line: 1,
+               code: "notebook-columns-ignored",
+               message:
+                  "Line 1: `dashboard { columns }` other than 1 is ignored on a notebook, which is always one column. Fix: remove `dashboard { columns }`.",
+            },
+         ]);
+         expect(lint(`${TILES_1}${SOURCE}${BLOCK}`)).toEqual([]);
+      });
+
+      it("reads an unquoted source -> view entry as a layout and says how to quote it", () => {
+         const found = lint(
+            `## artifact { kind=notebook tiles=[intro { kind=text }, orders_tiles -> headline] }\n${SOURCE}${BLOCK}`,
+         );
+         expect(found.map((f) => f.code)).toEqual([
+            "notebook-artifact-unparsed",
+         ]);
+         expect(found[0].message).toContain(
+            'every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`)',
+         );
+         expect(found[0].message).not.toContain("kind=notebook }`.");
+      });
+
+      it("says a bare entry naming a block needs kind=text", () => {
+         expect(
+            lint(
+               `## artifact { kind=notebook tiles=[intro, "a -> v"] }\n${SOURCE}${BLOCK}`,
+            ),
+         ).toEqual([
+            {
+               line: 3,
+               code: "notebook-markdown-block-unreferenced",
+               message:
+                  "Line 3: the `(markdown)` block `intro` is named by a tile with no `kind=text`, so that tile is read as a query and the block is not shown. Fix: write `intro { kind=text }` in `tiles`.",
+            },
+         ]);
+      });
+
+      it("warns that colspan and break mean nothing on a one-column notebook", () => {
+         expect(
+            lint(
+               `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE}${BLOCK}`,
+            ),
+         ).toEqual([
+            {
+               line: 1,
+               code: "notebook-tile-layout-ignored",
+               message:
+                  "Line 1: `colspan`, `break` on the `intro` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove them.",
+            },
+         ]);
+      });
+
+      it("reads the artifact tag written as a ##| block", () => {
+         const block = `##| artifact { kind=notebook\n  tiles=[\n    intro { kind=text },\n    "a -> v"\n  ]\n}\n|##\n`;
+         expect(lint(`${block}${SOURCE}${BLOCK}`)).toEqual([]);
+         expect(
+            lint(`${block}${SOURCE}${BLOCK}${RUN}`).map((f) => f.code),
+         ).toEqual(["notebook-layout-run"]);
+      });
+
+      it("names the document's own kind when it says a dashboard reads no attached note", () => {
+         const nested = `source: n is duckdb.sql("select 1 as x") extend {\n   #(markdown) hi\n   measure: c is count()\n}\n`;
+         const messages = (head: string, modelPath?: string) =>
+            lint(`${head}${nested}${BLOCK}`, modelPath)
+               .map((f) => f.message)
+               .join("\n");
+         expect(messages(TILES)).toContain("a notebook reads no attached note");
+         expect(
+            messages(
+               `## artifact { tiles=[intro { kind=text }] }\n`,
+               "dashboards/d.malloy",
+            ),
+         ).toContain("a dashboard reads no attached note");
+      });
+
+      it("is a layout from the tag, whichever folder holds it", () => {
+         expect(
+            lint(`${TILES}${SOURCE}${BLOCK}`, "dashboards/n.malloy").map(
+               (f) => f.code,
+            ),
+         ).toEqual(["notebook-other-folder"]);
+      });
    });
 
-   it("flags kind=notebook under dashboards", () => {
+   it("says a kind=notebook file under dashboards/ works, and where kinds are created", () => {
       expect(
          lint(
             `## artifact { kind=notebook tiles=[a] }\n${SOURCE}`,
@@ -665,9 +773,22 @@ describe("notebook lint", () => {
       ).toEqual([
          {
             line: 1,
-            code: "notebook-kind-under-dashboards",
+            code: "notebook-other-folder",
             message:
-               "Line 1: `kind=notebook` marks a notebook, but this file is under dashboards/, which serves dashboards. Fix: move the file to notebooks/, or remove `kind`.",
+               "Line 1: this notebook is served from dashboards/, where the other kind is created. It works either way. Fix: move it to notebooks/ if you want folders to match kinds.",
+         },
+      ]);
+   });
+
+   it("says the same of a kind=dashboard file under notebooks/, and reads it as a dashboard", () => {
+      expect(
+         lint(`## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`),
+      ).toEqual([
+         {
+            line: 1,
+            code: "notebook-other-folder",
+            message:
+               "Line 1: this dashboard is served from notebooks/, where the other kind is created. It works either way. Fix: move it to dashboards/ if you want folders to match kinds.",
          },
       ]);
    });
@@ -680,7 +801,7 @@ describe("notebook lint", () => {
             line: 1,
             code: "notebook-kind-text-on-dashboard",
             message:
-               "Line 1: `kind=text` marks a tile entry, so it does not mark this dashboard. Fix: remove `kind`, or write `kind=dashboard`.",
+               "Line 1: `kind=text` marks a tile entry, so it does not mark this document. Fix: remove `kind`, or write `kind=dashboard` or `kind=notebook`.",
          },
       ]);
       expect(

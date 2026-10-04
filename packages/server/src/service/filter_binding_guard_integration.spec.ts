@@ -974,6 +974,14 @@ source: gated_joiner is duckdb.table('orgtable') extend {
          "except+dimension, chained",
          "except: note } extend { dimension: note is $TENANT",
       ],
+      [
+         "rename+dimension, chained",
+         "rename: r is note } extend { dimension: note is $TENANT",
+      ],
+      [
+         "rename+dimension, single block",
+         "rename: r is note; dimension: note is $TENANT",
+      ],
    ])(
       "a row filter (scalar given, direct column) stays bound when the entry point is re-extended (%s)",
       async (_label, extendBody) => {

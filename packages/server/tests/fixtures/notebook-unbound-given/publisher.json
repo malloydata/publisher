@@ -1,0 +1,5 @@
+{
+   "name": "notebook-unbound-given",
+   "version": "1.0.0",
+   "description": "Fixture for a notebook cell whose query reads a given with no default"
+}

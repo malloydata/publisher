@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { saveChanges } from "./helpers/save";
 
 /**
  * A dashboard's whole life through the Console, against a server that takes
@@ -68,9 +69,10 @@ test.describe("dashboard-create", () => {
       page,
    }) => {
       await page.goto(`/${env}/${PKG}`);
-      await page.getByRole("button", { name: "Add dashboard" }).click({
+      await page.getByRole("button", { name: "New", exact: true }).click({
          timeout: 60_000,
       });
+      await page.getByRole("menuitem", { name: "Dashboard" }).click();
 
       const dialog = page.getByRole("dialog");
       // The model and a first tile fill themselves in; only the ones with a
@@ -102,17 +104,15 @@ test.describe("dashboard-create", () => {
       ).toBeVisible();
 
       // An edit, saved into the package.
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // The title is edited where it is shown.
+      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
       const title = page.getByLabel("Dashboard title");
       await title.fill("Created and saved");
-      await title.press("Escape");
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible({
-         timeout: 30_000,
-      });
+      await title.press("Enter");
+      await saveChanges(page);
 
       // The reader's view is served from the package, so it shows the save.
-      await page.getByRole("button", { name: "Done editing" }).click();
+      await page.getByRole("button", { name: "Close", exact: true }).click();
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here$`),
       );

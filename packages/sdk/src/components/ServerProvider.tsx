@@ -75,7 +75,8 @@ export interface ServerContextValue {
    server: string;
    getAccessToken?: () => Promise<string>;
    apiClients: ApiClients;
-   mutable: boolean;
+   /** `undefined` while `/status` loads (or failed) and the host passed no `mutable`. */
+   mutable: boolean | undefined;
    isLoadingStatus: boolean;
    /**
     * Instance-wide default theme, pulled from the `/api/v0/status` response.

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { openDocument, refused, spliced } from "./testing/fixtures";
 import { syntaxErrors } from "./spliceDocument";
+import { queryTile } from "./testing/fixtures";
 
 /**
  * Malloy's unit is the statement; every scan in this directory works a line at
@@ -37,7 +38,7 @@ ${stage}
    // builder has to declare off limits.
    it("reads every clause of a continued list", async () => {
       const d = await openDocument(CONTINUED_LIST);
-      expect(d.tiles[0].filters).toEqual([
+      expect(queryTile(d, 0).filters).toEqual([
          { field: "a", given: "A" },
          { field: "b", given: "B" },
       ]);
@@ -45,7 +46,7 @@ ${stage}
 
    it("does not read a continued predicate as a binding", async () => {
       const d = await openDocument(CONTINUED_PREDICATE);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    // Unticking used to delete the first line and leave `b ~ $B` behind as a
@@ -53,7 +54,7 @@ ${stage}
    // aggregate beside it does not.
    it("removes a continued clause list whole when the tile is unbound", async () => {
       const out = await spliced(CONTINUED_LIST, (d) => {
-         delete d.tiles[0].filters;
+         delete queryTile(d, 0).filters;
          d.tiles[0].colspan = 4;
       });
       expect(out).not.toContain("where:");
@@ -66,7 +67,7 @@ ${stage}
    // all -- the half-read that stranded text on `main`.
    it("drops one clause of a continued list and keeps the other", async () => {
       const out = await spliced(CONTINUED_LIST, (d) => {
-         d.tiles[0].filters = [{ field: "a", given: "A" }];
+         queryTile(d, 0).filters = [{ field: "a", given: "A" }];
       });
       expect(out).toContain("    where: a ~ $A\n    aggregate: n is count()");
       expect(out).not.toContain("b ~ $B");
@@ -78,7 +79,7 @@ ${stage}
    // unmanaged, and the control would silently stop filtering.
    it("still reads a binding whose line ends in a separator comma", async () => {
       const d = await openDocument(body("    where: a ~ $A,"));
-      expect(d.tiles[0].filters).toEqual([{ field: "a", given: "A" }]);
+      expect(queryTile(d, 0).filters).toEqual([{ field: "a", given: "A" }]);
    });
 
    it("still reads one where the comma is the last thing in the stage", async () => {
@@ -93,12 +94,12 @@ source: a is one extend {
   }
 }`;
       const d = await openDocument(trailing);
-      expect(d.tiles[0].filters).toEqual([{ field: "a", given: "A" }]);
+      expect(queryTile(d, 0).filters).toEqual([{ field: "a", given: "A" }]);
    });
 
    it("leaves a continued predicate whole when the tile changes", async () => {
       const out = await spliced(CONTINUED_PREDICATE, (d) => {
-         delete d.tiles[0].filters;
+         delete queryTile(d, 0).filters;
          d.tiles[0].colspan = 4;
       });
       expect(out).toContain("    where: a ~ $A\n      and c = 1");
@@ -124,7 +125,7 @@ source: a is one extend {
 
    it("does not read it as a binding", async () => {
       const d = await openDocument(COMPOUND);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    it("survives an unrelated change to the tile", async () => {
@@ -138,7 +139,7 @@ source: a is one extend {
    // managed clause for it would filter on $A twice.
    it("refuses to bind a given it already filters on", async () => {
       const reason = await refused(COMPOUND, (d) => {
-         d.tiles[0].filters = [{ field: "a2", given: "A" }];
+         queryTile(d, 0).filters = [{ field: "a2", given: "A" }];
       });
       expect(reason).toContain("already filters on `$A`");
    });
@@ -147,7 +148,7 @@ source: a is one extend {
    // clause, because Malloy rejects a comma after some statement forms.
    it("keeps the compound when a different given is bound", async () => {
       const out = await spliced(COMPOUND, (d) => {
-         d.tiles[0].filters = [{ field: "b", given: "B" }];
+         queryTile(d, 0).filters = [{ field: "b", given: "B" }];
       });
       expect(out).toContain("vx + { where: a ~ $A and c = 1 where: b ~ $B }");
    });
@@ -176,12 +177,12 @@ ${declaration}
 
    it("does not read a filtered measure's predicate as a tile filter", async () => {
       const d = await openDocument(MEASURE);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    it("does not delete that predicate when the tile is edited", async () => {
       const out = await spliced(MEASURE, (d) => {
-         delete d.tiles[0].filters;
+         delete queryTile(d, 0).filters;
          d.tiles[0].colspan = 4;
       });
       expect(out).toContain("aggregate: big is count() { where: amt > $MIN }");
@@ -189,7 +190,7 @@ ${declaration}
 
    it("does not read a nest's own where: as a tile filter", async () => {
       const d = await openDocument(NESTED);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    // This one used to LIFT the nest's filter out to tile level on an edit that
@@ -221,7 +222,7 @@ source: a is one extend {
    // rather than doubling it, which is the outcome the refusal stood in for.
    it("rebinds a given used only on a continuation line, without doubling it", async () => {
       const out = await spliced(CONTINUED, (d) => {
-         d.tiles[0].filters = [{ field: "b2", given: "B" }];
+         queryTile(d, 0).filters = [{ field: "b2", given: "B" }];
       });
       expect(out.match(/\$B\b/g)).toHaveLength(1);
       expect(out).toContain("    where: b2 ~ $B");
@@ -239,7 +240,7 @@ source: a is one extend {
   view: kpis is vx + { where: label = 'costs $B' }
 }`,
          (d) => {
-            d.tiles[0].filters = [{ field: "b", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b", given: "B" }];
          },
       );
       expect(out).toContain("where: label = 'costs $B'");
@@ -297,7 +298,7 @@ ${stage}
       const reason = await refused(
          body("    // don't remove\n    where: b ~ $B and c = 1"),
          (d) => {
-            d.tiles[0].filters = [{ field: "b2", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b2", given: "B" }];
          },
       );
       expect(reason).toContain("already filters on `$B`");
@@ -307,7 +308,7 @@ ${stage}
       const out = await spliced(
          body("    // TODO: maybe filter on $B later\n    group_by: c"),
          (d) => {
-            d.tiles[0].filters = [{ field: "b", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b", given: "B" }];
          },
       );
       expect(out).toContain("where: b ~ $B");
@@ -321,7 +322,9 @@ ${stage}
       const out = await spliced(
          body("    where: amt > $MIN\n    group_by: big is amt > $MIN"),
          (d) => {
-            d.tiles[0].filters = [{ field: "amt", given: "MIN", op: ">=" }];
+            queryTile(d, 0).filters = [
+               { field: "amt", given: "MIN", op: ">=" },
+            ];
          },
       );
       expect(out).toContain("where: amt >= $MIN");
@@ -347,7 +350,7 @@ source: a is one extend {
 
    it("does not report a partial filter set", async () => {
       const d = await openDocument(CHAINED);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    // Declared HERE, in a body with no one block a binding belongs in. Saying
@@ -357,7 +360,7 @@ source: a is one extend {
       const d = await openDocument(
          CHAINED.replace("  view: kpis", "  # colspan=6\n  view: kpis"),
       );
-      expect(d.tiles[0].declaration).toEqual({
+      expect(queryTile(d, 0).declaration).toEqual({
          kind: "opaque",
          why: "a chained refinement",
       });
@@ -375,7 +378,7 @@ source: a is one extend {
    // given already filtered on in the other would be bound a second time.
    it("refuses a filter change rather than writing into one block", async () => {
       const reason = await refused(CHAINED, (d) => {
-         d.tiles[0].filters = [{ field: "n", given: "N" }];
+         queryTile(d, 0).filters = [{ field: "n", given: "N" }];
       });
       expect(reason).toContain("chained refinement");
       // The view is declared right here; blaming the model would send whoever
@@ -403,12 +406,12 @@ source: a is one extend {
 
    it("reads as declared here, with a reason, and keeps its tags", async () => {
       const d = await openDocument(PIPELINE);
-      expect(d.tiles[0].declaration).toEqual({
+      expect(queryTile(d, 0).declaration).toEqual({
          kind: "opaque",
          why: "a `->` pipeline from a named view",
       });
       expect(d.tiles[0].colspan).toBe(6);
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
    });
 
    it("survives an unrelated change untouched", async () => {
@@ -421,7 +424,7 @@ source: a is one extend {
 
    it("refuses a filter change rather than writing into a stage", async () => {
       const reason = await refused(PIPELINE, (d) => {
-         d.tiles[0].filters = [{ field: "n", given: "N" }];
+         queryTile(d, 0).filters = [{ field: "n", given: "N" }];
       });
       expect(reason).toContain("pipeline");
       expect(reason).not.toContain("declared on its source");
@@ -451,7 +454,7 @@ source: a is one extend {
   }
 }`,
          (d) => {
-            d.tiles[0].filters = [{ field: "b", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b", given: "B" }];
          },
       );
       expect(reason).toContain("// keep");
@@ -472,7 +475,7 @@ source: a is one extend {
   }
 }`,
          (d) => {
-            delete d.tiles[0].filters;
+            delete queryTile(d, 0).filters;
          },
       );
       expect(reason).toContain("// why both");
@@ -490,7 +493,7 @@ source: a is one extend {
   }
 }`,
          (d) => {
-            delete d.tiles[0].filters;
+            delete queryTile(d, 0).filters;
          },
       );
       expect(reason).toContain("// only this quarter");
@@ -509,7 +512,7 @@ source: a is one extend {
   }
 }`,
          (d) => {
-            d.tiles[0].filters = [{ field: "b", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b", given: "B" }];
          },
       );
       expect(reason).toContain("/* keep both */");
@@ -524,7 +527,7 @@ source: a is one extend {
     + { where: a ~ $A }
 }`,
          (d) => {
-            delete d.tiles[0].filters;
+            delete queryTile(d, 0).filters;
          },
       );
       expect(reason).toContain("// note");
@@ -543,7 +546,7 @@ source: a is one extend {
   }
 }`,
          (d) => {
-            d.tiles[0].filters = [{ field: "b", given: "B" }];
+            queryTile(d, 0).filters = [{ field: "b", given: "B" }];
          },
       );
       expect(out).toContain(

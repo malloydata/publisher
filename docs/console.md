@@ -26,7 +26,7 @@ Environment            e.g. "examples"
     ├── Model          a .malloy file: sources, views, measures, dimensions
     │   ├── Source     a queryable entity (a table or a join graph)
     │   └── View       a saved, reusable query on a source
-    ├── Notebook       a notebooks/*.malloy file (a legacy .malloynb is read, not authored): markdown + live query cells
+    ├── Notebook       a notebooks/*.malloy file (a legacy .malloynb is read, not authored): a one-column layout of text and query tiles
     ├── Dashboard      a dashboards/*.malloy file: filter controls + a tiled grid
     └── Data Apps      an in-package HTML data app (the package's public/ dir)
 ```
@@ -63,20 +63,63 @@ is a Console convenience.
 
 ## What you can do in the Console
 
-- **Browse a package** — one section each for **Dashboards**, **Notebooks**, **Data Apps**,
-  **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
-  `README.malloynb` rendered underneath. Dashboards and Data Apps are hidden when the package has
-  none. Every kind has its own icon and its own color, so a row's type reads before its name does.
+- **Browse a package** — one section each for **Artifacts**, **Data Apps**, **Semantic Models**,
+  **Package Data** and **Materializations**, in that order, plus the package's `README.malloynb`
+  rendered underneath. Artifacts lists dashboards and notebooks together, each row tagged with its
+  kind, and carries the **New** button on its heading row. Data Apps is hidden when the package has
+  none. Artifacts is hidden when empty too, unless creating is offered: then it shows a "No
+  artifacts yet" row with a **New artifact** button. Every kind has its own icon and its own color,
+  so a row's type reads before its name does.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
-  Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
-  slug beside it; a notebook's title comes from its opening markdown heading unless a
+  An artifact is listed by its title, or by its file name without folder or extension when it has
+  none; the folder path appears beside it only to tell apart two files with the same name, and a
+  `.malloynb` keeps its path. A notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
-  a grid you rearrange directly: drag a tile to move it, drag its right edge to resize it, set its
-  view and label from its own menu, add filters from the strip above. The classic dashboard-building
-  feel, over a file you can still read and review — Save writes the
-  `dashboards/*.malloy` back into the package ([dashboards.md](dashboards.md#editing-in-the-console)).
+  a grid you rearrange directly: drag a tile to move it, set its
+  width, view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
+  and text tiles are edited where they are shown: click one and type, with no edit icon to find
+  first. A **text tile** holds markdown (a heading, a paragraph, a list) and is added from the same
+  dialog as a query tile. The classic dashboard-building feel, over a file you can still read and
+  review. **Save** writes the `dashboards/*.malloy` back into the package at once, then offers
+  **View change** (the diff, read-only) and **Undo save**
+  ([dashboards.md](dashboards.md#editing-in-the-console)).
+- **Create a dashboard or notebook** — the package page's **New** menu takes a type (Dashboard or Notebook), a
+  model, a source and its view (one select), and a title, writes the file into the package (it never overwrites an existing one) and opens it in
+  its editor. A host with its own record creates it there instead. It is offered when the server takes
+  writes (the file goes into the package) or when a host keeps the record and can store; a workspace
+  that keeps drafts in the browser beside a writable server still gets it, and writes to the package.
+  It is not offered when neither route exists, on a record that cannot store, or on a pinned version
+  of a package. An empty Dashboards or Notebooks section carries its own **New dashboard** or
+  **New notebook** that opens the same window on that kind. Below 600px wide the Console hides
+  **Edit** and the **New** menu, and an editor opened by URL asks for **Edit anyway** first.
+- **Edit a notebook** — a notebook is a one-column dashboard, and it opens in the same builder as a
+  dashboard (a tagged `notebooks/*.malloy`; a legacy `.malloynb` is read-only). Its prose is text
+  tiles and its queries are query tiles, in file order. Everything is click-to-edit: click the
+  title, the description, a text tile or a tile's heading and type. In a one-line field Enter keeps
+  the edit and Escape puts the old text back; in a text tile, Escape, **Done** or Cmd/Ctrl+Enter
+  keeps it, **Cancel** drops it, and Cmd/Ctrl+S saves from inside the field. Use the **+** on a
+  tile to insert a tile between two tiles, or **Add tile** at the end; each query tile has
+  a **Viz type** picker listing all eight choices (From the view, Table, Line, Bar, Big value,
+  Scatter, Shape map and Segment map). A choice the view cannot render stays in the list, greyed,
+  with its reason beside it: Big value needs a view with only totals (no group by), and a map needs
+  a view that already carries a map chart. The picker is disabled, with the reason, for a tile whose
+  chart line the builder does not model (such as `# bar_chart { size=spark }`), and that line is left
+  alone. Tiles are dragged into a new order.
+  **Settings** holds **Show as** (Dashboard or Notebook, which is a tag edit on the same file, and a
+  notebook has no grid width) and the file's **Sources**: the imports are chips you remove and an
+  **Add a source** picker you add from, and a source a tile reads cannot be removed.
+  A cell-format notebook (the older shape, with `(markdown)` cells) opens already converted to this
+  layout and unsaved: **Save** writes the converted file, and **Undo save** puts the original text
+  back. Nothing is written until you save.
+  **Save** writes at once, with no review step; the caption under the button says where
+  (the package file, this browser, or where the host app keeps it). A notice then offers
+  **View change**, the file's diff read-only, and **Undo save**, which writes the file back as it was
+  before that save. The notice stays until the next edit or save. **Close** leaves, and asks first
+  when edits are unsaved. On a server that does not take writes there is no Save; while the server's answer is still loading, the caption under the button says so. A save whose text
+  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so
+  the builder opens such a file but cannot save it from the Console; gates live in the model file.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells
@@ -86,7 +129,7 @@ is a Console convenience.
 ![The storefront business-overview dashboard rendered inline in a notebook](screenshots/storefront-dashboard.png)
 
 - **Tune parameters live** — when a model declares [givens](givens.md), a dashboard over it shows a
-  control row and a notebook a **Parameters panel**; change a control and every tile or cell re-runs.
+  control row and a notebook a **Filters panel**; change a control and every tile or cell re-runs.
   Try `http://localhost:4000/examples/governed-analytics`.
 
 ![A notebook's Parameters panel, generated automatically from the model's givens](screenshots/givens-parameters-panel.png)

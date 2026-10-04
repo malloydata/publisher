@@ -25,10 +25,15 @@ import {
 import { Model } from "./model";
 import { Package } from "./package";
 import {
+   ANY_ARTIFACT_NOTE,
+   artifactKindInText,
    artifactNoteLine,
    claimsToBeANotebook,
    docNotesAboveArtifact,
+   documentKind,
    hasArtifactLineOutsideBlocks,
+   isArtifactNoteText,
+   isDocumentModelPath,
    isNotebookModelPath,
 } from "./notebook";
 
@@ -52,6 +57,119 @@ describe("notebook predicates", () => {
       expect(isNotebookModelPath("notebooks/sub/a.malloy")).toBe(false);
       expect(isNotebookModelPath("a/notebooks/a.malloy")).toBe(false);
       expect(isNotebookModelPath("dashboards/a.malloy")).toBe(false);
+   });
+
+   it("takes the kind from the tag and falls back to the folder", () => {
+      expect(documentKind("dashboards/a.malloy", "notebook")).toBe("notebook");
+      expect(documentKind("notebooks/a.malloy", "dashboard")).toBe("dashboard");
+      expect(documentKind("notebooks/a.malloy", undefined)).toBe("notebook");
+      expect(documentKind("dashboards/a.malloy", "text")).toBe("dashboard");
+      expect(isDocumentModelPath("dashboards/a.malloy")).toBe(true);
+      expect(isDocumentModelPath("notebooks/a.malloy")).toBe(true);
+      expect(isDocumentModelPath("models/a.malloy")).toBe(false);
+      expect(isDocumentModelPath("notebooks/sub/a.malloy")).toBe(false);
+   });
+
+   it("reads the top-level kind off the artifact line, not a tile entry's", () => {
+      const text = (tag: string) => `${tag}\nrun: x`;
+      expect(
+         artifactKindInText(
+            text("## artifact { kind=notebook tiles=[a { kind=text }] }"),
+         ),
+      ).toBe("notebook");
+      expect(
+         artifactKindInText(text("## artifact { tiles=[a { kind=text }] }")),
+      ).toBeUndefined();
+      expect(artifactKindInText("run: x")).toBeUndefined();
+      expect(
+         artifactKindInText('##|"\n## artifact { kind=notebook }\n|##\nrun: x'),
+      ).toBeUndefined();
+   });
+
+   it("reads the artifact tag written as a ##| block", () => {
+      const block =
+         '##| artifact { kind=notebook\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
+      expect(artifactKindInText(block)).toBe("notebook");
+      expect(claimsToBeANotebook(block)).toBe(true);
+      // The lexer takes the opener's whole line, so a same-line `|##` is tag text the tag cannot parse.
+      const sameLine = "##| artifact { kind=dashboard } |##\n}\n|##\nrun: x";
+      expect(claimsToBeANotebook(sameLine)).toBe(true);
+      expect(artifactKindInText(sameLine)).toBeUndefined();
+      expect(claimsToBeANotebook("##| artifacts\nprose\n|##\nrun: x")).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("##| artifact { kind=notebook }")).toBe(true);
+   });
+
+   it("reads an artifact property anywhere among the tag's properties", () => {
+      const second = "## dashboard { columns=2 } artifact { kind=notebook }";
+      expect(isArtifactNoteText(second)).toBe(true);
+      expect(claimsToBeANotebook(`${second}\nrun: x`)).toBe(true);
+      expect(artifactKindInText(`${second}\nrun: x`)).toBe("notebook");
+      expect(
+         artifactKindInText(
+            "##| dashboard { columns=2 }\n  artifact { kind=notebook }\n|##\nrun: x",
+         ),
+      ).toBe("notebook");
+      expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
+      expect(isArtifactNoteText("## title=artifact")).toBe(false);
+   });
+
+   it("reads a dashboards/ file's kind off a tag whose artifact property is not first", () => {
+      const source = "## x {} artifact { kind=notebook }\nrun: x";
+      expect(
+         documentKind("dashboards/a.malloy", artifactKindInText(source)),
+      ).toBe("notebook");
+      expect(
+         documentKind(
+            "dashboards/a.malloy",
+            artifactKindInText("## 2024_q1 {} artifact { kind=notebook }"),
+         ),
+      ).toBe("notebook");
+   });
+
+   it("follows Malloy's route rule: a sigil glued to a word is a route, not a tag", () => {
+      expect(isArtifactNoteText("##artifact { kind=notebook }")).toBe(false);
+      expect(isArtifactNoteText("##|artifact { kind=notebook }")).toBe(false);
+      expect(ANY_ARTIFACT_NOTE.test("##artifact { kind=notebook }")).toBe(
+         false,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("#artifact { kind=dashboard }")).toBe(
+         false,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("# 2024 artifact { kind=dashboard }")).toBe(
+         true,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("#|\n  artifact { kind=dashboard }")).toBe(
+         true,
+      );
+      expect(ANY_ARTIFACT_NOTE.test("# Áartifact {}")).toBe(false);
+      expect(
+         hasArtifactLineOutsideBlocks(
+            "##|artifact { kind=dashboard }\n|##\nrun: x",
+            ANY_ARTIFACT_NOTE,
+         ),
+      ).toBe(false);
+   });
+
+   it("scans a megabyte of unclosed block openers in linear time", () => {
+      const MB = 1024 * 1024;
+      const flat = "##| x\n".repeat(MB / 6);
+      let indented = "";
+      for (let i = 0; indented.length < MB; i++)
+         indented += `${" ".repeat(i % 64)}##| x\n`;
+      for (const source of [flat, indented]) {
+         const started = performance.now();
+         expect(claimsToBeANotebook(source)).toBe(false);
+         expect(hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE)).toBe(
+            false,
+         );
+         expect(artifactKindInText(source)).toBeUndefined();
+         expect(performance.now() - started).toBeLessThan(2000);
+      }
    });
 
    it("locates the artifact note by its line, and only the ## form", () => {
@@ -226,6 +344,25 @@ describe("served notebooks (worker path)", () => {
          expect(pkg.getModel("notebooks/untagged.malloy")!.isNotebook()).toBe(
             false,
          );
+      });
+   });
+
+   it("serves a notebook whose artifact property follows another property", async () => {
+      manifest();
+      write(
+         "notebooks/second.malloy",
+         `## dashboard { columns=2 } artifact { kind=notebook }\n${BASE}`,
+      );
+      write(
+         "notebooks/titled.malloy",
+         `## dashboard { title="artifact" }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.isServedNotebook("notebooks/second.malloy")).toBe(true);
+         expect(pkg.getModel("notebooks/second.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         expect(pkg.isServedNotebook("notebooks/titled.malloy")).toBe(false);
       });
    });
 

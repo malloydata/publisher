@@ -54,7 +54,8 @@ export const isDocumentNotFound = (error: unknown): boolean =>
 
 /**
  * The kinds of document the SDK authors. A `dashboard` is a
- * `dashboards/<slug>.malloy` file; a `notebook` is a `.malloynb`.
+ * `dashboards/<slug>.malloy` file; a `notebook` is a
+ * `notebooks/<slug>.malloy` file.
  */
 export type DocumentType = "dashboard" | "notebook";
 

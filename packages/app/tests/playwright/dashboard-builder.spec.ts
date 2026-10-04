@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { saveChanges } from "./helpers/save";
 
 /**
  * The dashboard builder, end to end in a browser: open a package dashboard in
@@ -83,10 +84,11 @@ test.describe("dashboard-builder", () => {
          page.getByText("Two rows of two, one of them a chart."),
       ).toBeVisible();
 
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      // The title is edited where it is shown.
+      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
       const title = page.getByLabel("Dashboard title");
       await title.fill("Tiled, edited");
-      await title.press("Escape");
+      await title.press("Enter");
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
@@ -94,8 +96,7 @@ test.describe("dashboard-builder", () => {
          page.getByRole("button", { name: "Save changes" }),
       ).toBeEnabled();
 
-      await page.getByRole("button", { name: "Save changes" }).click();
-      await expect(page.getByRole("button", { name: "Saved" })).toBeVisible();
+      await saveChanges(page);
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
@@ -168,6 +169,10 @@ test.describe("dashboard-builder", () => {
       page,
    }) => {
       await openEditor(page);
+      // Width is never a drag: no edge handle is offered on any tile.
+      await expect(
+         page.getByRole("separator", { name: /^Resize / }),
+      ).toHaveCount(0);
       await page.getByLabel("Settings for Orders").click();
       await page.getByRole("button", { name: "Width Full" }).click();
       await page.keyboard.press("Escape");

@@ -38,6 +38,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
    WriteRolledBackError,
+   WriteVerifyError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -712,6 +713,19 @@ export class Environment {
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            // Checked again where the compiler reads it: a saved model ending in an open block note re-lexes the caller's prose.
+            // Both checks are load-bearing: this in-context form accepts text the stand-alone check above refuses.
+            if (source !== undefined && modelContent) {
+               try {
+                  assertNoCallerAuthorizeAnnotation(
+                     source,
+                     `${modelContent}\n`,
+                  );
+               } catch (err) {
+                  recordAuthorizeGuardRejection("compile_source");
+                  throw err;
+               }
+            }
             callerRegion = {
                kind: "span",
                url: virtualUri,
@@ -1803,7 +1817,8 @@ export class Environment {
     * for, and neither is visible to the caller that lost.
     *
     * `check` refuses by throwing, and runs against the file's current text
-    * (undefined when there is none) — so two saves racing on one file cannot
+    * (undefined when there is none) and the package as loaded before the
+    * write (undefined when it is not) — so two saves racing on one file cannot
     * both pass their precondition. `verify` runs against the reloaded package
     * and likewise refuses by throwing; a refusal puts the previous text back
     * (or removes the file, when it is new), reloads again, and raises
@@ -1817,7 +1832,7 @@ export class Environment {
       packageName: string,
       modelPath: string,
       source: string,
-      check: (current: string | undefined) => void,
+      check: (current: string | undefined, loaded: Package | undefined) => void,
       verify: (reloaded: Package) => Promise<T>,
    ): Promise<{ previous: string | undefined; verified: T }> {
       assertSafePackageName(packageName);
@@ -1829,7 +1844,7 @@ export class Environment {
             modelPath,
          );
          const previous = await this._readModelFileLocked(target);
-         check(previous);
+         check(previous, this.packages.get(packageName));
          await this._writeModelFileLocked(target, source);
          try {
             // The locked form, because this whole callback already holds the
@@ -1851,9 +1866,14 @@ export class Environment {
                modelPath,
                error,
             });
+            // Only a refusal worded for the caller is echoed; anything else can carry a server path.
+            const reason =
+               error instanceof WriteVerifyError ? error.message : undefined;
             throw new WriteRolledBackError(
-               `The package did not reload with the new \`${modelPath}\`, so ` +
-                  `the previous text was put back and nothing changed.`,
+               `The package did not reload with the new \`${modelPath}\`` +
+                  `${reason ? ` (${reason})` : ""}, so the previous text was ` +
+                  `put back and nothing changed.`,
+               { cause: error },
             );
          }
       });

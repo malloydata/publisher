@@ -7,7 +7,16 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../errors";
+import { hasCallerAuthorizeAnnotation } from "./authorize";
 import { Environment } from "./environment";
+
+/** The rows of a query result, whatever wrapper the result carries them in. */
+function rowsOf(result: unknown): unknown[] {
+   const rows = (result as { result?: { data?: { array_value?: unknown[] } } })
+      ?.result?.data?.array_value;
+   if (!Array.isArray(rows)) throw new Error("result carries no rows");
+   return rows;
+}
 
 // End-to-end gate on the /compile path. Exercises environment.compileSource
 // through a real installed package, not just the Model primitives — pins that
@@ -483,6 +492,183 @@ run: open_src -> { aggregate: c }`;
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       });
+   });
+});
+
+describe("caller-annotation guard on markdown prose (compileSource)", () => {
+   let rootDir: string;
+   let env: Environment;
+
+   const install = async (model: string) => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-prose-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            PUBLISHER_JSON,
+         );
+         await fs.writeFile(path.join(stagingPath, "model.malloy"), model);
+      });
+   };
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("compiles text whose markdown block prose names #(authorize), at every scope", async () => {
+      await install(MODEL);
+      const prose =
+         "#|(markdown)\nThe base is locked with #(authorize) and filtered by #(access_filter).\n|#\n";
+      const append = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${prose}run: open_src -> { aggregate: c }`,
+      );
+      expect(append.problems).toEqual([]);
+      const file = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${withoutGates(MODEL)}\n${prose}run: open_src -> { aggregate: c }`,
+         false,
+         undefined,
+         "file",
+      );
+      expect(file.problems).toEqual([]);
+      const pkg = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${withoutGates(MODEL)}\n${prose}run: open_src -> { aggregate: c }`,
+         false,
+         undefined,
+         "package",
+      );
+      expect(pkg.problems).toEqual([]);
+      const line = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         "##(markdown) Rows are limited by #(access_filter).\nrun: open_src -> { aggregate: c }",
+      );
+      expect(line.problems).toEqual([]);
+   });
+
+   it("refuses a real gate behind prose, at file scope", async () => {
+      await install(MODEL);
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGates(MODEL)}\n#|(markdown)\nprose\n|#\n#(authorize) true\nsource: mine is open_src extend {}\n`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   // An append compile reads the model file as saved, which can be an edit not
+   // yet reloaded that ends inside an indented block note; appended text is
+   // lexed inside it, so the caller's prose block is not what the compiler reads.
+   it("refuses appended prose that a saved model's unclosed block note turns into a gate", async () => {
+      await install(MODEL);
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "model.malloy"),
+         `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n`,
+      );
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            [
+               "#|(markdown)",
+               "  |#",
+               "#(authorize) true",
+               "source: mine is gated extend {}",
+               "run: mine -> { aggregate: c }",
+               "  #|(markdown)",
+               "|#",
+               "",
+            ].join("\n"),
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   it("refuses the same forgery when the combined text closes every block and compiles", async () => {
+      await install(MODEL);
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "model.malloy"),
+         `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n`,
+      );
+      const forged = [
+         "#|(markdown)",
+         "  |#",
+         "#(authorize) true",
+         "source: mine is gated extend {}",
+         " #|(markdown)",
+         "|#",
+         " #|(markdown)",
+         " |#",
+         "run: mine -> { aggregate: c }",
+         "",
+      ].join("\n");
+      // Prose on its own; a real gate where the compiler reads it.
+      expect(hasCallerAuthorizeAnnotation(forged)).toBe(false);
+      expect(
+         hasCallerAuthorizeAnnotation(
+            forged,
+            `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n\n`,
+         ),
+      ).toBe(true);
+      await expect(
+         env.compileSource("pkg", "model.malloy", forged, true, {
+            ROLE: "nobody",
+         }),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   it("still filters a derived row-gated source whose caller text wraps #(access_filter) true in prose", async () => {
+      await install(MODEL);
+      const model = (await env.getPackage("pkg", false)).getModel(
+         "model.malloy",
+      );
+      const DERIVED =
+         "source: mine is row_gated extend {}\nrun: mine -> { select: org_id }";
+      /** The rows the query returns, or the error it was refused with. */
+      const run = (query: string, groups: number[]) =>
+         model
+            ?.getQueryResults(
+               undefined,
+               undefined,
+               query,
+               undefined,
+               undefined,
+               {
+                  ROLE: "nobody",
+                  GROUPS: groups,
+               },
+            )
+            .then(
+               (r) => rowsOf(r),
+               (e: Error) => e,
+            );
+      // The fixture's one row is org 1, so a caller in group 1 sees it.
+      expect(await run(DERIVED, [1])).toHaveLength(1);
+      for (const prose of [
+         "#|(markdown)\n#(access_filter) true\n|#\n",
+         "##|(markdown)\n#(access_filter) true\n|##\n",
+         "#(markdown) #(access_filter) true\n",
+         "##(markdown) #(access_filter) true\n",
+      ]) {
+         const outcome = await run(`${prose}${DERIVED}`, [2]);
+         // The base's filter still decides: no row, or the fail-closed refusal.
+         if (outcome instanceof Error)
+            expect(outcome).toBeInstanceOf(AccessDeniedError);
+         else expect(outcome).toEqual([]);
+      }
    });
 });
 

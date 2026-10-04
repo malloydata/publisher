@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 A dashboard is a self-contained `.malloy` file in a package's `dashboards/` directory. The file _is_
 the dashboard: it imports the model parts it needs, names the views to show, and tags the layout.
-Publisher discovers it at package load, lists it on the package page, and serves it at
+Publisher discovers it at package load, lists it on the package page (in the one **Artifacts** list, beside the notebooks), and serves it at
 `/<env>/<package>/dashboards/<name>`.
 
 **One form:** `## artifact { tiles=[…] }` at model level, one tile per named view. The controls at the
@@ -123,8 +123,8 @@ query: overview is order_items -> {
   object and at model level there is none — a `#"` there fails the package load with "Object
   annotation not connected to any object". On the single-query form it is `#"`, attached to the
   `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
-  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`.
-  The format is decided but Publisher does not render text tiles yet, so the lint reports a listed one as left out of the page.
+  one line. Prose BETWEEN tiles is a text tile: a `##|(markdown) name` block listed in `tiles=[name { kind=text }, …]`
+  ([Text tiles](#text-tiles)).
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
@@ -140,7 +140,10 @@ dashboard's `tiles=[…]` Publisher reads them off the view each tile names. (`#
 a package's dashboards is what makes them read as one product rather than as several pages:
 
 - **`columns=12`.** Twelve divides by 2, 3, 4 and 6, so a row comes out even whether it holds three
-  cards or four. Pick one number and use it on every dashboard in the package.
+  cards or four. Pick one number and use it on every dashboard in the package. The Console builder
+  offers widths up to 24 (Settings → Grid width, with no "default" entry: an unset file shows 2 until
+  one is picked). A wider `columns` still renders, with ever-thinner tracks, and the package warnings
+  say it is beyond what the builder offers.
 - **A colspan on every card and every tile, summing to `columns` per row.** Four cards at 3, three at
   4, two tiles at 6, a full-width table at 12. Leave them off and each item takes one column. A
   colspan wider than `columns` is clamped, and said so in the package warnings.
@@ -211,16 +214,16 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
-| Construct                                                                           | What it does                                                                                                                                |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `kind=dashboard` in the artifact tag, `kind=query` on a tile entry                  | Explicit spellings of what the file and the tile already are. `kind=notebook` under `dashboards/` is a warning                              |
-| `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                                                          |
-| `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
-| `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
-| `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
-| A `dashboards/*.malloy` with **no** artifact tag                                    | A shared include, skipped by discovery                                                                                                      |
+| Construct                                                                             | What it does                                                                                                                                |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { title= tiles=[…] givens{…} autorun= }`                                 | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `kind=dashboard` or `kind=notebook` in the artifact tag, `kind=query` on a tile entry | The tag's `kind` decides what the document is; the folder only supplies the default. `kind=text` on an entry is a [text tile](#text-tiles)  |
+| `# artifact { title= givens{…} autorun= }` on a `query:`                              | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
+| `# dashboard { columns=N }`                                                           | Grid width, beside the artifact tag on either form. Canonical; `dashboard_columns` is its alias                                             |
+| `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view   | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
+| `# label="…"` on an aggregate                                                         | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
+| `# drill { to=[…] given=… }` on a source `dimension:`                                 | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
+| A `dashboards/*.malloy` with **no** artifact tag                                      | A shared include, skipped by discovery                                                                                                      |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -229,8 +232,11 @@ properties up by name and would otherwise serve the page as though the line were
 
 Two spellings that bite:
 
-- **A model-level `##` tag has to be on one line.** Wrapping a long `## artifact { … }` across lines
-  is a compile error, and it fails the whole package rather than the one file.
+- **A `## artifact { … }` line has to be on one line.** Wrapping it across lines is a compile error,
+  and it fails the whole package rather than the one file. To spread a long tile list over lines,
+  write the tag as a block instead: `##| artifact { …` on the opener line, the rest below it, and
+  `|##` on a line of its own. It reads, lints and edits exactly as the one-line tag does, and the
+  builder keeps whichever form the file has.
 - **`# artifact` is read off a `query:`, not off a `view:`.** A source-level view carrying the tag is
   not discovered, and nothing says so: the file is treated as a shared include and quietly produces
   no dashboard. Name the view in `tiles=[…]` instead, which is what that list is for.
@@ -367,9 +373,10 @@ query: regional_sales is order_items -> { … }
 - **Control state lives in the URL**, so a filtered dashboard is a shareable link. A URL parameter
   beats the dashboard's own starting values.
 
-All three behave identically in a notebook, which spells them at the file level (`## autorun=false`
-and `## givens { REGION=f'West' }`) and gets the same controls, the same URL state, and the same
-Apply button from the same code.
+All three behave identically in a served `.malloy` notebook, which spells the first two inside its
+own `## artifact { kind=notebook autorun=false givens { REGION=f'West' } }` tag (a legacy
+`.malloynb` takes them as file-level `## autorun=false` and `## givens { … }` lines), and gets the
+same controls, the same URL state, and the same Apply button from the same code.
 
 ## A dashboard: `tiles=[…]`
 
@@ -421,6 +428,23 @@ knowing: if a tile cannot be resolved, the row widens to every given the entry f
 than narrowing to the tiles that did resolve. The unresolvable tile is a package warning of its own,
 so the state is visible, but the control row is usually where it is noticed first.
 
+A tile that ignores some of the row's controls says so: a small amber chip under its heading reads
+"Doesn't respond to Brand" (a count past three filters), and its tooltip explains that the tile's
+query never reads that given, so changing it will not change the tile. A tile that reads every
+control shows nothing, as does a tile that could not be resolved, which runs with the whole row.
+Because one unresolved tile widens the row to every given the file surfaces, the tiles that did
+resolve then chip "Doesn't respond to" for any of those that no tile reads.
+"Reads" is what Malloy compiles the tile to, not just its view's `where:`: a given read through the
+source's own `where:`, a joined source's `where:`, a dimension or measure the tile uses, or the
+source's `#(authorize)`/`#(access_filter)` gate all count. The builder shows the same chip, and
+counts a filter you have just added before it is saved. A tile the saved file does not have yet
+shows no chip until it is saved, unless you bind it a filter or its source scopes it, because only
+the saved file's compile knows what the model's own sources read. The single-query form has no chip.
+
+A given that only the source's gate reads is in the tile's `givenNames`, so a value the host
+injects (an `ORG` from its session, say) is sent with the tile rather than dropped, but it does not
+become a control: a gate is a model concern, so the row stays the givens the tiles' queries read.
+
 Three things it costs, none of them fixable by tagging differently:
 
 - **A tile expression is a string in an annotation, so the compiler never checks it.** Rename a view
@@ -446,6 +470,46 @@ source: scoped_sales is order_items extend {
 Note the imports in the dashboard file itself. Nothing in that file mentions `CATEGORY` or `SINCE` (the
 `where:` that does is one file over), but the given namespace is per-file, so without importing them
 the control row would be empty and the tiles would silently run at their defaults.
+
+### Text tiles
+
+Prose between tiles is a tile of its own. List it in `tiles=[…]` as a bare name with `kind=text`, and
+write its body as a `##|(markdown) name` block in the same file:
+
+```malloy
+## artifact { title="Seasonality" tiles=[intro { kind=text colspan=6 break }, "seasonal -> revenue_trend"] } dashboard { columns=12 }
+##|(markdown) intro
+## How to read this page
+
+Revenue first, then the seasonal split.
+|##
+```
+
+The block form of the tag, with a tile on each line, is the same tag:
+
+```malloy
+##| artifact { title="Seasonality"
+  tiles=[
+    intro { kind=text colspan=6 break },
+    "seasonal -> revenue_trend"
+  ]
+} dashboard { columns=12 }
+|##
+```
+
+Every `source -> view` entry is a quoted string, and a text entry is a bare name followed by
+`{ kind=text }`. A bare name without it (`tiles=[intro, …]`) is the query-tile form for a `query:`
+called `intro`, so the `##|(markdown) intro` block is not shown and the lint says to add `{ kind=text }`.
+
+The entry reads `colspan` and `break` and nothing else, the same two layout tags a query tile takes
+from its view. The body is markdown (headings, emphasis, lists, links, inline code), so a heading
+goes inside the block: a bare `## Heading` line is a model tag, not prose. The name is one bare word
+on the opener line, the text starts on the next line, and `|##` closes the block at the opener's
+column. Keep the parentheses: `##|markdown` draws a malformed-route warning.
+
+In the manifest a text tile is `{ kind: "text", name, markdown, colspan?, break? }` with no `query`,
+and a query tile is `{ kind: "query", query, … }`. Anything that runs a dashboard's tiles skips the
+text ones.
 
 <a id="drill"></a>
 
@@ -573,6 +637,9 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   that is wider than the grid and therefore clamped; a `dashboard_columns=` alias, and an error when
   it disagrees with `dashboard { columns= }`; and any property inside the artifact tag that
   Publisher does not read.
+- **Text tiles.** A `kind=text` entry with no `##|(markdown) name` block, a block written twice, a
+  `colspan` that is not a positive integer, and any property on the entry other than `colspan` and
+  `break`.
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
 - **Curation.** A tile, a single query, or a filter `suggest` that reads a source the surface does
@@ -607,7 +674,7 @@ the file, reload again.
 | `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                               |
 | `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state            |
 | `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                      |
-| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles    |
+| `GET …/dashboards/<name>`                                  | The manifest: title, kind, autorun, columns, controls, tiles   |
 | `/<env>/<pkg>/dashboards/<name>/edit`                      | The same dashboard in the builder                              |
 | `PUT …/models/dashboards/<name>.malloy`                    | Write the file into the package and reload; the builder's save |
 
@@ -623,11 +690,31 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has an **Add dashboard** control: pick a
-model, a source, the view for the first tile and a title, and the file is written into the package
-and opened in the builder. From there it is the classic loop — **drag a tile by its grip to move
-it, drag its right edge to resize it, pick its view and label from its own menu, and add filters
-from the strip above the grid.**
+dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Artifacts section also offers a **New artifact** button that opens the same menu): pick a
+type (Dashboard or Notebook), a model, a source and its view (one select), and a title, and the file is written into the package and opened in the builder. From there it is
+the classic loop — **drag a tile by its grip to move it, set its width, view, label and chart from its own
+menu (or nudge the width with the arrow keys), and add filters from the strip above the grid.** Titles,
+descriptions and text tiles are click-to-edit where they stand. A **text tile** is markdown, added
+from the same dialog as a query tile.
+
+The **Viz type** choices are From the view (the view's own chart), Table (no chart), Line, Bar, Big value, Scatter,
+Shape map and Segment map. A choice the view cannot render stays in the list, greyed, with its reason
+beside it: Big value needs a view with only totals (no group by), and a map needs a view that already
+carries a map chart. A choice writes one chart line on the tile's wrapper that turns off the other chart
+tags. A chart line it does not model, such as `# bar_chart { size=spark }`, is kept byte for byte on
+every edit, and the picker is disabled for that tile with the reason shown; so is a tile inherited
+from a declaration on the source, which has no wrapper to carry the line.
+
+A dashboard with `tiles=[]` (only possible by hand-editing, since New always seeds a first tile)
+opens in the builder, but it is not served (the manifest 404s and the load lint reports it) until it has a tile, and the builder will not
+remove the last tile of a dashboard that was saved with tiles: **Remove tile** stays visible but
+disabled, with "A saved dashboard needs at least one tile." beside it. A filter window shows what is
+wrong with a field only once you have edited something in it, so opening a fresh one is not a wall
+of red; **Apply** stays disabled until it is valid either way. On a screen narrower than 600px the
+Console hides **Edit** and the package page's **New** menu, and opening an editor's URL there shows
+"Editing works best on a larger screen" with an **Edit anyway** button (decided once when the page
+opens, so rotating a phone never swaps the editor away). A filter on a dimension reached through a join keeps its full dotted path
+(`products.category`), written quoted, and the lint accepts one level of join there.
 
 What makes it different from a classic BI tool is not the editing, it is what the editing produces.
 There is no proprietary layout document: the builder reads and writes the same
@@ -635,10 +722,20 @@ There is no proprietary layout document: the builder reads and writes the same
 it, so comments and anything it does not model survive the round trip. The result is a source file
 you can review in a pull request, and one an agent can write by hand just as well.
 
-The builder's **Save** writes the file back
-through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
-atomically, reloads the package in place, and restores the previous text if the reload does not
-take it; a copy someone else changed since you opened it is refused (409), never merged. The
+The builder's **Save** writes at once, with no review step, and then shows a notice with
+**View change** (the file's diff, read-only) and **Undo save**, which writes the file back as it was
+before that save. The notice stays until the next edit or save. The caption under the button says
+where Save writes. A notebook is the same builder over a one-column document (**Settings → Show as**
+switches the tag); a cell-format notebook opens converted and unsaved, and Undo save restores the
+original text. A file whose tag names no `kind` is edited as the kind its folder implies
+(`notebooks/` is a notebook). Save writes back through `PUT …/models/dashboards/<name>.malloy` (or
+`notebooks/<name>.malloy`), which compiles the text first, writes it atomically, reloads the package
+in place, and restores the previous text if the reload does not take it, or if the compiled file
+carries no `## artifact` tag (500; a tagged dashboard with no tiles still saves). A `dashboards/`
+file whose text has no `artifact` property on any `#` or `##` tag line is refused (400) before it
+compiles; one whose only tag is inside a block comment gets as far as that rollback. A copy someone
+else changed since you opened it is refused (409),
+never merged, and so is a dashboard whose name another file already holds. The
 check, the write, the reload and the restore all happen under one hold of the package lock, so two
 saves racing on one file cannot both pass the check, and a rollback cannot revert the other
 writer's text instead of its own. On a
@@ -731,19 +828,16 @@ complete embedding story.
 
 ## Editing one in your own React app
 
-`<DashboardEditor>` is the other public export of `@malloy-publisher/sdk` for this component: the
-same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
+`<DashboardEditor>` is the other public export for this component, from `@malloy-publisher/sdk/builder`
+(the main entry stays free of the Malloy parser): the same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
 as `<Dashboard>`, plus `onExit`, `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
 and a `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the
 package cannot be written (see the SDK README's
 [Document Storage](../packages/sdk/README.md#document-storage) section).
 
 ```tsx
-import {
-  DashboardEditor,
-  encodeResourceUri,
-  ServerProvider,
-} from "@malloy-publisher/sdk";
+import { encodeResourceUri, ServerProvider } from "@malloy-publisher/sdk";
+import { DashboardEditor } from "@malloy-publisher/sdk/builder";
 
 <ServerProvider baseURL="https://publisher.example.com/api/v0">
   <DashboardEditor
@@ -756,6 +850,22 @@ import {
   />
 </ServerProvider>;
 ```
+
+The editor's **Close** button asks about unsaved edits itself (Keep editing, Discard changes, or
+Save and exit), and calls `onExit` only once the person has chosen to leave. An `onExit` that also
+prompts would ask twice, so have it navigate and nothing more. Close is the only exit the editor owns:
+to guard the host's other ways out (a nav link, the browser's Back, closing the tab), track
+`onDirtyChange`, which reports whether anything is unsaved (an open text edit counts, and it reports
+`false` when the editor unmounts), and block navigation while it is `true`. The Console's
+`DashboardEditPage` does this with a router blocker and a `beforeunload` listener.
+
+Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is a thin
+wrapper over `DashboardEditor` with `kind="notebook"` (`DashboardEditor` also takes a `path` and a
+`kind`, to open a document as its tag's kind from the path the package lists it at). `createRoute` says whether a host can create documents
+(`"package"`, `"storage"`, or `undefined`), `useDocumentChoices` lists the models and views the New
+dialog offers, `createDocument` writes the new file by that route, and `newNotebookSource` /
+`newDashboardSource` build the starting text. `locatorFor` names a created document's address in a
+host's own store. The events are `DashboardEvent`, `NotebookEvent` and their union `BuilderEvent`; Undo save reports `*.save_undone`, or `*.save_undo_refused` when the write is refused.
 
 An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
 `resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps
