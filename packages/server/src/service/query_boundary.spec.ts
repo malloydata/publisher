@@ -423,21 +423,26 @@ export { customers, dated }`,
          );
          expect((exported as QueryCompileError).problems.length).toBe(1);
 
-         // Decoys: the same filter over a hidden source, a missing one, and an
-         // alias of each, all answer the generic 404 in the same words.
-         const messages = new Set<string>();
-         for (const query of [
-            filter("helper", "id"),
-            filter("no_such_source", "id"),
-            `source: x is helper extend {}\n${filter("x", "id")}`,
-            `source: x is no_such_source extend {}\n${filter("x", "id")}`,
+         // Decoys: a hidden source, a missing one and an alias of each get a
+         // refusal that does not depend on the filter. (Where nothing is gated
+         // the boundary explains a real hidden source, so hidden and missing
+         // may differ from each other; they must answer a `~` the way they answer any other compile error.)
+         for (const text of [
+            (f: string) =>
+               `run: helper -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `run: no_such_source -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is helper extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is no_such_source extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
          ]) {
-            const answer = await problemsOrRefusal(model, query);
-            expect(answer).toBeInstanceOf(NotQueryableError);
-            expect(answer).not.toBeInstanceOf(QueryCompileError);
-            messages.add(answer.message);
+            const tilde = await problemsOrRefusal(model, text("id ~ @2025"));
+            const plain = await problemsOrRefusal(model, text("nosuch = 1"));
+            expect(tilde).toBeInstanceOf(NotQueryableError);
+            expect(tilde).not.toBeInstanceOf(QueryCompileError);
+            expect(tilde.message).toBe(plain.message);
          }
-         expect(messages.size).toBe(1);
       } finally {
          await duckdb.close();
       }

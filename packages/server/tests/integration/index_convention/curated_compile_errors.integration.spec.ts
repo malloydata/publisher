@@ -168,8 +168,14 @@ describe.serial("compile errors on a curated package", () => {
       [
          "`~` against a date literal, which Malloy throws on",
          "run: orders -> { where: d ~ @2025 aggregate: n is total }",
-         "compiler-bug",
+         "translator-error",
          "mysterious error in range computation",
+      ],
+      [
+         "`~` against a number, which Malloy throws a type mismatch on",
+         "run: orders -> { where: d ~ 2025 aggregate: n is total }",
+         "translator-error",
+         "Incompatible types for match('~') operator",
       ],
    ];
 
