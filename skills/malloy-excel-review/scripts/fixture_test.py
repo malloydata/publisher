@@ -360,6 +360,11 @@ class CommittedBinaries(Invariants, unittest.TestCase):
         self.assertTrue([c for c in cache.iter(M + "cacheField") if c.get("formula")], "no calculated field")
         self.assertIsNotNone(next(cache.iter(M + "fieldGroup"), None), "OrderDate is not grouped")
 
+    @staticmethod
+    def round_floats(raw):
+        # libm differs by platform in the last digit of a generated float
+        return re.sub(rb"-?\d+\.\d{10,}(?:[eE][-+]?\d+)?", lambda m: b"%.9g" % float(m.group()), raw)
+
     def test_python_engine_binary_matches_a_fresh_build(self):
         if self.engine != "python":
             self.skipTest("engine is %s" % self.engine)
@@ -369,7 +374,7 @@ class CommittedBinaries(Invariants, unittest.TestCase):
                 a, b = zipfile.ZipFile(os.path.join(FIXTURES, name)), zipfile.ZipFile(os.path.join(d, name))
                 self.assertEqual(sorted(a.namelist()), sorted(b.namelist()))
                 for part in a.namelist():
-                    self.assertEqual(a.read(part), b.read(part), "%s:%s differs: rebuild the fixture" % (name, part))
+                    self.assertEqual(self.round_floats(a.read(part)), self.round_floats(b.read(part)), "%s:%s differs: rebuild the fixture" % (name, part))
 
     def test_every_formula_cell_has_a_cached_value(self):
         self.assertEqual([c.get("r") for c in self.book.formula_cells() if c.find(M + "v") is None], [])
