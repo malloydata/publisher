@@ -99,7 +99,7 @@ When reviewing tables and columns, capture:
 |-----------------|-------------|
 | **Denormalized vs joined values** | Compare pre-computed columns (e.g., `customers.order_count`) against the actual joined aggregate (`count()` from `orders`). Report discrepancy rate. If >0%, flag for user decision. |
 | **Candidate date fields** | When multiple date/timestamp columns exist, query both. What % of rows differ? By how much? This informs which is canonical. |
-| **Numeric column distributions** | Query min, max, avg, percentiles (p25, p50, p75, p95). These inform tier boundaries and detect outliers. |
+| **Numeric column distributions** | Query min, max, avg and percentiles (p25, p50, p75, p95; Malloy has no percentile function, so use the two-stage query under Example Queries). These inform tier boundaries and detect outliers. |
 | **Categorical column cardinality** | Query distinct values. A `status` column with 5 values behaves differently from one with 500. |
 | **Column usefulness** | Query NULL rates. Columns that are >95% NULL are candidates for `internal`. |
 | **Join cardinality** | Query FK uniqueness: `group_by: fk_col, aggregate: row_count is count(), having: row_count > 1`. Determines `join_one` vs `join_many`. |
@@ -111,23 +111,35 @@ When reviewing tables and columns, capture:
 
 ### Example Queries
 
-**Tier boundaries**: query distribution, propose breaks from percentiles:
+**Tier boundaries**: query the distribution, propose breaks from percentiles. Malloy has no `percentile` function and no scalar median, so this is a two-stage query: count the rows at each distinct value, keep a running count, and take the smallest value whose running count reaches the share you want (the nearest-rank percentile). The `order_by` in the first stage is required, and a null group would shift every percentile, so filter nulls out. On a column with very many distinct values, round it first (`round(x, 0)`) so the first stage stays small. For a measure you will keep, see `skill:malloy-gotchas-modeling` § No Scalar Median.
 ```malloy
 run: orders -> {
+  where: sale_price is not null
+  group_by: sale_price
+  aggregate: c is count()
+  calculate: cum is sum_cumulative(c), tot is sum_window(c)
+  order_by: sale_price
+} -> {
   aggregate:
-    min_val is min(sale_price), p25 is sale_price.percentile(25)
-    median_val is sale_price.percentile(50), p75 is sale_price.percentile(75)
-    p95 is sale_price.percentile(95), max_val is max(sale_price)
+    min_val is min(sale_price)
+    p25 is min(sale_price) { where: cum >= 0.25 * tot }
+    median_val is min(sale_price) { where: cum >= 0.5 * tot }
+    p75 is min(sale_price) { where: cum >= 0.75 * tot }
+    p95 is min(sale_price) { where: cum >= 0.95 * tot }
+    max_val is max(sale_price)
 }
 ```
 
-**Denormalized vs joined**: compare pre-computed column against real aggregate, report match rate:
+**Denormalized vs joined**: compare a pre-computed column against the real aggregate and report the match rate. Aggregates cannot go inside `where:`, so count the joined rows per key in a first stage and compare in a second:
 ```malloy
 run: customers -> {
   join_many: orders on customer_id = orders.customer_id
+  group_by: customer_id, order_count
+  aggregate: actual is count(orders.order_id)
+} -> {
   aggregate:
     total is count()
-    match is count() { where: order_count = count(orders.order_id) }
+    match is count() { where: order_count = actual }
 }
 ```
 

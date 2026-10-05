@@ -33,12 +33,14 @@ top, bottom, desc, asc, row, range, current, window, rank
 - `number`: only the bare word needs backticking; `account_number` is fine
 - `source`: reserved; use a different alias like `traffic_source`
 
-## NULL Checks: `is not null`, NOT `!= null`
+## NULL Checks: write `is not null`
 
 ```malloy
-// WRONG                             // RIGHT
+// AVOID (compiles with a warning)     // RIGHT
 dimension: is_sold is sold_at != null   dimension: is_sold is sold_at is not null
 ```
+
+`!= null` also compiles and returns the right rows (a null row comes back false), but the compiler warns `Use 'is not null' to check for NULL instead of '!= null'`. Write `is not null` to keep the file warning-free.
 
 ## Date Functions vs Properties
 
@@ -143,7 +145,9 @@ measure: median_x is percentile_cont!(x, 0.5)
 measure: median_x is sql_number("PERCENTILE_CONT(...) ...") { is_aggregate: true }
 ```
 
-**Ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
+**To see a median or any percentile as evidence** (for example before choosing a tier boundary), run the two-stage nearest-rank query in `skill:malloy-discover` § Example Queries. It is a query result you read, not a reusable measure.
+
+**For a measure, ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
 
 **`stddev` does work**, so reach for it when the question is about spread. It is a native Malloy aggregate rather than a raw-SQL escape, so unlike everything above it compiles both inline and as a `measure:`, and it is the sample standard deviation. `variance`, `stddev_samp`, and `stddev_pop` are not Malloy functions, and pushing them through `!` fails as a scalar exactly like `percentile_cont!`.
 
@@ -184,7 +188,7 @@ source: orders is conn.table('orders') include {
 
 ### When a `rename:` is needed: rename first, then `include {}`
 
-The usual reason is a collision inside `include {}`: a measure cannot share a name with a raw column, even one tagged `internal:`, and the compiler says so (`Cannot redefine 'revenue' 'revenue' is internal`). The fix is to rename the raw column out of the way, which frees the name for the measure. Order is what makes it work:
+The usual reason is a collision inside `include {}`: a measure cannot share a name with a raw column, even one tagged `internal:`, and the compiler says so (`Cannot redefine 'revenue'`). The fix is to rename the raw column out of the way, which frees the name for the measure. Order is what makes it work:
 
 ```malloy
 ##! experimental.access_modifiers
@@ -263,7 +267,7 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 | Looks like it needs SQL | Malloy equivalent |
 |---|---|
 | Multi-CTE pipeline | Stacked query-based sources: `source: a is t -> {...}`; `source: b is a -> {...}`; `source: c is b -> {...}` |
-| UNNEST / array column access | `array_column.each.field`: arrays auto-join as nested tables ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
+| UNNEST / array column access | An array of records is read by its field path: `group_by: ys.yr`, `aggregate: tv is ys.v.sum()`. An array of plain values is read with `.each` and nothing after it: `group_by: v is arr.each`. `arr.each.field` does not exist ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
 | PIVOT (conditional aggregation) | Filtered aggregates: `aggregate: a is x.sum() { where: cat = 'a' }, b is x.sum() { where: cat = 'b' }` |
 | Window functions (any frame, including custom) | `calculate:` with `sum_cumulative`, `lag`, `lead`, `rank`, `row_number`, `avg_moving`, `first_value`, `last_value`: supports `partition_by:` and `order_by:` ([window functions docs](https://docs.malloydata.dev/documentation/language/functions#window-functions)) |
 | `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` | `sum_cumulative(x) - x` (cumulative-including-current minus current = cumulative-excluding-current) |

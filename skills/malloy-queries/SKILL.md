@@ -282,7 +282,7 @@ Read the `malloy-charts` skill for chart types, properties, data shape requireme
 
 ## More Compile Mistakes
 
-**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix.
+**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path through a `join_many` fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix. Over a `join_one` path the call form compiles and is correct.
 
 Wrong: `measure: cogs is sum(inventory_items.item_cost)`
 Right: `measure: cogs is inventory_items.item_cost.sum()`

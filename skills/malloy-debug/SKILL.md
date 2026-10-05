@@ -35,11 +35,11 @@ Only ask the user to open the file in an editor when you know they have the mode
 |-------|-----|
 | "Unknown field" | Check typo, source order, wrong source, or missing `import` |
 | "Can't use type string" | Cast: `field::number` |
-| "Aggregate not allowed in where" | Use `having:` instead |
-| 20+ random errors | Backtick reserved word (`` `Date` ``, `` `Hour` ``, `` `number` ``) |
+| `Aggregate expressions are not allowed in `where:`; use `having:`` | Use `having:` instead |
+| 20+ random errors | Backtick reserved word (`` `date` ``, `` `hour` ``, `` `number` ``) |
 | `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see `skill:malloy-gotchas-modeling` § Field Management) |
 | `IO Error: No files found that match the pattern "data/x.csv"` | Data-file path, not the model. Relative `duckdb.table()` paths resolve against the DuckDB `workingDirectory`; Publisher sets it to the package root, but a relative `workingDirectory` in `malloy-config.json` resolves against the process cwd. Make it absolute (see `skill:malloy-gotchas-modeling` § Relative Data-File Paths). The "not defined" errors under it are cascade, not real |
-| Import path errors | Check paths: `import "orders.malloy"`. All files should be in the same directory (flat layout) |
+| Import path errors | Check the path is relative to the importing file: `import "orders.malloy"` from the same folder, `import "../orders.malloy"` from a subfolder. Subfolders are fine; do not move files to fix an import |
 | `unexpected 'from'` | `from()` was removed from the language. Use the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
 | Query-based source errors | Verify the source query returns the expected columns, check that imported sources are defined |
 | "Cannot redefine 'X'" | Field already exists from query-based source (`-> { group_by, aggregate }`). Remove the dimension, add only NEW derived fields in `extend {}`. Use `include {}` to add `#(doc)` tags to existing fields. |
@@ -61,6 +61,7 @@ Common reserved words: `Date`, `Timestamp`, `Type`, `Hour`, `source`, `year`, `m
 ```malloy
 // WRONG                        // RIGHT
 is_sold is sold_at != null      is_sold is sold_at is not null
+// `!= null` compiles and returns the right rows, but with a warning
 ```
 
 ### Call Date Functions, Don't Access as Properties
@@ -95,11 +96,12 @@ group_by: races.year            group_by: yr is races.year
 order_by: races.year            order_by: yr
 ```
 
-### Use Method Syntax for Joined Aggregates
+### Use Method Syntax for Aggregates Over a `join_many` Path
 ```malloy
 // WRONG                        // RIGHT
 sum(items.cost)                 items.cost.sum()
 ```
+The call form fails only when `items` is a `join_many` (`Join path is required for this calculation`). Over a `join_one` path, `sum(customer.score)` compiles and is correct.
 
 ### Define Lookup Tables First (or Use Imports)
 ```malloy
@@ -123,6 +125,6 @@ a / b                           a / nullif(b, 0)
 | Error | Fix |
 |-------|-----|
 | "Can't find source X" | Add `import "X.malloy"` at top of file (all files in same directory) |
-| Wrong import path | All `.malloy` files should be in the package root (flat layout). Use `import "orders.malloy"`, not `import "../sources/orders.malloy"` |
+| Wrong import path | The path is relative to the importing file. A file in `dashboards/` imports the root with `import "../orders.malloy"`; a file in the root imports a subfolder with `import "sources/orders.malloy"` |
 | Circular imports | Source A imports Source B which imports Source A. Restructure to break the cycle |
 | Query-based source "Can't find field" | Verify the source query's GROUP BY and aggregate fields match what you reference in `extend {}` |
