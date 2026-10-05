@@ -1,0 +1,13 @@
+malloy-excel-review
+
+Copyright (c) Credible Data Inc.
+Licensed under the MIT License.
+
+Third-party content
+--------------------
+
+This skill's routing was exercised against third-party Excel workbooks for testing only.
+None of those workbooks, nor any name, path or value from them, appears anywhere in this skill.
+
+The bundled workbooks under `fixtures/` are original, synthetic and dedicated to the
+public domain (CC0).

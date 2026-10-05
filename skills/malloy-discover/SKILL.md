@@ -170,6 +170,7 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 |--------|------------|-------------------|
 | `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
 | `.pbix`, `.pbip`, or a `definition/` folder of `.tmdl` files | power bi | `skill:malloy-powerbi-review` |
+| `.xlsx` or `.xlsm` with formulas or pivots, not a plain data file | excel | `skill:malloy-excel-review` |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |
 | Dataset metadata (`metadata.json` and friends), metrics/KPI docs, catalog exports, data READMEs, existing SQL or report files, dashboard screenshots | direct | none: read it yourself (see below) |
 

@@ -35,6 +35,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
 | `skill:malloy-powerbi-review` | Prior-art adapter for Power BI (TMDL tables and relationships, DAX measure classification, RLS roles, docs) |
+| `skill:malloy-excel-review` | Prior-art adapter for Excel workbooks (formula and pivot classification, lookups, scenarios, Power Pivot, parity checks) |
 
 **Analysis and presentation**
 

@@ -2173,6 +2173,9 @@ function workspaceGitignoreEntries(): string[] {
       // machine, which reads as every table failing to resolve rather than as a
       // missing file.
       "malloy-config.json",
+      // docs/configuration.md tells users to keep API keys and passwords here.
+      ".env",
+      "*.env",
    ];
 }
 
