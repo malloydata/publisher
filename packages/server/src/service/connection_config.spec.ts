@@ -1198,9 +1198,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
          },
       };
 
-      expect(() =>
-         assembleEnvironmentConnections([conn], "/tmp/env"),
-      ).toThrow(
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
          /setupSQL is not allowed on DuckDB connection "my_duckdb" when EXTENSION_FETCH_POLICY is "local-only"/i,
       );
    });
@@ -1215,9 +1213,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
          },
       };
 
-      expect(() =>
-         assembleEnvironmentConnections([conn], "/tmp/env"),
-      ).toThrow(
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
          /must provide either attachedDatabases or non-empty setupSQL/i,
       );
    });
@@ -1230,9 +1226,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
          duckdbConnection: {},
       };
 
-      expect(() =>
-         assembleEnvironmentConnections([conn], "/tmp/env"),
-      ).toThrow(
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
          /must provide either attachedDatabases or non-empty setupSQL/i,
       );
    });
