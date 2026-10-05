@@ -16,6 +16,7 @@ import type {
 } from "./get_context_pipeline";
 import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
 import {
+   enterJoin,
    matchesScope,
    sourceContextKey,
    type Entity,
@@ -213,6 +214,14 @@ function expandJoins(
    const damping = settings.joinDamping;
    const out: ResultEntity[] = [];
    const copies = new Map<string, ResultEntity>();
+   // Rows the index already holds under the display name a copy would take: a
+   // field the index kept (an inline-table join's field, reached again through
+   // another join) can also be rebuilt here, and the two must not both appear.
+   const ranked = new Set(
+      rows.map((r) =>
+         [r.modelPath, r.source ?? "", r.kind, r.name].join(KEY_SEPARATOR),
+      ),
+   );
    for (const row of rows) {
       if (matchesScope(row, request)) out.push(row);
       for (const place of joinedCopiesOf(
@@ -221,7 +230,26 @@ function expandJoins(
          settings.joinMaxDepth,
       )) {
          if (!matchesScope({ ...place, kind: row.kind }, request)) continue;
-         const factor = damping === null ? 1 : damping ** (place.hops + 1);
+         // A row that is itself a dotted index row (`lines.total` on `cust`)
+         // is reached through the root's join and then its own: the copy's path
+         // is both, its fan-out the widest of the two (the same rule the index's
+         // own copies use), and its hops count both.
+         const path =
+            row.joinPath === undefined
+               ? place.joinPath
+               : `${place.joinPath}.${row.joinPath}`;
+         const fanout =
+            row.joinPath === undefined
+               ? place.fanout
+               : enterJoin(
+                    { name: row.joinPath, relationship: row.relationship },
+                    { joinPath: place.joinPath, fanout: place.fanout },
+                 ).fanout;
+         const hops =
+            place.hops +
+            (row.joinPath === undefined ? 0 : row.joinPath.split(".").length);
+         if (hops > settings.joinMaxDepth) continue;
+         const factor = damping === null ? 1 : damping ** (hops + 1);
          const score =
             row.score === undefined ? undefined : round4(row.score * factor);
          const rawScore =
@@ -229,6 +257,7 @@ function expandJoins(
          const key = [place.modelPath, place.source, row.kind, place.name].join(
             KEY_SEPARATOR,
          );
+         if (ranked.has(key)) continue;
          const seen = copies.get(key);
          if (seen) {
             if (score !== undefined && score > (seen.score ?? 0)) {
@@ -247,8 +276,8 @@ function expandJoins(
             packageName: row.packageName,
             modelPath: place.modelPath,
             doc: row.doc,
-            relationship: place.fanout,
-            joinPath: place.joinPath,
+            relationship: fanout,
+            joinPath: path,
             ...(row.dataType ? { dataType: row.dataType } : {}),
             ...(score !== undefined ? { score } : {}),
             ...(rawScore !== undefined ? { rawScore } : {}),
@@ -258,7 +287,7 @@ function expandJoins(
             ...(row.bestTarget !== undefined
                ? { bestTarget: row.bestTarget }
                : {}),
-            joinHops: place.hops,
+            joinHops: hops,
          };
          copies.set(key, copy);
          out.push(copy);
@@ -281,7 +310,14 @@ export function assembleCards(
    state: RankedState,
    ctx: PipelineContext,
 ): CardState {
-   const perSourcePerTarget = ctx.settings.entityWindow.perSourcePerTarget;
+   // On the semantic path the card holds the source's own window plus the
+   // dotted rows' window, so a dotted row the scan kept is not then cut here for
+   // a higher-scored one. The lexical path has no separate window and keeps 10.
+   const perSourcePerTarget =
+      ctx.settings.entityWindow.perSourcePerTarget +
+      (state.retrieval === "semantic"
+         ? (ctx.settings.entityWindow.joinedPerSourcePerTarget ?? 0)
+         : 0);
    const cards = new Map<string, CardDraft>();
    const perTarget = new Map<string, Map<number, number>>();
    // Joined copies are made here only for semantic rows, which search direct

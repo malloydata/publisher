@@ -127,6 +127,10 @@ export const semanticRetriever: Retriever = {
                   // SOURCE CARDS and is applied after assembly, so the scan
                   // must not decide how many sources are returned.
                   perSourceWindow: ctx.settings.entityWindow.perSourcePerTarget,
+                  // Dotted rows the index keeps get their own window, so they
+                  // cannot take the source's own fields' slots.
+                  perSourceJoinedWindow:
+                     ctx.settings.entityWindow.joinedPerSourcePerTarget,
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
                   sourceName: assembling ? undefined : sourceName || undefined,

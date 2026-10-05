@@ -1610,6 +1610,15 @@ export async function trySemanticSearch(args: {
     * out of the answer, and nothing bounds how many sources are returned.
     */
    perSourceWindow: number;
+   /**
+    * The most DOTTED rows (`path.leaf`: joined fields the index keeps because
+    * assembly cannot rebuild them) kept per source, per target, in a window of
+    * their own. Without it they share `perSourceWindow` with the source's own
+    * fields and, when a package joins inline tables, hundreds of them can
+    * outrank every own field and take the whole window. Omit for one shared
+    * window.
+    */
+   perSourceJoinedWindow?: number;
    sourceName?: string;
    /**
     * The (kind, source, name) triples the caller's scope admits, when it
@@ -1785,6 +1794,29 @@ export async function trySemanticSearch(args: {
       // its join from the statement entirely.
       const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
       const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
+      // Dotted rows (joined fields the index keeps) get a window of their own
+      // when the caller sets one: ranked apart from the source's own fields, so
+      // they cannot take their slots. Without it the statement is unchanged.
+      // The window is a number the server sets, validated here, so it is written
+      // into the statement rather than bound.
+      const joinedWindow = args.perSourceJoinedWindow;
+      if (
+         joinedWindow !== undefined &&
+         (!Number.isInteger(joinedWindow) || joinedWindow < 0)
+      ) {
+         throw new Error(
+            `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
+         );
+      }
+      const dotted =
+         "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
+      const joinedCol =
+         joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
+      const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
+      const hitWhere =
+         joinedWindow === undefined
+            ? "h.rn <= ?"
+            : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
       const scan = await db.all<{
          total: number;
          below: number;
@@ -1863,8 +1895,9 @@ export async function trySemanticSearch(args: {
                    -- instead of in whatever order the scan produced the rows.
                    -- This decides which tied rows fit the window, not just
                    -- how they are listed.
+                   ${joinedCol}
                    ROW_NUMBER() OVER (
-                      PARTITION BY target_idx, entity_source
+                      PARTITION BY target_idx, entity_source${joinedPartition}
                       ORDER BY score DESC, entity_source, entity_name,
                                entity_kind
                    ) AS rn
@@ -1879,7 +1912,7 @@ export async function trySemanticSearch(args: {
               ON p.entity_kind = h.entity_kind
              AND p.entity_source = h.entity_source
              AND p.entity_name = h.entity_name
-            WHERE h.rn <= ?
+            WHERE ${hitWhere}
          ),
          -- What the window left out, per source: entities that cleared the
          -- floor on some target, less the ones kept. Source rows do not spend
