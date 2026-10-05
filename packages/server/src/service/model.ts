@@ -182,6 +182,7 @@ import {
    stringifyQueryResponse,
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
+import { onlyParseFailures } from "./compile_restriction";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -5372,6 +5373,37 @@ export class Model {
    }
 
    /**
+    * Whether `compileError` for ad-hoc `query` may be shown although
+    * {@link queryTextSourcesQueryable} cannot vouch for the text, because no
+    * run target can be read off it (`run` with no colon, SQL, a bare `run:`).
+    *
+    * A grammar failure says nothing about the model, so the only way the
+    * answer could depend on a hidden name is a check that reads names before
+    * the compile and refuses on one. Three do, and this is false whenever one
+    * could act, so a hidden name and a missing one still get the same answer:
+    *   - the run-target check, which has no target to read here (zero names);
+    *   - the caller-join check, which the text must not trigger (no joins);
+    *   - the lock checks, which read every name in the text and answer
+    *     differently for a gated one: false when anything is gated, using the
+    *     same test {@link notQueryable} applies before it will explain a
+    *     refusal.
+    * Where nothing is gated, the boundary already says a hidden source is real
+    * (see {@link OffSurfaceError}), so there is no existence to protect.
+    */
+   private parseFailureNamesNothing(
+      query: string,
+      compileError: MalloyError,
+   ): boolean {
+      return (
+         onlyParseFailures(compileError.problems) &&
+         extractRunTargetSourceNames(query).length === 0 &&
+         buildJoinBaseMap(query).size === 0 &&
+         !this.declaresAnyGate() &&
+         !this.hasAnyAuthorizeNote()
+      );
+   }
+
+   /**
     * Whether the compiler's problems for ad-hoc `query` may be shown (400) or
     * the text keeps the boundary's 404. Every source the text NAMES must pass
     * the compiled boundary's admission test — curated, or derived only from
@@ -7653,7 +7685,9 @@ export class Model {
       // that reaches here is in text the caller may run: when every run target
       // is queryable (curated, or derived only from curated sources) the caller
       // gets the compiler's problems as a 400 located in its own text;
-      // otherwise the answer is the backstop's 404. A given that will not bind
+      // otherwise the answer is the backstop's 404. The one exception is text
+      // that fails only at the grammar and names no run target, in a model
+      // where nothing is gated (see parseFailureNamesNothing). A given that will not bind
       // is left to the run path, which answers it opaquely when a gate reads it.
       // Skipped when the query routed: the routed runnable compiled the same
       // text, so checking the live one would cost a second compile.
@@ -7668,7 +7702,8 @@ export class Model {
          if (compileError && !isGivenBindingFailure(compileError)) {
             if (
                boundary === "deferred" &&
-               !this.queryTextSourcesQueryable(query)
+               !this.queryTextSourcesQueryable(query) &&
+               !this.parseFailureNamesNothing(query, compileError)
             ) {
                // Explain the refusal (`OffSurfaceError`, ungated only) when a
                // run target is a real model source off the surface — the same

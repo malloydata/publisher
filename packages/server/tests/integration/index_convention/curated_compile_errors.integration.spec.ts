@@ -43,10 +43,7 @@ describe.serial("compile errors on a curated package", () => {
    let mcp: McpE2ETestEnvironment | null = null;
    let baseUrl: string;
 
-   const viaRest = async (
-      pkg: string,
-      query: string,
-   ): Promise<RestAnswer> => {
+   const viaRest = async (pkg: string, query: string): Promise<RestAnswer> => {
       const res = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}/models/index.malloy/query`,
          {
