@@ -40,7 +40,7 @@ A name is a pointer, not confirmation. A field, source, or view name you saw in 
 
 Write Malloy using only the model's names. Load `skill:malloy-queries` for syntax (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting) and `skill:malloy-gotchas-queries` to avoid the common compile errors. If a model `view:` already matches, run it directly rather than rewriting it.
 
-**Check these three before your first `execute_query`** - they account for most first-attempt compile failures, and they are the ones a SQL habit gets wrong:
+**Check these before your first `execute_query`.** They cause most first-attempt compile failures, and a SQL habit gets each one wrong:
 
 - **Counting.** `count(field)` is already the *distinct* count of that field. `count(distinct field)` is a compile error (its message says "deprecated"); write `count(field)`.
 - **Separators.** Within a clause, fields are separated by commas or newlines, never `;`. A semicolon fails with `no viable alternative at input '<next-field>'`.

@@ -156,6 +156,8 @@ where: order_date ? @2025-06-01 for 3 months -- same range, duration form
 where: order_date ? now - 1 year for 1 year  -- the last full year
 ```
 
+`~` is for strings, not dates: `where: order_date ~ @2025` does not compile (Malloy reports `mysterious error in range computation`). Use `?`, or `=` for a whole year, month or day.
+
 Bounded `>=`/`<` with two literals also works and is sometimes clearer:
 
 ```malloy
