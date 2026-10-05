@@ -18,7 +18,8 @@ const REPO_ROOT = resolve(import.meta.dir, "../../..");
 
 /** The lines of `PackageEmbeddingIndex.properties.status`. */
 function statusBlock(apiDoc: string): string[] {
-   const lines = apiDoc.split("\n");
+   // api-doc.yaml is checked out with CRLF line endings on Windows.
+   const lines = apiDoc.split(/\r?\n/);
    const start = lines.findIndex((l) => l === "    PackageEmbeddingIndex:");
    if (start < 0) throw new Error("PackageEmbeddingIndex not found");
    const statusAt = lines.findIndex(
