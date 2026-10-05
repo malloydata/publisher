@@ -33,7 +33,7 @@
       "returned": 2
    },
    "fallback/cooldown": {
-      "error": "Semantic search for this package is paused after an embedding failure: The embedding provider answered with HTTP 500.",
+      "error": "Semantic search for this package is paused after an embedding failure: Embedding request failed (500): down",
       "suggestions": [
          "The next question after <retry-at> tries again; nothing retries on its own before then.",
          "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
@@ -73,7 +73,7 @@
       ]
    },
    "fallback/provider-error": {
-      "error": "The embedding provider failed to embed the search text: The embedding provider answered with HTTP 500.",
+      "error": "The embedding provider failed to embed the search text: Embedding request failed (500): down",
       "suggestions": [
          "The next question after <retry-at> tries again; nothing retries on its own before then.",
          "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",

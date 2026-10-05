@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash } from "crypto";
+import type { EmbeddingModel } from "../../providers/types";
 import { E_ALREADY_LOCKED, Mutex, tryAcquire } from "async-mutex";
 import { logger } from "../../logger";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { Package } from "../../service/package";
 import {
    DEFAULT_EMBEDDING_RETRY,
-   EmbeddingProvider,
-   EmbeddingRequestError,
    EmbeddingRetryPolicy,
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
@@ -17,6 +16,7 @@ import {
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
+import { HttpRequestError, publicMessage } from "../../service/http_retry";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
@@ -521,8 +521,23 @@ function desiredFacets(
 }
 
 /**
+ * Rows as the sync stores them when the embedding model wants text put before
+ * indexed text (`retrieval.embedding.documentPrefix`). The hash is then taken
+ * over prefix + text, which is what is sent; with no prefix the rows are
+ * returned unchanged, so turning the feature off costs no re-embed.
+ */
+function withDocumentPrefix(
+   desired: DesiredFacet[],
+   prefix: string,
+): DesiredFacet[] {
+   if (prefix === "") return desired;
+   return desired.map((d) => ({ ...d, hash: contentHash(prefix + d.text) }));
+}
+
+/**
  * The fingerprint's input: every desired row's key and its content hash,
- * hashed together by desiredFingerprintChunked. Two entity sets share a fingerprint exactly when a sync over either
+ * hashed together by desiredFingerprintChunked. Two entity sets share a
+ * fingerprint exactly when a sync over either
  * is a no-op for the other, which is what lets a reloaded package keep the
  * index the replaced instance built.
  *
@@ -750,32 +765,21 @@ function markProviderFailure(meta: PackageSyncMeta, message: string): void {
 }
 
 /**
- * What `lastError` shows on the package status. Fixed wording by failure
- * kind: the status is returned to API callers, and the raw error text can
- * carry the provider's URL and a slice of its response body. The full error
- * goes to the log.
+ * What `lastError` shows on the package status. A provider failure carries
+ * its own public wording (see publicMessage), which names no endpoint. Any
+ * other failure (a DuckDB error, say) gets fixed wording: its text can name
+ * a file or a statement. The full error goes to the log.
  */
-function publicProviderMessage(error: unknown): string {
-   if (error instanceof EmbeddingRequestError) {
-      if (error.status === 401 || error.status === 403) {
-         return "The embedding provider rejected the credentials. Check EMBEDDING_API_KEY.";
-      }
-      if (error.status === 429) {
-         return "The embedding provider is rate limiting requests.";
-      }
-      if (error.status !== undefined) {
-         return `The embedding provider answered with HTTP ${error.status}.`;
-      }
-      return "The embedding provider could not be reached, or did not answer in time.";
-   }
+function publicStatusMessage(error: unknown): string {
+   if (error instanceof HttpRequestError) return publicMessage(error);
    if (error instanceof SyncDeadlineError) return error.message;
-   return "The embedding provider returned an unusable response, or the index could not be written. See the server log.";
+   return "The embedding sync failed on an unusable response or a write error. See the server log.";
 }
 
 /** Whether `error` says the provider itself is down, not one package's input. */
 function isProviderWideFailure(error: unknown): boolean {
    return (
-      error instanceof EmbeddingRequestError &&
+      error instanceof HttpRequestError &&
       (error.retryable || error.status === 401 || error.status === 403)
    );
 }
@@ -787,16 +791,16 @@ function isProviderWideFailure(error: unknown): boolean {
  * the same model is not held back by this one's outage.
  */
 let providerBreaker = new WeakMap<
-   EmbeddingProvider,
+   EmbeddingModel,
    { atMs: number; message: string }
 >();
 
-function openBreaker(provider: EmbeddingProvider, message: string): void {
+function openBreaker(provider: EmbeddingModel, message: string): void {
    providerBreaker.set(provider, { atMs: Date.now(), message });
 }
 
 function openBreakerFor(
-   provider: EmbeddingProvider,
+   provider: EmbeddingModel,
 ): { atMs: number; message: string } | undefined {
    const open = providerBreaker.get(provider);
    if (!open) return undefined;
@@ -816,8 +820,14 @@ function inCooldown(meta: PackageSyncMeta): boolean {
  * config are not interchangeable with another's, so both the search path and
  * the readiness test compare it; defined here so they cannot disagree.
  */
-function providerKeyFor(provider: EmbeddingProvider): string {
-   return `${provider.model}${KEY_SEPARATOR}${provider.dimensions ?? ""}`;
+function providerKeyFor(provider: EmbeddingModel): string {
+   return [
+      provider.model,
+      provider.dimensions ?? "",
+      // Text put before indexed text changes every vector, so it is part of
+      // what makes two syncs interchangeable.
+      provider.documentPrefix,
+   ].join(KEY_SEPARATOR);
 }
 
 /** What one pass over an entity set's desired rows yields. */
@@ -1164,7 +1174,7 @@ async function upsertEmbeddingRows(
  */
 async function syncPackageEmbeddings(
    db: DuckDBConnection,
-   provider: EmbeddingProvider,
+   provider: EmbeddingModel,
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
@@ -1229,9 +1239,15 @@ async function syncPackageEmbeddings(
          }
       }
 
-      const desired = await desiredFacetsChunked(entities, {
-         representation: settings.representation,
-      });
+      // A row's hash covers the text actually sent, prefix included, so a
+      // changed documentPrefix re-embeds every row through the ordinary diff.
+      const documentPrefix = provider.documentPrefix ?? "";
+      const desired = withDocumentPrefix(
+         await desiredFacetsChunked(entities, {
+            representation: settings.representation,
+         }),
+         documentPrefix,
+      );
       const desiredKeys = new Set(
          desired.map((d) =>
             facetRowKey(
@@ -1305,7 +1321,7 @@ async function syncPackageEmbeddings(
             if (pastDeadline()) throw new SyncDeadlineError();
             const batch = toEmbed.slice(start, start + syncBatchSize);
             const vectors = await provider.embedBatch(
-               batch.map((d) => d.text),
+               batch.map((d) => documentPrefix + d.text),
                EMBEDDING_BATCH_TIMEOUT_MS,
                retry,
             );
@@ -1353,8 +1369,9 @@ async function syncPackageEmbeddings(
       // purpose: a sync that aborted as orphaned wrote no rows, so the next
       // call must re-sync under the fresh meta.
       meta.synced = {
-         // Computed exactly as the readiness check computes it: over the rows
-         // for the package's representation plus the settings key.
+         // Computed exactly as the readiness check computes it: over the
+         // unprefixed rows plus the settings key. The prefix is part of
+         // providerKey, not of the content fingerprint.
          fingerprint: await fingerprintFor(entities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
@@ -1388,7 +1405,7 @@ async function syncPackageEmbeddings(
  */
 function kickSync(args: {
    db: DuckDBConnection;
-   provider: EmbeddingProvider;
+   provider: EmbeddingModel;
    pkg: Package;
    environmentName: string;
    packageName: string;
@@ -1425,7 +1442,7 @@ function kickSync(args: {
 async function runTrackedSync(
    args: {
       db: DuckDBConnection;
-      provider: EmbeddingProvider;
+      provider: EmbeddingModel;
       pkg: Package;
       environmentName: string;
       packageName: string;
@@ -1467,10 +1484,12 @@ async function runTrackedSync(
          return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      const publicMessage = publicProviderMessage(error);
-      markProviderFailure(meta, publicMessage);
+      // The log keeps the full message; what the status and an error result
+      // show a caller never names the endpoint.
+      const shown = publicStatusMessage(error);
+      markProviderFailure(meta, shown);
       if (isProviderWideFailure(error)) {
-         openBreaker(provider, publicMessage);
+         openBreaker(provider, shown);
       }
       logger.warn(
          "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
@@ -1510,7 +1529,7 @@ export function enqueuePackageSync(args: {
    prepare: () => Promise<
       | {
            db: DuckDBConnection;
-           provider: EmbeddingProvider;
+           provider: EmbeddingModel;
            entities: readonly EmbeddableEntity[];
         }
       | undefined
@@ -1576,7 +1595,7 @@ export function enqueuePackageSync(args: {
  */
 export async function trySemanticSearch(args: {
    db: DuckDBConnection;
-   provider: EmbeddingProvider;
+   provider: EmbeddingModel;
    pkg: Package;
    environmentName: string;
    packageName: string;
@@ -1719,12 +1738,14 @@ export async function trySemanticSearch(args: {
       // targets cost one round trip rather than N -- and the round trip is
       // what sits on the latency path of every semantic call.
       queryVectors = await provider.embedBatch(
-         queries.map((q) => q.text),
+         queries.map((q) => (provider.queryPrefix ?? "") + q.text),
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      markProviderFailure(meta, publicProviderMessage(error));
+      // The log keeps the full message; what the status and an error result
+      // show a caller never names the endpoint.
+      markProviderFailure(meta, publicStatusMessage(error));
       logger.warn(
          "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },
@@ -2272,7 +2293,7 @@ export interface EmbeddingIndexStatus {
  */
 export async function getEmbeddingIndexStatus(
    db: DuckDBConnection,
-   provider: EmbeddingProvider,
+   provider: EmbeddingModel,
    environmentName: string,
    packageName: string,
    allEntities: readonly EmbeddableEntity[],

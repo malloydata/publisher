@@ -502,7 +502,7 @@ describe("a provider that is down, and a sync that runs too long", () => {
       expect(requests).toBe(afterFirstPackage);
    });
 
-   it("shows fixed wording as the cause, with no URL or response text", async () => {
+   it("shows a cause that names the status but not the provider URL", async () => {
       const down = stubProvider(
          (async () =>
             new Response("secret provider detail", {
@@ -517,7 +517,8 @@ describe("a provider that is down, and a sync that runs too long", () => {
 
       const message = (await getPackageEmbeddingStatus(store, "env", "wording"))
          .lastError?.message;
-      expect(message).toBe("The embedding provider answered with HTTP 503.");
+      expect(message).toContain("503");
+      expect(message).not.toContain("stub.example.com");
    });
 
    it("stops a sync that outlasts its time limit, keeps what it saved, and frees the queue", async () => {
@@ -620,8 +621,9 @@ describe("getPackageEmbeddingStatus", () => {
       const status = await getPackageEmbeddingStatus(store, "env", "failing");
       expect(status.status).toBe("error");
       expect(status.reason).toBe("cooldown");
-      expect(status.lastError?.message).toContain("rejected the credentials");
+      expect(status.lastError?.message).toContain("authentication failed");
       expect(status.lastError?.message).not.toContain("sk-secret-key-123");
+      // The status is shown to callers, so it never names the endpoint.
       expect(status.lastError?.message).not.toContain("stub.example.com");
       expect(Date.parse(status.lastError!.retryAt!)).toBeGreaterThan(before);
       expect(status.embeddedRows).toBe(0);

@@ -74,9 +74,11 @@ reload. On such a build, `ready` here is necessary but not sufficient.
 --allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true: a `publisher`-type
 connection is refused without it, and the server still reports `serving` with
 load_errors=1. --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, which
-open-source Publisher does not read: it has no trace store, and attribution
-reads each call's rankedSummary, copied at capture. The flag is kept so older
-commands still parse.
+Publisher reads: each ranked get_context call writes one "Retrieval trace" line
+to publisher.log with the count and timing of every pipeline stage. It adds
+nothing to a response, so the answering agent sees what it would without the
+flag. The line has no per-target ranked results; attribution reads each call's
+rankedSummary, copied at capture, and does not read this line yet.
 
 A server started without EMBEDDING_API_KEY has no provider (`lexical`): it
 ranks get_context with the lexical matcher, and the start line says so. A retrieval number from it is not comparable with a

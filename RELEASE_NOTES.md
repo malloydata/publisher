@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and a smaller, direct-field index
+## [Unreleased] — Semantic retrieval: provider layer and `retrieval` settings for chat and embedding models, with no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and a smaller, direct-field index
 
 With no embedding provider configured, `get_context` ranks by words as before. Everything below applies once a provider is configured. Read the first three items if you poll the status API or run a server with an embedding provider.
 
@@ -46,11 +46,15 @@ With no embedding provider configured, `get_context` ranks by words as before. E
 
 **Ranked responses are capped at 35,000 characters.** Whole source cards are dropped, never cut in half, and a warning says how many. Narrow the request with `model_path`, `source_name` or `entity_name` to see them.
 
+**New settings.** `publisher.config.json` gains a `retrieval` block with `llm`, `embedding`, `egress.preset` and `indexing.maxEntities`; the API keys are `LLM_API_KEY` and `EMBEDDING_API_KEY`. Chat and embedding calls go through one provider layer for OpenAI, OpenAI-compatible servers, Ollama, Anthropic, Google and Vertex. `retrieval.llm.maxCallsPerRequest` (default 20) is the most HTTP requests one `get_context` call may send to the chat model, retries included; a call made while a person waits retries once, after at most one second. A repeated chat failure (three in a row that are 429, 408 or 5xx) pauses chat calls for 60 seconds, process-wide. An error from a vendor shows the status and the vendor's own message, never the endpoint. A bad or unreadable `publisher.config.json` no longer stops the server from starting.
+
+**Trace.** The `X-Publisher-Retrieval-Trace: summary` request header adds a `retrieval_trace` block (per stage: name, status, ms, rows in and out, chat requests, tokens). Setting `PUBLISHER_MCP_TRACE=retrieval` on the server writes the same summary to the server log, one line per ranked call, and adds nothing to a response.
+
 Also changed, when an embedding provider is configured:
 
-- **Semantic search covers a source's own fields.** Joined copies are made when the answer is assembled and scored `cosine * 0.9 ** (hops + 1)`, so results are fewer and more direct. A joined field that cannot be rebuilt from a source of its own (a join to an inline table or SQL, or a join that adds the field to its target) stays in the index, so it is still found. A dotted `entity_name` that names a joined field, such as `buyer.name`, still matches on this path; a bare `name` does not match the joined copy.
-- **Two model files that each define a source of the same name** no longer share joined copies: a field ranked from one file is copied only into joins that reach that file's source.
-- **`retrieval.representation` defaults to `single`**: one vector per entity, made from its doc or name. Scores and rankings change and each package re-embeds on its first start. `facets` is the earlier layout. It is set in the new `retrieval` block of `publisher.json`; an unknown key or bad value there stops that package from loading (HTTP 424) with a message naming the valid keys.
+- **Semantic search covers a source's own fields.** Joined copies are made when the answer is assembled and scored `cosine * 0.9 ** (hops + 1)`. A joined field that cannot be rebuilt from a source of its own (a join to an inline table or SQL, or a join that adds the field to its target) stays in the index, so it is still found. A dotted `entity_name` that names a joined field, such as `buyer.name`, still matches on this path; a bare `name` does not match the joined copy.
+- **Two model files that each define a source of the same name** no longer share joined copies.
+- **`retrieval.representation` defaults to `single`**: one vector per entity, made from its doc or name. Scores and rankings change and each package re-embeds on its first start. `facets` is the earlier layout. An unknown key or bad value in the `retrieval` block of `publisher.json` stops that package from loading (HTTP 424).
 
 ## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
