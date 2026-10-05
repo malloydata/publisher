@@ -654,6 +654,17 @@ describe("spliceDashboardDocument: switching kind", () => {
       expect(back.document.kind).toBe("notebook");
    });
 
+   it("tags a dashboard kind=dashboard when the document has no path, as in text-source mode", async () => {
+      const { out } = await writes(
+         NOTEBOOK,
+         (d) => {
+            d.kind = "dashboard";
+         },
+         { changeKind: true },
+      );
+      expect(out).toContain("kind=dashboard");
+   });
+
    it("leaves a dashboard under dashboards/ untagged", async () => {
       const { out } = await writes(
          NOTEBOOK,

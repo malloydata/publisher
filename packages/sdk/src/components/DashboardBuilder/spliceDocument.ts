@@ -748,10 +748,10 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       };
       if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
          inner = append("kind=notebook");
-      // The server reads an untagged file under notebooks/ as a notebook, so a dashboard there must say so.
+      // A tag with no kind takes its folder's; a document held as text has no dashboards/ folder, so a dashboard there must say so.
       else if (
          kindOf(current) !== kindOf(next) &&
-         ctx.modelPath?.startsWith("notebooks/")
+         !ctx.modelPath?.startsWith("dashboards/")
       )
          inner = append("kind=dashboard");
       if (current.title !== next.title)

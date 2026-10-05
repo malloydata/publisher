@@ -118,15 +118,34 @@ run: open_src -> { aggregate: c }
          ]);
       });
 
-      it("defaults the kind to notebook and takes a dashboard from the tag", async () => {
-         const notebook = await compile(
-            `## artifact { tiles=["open_src -> v"] }\n`,
+      it("reads the kind from the tag, and from the layout when the tag names none", async () => {
+         const kindOf = async (source: string) =>
+            (await compile(source)).document?.kind;
+         // Submitted text has no folder to take a kind from, so the layout decides.
+         expect(await kindOf(`## artifact { tiles=["open_src -> v"] }\n`)).toBe(
+            "dashboard",
          );
-         expect(notebook.document?.kind).toBe("notebook");
+         expect(
+            await kindOf(`## artifact { } dashboard { columns=12 }\n`),
+         ).toBe("dashboard");
+         expect(
+            await kindOf(
+               `## artifact { }\nrun: open_src -> { aggregate: c }\n`,
+            ),
+         ).toBe("notebook");
+         expect(
+            await kindOf(
+               `## artifact { kind=notebook tiles=["open_src -> v"] }\n`,
+            ),
+         ).toBe("notebook");
+         expect(
+            await kindOf(
+               `## artifact { kind=dashboard }\nrun: open_src -> { aggregate: c }\n`,
+            ),
+         ).toBe("dashboard");
          const dashboard = await compile(
             DOC_TILES.replace("gated -> v", "open_src -> v"),
          );
-         expect(dashboard.document?.kind).toBe("dashboard");
          expect(tilesOf(dashboard)).toHaveLength(2);
       });
 

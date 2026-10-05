@@ -1899,7 +1899,9 @@ paths:
         that is both gated and hidden from the caller answers 404 for the whole
         request, as it does without a document. In a document, problem positions
         are lines of the submitted text, problems carry no `model` tag, and
-        `includeSql` returns no `sql`.
+        `includeSql` returns no `sql`. A tag that names no `kind` is a dashboard
+        when it lists `tiles` or carries a `dashboard { … }` grid tag, and a
+        notebook otherwise, since submitted text has no folder to take a kind from.
       parameters:
         - name: environmentName
           in: path

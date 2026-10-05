@@ -27,6 +27,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 The SDK builder opens a document held as text: `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` and `<DashboardView preamble runModelPath hiddenGivens />` run every tile, cell and control option as the viewer's own text. Existing responses and props are unchanged. `malloy-notebook-chat` is no longer part of the shared skills; it only makes sense in a host that binds a chat to a notebook.
 
+Submitted text has no folder to take a kind from, so a `## artifact` tag that names no `kind` is a dashboard when it lists `tiles=[…]` or carries a `dashboard { … }` grid tag, and a notebook otherwise; the builder's "Show as: Dashboard" now writes `kind=dashboard` for a document held as text.
+
 ## Packages that version on their own line
 
 `@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.

@@ -27,8 +27,10 @@ import {
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
 import { ownModelNoteObjects } from "./annotations";
+import { motlyTag } from "./motly";
 import {
    artifactKindOfNotes,
+   artifactTagText,
    cellOffsets,
    claimsToBeANotebook,
    documentKind,
@@ -119,6 +121,16 @@ export function blankSpans(
       }
    }
    return units.join("");
+}
+
+/** A tag that names no kind takes its folder's and submitted text has none, so tiles or a grid width make it a dashboard. */
+function pathForKind(source: string, slug: string): string {
+   const line = artifactTagText(source);
+   const tags = line === undefined ? undefined : motlyTag([line]);
+   const dashboard =
+      tags?.tag("artifact")?.has("tiles") === true ||
+      tags?.tag("dashboard") !== undefined;
+   return `${dashboard ? "dashboards" : "notebooks"}/${slug}.malloy`;
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
@@ -367,8 +379,9 @@ export async function compileDocument(input: {
    });
 
    const slug = modelName.replace(/^.*\//, "").replace(/\.malloy$/, "");
+   const path = pathForKind(source, slug);
    const facts = readDashboardModelFacts(
-      `notebooks/${slug}.malloy`,
+      path,
       modelDef,
       Object.values(registry).map((given) => given.name),
       new Map(
@@ -410,7 +423,7 @@ export async function compileDocument(input: {
    if (!manifest) {
       // Written as cells: no tile layout, so the file's own cells are the document.
       const kind = documentKind(
-         `notebooks/${slug}.malloy`,
+         path,
          artifactKindOfNotes(ownModelNoteObjects(modelDef)),
       );
       return { problems, document: { kind, cells } };
