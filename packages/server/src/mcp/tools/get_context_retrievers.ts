@@ -194,6 +194,7 @@ export const semanticRetriever: Retriever = {
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
                         score: Math.round(hit.score * 10_000) / 10_000,
+                        rawScore: hit.score,
                         targetScores: hit.targetScores,
                      }));
                   });

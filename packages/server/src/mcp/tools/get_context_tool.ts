@@ -159,6 +159,12 @@ export interface ResultEntity {
     */
    code?: string;
    score?: number;
+   /**
+    * The score before it was rounded to the four places the response publishes.
+    * Ordering uses it, so two rows whose scores differ in the fifth place are
+    * not treated as tied. Never serialized.
+    */
+   rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -2187,6 +2193,14 @@ export async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -2547,7 +2561,11 @@ function runListing(
 // The stages and retrievers runContextQuery runs. PR 1 registers no stage of
 // either kind; a new stage is one file and one line here.
 const QUERY_STAGES: QueryStage[] = [];
-const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
+// A function, not a constant: get_context_retrievers imports this file, so the
+// two retrievers must not be read while this module is still being evaluated.
+// A constant here made importing the retrievers first throw "Cannot access
+// 'semanticRetriever' before initialization".
+const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
 const RANK_STAGES: RankStage[] = [];
 const CARD_STAGES: CardStage[] = [];
 
@@ -2659,7 +2677,7 @@ async function runContextQuery(
    // then the payload carries no `retrieval` marker and no per-entity
    // `score`, byte-identical to the lexical-only releases.
    let ranked: RankedState | undefined;
-   for (const retriever of RETRIEVERS) {
+   for (const retriever of retrievers()) {
       const result = await retriever.retrieve(ctx);
       if ("unavailable" in result) {
          // "unconfigured" means no provider: the next retriever is the mode.
@@ -3058,14 +3076,14 @@ export function startPackageEmbeddingSync(
          // and the status endpoint reports it.
          const provider = getEmbeddingProvider();
          if (!provider) return undefined;
-         const pkgIndex = await getPackageIndex(
-            environmentStore,
-            environmentName,
-            packageName,
-         );
-         // The package was reloaded while this waited; the reload queued its
-         // own sync.
-         if (pkgIndex.pkg !== pkg) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
          return {
             db: environmentStore.storageManager.getDuckDbConnection(),
             provider,

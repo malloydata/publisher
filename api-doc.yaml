@@ -3753,8 +3753,11 @@ components:
             message:
               type: string
               description: >-
-                What went wrong, with the fix where there is one. Never
-                contains the API key.
+                What went wrong, in fixed wording that names the kind of
+                failure (credentials rejected, rate limited, HTTP status,
+                unreachable) and never contains the provider's URL, its
+                response text or the API key. The full error is in the
+                server log.
             retryAt:
               type: string
               format: date-time

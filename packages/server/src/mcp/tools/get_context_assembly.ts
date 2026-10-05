@@ -49,14 +49,14 @@ function compareText(a: string, b: string): number {
 
 /**
  * The order of ranked rows: score descending, then source, name, kind and
- * model path. The score is the rounded one the response publishes, so two rows
- * that show the same relevance are listed in a fixed order, not in whatever
- * order the scan happened to return them. Shared by the semantic retriever
- * and by assembly, which adds joined copies and so has to sort again.
+ * model path. The score compared is the unrounded one, so only rows with
+ * exactly the same score count as tied and are listed in a fixed order, not in
+ * whatever order the scan happened to return them. Shared by the semantic
+ * retriever and by assembly, which adds joined copies and so has to sort again.
  */
 export function compareRanked(a: ResultEntity, b: ResultEntity): number {
    return (
-      (b.score ?? 0) - (a.score ?? 0) ||
+      (b.rawScore ?? b.score ?? 0) - (a.rawScore ?? a.score ?? 0) ||
       compareText(a.source ?? "", b.source ?? "") ||
       compareText(a.name, b.name) ||
       compareText(a.kind, b.kind) ||
@@ -224,6 +224,8 @@ function expandJoins(
          const factor = damping === null ? 1 : damping ** (place.hops + 1);
          const score =
             row.score === undefined ? undefined : round4(row.score * factor);
+         const rawScore =
+            row.rawScore === undefined ? undefined : row.rawScore * factor;
          const key = [place.modelPath, place.source, row.kind, place.name].join(
             KEY_SEPARATOR,
          );
@@ -231,6 +233,7 @@ function expandJoins(
          if (seen) {
             if (score !== undefined && score > (seen.score ?? 0)) {
                seen.score = score;
+               seen.rawScore = rawScore;
                seen.targetScores = dampTargetScores(row, factor);
                seen.bestTarget = row.bestTarget;
             }
@@ -248,6 +251,7 @@ function expandJoins(
             joinPath: place.joinPath,
             ...(row.dataType ? { dataType: row.dataType } : {}),
             ...(score !== undefined ? { score } : {}),
+            ...(rawScore !== undefined ? { rawScore } : {}),
             ...(row.targetScores
                ? { targetScores: dampTargetScores(row, factor) }
                : {}),
