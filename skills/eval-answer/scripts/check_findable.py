@@ -45,6 +45,8 @@ EXIT CODES
   1  at least one is not
   2  usage error
   3  the check could not run (no server, no scope); says nothing either way
+  4  inconclusive: the server answered `indexing` or `error` instead of searching,
+     so no id was checked. Re-run once the index is ready.
 """
 from __future__ import annotations
 
@@ -60,7 +62,7 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import config  # noqa: E402
-from mcp_payload import entity_hits  # noqa: E402
+from mcp_payload import entity_hits, unavailable_state  # noqa: E402
 
 # An entity kind, and the target type that can return it. The inverse of the
 # server's KINDS_BY_TARGET; `score_retrieval.KINDS_BY_TARGET` is the forward map
@@ -223,6 +225,18 @@ def embedding_index(rest_url: str, environment: str, package: str,
 
 # `indexing` is the only state that can still change on its own. `lexical`
 # (no provider) and `error` are settled; `error` clears only by a re-run.
+# Neither pass (0) nor findings (1): the check could not run.
+EXIT_INCONCLUSIVE = 4
+
+def index_cannot_search(index: dict[str, Any] | None) -> bool:
+    """Whether the wait ended on an index that answers no search.
+
+    `indexing` after the deadline and `error` both do. `lexical` and `ready`
+    search, and an unreadable status (None) is left to the per-search check.
+    """
+    return index is not None and index.get("status") in ("indexing", "error")
+
+
 TERMINAL = ("ready", "lexical", "error")
 
 
@@ -404,6 +418,10 @@ def finding_id(message: str) -> str:
     return message.split(": ", 1)[0]
 
 
+class Inconclusive(Exception):
+    """The search could not run, so the check says nothing about the key."""
+
+
 def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
           package: str) -> tuple[list[str], list[dict[str, Any]]]:
     findings: list[str] = []
@@ -429,6 +447,15 @@ def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
             raise SystemExit(f"get_context failed for {eid}: {e}\n"
                              f"The check did not run; this says nothing about "
                              f"the key.") from e
+        state = unavailable_state(payload)
+        if state:
+            # An `indexing` or `error` answer carries no entities. Reading it
+            # as a miss would report "not retrievable" for an id the server
+            # never searched for.
+            raise Inconclusive(
+                f"get_context answered `{state}` for {eid}, so the server did "
+                f"not search. The check is inconclusive: it says nothing "
+                f"about the key.")
         hit = next((h for h in entity_hits(payload)
                     if h["entity_id"] == eid), None)
         rows.append({"entity_id": eid, "target": target, "search_text": phrase,
@@ -502,6 +529,13 @@ def main(argv: list[str] | None = None) -> int:
         note = index_message(index, a.index_wait)
         if note:
             print(note, file=sys.stderr)
+        if index_cannot_search(index):
+            # The wait ended on a server that cannot rank. Every search below
+            # would come back empty and read as a missing entity.
+            print(f"inconclusive: the embedding index is "
+                  f"`{index.get('status')}`, so no search was run. Re-run "
+                  f"once it is ready.", file=sys.stderr)
+            return EXIT_INCONCLUSIVE
 
     declared_out: list[str] = []
     if a.publisher:
@@ -513,7 +547,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"compiled model: {sum(len(v) for v in declared.values())} "
                   f"entities across {len(declared)} sources")
 
-    findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+    try:
+        findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+    except Inconclusive as e:
+        print(f"inconclusive: {e}", file=sys.stderr)
+        return EXIT_INCONCLUSIVE
     # An id the compiled model already rejected is not also reported as
     # unretrievable: it is the same defect, and saying it twice reads as two.
     # The compiled message is the useful one, because it names the real kind.
