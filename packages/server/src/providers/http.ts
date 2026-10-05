@@ -22,6 +22,13 @@ export interface PostJsonArgs {
    authHint: string;
    /** "Chat request" or "Embedding request". */
    what: string;
+   /**
+    * Whether the vendor's own error text may be shown to a caller. A vendor
+    * whose messages name the account's resources (Vertex AI puts the project
+    * and location in the text) sets this false: the caller then sees the
+    * status and a fixed sentence, and the server log keeps the full text.
+    */
+   showVendorMessage?: boolean;
 }
 
 /** The URL without its query string, so a key in a query never reaches a log. */
@@ -82,7 +89,10 @@ export async function postJson(args: PostJsonArgs): Promise<unknown> {
       } else {
          const text = await response.text().catch(() => "");
          detail = scrub(text, args.secrets).slice(0, 200);
-         vendorMessage = vendorErrorMessage(scrub(text, args.secrets));
+         vendorMessage =
+            args.showVendorMessage === false
+               ? "the vendor rejected the request; the server log has its message"
+               : vendorErrorMessage(scrub(text, args.secrets));
       }
       throw new HttpRequestError(
          `${args.what} to ${where} failed (${response.status}): ${detail}`,
@@ -93,8 +103,34 @@ export async function postJson(args: PostJsonArgs): Promise<unknown> {
       );
    }
 
+   // Reading the body can fail after good headers: the timeout fires, or the
+   // connection drops. That is the network, so a retry can help. Only text
+   // that arrived whole and is not JSON will fail the same way again.
+   let text: string;
    try {
-      return await response.json();
+      text = await response.text();
+   } catch (error) {
+      const name = (error as Error)?.name;
+      if (name === "AbortError") {
+         throw new HttpRequestError(
+            `${args.what} to ${where} was cancelled`,
+            undefined,
+            false,
+         );
+      }
+      const timedOut = name === "TimeoutError";
+      throw new HttpRequestError(
+         `${args.what} to ${where} failed while reading the reply: ${scrub((error as Error).message, args.secrets)}`,
+         undefined,
+         true,
+         undefined,
+         timedOut
+            ? `${args.what} failed: timed out after ${args.timeoutMs}ms`
+            : `${args.what} failed: the connection dropped while reading the reply`,
+      );
+   }
+   try {
+      return JSON.parse(text);
    } catch {
       throw new HttpRequestError(
          `${args.what} to ${where} returned a body that is not JSON`,

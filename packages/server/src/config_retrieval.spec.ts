@@ -31,13 +31,23 @@ describe("retrieval.indexing.maxEntities", () => {
       expect(parseRetrievalConfig({ indexing: {} })).toEqual({ indexing: {} });
    });
 
-   it("ignores keys it does not know yet, so the block can grow", () => {
-      expect(
-         parseRetrievalConfig({
-            futureSetting: true,
-            indexing: { maxEntities: 7, futureKnob: 1 },
-         }),
-      ).toEqual({ indexing: { maxEntities: 7 } });
+   it("names a key it does not know, at the top level and under indexing", () => {
+      expect(() =>
+         parseRetrievalConfig({ embeding: { provider: "openai" } }),
+      ).toThrow(
+         "Invalid retrieval: unknown key 'embeding'. Valid keys: indexing, llm, embedding, egress.",
+      );
+      expect(() =>
+         parseRetrievalConfig({ indexing: { maxEntitites: 7 } }),
+      ).toThrow(
+         "Invalid retrieval.indexing: unknown key 'maxEntitites'. Valid keys: maxEntities.",
+      );
+   });
+
+   it("says what an indexing value of the wrong shape should be", () => {
+      expect(() => parseRetrievalConfig({ indexing: [7] })).toThrow(
+         "Invalid retrieval.indexing: expected an object",
+      );
    });
 
    const bad: Array<[string, unknown, string]> = [

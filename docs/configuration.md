@@ -345,17 +345,23 @@ What to know before turning it on:
 
   `provider` is one of `openai`, `openai-compatible`, `ollama`, `anthropic`, `google`, `vertex`
   (Anthropic has no embeddings). `vertex` also needs `projectId` and `location` and uses Application
-  Default Credentials. Under `llm`, `timeoutMs` (default 30000), `concurrency` (4),
-  `maxCallsPerSync` (300) and `maxCallsPerRequest` (20) bound the spend: `maxCallsPerRequest` counts
-  HTTP requests to the vendor for one `get_context` call, retries and JSON repairs included, and a
-  call made while a person waits retries once, after at most one second. Under `embedding`,
+  Default Credentials. Under `llm`, `timeoutMs` (default 30000) and `maxCallsPerRequest` (20) bound the
+  spend: `maxCallsPerRequest` counts HTTP requests to the vendor for one `get_context` call, retries
+  and JSON repairs included, and a call made while a person waits retries once, after at most one
+  second. `concurrency` (4), `maxCallsPerSync` (300) and `egress.preset` are accepted and checked but
+  reserved: nothing reads them until the stages that call a chat model are added, so they have no
+  effect yet. On Vertex, `gemini-embedding-*` models are sent one input per request, as the API
+  requires; other models are sent up to 250. For OpenAI's `gpt-5` and `o`-series models no
+  `temperature` is sent, because the API rejects it. Under `embedding`,
   `queryPrefix` and `documentPrefix` are text put before a query or before indexed text; changing
   `documentPrefix` re-embeds. `egress.preset` says what may leave the machine for a chat model:
   `default` is entity names, `#(doc)` text and schema context, `full` adds code. Access predicates
-  (`#(access_filter)`, `#(authorize)`) never leave. A bad value stops the server at startup with a
-  message that names the key and a fix.
+  (`#(access_filter)`, `#(authorize)`) never leave. A bad value, or a key the block does not know (a typo
+  such as `maxEntitites`), stops the server at startup with a message that names the key and a fix.
 - Errors from a vendor: a failed call shows the caller the status and the vendor's own message, never
-  the endpoint or project path; the server log keeps the full text. Three failures in a row that look
+  the endpoint or project path; the server log keeps the full text. Vertex AI errors show the status
+  and a fixed sentence, since its messages name the project, and a credentials failure shows the fix
+  without the key file path. Three failures in a row that look
   like an outage (429, 408, 5xx, a timeout) pause chat calls for 60 seconds, process-wide.
 - Retrieval trace: send `X-Publisher-Retrieval-Trace: summary` to add a `retrieval_trace` block to a
   ranked response, or start the server with `PUBLISHER_MCP_TRACE=retrieval` to write the same summary to

@@ -25,7 +25,7 @@ import {
 } from "./types";
 import {
    adcAccessToken,
-   VERTEX_EMBED_MAX_BATCH,
+   vertexEmbedMaxBatch,
    VertexChat,
    vertexEmbedChunk,
 } from "./vertex";
@@ -183,7 +183,7 @@ export function createEmbeddingModel(
          return new BatchEmbeddingModel(
             "vertex",
             settings,
-            VERTEX_EMBED_MAX_BATCH,
+            vertexEmbedMaxBatch(settings.model),
             vertexEmbedChunk({
                model: settings.model,
                projectId,

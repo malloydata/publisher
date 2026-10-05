@@ -18,6 +18,23 @@ export function defaultOpenAiBaseUrl(
    return undefined;
 }
 
+/**
+ * Whether OpenAI's own endpoint refuses a `temperature` other than the default
+ * for this model. The reasoning families (o1, o3, o4 and the gpt-5 models)
+ * answer 400 to `temperature: 0`; gpt-5 "chat" variants accept it. Applies to
+ * OpenAI only: a compatible server (Ollama, vLLM, a gateway) takes the field
+ * whatever the model is called.
+ */
+export function rejectsTemperature(
+   provider: ProviderName,
+   model: string,
+): boolean {
+   if (provider !== "openai") return false;
+   const name = model.toLowerCase().replace(/^.*\//, "");
+   if (/^gpt-5.*-chat/.test(name)) return false;
+   return /^(o\d|gpt-5)/.test(name);
+}
+
 interface OpenAiChatReply {
    choices?: { message?: { content?: unknown } }[];
    usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
@@ -32,7 +49,7 @@ function count(value: unknown): number | undefined {
 /**
  * Chat through an OpenAI-style `/chat/completions` endpoint: OpenAI itself,
  * Ollama's compatibility endpoint, and any server that copies the shape
- * (vLLM, Azure, a gateway). Temperature is 0. `response_format` is sent only
+ * (vLLM, Azure, a gateway). Temperature is 0 unless the model rejects it. `response_format` is sent only
  * when JSON was asked for. Ollama and some gateways need no key, so the
  * Authorization header is omitted when there is none.
  */
@@ -52,9 +69,10 @@ export class OpenAiCompatibleChat implements RawChat {
       messages.push({ role: "user", content: req.prompt });
       const body: Record<string, unknown> = {
          model: this.model,
-         temperature: 0,
          messages,
       };
+      // Temperature 0 keeps ranking stable where the model allows it.
+      if (!rejectsTemperature(this.provider, this.model)) body.temperature = 0;
       if (req.maxTokens !== undefined) {
          // OpenAI renamed the field; other servers still read max_tokens.
          body[

@@ -334,6 +334,111 @@ describe("vertex adapter", () => {
       });
    });
 
+   it("sends one input per request for the gemini-embedding models", async () => {
+      const one = () =>
+         jsonResponse({ predictions: [{ embeddings: { values: [1, 2] } }] });
+      const { fetchFn, requests } = stubFetch([one, one, one]);
+      const model = createEmbeddingModel(
+         emb({
+            provider: "vertex",
+            apiKey: undefined,
+            projectId: "proj",
+            location: "us-central1",
+            model: "gemini-embedding-001",
+         }),
+         { fetchFn, getAccessToken: token },
+      );
+      expect(model.maxBatch).toBe(1);
+      const vectors = await model.embed(["a", "b", "c"]);
+      expect(vectors).toHaveLength(3);
+      expect(requests).toHaveLength(3);
+      for (const r of requests) expect(r.body.instances).toHaveLength(1);
+   });
+
+   it("keeps the text-embedding models at 250 inputs per request", () => {
+      const model = createEmbeddingModel(
+         emb({
+            provider: "vertex",
+            apiKey: undefined,
+            projectId: "proj",
+            location: "us-central1",
+            model: "text-embedding-005",
+         }),
+         { fetchFn: stubFetch([() => jsonResponse({})]).fetchFn },
+      );
+      expect(model.maxBatch).toBe(250);
+   });
+
+   it("stops waiting for an access token when the request times out", async () => {
+      const { fetchFn, requests } = stubFetch([() => jsonResponse({})]);
+      const chat = createChatModel(
+         llm({
+            provider: "vertex",
+            apiKey: undefined,
+            projectId: "proj",
+            location: "us-central1",
+            timeoutMs: 30,
+         }),
+         {
+            fetchFn,
+            // A metadata server that never answers.
+            getAccessToken: () => new Promise<string>(() => {}),
+            retry: { ...instantRetry(), maxAttempts: 1 },
+         },
+      );
+      const started = Date.now();
+      await expect(chat.complete({ prompt: "p" })).rejects.toThrow("timed out");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(requests).toHaveLength(0);
+   });
+
+   it("shows a caller the status and a fixed sentence for a Vertex error, and keeps the project path in the log message", async () => {
+      const body = {
+         error: {
+            message:
+               "Publisher Model `projects/secret-proj/locations/us-central1/publishers/google/models/gemini-x` not found.",
+         },
+      };
+      const { fetchFn } = stubFetch([
+         () => jsonResponse(body, { status: 404 }),
+      ]);
+      const chat = createChatModel(
+         llm({
+            provider: "vertex",
+            apiKey: undefined,
+            projectId: "secret-proj",
+            location: "us-central1",
+         }),
+         { fetchFn, getAccessToken: token, retry: instantRetry() },
+      );
+      const failure = await chat.complete({ prompt: "p" }).catch((e) => e);
+      const { publicMessage } = await import("../service/http_retry");
+      expect(publicMessage(failure)).toContain("(404)");
+      expect(publicMessage(failure)).not.toContain("secret-proj");
+      expect(publicMessage(failure)).not.toContain("projects/");
+      expect((failure as Error).message).toContain("secret-proj");
+   });
+
+   it("does not show a caller the credentials file path an ADC failure names", async () => {
+      const { adcAccessToken } = await import("./vertex");
+      const saved = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      process.env.GOOGLE_APPLICATION_CREDENTIALS =
+         "/home/someone/keys/secret-key.json";
+      try {
+         const failure = await adcAccessToken()().catch((e) => e);
+         const { publicMessage } = await import("../service/http_retry");
+         expect(publicMessage(failure)).toContain(
+            "gcloud auth application-default login",
+         );
+         expect(publicMessage(failure)).not.toContain("secret-key.json");
+         expect((failure as Error).message).toContain("secret-key.json");
+      } finally {
+         if (saved === undefined)
+            delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+         else process.env.GOOGLE_APPLICATION_CREDENTIALS = saved;
+      }
+   });
+
    it("does not retry when credentials cannot be resolved, and says how to fix it", async () => {
       const { fetchFn, requests } = stubFetch([() => jsonResponse({})]);
       const { HttpRequestError } = await import("../service/http_retry");
