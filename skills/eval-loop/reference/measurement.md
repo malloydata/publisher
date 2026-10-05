@@ -132,12 +132,15 @@ key a provider that fails partway leaves some calls returning `error` or
 `indexing` (no sources) while others rank semantically. Compared across that,
 the flips read as a model change.
 
-So every run records `retrievalMode` (`semantic`, `lexical`, `mixed` or
-`unreported`) and `retrievalCalls` from the `retrieval` field of the responses
+So every run records `retrievalMode` (`semantic`, `lexical`, `mixed`,
+`unavailable` or `unreported`) and `retrievalCalls` from the `retrieval` field of the responses
 that answered it. Only a ranking call carries that field: an enumeration or a
 targeted lookup comes back without one on a fully semantic server, so those
 land in `unreported`, the mode is decided on the ranking calls alone, and a
-run is `unreported` only when nothing ranked at all.
+run is `unreported` only when nothing ranked at all. A run with any search answered
+`indexing` or `error` is `unavailable`: those searches returned nothing to score and read as
+misses, so `flip_table.py` refuses a pair with such an arm. Wait for the index to be ready and
+re-run the arm.
 
 `flip_table.py` refuses a pair whose arms disagree, or where either is
 `mixed`, unless `--allow-retrieval-mismatch` says to report anyway.

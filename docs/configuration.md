@@ -276,7 +276,10 @@ What to know before turning it on:
   `embeddedRows` of `totalRows` (progress while indexing), `totalEntities`, `embeddedEntities`,
   `lastSyncedAt`, `startedAt` (when the running sync began), and, on an error, `reason`
   (`cooldown` or `too-many-entities`) and `lastError` (`message`, and `retryAt`, the earliest
-  time a retry can start: nothing retries on a timer, the next question after it does).
+  time a retry can start: nothing retries on a timer, the next question after it does). The
+  message never names the provider's URL; the full error is in the server log only. When one package's sync finds the provider unreachable, the packages queued
+  behind it show the same `cooldown` cause and send no requests until it ends. One package's sync
+  is stopped after 15 minutes; what it saved is kept and it resumes after the cooldown.
   `lexical` means no embedding provider is configured: that is a mode, not a failure.
   Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
   index; there is no need to send a question first, because indexing starts when the package

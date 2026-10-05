@@ -247,7 +247,7 @@ export interface LoadPackageResult {
        * still-parsing-but-outdated manifest is visible without failing a load.
        */
       manifestWarnings?: string[];
-      /** The manifest's `retrieval` block, validated, with prompt files read. */
+      /** The manifest's `retrieval` block, validated. */
       retrieval?: PackageRetrievalSettings;
    };
    models: SerializedModel[];

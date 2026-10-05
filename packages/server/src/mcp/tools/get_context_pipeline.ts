@@ -41,6 +41,17 @@ export interface PipelineSettings {
        * entities a card carries for one target.
        */
       perSourcePerTarget: number;
+      /**
+       * Rows kept per source, per search target, for the dotted rows the index
+       * keeps because assembly cannot rebuild them (a field of an inline-table
+       * or SQL join, a field a join adds to its target, a field of a target
+       * that is not indexed). They are windowed on their own, so they cannot
+       * take slots from the source's own fields: on a package whose joins are
+       * inline tables, one source can have hundreds of such rows scoring above
+       * its own `order_year_month`. Assembly's card cap grows by this many.
+       * Undefined: no separate window, the dotted rows share `perSourcePerTarget`.
+       */
+      joinedPerSourcePerTarget?: number;
    };
    /**
     * Deepest join chain assembly follows. The lexical index has its own,

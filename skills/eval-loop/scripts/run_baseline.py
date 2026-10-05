@@ -1456,7 +1456,9 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 
     `semantic` or `lexical` when every ranking call agreed, `mixed` when they
     did not (the embedding path fell over partway, which is exactly the case a
-    reader must not average across), and `unreported` when nothing in the run
+    reader must not average across), `unavailable` when ANY call was answered
+    `indexing` or `error` (the server could not rank at all, so that call has
+    no result to score and reads as a miss), and `unreported` when nothing in the run
     ranked at all: usually no embedding provider configured, which is the
     silent degradation eval-mvp's standing gate exists to catch, and which
     `retrieval_probe` settles before the arm starts by always passing a
@@ -1466,13 +1468,17 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
     semantic 100 / lexical 0 / unreported 43 as `mixed`, and told it not to
     report the discoverability findings it had just paid for.
     """
-    tally = {"semantic": 0, "lexical": 0, "unreported": 0}
+    tally = {"semantic": 0, "lexical": 0, "indexing": 0, "error": 0,
+             "unreported": 0}
     for att in attempts:
         for c in att.get("calls") or []:
             if c.get("tool") != "get_context":
                 continue
             mode = c.get("retrieval_mode")
-            tally[mode if mode in ("semantic", "lexical") else "unreported"] += 1
+            tally[mode if mode in ("semantic", "lexical", "indexing", "error")
+                  else "unreported"] += 1
+    if tally["indexing"] or tally["error"]:
+        return "unavailable", tally
     seen = [k for k in ("semantic", "lexical") if tally[k]]
     if not seen:
         return "unreported", tally
@@ -1729,8 +1735,15 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     lines += cascade_lines(cascade)
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
+              f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
               f" unreported {tally['unreported']})"]
-    if retrieval_mode != "semantic":
+    if retrieval_mode == "unavailable":
+        lines += ["                ! some searches were answered `indexing` or "
+                  "`error`, so they returned nothing to score and count as "
+                  "misses. This run does not measure retrieval; wait for the "
+                  "index to be ready and re-run. flip_table.py refuses a pair "
+                  "with an arm like this."]
+    elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
                   "across that reads as a model change; flip_table.py refuses "
@@ -2202,6 +2215,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # retrieval score never counts it as a search that
                         # found nothing.
                         calls.append({**info, "error": text[:300],
+                                      "retrieval_mode":
+                                          (payload or {}).get("retrieval"),
                                       "rankedSummary": None})
                         continue
                     # The host may have spilled the body to a file. Read it

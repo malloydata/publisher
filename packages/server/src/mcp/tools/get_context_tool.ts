@@ -161,6 +161,12 @@ export interface ResultEntity {
     */
    code?: string;
    score?: number;
+   /**
+    * The score before it was rounded to the four places the response publishes.
+    * Ordering uses it, so two rows whose scores differ in the fifth place are
+    * not treated as tied. Never serialized.
+    */
+   rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -545,6 +551,16 @@ function matchedTargetsFor(
  * below prevents between cards.
  */
 const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+
+/**
+ * The most dotted index rows (joined fields assembly cannot rebuild) one source
+ * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
+ * own fields. On a benchmark package whose joins are all inline tables,
+ * sharing one window let 625 such rows push the labelled fields from rank 4 to
+ * 10 down to rank 13 to 33; an own window of 3 (or 1) recovered the loss and
+ * left a joined field findable.
+ */
+export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
 
 /** The target index with the highest score, or undefined when there is none. */
 export function bestTargetOf(scores: Map<number, number>): number | undefined {
@@ -1266,7 +1282,7 @@ interface JoinSchemaField {
  * way. A `one` hop keeps the parent's fan-out; any other relationship
  * replaces it.
  */
-function enterJoin(
+export function enterJoin(
    join: { name: string; relationship?: Relationship },
    from: { joinPath: string; fanout: Relationship },
 ): { joinPath: string; fanout: Relationship } {
@@ -2189,6 +2205,14 @@ export async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -2549,7 +2573,11 @@ function runListing(
 // The stages and retrievers runContextQuery runs. PR 1 registers no stage of
 // either kind; a new stage is one file and one line here.
 const QUERY_STAGES: QueryStage[] = [];
-const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
+// A function, not a constant: get_context_retrievers imports this file, so the
+// two retrievers must not be read while this module is still being evaluated.
+// A constant here made importing the retrievers first throw "Cannot access
+// 'semanticRetriever' before initialization".
+const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
 const RANK_STAGES: RankStage[] = [];
 const CARD_STAGES: CardStage[] = [];
 
@@ -2560,7 +2588,10 @@ const CARD_STAGES: CardStage[] = [];
  */
 const PIPELINE_SETTINGS: PipelineSettings = {
    joins: "assembly",
-   entityWindow: { perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET },
+   entityWindow: {
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+      joinedPerSourcePerTarget: MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+   },
    joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
    joinDamping: 0.9,
    scoring: "cosine",
@@ -2691,7 +2722,7 @@ async function runContextQuery(
    // then the payload carries no `retrieval` marker and no per-entity
    // `score`, byte-identical to the lexical-only releases.
    let ranked: RankedState | undefined;
-   for (const retriever of RETRIEVERS) {
+   for (const retriever of retrievers()) {
       const result = await retriever.retrieve(ctx);
       if ("unavailable" in result) {
          // "unconfigured" means no provider: the next retriever is the mode.
@@ -3124,14 +3155,14 @@ export function startPackageEmbeddingSync(
          // and the status endpoint reports it.
          const provider = getEmbeddingProvider();
          if (!provider) return undefined;
-         const pkgIndex = await getPackageIndex(
-            environmentStore,
-            environmentName,
-            packageName,
-         );
-         // The package was reloaded while this waited; the reload queued its
-         // own sync.
-         if (pkgIndex.pkg !== pkg) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
          return {
             db: environmentStore.storageManager.getDuckDbConnection(),
             provider,
