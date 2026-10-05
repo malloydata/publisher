@@ -2111,6 +2111,15 @@ export class Environment {
       );
    }
 
+   /**
+    * The package instance currently being served under `name`, or undefined.
+    * Never loads from disk, so a caller can ask "is this still served?"
+    * without bringing back a package that was unloaded or deleted.
+    */
+   public peekPackage(name: string): Package | undefined {
+      return this.packages.get(name);
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,

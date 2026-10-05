@@ -272,8 +272,12 @@ What to know before turning it on:
   `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows` of `totalRows`
   (progress while indexing), `totalEntities`, `embeddedEntities`, `lastSyncedAt`, `startedAt`
   (when the running sync began), and, on `cooldown` or `too-many-entities`, `lastError`
-  (`message`, and `retryAt` when a retry is scheduled). The object is absent when no provider is
-  configured.
+  (`message`, and `retryAt` when a retry is scheduled). The message is fixed wording for the kind of
+  failure; the provider's URL and response text are in the server log only. When one package's sync
+  finds the provider unreachable, the packages queued behind it show `cooldown` with the same cause
+  and send no requests until the cooldown ends. A single package's sync is also stopped after 15
+  minutes; what it saved is kept and it resumes after the cooldown. The object is absent when no
+  provider is configured.
   Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
   index; there is no need to send a question first, because indexing starts when the package
   loads. After a restart every package reads `indexing` until its turn in the queue has checked

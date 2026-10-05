@@ -1927,6 +1927,14 @@ async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -2684,14 +2692,14 @@ export function startPackageEmbeddingSync(
          // and the status endpoint reports it.
          const provider = getEmbeddingProvider();
          if (!provider) return undefined;
-         const pkgIndex = await getPackageIndex(
-            environmentStore,
-            environmentName,
-            packageName,
-         );
-         // The package was reloaded while this waited; the reload queued its
-         // own sync.
-         if (pkgIndex.pkg !== pkg) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
          return {
             db: environmentStore.storageManager.getDuckDbConnection(),
             provider,
