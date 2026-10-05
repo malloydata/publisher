@@ -1058,7 +1058,7 @@ function Surface({
          (
             manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
          ).filter(
-            // A `#(secure)` given is the host's to set; a viewer gets no control for it.
+            // Only a document held as text hides a `#(secure)` given's control; a saved file's givens show as before.
             (spec) =>
                !(textSource && spec.secure === true) &&
                !(spec.name !== undefined && hidden.has(spec.name)),

@@ -1892,7 +1892,10 @@ paths:
         and `##` notes never mix in. The compile runs nothing, including a
         control's `suggest` query. A cell or tile whose source the caller may
         not read is not compiled at all and comes back `restricted` with no
-        diagnostic; the rest of the document compiles. A cell that names a source
+        diagnostic; the rest of the document compiles. A tile expression that
+        uses a construct `append` refuses (a data root of its own, such as
+        `duckdb.table(...)`) is refused with 400, and a tile that does not parse
+        is reported as a `tile-does-not-compile` problem. A cell that names a source
         that is both gated and hidden from the caller answers 404 for the whole
         request, as it does without a document. In a document, problem positions
         are lines of the submitted text, problems carry no `model` tag, and
@@ -4546,7 +4549,9 @@ components:
           type: boolean
           description: >-
             True when the declaration carries `#(secure)`: its value is the
-            host's to set, so a control never offers it. Absent otherwise.
+            host's to set. The builder withholds its control only when it edits
+            a document held as text; a saved dashboard or notebook renders it
+            as before. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal

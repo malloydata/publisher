@@ -7,7 +7,11 @@ import {
    type ModelDef,
    type ModelMaterializer,
 } from "@malloydata/malloy";
-import { AccessDeniedError, NotQueryableError } from "../errors";
+import {
+   AccessDeniedError,
+   NotQueryableError,
+   UnparseableTextError,
+} from "../errors";
 import {
    buildDashboardManifest,
    compileTileGivens,
@@ -45,7 +49,7 @@ import { extractSourcesFromModelDef } from "./source_extraction";
  * once saved.
  *
  * AUTHORIZATION IS PER CELL AND PER TILE. A cell or tile whose source the caller
- * may not read is never handed to the compiler: its lines are blanked out of
+ * may not read is never handed to the compiler: its characters are blanked out of
  * the text that compiles, and it comes back `restricted` with no diagnostic.
  * Dropping the diagnostics of a cell the compiler did see would still leave the
  * rest of the answer (a "no such column" on a neighbor that reads a derived
@@ -98,12 +102,18 @@ const DECLARATION =
    /\b(?:source|query)\s*:\s*(`(?:[^`\\]|\\.)*`|[\p{L}_][\p{L}\p{N}_]*)\s+is\b/giu;
 
 /** Blank the given character ranges, keeping every newline so no line or column moves. */
-function blankSpans(text: string, cells: readonly NotebookCellSpan[]): string {
+export function blankSpans(
+   text: string,
+   cells: readonly NotebookCellSpan[],
+): string {
    if (cells.length === 0) return text;
    // Offsets are UTF-16 units, so blank over the unit array.
    const units = text.split("");
    for (const cell of cells) {
-      const [start, end] = cellOffsets.get(cell) ?? [0, 0];
+      const span = cellOffsets.get(cell);
+      // A cell with no recorded span cannot be blanked, and compiling it would run what the caller may not read.
+      if (!span) throw new Error("restricted cell has no recorded span");
+      const [start, end] = span;
       for (let i = start; i < end && i < units.length; i++) {
          if (units[i] !== "\n" && units[i] !== "\r") units[i] = " ";
       }
@@ -220,9 +230,23 @@ export async function compileDocument(input: {
    // A tile expression is a string in the tag, so the construct gate that read
    // the submitted text as Malloy never saw it. Each readable tile is judged
    // here, after the definitions it may name, before anything compiles it.
+   const unparsedTiles = new Set<string>();
+   const tileProblems: LogMessage[] = [];
    for (const expression of tileExpressions) {
-      if (restrictedTiles.has(normalizeTileExpression(expression))) continue;
-      await gates.constructs(`${definitions}\nrun: ${expression}`);
+      const key = normalizeTileExpression(expression);
+      if (restrictedTiles.has(key)) continue;
+      try {
+         await gates.constructs(`${definitions}\nrun: ${expression}`);
+      } catch (error) {
+         if (!(error instanceof UnparseableTextError)) throw error;
+         // Nothing compiles it, so it is one tile that fails, not a refusal of the document.
+         unparsedTiles.add(key);
+         tileProblems.push({
+            code: "tile-does-not-compile",
+            severity: "error",
+            message: `Tile "${expression}" could not be parsed.`,
+         } as LogMessage);
+      }
    }
 
    const boundaryProblems: LogMessage[] = [];
@@ -253,7 +277,8 @@ export async function compileDocument(input: {
       }
    }
    for (const expression of tileExpressions) {
-      if (!restrictedTiles.has(normalizeTileExpression(expression))) {
+      const key = normalizeTileExpression(expression);
+      if (!restrictedTiles.has(key) && !unparsedTiles.has(key)) {
          checkBoundary(`run: ${expression}`, undefined);
       }
    }
@@ -267,7 +292,8 @@ export async function compileDocument(input: {
    try {
       model = await extended.getModel();
    } catch (error) {
-      if (error instanceof MalloyError) return { problems: error.problems };
+      if (error instanceof MalloyError)
+         return { problems: [...tileProblems, ...error.problems] };
       throw error;
    }
    const modelDef: ModelDef = model._modelDef;
@@ -319,7 +345,7 @@ export async function compileDocument(input: {
       { loadQuery: (text) => extended.loadRestrictedQuery(text) },
       registry,
       (sourceName) => gateGivenSource(sources, sourceName),
-      restrictedTiles,
+      new Set([...restrictedTiles, ...unparsedTiles]),
       async (tile, prepared) => {
          let denied = false;
          await settle({ getPreparedQuery: async () => prepared }, () => {
@@ -332,7 +358,7 @@ export async function compileDocument(input: {
    if (boundaryProblems.length > 0) return { problems: boundaryProblems };
 
    const spans = [...restrictedCells];
-   const problems = model.problems.filter((problem) => {
+   const problems = [...tileProblems, ...model.problems].filter((problem) => {
       const line = problemLine(problem);
       return (
          line === undefined ||

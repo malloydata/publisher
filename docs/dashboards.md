@@ -910,10 +910,14 @@ carries its expression and nothing derived from the source (no `givenNames`, no 
 restricted cell is still listed. No diagnostic is returned for either, because a gated source's columns would
 otherwise leak through the error text. A source defined from a gated one in the same document is restricted
 along with it. A tile over a source off the package's query surface is an error problem
-(`query-not-queryable`) and no `document`, judged both on the text and on the source the compiled query reads, so a document that compiles also runs on a curated package. A tile expression is checked for the constructs `append` refuses (`duckdb.table(…)` and the like) before anything compiles it, and refused with a 400. A cell that names a source both gated and hidden from the caller answers 404 for the whole request, as it does without a document.
+(`query-not-queryable`) and no `document`, judged both on the text and on the source the compiled
+query reads, so a document that compiles also runs on a curated package. A tile expression is
+checked for the constructs `append` refuses (`duckdb.table(…)` and the like) before anything
+compiles it, and refused with a 400; a tile that does not parse is a `tile-does-not-compile` problem and the document still comes back. A cell that names a source both gated and hidden from the
+caller answers 404 for the whole request, as it does without a document.
 
-A given declared `#(secure)` carries `secure: true` on `Given`: its value is the host's to set, so no control
-is offered for it.
+A given declared `#(secure)` carries `secure: true` on `Given`: its value is the host's to set. The builder
+withholds its control only when it edits a document held as text; a saved file's givens show as before.
 
 The SDK reads this with `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` (the text comes from
 the host's authoritative `DocumentStorage`) and `<DashboardView preamble runModelPath hiddenGivens />`. Every

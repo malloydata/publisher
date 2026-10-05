@@ -3,7 +3,7 @@
 
 import type { LogMessage, Model, Runtime } from "@malloydata/malloy";
 import { Malloy, MalloyError } from "@malloydata/malloy";
-import { CompileRefusedError } from "../errors";
+import { CompileRefusedError, UnparseableTextError } from "../errors";
 
 /**
  * Construct containment for caller-submitted `/compile` text.
@@ -149,7 +149,7 @@ export async function assertNoRestrictedConstructs(
       // rejection there is real evidence and the diagnostic belongs to the
       // caller-facing compile rather than to this gate.
       if (problems.some(isParseFailure)) {
-         throw new CompileRefusedError(
+         throw new UnparseableTextError(
             `This Malloy cannot be compiled at scope "append": the submitted ` +
                `text could not be parsed on its own, so it cannot be checked ` +
                `against the model's published surface. Fix: send text that ` +

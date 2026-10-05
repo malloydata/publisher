@@ -42,6 +42,7 @@ import {
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
+   UnparseableTextError,
    WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
@@ -217,6 +218,7 @@ function getCompileRefusalsCounter(): Counter {
 export function resetAdmissionTelemetryForTesting(): void {
    queryAdmissionRejectionsCounter = null;
    packageAdmissionRejectionsCounter = null;
+   compileRefusalsCounter = null;
 }
 
 /**
@@ -1214,8 +1216,8 @@ export class Environment {
          if (documentCandidate && source !== undefined) {
             const gate = gateModel;
             const exact = hasExactGateModel;
-            const base =
-               appendBase ?? runtime.loadModel(pathToFileURL(modelPath));
+            const base = appendBase;
+            if (!base) throw new Error("append base model was not loaded");
             const baseModel = await base.getModel();
             const result = await compileDocument({
                base,
@@ -1255,8 +1257,27 @@ export class Environment {
                                      ),
                           )
                         : Promise.resolve(),
-                  constructs: (text) =>
-                     assertNoRestrictedConstructs(runtime, baseModel, text),
+                  constructs: async (text) => {
+                     try {
+                        await assertNoRestrictedConstructs(
+                           runtime,
+                           baseModel,
+                           text,
+                        );
+                     } catch (error) {
+                        // An unparseable tile is a compile problem for the document, not a refusal.
+                        if (
+                           error instanceof CompileRefusedError &&
+                           !(error instanceof UnparseableTextError)
+                        ) {
+                           getCompileRefusalsCounter().add(1, {
+                              environment: this.environmentName,
+                              reason: "restricted_construct",
+                           });
+                        }
+                        throw error;
+                     }
+                  },
                   boundaryCompiled: (compiledSource, query, definitions) => {
                      gate?.assertQueryBoundaryCompiled(
                         compiledSource,

@@ -124,7 +124,7 @@ export interface MalloyGivenApi extends GivenControlSpec {
    name: string;
    type: string;
    annotations?: string[];
-   /** True when the declaration carries `#(secure)`: its value is the host's to set, so a control never offers it. */
+   /** True when the declaration carries `#(secure)`: the host's to set; the builder hides its control only on a document held as text. */
    secure?: boolean;
    /**
     * The given's default as a Malloy source literal — one literal per declared

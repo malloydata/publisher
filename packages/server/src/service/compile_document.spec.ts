@@ -9,9 +9,18 @@ import path from "path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Runtime } from "@malloydata/malloy";
 import { AccessDeniedError, CompileRefusedError } from "../errors";
-import { compileDocument, type CompiledDocument } from "./compile_document";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
+import {
+   blankSpans,
+   compileDocument,
+   type CompiledDocument,
+} from "./compile_document";
+import type { NotebookCellSpan } from "./notebook";
 import type { DashboardQueryTileSpec } from "./dashboard";
-import { Environment } from "./environment";
+import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 
 const manifestOf = (result: { document?: CompiledDocument }) => {
    if (!result.document?.manifest) throw new Error("no manifest");
@@ -230,7 +239,7 @@ run: open_src -> { aggregate: c }
             ).rejects.toBeInstanceOf(CompileRefusedError);
          });
 
-         it(`refuses a cell over ${root}`, async () => {
+         it(`the whole-text gate refuses a cell over ${root}`, async () => {
             await expect(
                compile(
                   `## artifact { kind=notebook }\nrun: ${root} -> { select: region }\n`,
@@ -240,7 +249,7 @@ run: open_src -> { aggregate: c }
          });
       }
 
-      it("refuses a tile that reaches a root through a source the document defines", async () => {
+      it("the whole-text gate refuses a definition cell that declares a root, so the tile over it never compiles", async () => {
          await expect(
             compile(
                `## artifact { kind=dashboard tiles=["d -> v"] }\nsource: d is duckdb.table('/etc/hosts') extend { view: v is { select: * } }\n`,
@@ -259,9 +268,147 @@ run: open_src -> { aggregate: c }
       });
    });
 
+   describe("tile expressions at the construct gate", () => {
+      let harness: MetricsHarness;
+
+      beforeEach(async () => {
+         await install({ "model.malloy": MODEL });
+         harness = await startMetricsHarness();
+         resetAdmissionTelemetryForTesting();
+      });
+
+      afterEach(async () => {
+         resetAdmissionTelemetryForTesting();
+         await harness.shutdown();
+      });
+
+      const refusals = () =>
+         harness.collectCounter("publisher_compile_refusals_total", {
+            reason: "restricted_construct",
+         });
+      const tiles = (...expressions: string[]) =>
+         `## artifact { kind=dashboard tiles=[${expressions
+            .map((e) => `"${e}"`)
+            .join(", ")}] }\n`;
+      const refusalOf = async (source: string) => {
+         try {
+            await compile(source, { ROLE: "analyst" });
+         } catch (error) {
+            if (error instanceof CompileRefusedError) return error.message;
+            throw error;
+         }
+         throw new Error("expected a refusal");
+      };
+
+      it("answers a tile that does not parse with a problem and keeps the document", async () => {
+         const result = await compile(tiles("open_src -> {", "open_src -> v"));
+         expect(result.problems.map((p) => p.code)).toEqual([
+            "tile-does-not-compile",
+         ]);
+         expect(result.problems[0].message).toContain("open_src -> {");
+         expect(tilesOf(result).map((t) => t.query)).toEqual([
+            "open_src -> {",
+            "open_src -> v",
+         ]);
+         expect(tilesOf(result)[1].givenNames).toEqual(["REGION"]);
+         expect(await refusals()).toBe(0);
+      });
+
+      it("counts a tile refused for a construct, with the same reason as the whole-text gate", async () => {
+         await expect(
+            compile(tiles("open_src -> { select: y is f!number(x) }")),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+         expect(await refusals()).toBe(1);
+      });
+
+      it("refuses a tile that uses a sql_ function", async () => {
+         await expect(
+            compile(tiles("open_src -> { select: y is sql_number('1') }")),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+
+      it("refuses a tile that smuggles a second statement behind its query", async () => {
+         await expect(
+            compile(
+               tiles(
+                  "open_src -> v\\nsource: zz is duckdb.table('/etc/hosts')",
+               ),
+            ),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+
+      it("gives an existing and a missing path the same refusal, so the message cannot say which exists", async () => {
+         const existing = await refusalOf(
+            tiles("duckdb.table('/etc/hosts') -> { select: region }"),
+         );
+         const missing = await refusalOf(
+            tiles("duckdb.table('/no/such/file') -> { select: region }"),
+         );
+         expect(existing.replaceAll("/etc/hosts", "P")).toBe(
+            missing.replaceAll("/no/such/file", "P"),
+         );
+      });
+   });
+
    describe("restricted cells that share lines or names", () => {
       beforeEach(async () => {
          await install({ "model.malloy": MODEL });
+      });
+
+      it("blanks a restricted cell written with CRLF line endings", async () => {
+         const { document, problems } = await compile(
+            `## artifact { kind=notebook }\r\nrun: gated -> {\r\n  select: no_such_column_in_gated\r\n}\r\nrun: open_src -> { aggregate: c }\r\n`,
+            { ROLE: "nobody" },
+         );
+         expect(problems).toEqual([]);
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            undefined,
+         ]);
+      });
+
+      it("blanks a restricted cell together with its annotations", async () => {
+         const { document, problems } = await compile(
+            `## artifact { kind=notebook }\n#(markdown) About the gated total\n# label="Gated"\nrun: gated -> { select: no_such_column_in_gated }\nrun: open_src -> { aggregate: c }\n`,
+            { ROLE: "nobody" },
+         );
+         expect(problems).toEqual([]);
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            undefined,
+         ]);
+      });
+
+      it("taints every name of a multi-item declaration", async () => {
+         const { document } = await compile(
+            `## artifact { kind=notebook }\nsource: a is gated extend { }\nsource: b is gated extend { }, c is open_src extend { }\nrun: b -> { aggregate: c }\nrun: c -> { aggregate: c }\n`,
+            { ROLE: "nobody" },
+         );
+         // `c` reads an open source, but its statement is blanked with `b`, so `c` no longer exists to read.
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            true,
+            true,
+            true,
+         ]);
+      });
+
+      it("taints a parameterized declaration's name", async () => {
+         const { document } = await compile(
+            `## artifact { kind=notebook }\nsource: p(n::number is 1) is gated extend { }\nrun: p(n is 2) -> { aggregate: c }\nrun: open_src -> { aggregate: c }\n`,
+            { ROLE: "nobody" },
+         );
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            true,
+            undefined,
+         ]);
+      });
+
+      it("fails closed when a restricted cell has no recorded span", () => {
+         expect(() => blankSpans("run: x", [{} as NotebookCellSpan])).toThrow(
+            "no recorded span",
+         );
       });
 
       it("blanks only the restricted statement, so an open one on its line still compiles", async () => {
