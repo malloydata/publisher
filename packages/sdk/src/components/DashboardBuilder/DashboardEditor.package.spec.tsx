@@ -8,7 +8,9 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   TEST_SERVER,
 } from "../../../test/serverProvider";
+import { globalQueryClient } from "../../utils/queryClient";
 import { sha256Hex } from "../../utils/sha256";
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
@@ -26,6 +28,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({
@@ -110,11 +113,7 @@ describe("DashboardEditor, when the server takes writes", () => {
          screen.getByText("Save writes the file into the package."),
       ).toBeDefined();
 
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
@@ -134,6 +133,26 @@ describe("DashboardEditor, when the server takes writes", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
+   it("Undo save after resuming a draft writes the package file back, not the draft", async () => {
+      const draft = PACKAGE_FILE.replace(
+         'title="Storefront"',
+         'title="Drafted"',
+      );
+      await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
+      mount();
+      await screen.findByText("Storefront");
+      fireEvent.click(button("Resume"));
+      await screen.findByText("Drafted");
+      editInline("By category", "Tile title", "Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Undo save", hidden: true }),
+      );
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(2));
+      expect(updateModelSource.mock.calls[1][3].source).toBe(PACKAGE_FILE);
+   });
+
    it("keeps the edit and shows the server's reason when the package refuses the write", async () => {
       updateModelSource.mockImplementationOnce(() =>
          Promise.reject({
@@ -147,11 +166,7 @@ describe("DashboardEditor, when the server takes writes", () => {
       );
       mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save changes"));
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain(
@@ -159,5 +174,36 @@ describe("DashboardEditor, when the server takes writes", () => {
          ),
       );
       expect(button("Save changes")).toBeDefined();
+   });
+
+   it("drops the cached results of the saved file, which are keyed on query text, not content", async () => {
+      const key = (modelPath: string) => [
+         "queryResult",
+         "env",
+         "pkg",
+         undefined,
+         modelPath,
+         undefined,
+         "run: a -> by_cat",
+         undefined,
+         "{}",
+         TEST_SERVER,
+      ];
+      globalQueryClient.setQueryData(key("dashboards/overview.malloy"), "old");
+      globalQueryClient.setQueryData(key("dashboards/other.malloy"), "other");
+      mount();
+      await screen.findByText("Storefront");
+      editInline("By category", "Tile title", "Categories");
+      fireEvent.click(button("Save changes"));
+      await waitFor(() =>
+         expect(
+            globalQueryClient.getQueryState(key("dashboards/overview.malloy"))
+               ?.isInvalidated,
+         ).toBe(true),
+      );
+      expect(
+         globalQueryClient.getQueryState(key("dashboards/other.malloy"))
+            ?.isInvalidated,
+      ).toBe(false);
    });
 });

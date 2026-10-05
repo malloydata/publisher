@@ -197,7 +197,22 @@ class Retrieval(unittest.TestCase):
         att = {"calls": [{"tool": "execute_query", "retrieval_mode": None}]}
         self.assertEqual(rb.retrieval_summary([att]),
                          ("unreported", {"semantic": 0, "lexical": 0,
+                                         "indexing": 0, "error": 0,
                                          "unreported": 0}))
+
+    def test_a_call_answered_indexing_makes_the_run_unavailable(self):
+        mode, tally = rb.retrieval_summary([self.att("semantic", "indexing")])
+        self.assertEqual(mode, "unavailable")
+        self.assertEqual((tally["semantic"], tally["indexing"]), (1, 1))
+
+    def test_a_call_answered_error_makes_the_run_unavailable(self):
+        mode, tally = rb.retrieval_summary([self.att("error")])
+        self.assertEqual((mode, tally["error"]), ("unavailable", 1))
+
+    def test_unavailable_wins_over_mixed(self):
+        self.assertEqual(
+            rb.retrieval_summary([self.att("semantic", "lexical", "error")])[0],
+            "unavailable")
 
 
 class ReExecution(unittest.TestCase):
@@ -867,7 +882,7 @@ class HostedProbe(unittest.TestCase):
             ("assistant", [self.use("t1")]),
             ("user", [self.res("nope", "t1", err=True)]),
             ("assistant", [self.use("t2")]),
-            ("user", [self.res(json.dumps({"retrieval": "lexical"}), "t2")]))
+            ("user", [self.res(json.dumps({"retrieval": "indexing"}), "t2")]))
         self.assertEqual(rb.probe_outcome(ev, self.TOOLS)[0], "reached")
 
     def test_a_call_with_no_result_is_not_a_missing_login(self):

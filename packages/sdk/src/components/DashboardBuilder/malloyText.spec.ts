@@ -4,10 +4,16 @@
 import { describe, expect, it } from "bun:test";
 import {
    artifactLine,
+   artifactTag,
    blockSpans,
    closesBlock,
+   isBareName,
    isIdentifier,
+   isStrictName,
+   malloyPath,
+   readPath,
    markdownNote,
+   splitSourceLines,
    tileSteps,
 } from "./malloyText";
 
@@ -110,5 +116,47 @@ describe("blockSpans", () => {
          "*/",
       ];
       expect(blockSpans(lines, (i) => i >= 4)).toEqual([[0, 3]]);
+   });
+});
+
+describe("unclosed block openers", () => {
+   it("are scanned in linear time", () => {
+      const MB = 1024 * 1024;
+      const flat = "##| x\n".repeat(MB / 6);
+      let indented = "";
+      for (let i = 0; indented.length < MB; i++)
+         indented += `${" ".repeat(i % 64)}##| x\n`;
+      for (const source of [flat, indented]) {
+         const started = performance.now();
+         expect(artifactTag(splitSourceLines(source))).toBeUndefined();
+         expect(performance.now() - started).toBeLessThan(2000);
+      }
+   });
+});
+
+describe("reserved words", () => {
+   it("keeps statement keywords bare as source and view names, but not as given names or fields", () => {
+      for (const name of ["top", "index", "type", "limit", "view", "where"]) {
+         expect(isBareName(name)).toBe(true);
+         expect(isStrictName(name)).toBe(false);
+      }
+      for (const name of ["date", "Source", "IS", "year"]) {
+         expect(isBareName(name)).toBe(false);
+         expect(isStrictName(name)).toBe(false);
+      }
+      expect(isStrictName("revenue")).toBe(true);
+   });
+
+   it("back-quotes only a lone reserved field name", () => {
+      expect(malloyPath("date")).toBe("`date`");
+      // A dotted path stays verbatim: `.year` is reserved and is an accessor, not a name.
+      expect(malloyPath("orders.type.name")).toBe("orders.type.name");
+      expect(malloyPath("created_at.year")).toBe("created_at.year");
+      expect(malloyPath("type")).toBe("type");
+      expect(readPath("`date`")).toBe("date");
+      expect(readPath("lower(`date`)")).toBe("lower(`date`)");
+      expect(readPath("a.`b`")).toBe("a.`b`");
+      expect(malloyPath("products.category")).toBe("products.category");
+      expect(malloyPath("`odd name`.x")).toBe("`odd name`.x");
    });
 });

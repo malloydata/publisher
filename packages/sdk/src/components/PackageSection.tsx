@@ -14,8 +14,8 @@ import { useId } from "react";
  * size, indent or gap.
  *
  * The section is a landmark named by its own heading, which is what makes
- * "Dashboards" addressable — to a screen reader moving by region, and to a test
- * that wants the dashboards list rather than every row on the page that happens
+ * "Artifacts" addressable — to a screen reader moving by region, and to a test
+ * that wants the artifacts list rather than every row on the page that happens
  * to share a word with it.
  */
 export function PackageSection({

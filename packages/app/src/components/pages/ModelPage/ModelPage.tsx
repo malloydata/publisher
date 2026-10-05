@@ -16,9 +16,8 @@ import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
 import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
-import DashboardPage from "../DashboardPage/DashboardPage";
-import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
+import RoutedDocument from "./RoutedDocument";
 
 function ModelPage() {
    const params = useParams();
@@ -74,20 +73,14 @@ function ModelPage() {
       // `dashboards/<slug>/edit` opens the same dashboard in the builder. A
       // slug never contains a slash (nested dashboard directories are not
       // discovered), so the one segment can only be this.
-      if (slug.endsWith("/edit")) {
-         return (
-            <DashboardEditPage
-               environmentName={params.environmentName}
-               packageName={params.packageName}
-               dashboardName={slug.slice(0, -"/edit".length)}
-            />
-         );
-      }
+      const edit = slug.endsWith("/edit");
       return (
-         <DashboardPage
+         <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
-            dashboardName={slug}
+            routeKind="dashboard"
+            slug={edit ? slug.slice(0, -"/edit".length) : slug}
+            edit={edit}
          />
       );
    }
@@ -98,11 +91,15 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
+      const slug = modelPath.slice("notebooks/".length);
+      const edit = slug.endsWith("/edit");
       return (
-         <NotebookPage
+         <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
-            notebookPath={`${modelPath}.malloy`}
+            routeKind="notebook"
+            slug={edit ? slug.slice(0, -"/edit".length) : slug}
+            edit={edit}
          />
       );
    }

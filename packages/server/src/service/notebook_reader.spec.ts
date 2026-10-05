@@ -137,6 +137,26 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
          '## artifact { kind=notebook title="Revenue review" }\n',
       ],
    },
+   // A notebook written as tiles: the reader still sees a named block as a markdown cell, without its name.
+   "notebooks/layout.malloy": {
+      cells: [
+         def(3, 3, IMPORT),
+         md(
+            5,
+            9,
+            "## How to read this page\n\nTotals first, then the monthly trend.",
+         ),
+         def(
+            11,
+            13,
+            "source: orders_tiles is orders extend {\n   view: headline is { aggregate: order_count }\n}",
+         ),
+      ],
+      annotations: [
+         '##" A notebook written as one column of tiles.\n',
+         '## artifact { kind=notebook title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }\n',
+      ],
+   },
    "notebooks/definitions_only.malloy": {
       cells: [
          def(3, 3, IMPORT),

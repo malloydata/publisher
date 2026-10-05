@@ -9,7 +9,7 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
- * End-to-end coverage for the Notebook "Parameters" panel that surfaces
+ * End-to-end coverage for the Notebook "Filters" panel that surfaces
  * Malloy `given:` runtime parameters. The publisher's storefront
  * fixture set doesn't ship a model with `given:` declarations, so the
  * spec writes its own .malloy + .malloynb into the `storefront` package directory
@@ -108,13 +108,13 @@ test.describe("notebook-givens", () => {
       expect(names).toContain("include_x");
    });
 
-   test("Parameters panel renders one input per declared given", async ({
+   test("Filters panel renders one input per declared given", async ({
       page,
    }) => {
       await openGivensNotebook(page);
 
       await expect(
-         page.getByRole("heading", { name: "Parameters", level: 6 }),
+         page.getByRole("heading", { name: "Filters", level: 6 }),
       ).toBeVisible();
       await expect(page.getByLabel("target_code")).toBeVisible();
       await expect(page.getByLabel("cutoff")).toBeVisible();

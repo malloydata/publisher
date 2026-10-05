@@ -6,7 +6,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 /**
- * The scaffolder command must carry `@latest` everywhere it is written down.
+ * The scaffolder command, and the skills CLI (`npx @malloy-publisher/skills`),
+ * must carry `@latest` everywhere they are written down.
  *
  * Without it, `npm create` and `npx` resolve an unversioned name through npm's
  * npx cache and any copy already there satisfies it, so a machine that has run
@@ -18,8 +19,8 @@ import * as path from "node:path";
  * there, because a bare `@latest` reads as noise. But the failure mode is not
  * someone disagreeing with the sentence, it is someone tidying a README and
  * dropping the suffix without ever reading it, and prose does not survive that.
- * This test does. It reaches the two READMEs, the templates and the skill, which
- * no unit test over this package's output can.
+ * This test does. It reaches the READMEs, the templates, the skill and the
+ * skills CLI's own messages, which no unit test over this package's output can.
  */
 const PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, "..", "..");
@@ -42,7 +43,7 @@ const repoRelative = (file: string): string =>
  * them, which here would read as "everything is pinned".
  */
 const INVOCATION_SOURCE =
-   "(npm create @malloy-publisher/malloy-package|npx @malloy-publisher/create-malloy-package)(@[^\\s`]+)?";
+   "(npm create @malloy-publisher/malloy-package|npx @malloy-publisher/create-malloy-package|npx (?:-y )?@malloy-publisher/skills)(@[^\\s`]+)?";
 const invocations = (s: string): RegExpMatchArray[] => [
    ...s.matchAll(new RegExp(INVOCATION_SOURCE, "g")),
 ];
@@ -77,6 +78,10 @@ function scannedFiles(): string[] {
    dir(path.join(PACKAGE_ROOT, "src"), (f) => f.endsWith(".ts"));
    dir(path.join(PACKAGE_ROOT, "templates"), () => true);
    dir(path.join(PACKAGE_ROOT, "scripts"), (f) => f.endsWith(".ts"));
+   // The skills CLI prints its own npx command in usage and error messages.
+   dir(path.join(REPO_ROOT, "packages", "skills", "src"), (f) =>
+      f.endsWith(".ts"),
+   );
    for (const rel of [
       path.join(PACKAGE_ROOT, "README.md"),
       // The command is documented outside this package too, and those copies are
@@ -85,6 +90,8 @@ function scannedFiles(): string[] {
       // skills_bundle.spec.ts asserts that, so the source tree is enough.
       path.join(REPO_ROOT, "README.md"),
       path.join(REPO_ROOT, "skills", "malloy-getting-started", "SKILL.md"),
+      path.join(REPO_ROOT, "skills", "README.md"),
+      path.join(REPO_ROOT, "packages", "skills", "README.md"),
    ]) {
       if (fs.existsSync(rel)) files.push(rel);
    }
@@ -128,6 +135,9 @@ describe("the scaffolder command is pinned wherever it is written down", () => {
          "packages/create-malloy-package/src/scaffold.ts",
          "packages/create-malloy-package/templates/AGENTS.md",
          "skills/malloy-getting-started/SKILL.md",
+         "skills/README.md",
+         "packages/skills/README.md",
+         "packages/skills/src/cli.ts",
       ]) {
          expect(scanned).toContain(expected);
       }
