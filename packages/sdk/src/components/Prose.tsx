@@ -167,6 +167,8 @@ export function Prose({
       <Box sx={[STYLES[variant], ...(Array.isArray(sx) ? sx : [sx])]}>
          <Markdown
             options={{
+               // Authored text is not trusted markup: a `<meta refresh>`, `<iframe>`, `<form>` or `<style>` in it would act on the viewer's browser.
+               disableParsingRawHTML: true,
                overrides: {
                   a: { component: ProseLink, props: { context: links } },
                },

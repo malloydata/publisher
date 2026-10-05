@@ -1895,7 +1895,10 @@ paths:
         diagnostic; the rest of the document compiles. A tile expression that
         uses a construct `append` refuses (a data root of its own, such as
         `duckdb.table(...)`) is refused with 400, and a tile that does not parse
-        is reported as a `tile-does-not-compile` problem. A cell that names a source
+        is reported as a `tile-does-not-compile` problem. At scope `append`, submitted text that writes a render tag turning a value
+        into a URL (`# image`, `# link`), or HTML in a `# label`, is refused with 400
+        before anything compiles, for a field, view or query alike; a model file
+        keeps the tags it defines itself. A cell that names a source
         that is both gated and hidden from the caller answers 404 for the whole
         request, as it does without a document. In a document, problem positions
         are lines of the submitted text, problems carry no `model` tag, and

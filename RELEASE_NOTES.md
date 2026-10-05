@@ -31,6 +31,8 @@ Submitted text has no folder to take a kind from, so a `## artifact` tag that na
 
 The notebook GET now serves a layout notebook's (`tiles=[…]`) query cells like any other: each carries `queryInfo` and `proseLines: []`, where it carried neither, so a client no longer reads its cells as withheld. A cell the surface refuses still carries no `queryInfo`.
 
+Compile at scope `append` now refuses submitted text that writes `# image` or `# link` (render tags that make a cell value a URL the viewer's browser loads) or HTML inside a `# label`, with a 400 and the same message whether or not the data exists. A model file keeps the tags it defines. The SDK's markdown (`Prose`, so text tiles and descriptions) no longer parses raw HTML: tags such as `<iframe>`, `<form>` and `<meta>` render as text. `# link` is drawn by `@malloydata/render` without `rel="noopener"`; a host should pair the viewer with a Content-Security-Policy.
+
 ## Packages that version on their own line
 
 `@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.
