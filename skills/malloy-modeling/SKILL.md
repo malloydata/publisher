@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # STOP - READ BEFORE WRITING ANY MALLOY CODE
 
-> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering`.
+> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-queries`, and `skill:malloy-gotchas-rendering`.
 
 ## Pre-Flight Checklist
 
@@ -20,7 +20,7 @@ SPDX-License-Identifier: MIT
 2. **Search docs proactively**: call `search_malloy_docs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
-5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
+5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
 
 **Quick syntax reminders:**
 1. **Backtick reserved words:** `` `Date` ``, `` `Hour` ``, `` `Timestamp` ``, `` `Type` ``, `` `number` ``, `` `source` ``
@@ -213,5 +213,5 @@ top, bottom, desc, asc, row, range, current, window, rank
 The following skills contain detailed WRONG/RIGHT patterns that prevent the most common Malloy errors. **Read them before writing code:**
 
 - **`skill:malloy-gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
-- **`skill:malloy-gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
+- **`skill:malloy-queries`**: Syntax and the common compile errors: chart constraints, aggregate filters, joined field aliasing, method syntax, time truncation vs extraction
 - **`skill:malloy-gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns

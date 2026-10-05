@@ -1,6 +1,6 @@
 ---
 name: malloy-queries
-description: Malloy query patterns and syntax, for writing or debugging a query - dates, aggregates vs dimensions, join paths, filters, string matching, chart annotations, and the errors a SQL habit produces.
+description: Read before writing or debugging a Malloy query. Dates, aggregates vs dimensions, joins, filters, strings, window functions, chart annotations, and the compile errors a SQL habit produces.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -279,6 +279,48 @@ run: source -> {
 Charts render only the **first** aggregate. For multiple measures on one chart, place `# y` above the `aggregate:` keyword or use the `y=['a','b']` shorthand. A chart annotation left as the last line inside `{ }` fails with *"Parser enountered unexpected statement type 'unimplemented'"* (the compiler's spelling); one after the closing `}` fails with *"Object annotation not connected to any object"*.
 
 Read the `malloy-charts` skill for chart types, properties, data shape requirements, and selection guidance.
+
+## More Compile Mistakes
+
+**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix.
+
+Wrong: `measure: cogs is sum(inventory_items.item_cost)`
+Right: `measure: cogs is inventory_items.item_cost.sum()`
+
+`count(joined.field)` is the exception: it is the correct distinct count through a join, so keep it as written (see Counting above).
+
+**Scalar functions never take method form, and nothing chains onto a function call.** `round`, `floor` and `ceil` are always `round(x, 2)`. The errors (`something is missing before 'round'`, `Cannot call function round(number, number) with source`) name `round` without saying so, and read like a typo somewhere else.
+
+Wrong: `avg(price).round(2)`, `price.avg().round(2)`, `avg_price.round(2)`
+Right: `round(avg(price), 2)`, `round(price, 2)`
+
+**`sum` and `avg` need a numeric field.** `avg(status)` fails with `Can't use type string`. A name that reads numeric (`order_number`, `zip`, `account_id`) is often typed string, so check the type in the `get_context` result. Count a string field instead of averaging it.
+
+**A measure is already an aggregate.** `aggregate: busiest is max(flight_count)` fails with `Aggregate expression cannot be aggregate` and does not name the field. Aggregate per group, then take the maximum in a second stage:
+```malloy
+run: flights -> { group_by: carrier, aggregate: n is flight_count } -> { aggregate: busiest is max(n) }
+```
+For only the top row, use `order_by: n desc` with `limit: 1`.
+
+**A window's braces bind to the function.** Put `{ partition_by: ..., order_by: ... }` directly after the window call, not after the division: `sum_cumulative(n) { partition_by: region, order_by: n desc } / region_total`. For a share within a group, compute the denominator in `aggregate:` (`region_total is all(count(), region)`); a window's `partition_by` does not apply to `all()`.
+
+**A dotted path must name a join the source declares.** If the source declares the join as `carrier`, `carriers.name` fails with `'carriers.name' is not a source or join`. Confirm the join name and the field under it in a `get_context` result; do not infer either from a table name or a plural/singular guess.
+
+**`order_by:` can only name an output column.** `order_by: total` fails with `Unknown field total in output space` when the query never emits `total`. `group_by` or `aggregate` it first, and alias it if it comes through a join.
+
+**Charts: one aggregate per view.** A `# bar_chart` or `# line_chart` view renders only its first aggregate. For several metrics, nest separate chart views in a `# dashboard`, or use `y=['revenue','cost']`.
+
+**Define measures and dimensions in the source, and reference them in the view.** `aggregate: revenue` in a view, not a fresh `sum(total)` there.
+
+**Truncate for charts, extract for comparisons.** `ts.month` is the first day of the month (right for a time-series chart, which then orders correctly); `month(ts)` is the number 1 to 12 (right for comparing across years). `year(ts)` renders as `2,018`; tag it `# number=id`, as for zip codes and IDs.
+
+**Combine an alternation with other filters using a comma.** `where: is_us = true, party ? 'Democrat' | 'Republican'`. The `?` alternation means "any of these values". With `and` it works only when the alternation comes second.
+
+**Strings.** An apostrophe inside single quotes ends the literal (`no viable alternative at input 's'`), so use double quotes: `"Mac's Diner"`. There is no concatenation operator (`unexpected '+'`, `no viable alternative at input '||'`): write `concat(origin, '-', destination)`.
+
+**A `;` inside a clause ends it.** Between clauses a newline, comma or `;` all work. Within one clause, separate fields with commas or newlines, or the next field is orphaned (`no viable alternative at input 'charters'`). The same message appears for an unnamed aggregate after the first: `aggregate: n, max(x)` fails at `max`, so name every entry.
+
+**`Query execution failed: ...` means Malloy compiled and the warehouse refused the SQL**, often over a type. The position it quotes is in the generated SQL, not in your query. BigQuery, for example, will not partition a window function on a FLOAT64 column; `partition_by:` takes only a field name, so cast in `group_by:` (`season_key is season::string`) and partition on `season_key`, or fix the type in the model.
 
 ## When a Query Fails
 

@@ -38,7 +38,7 @@ A name is a pointer, not confirmation. A field, source, or view name you saw in 
 
 ## 3. Construct the query
 
-Write Malloy using only the model's names. Load `skill:malloy-queries` for syntax (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting) and `skill:malloy-gotchas-queries` to avoid the common compile errors. If a model `view:` already matches, run it directly rather than rewriting it.
+Write Malloy using only the model's names. Load `skill:malloy-queries` for syntax and the common compile errors (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting, method syntax). If a model `view:` already matches, run it directly rather than rewriting it.
 
 **Check these before your first `execute_query`.** They cause most first-attempt compile failures, and a SQL habit gets each one wrong:
 

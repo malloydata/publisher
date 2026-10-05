@@ -66,7 +66,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 ## R-06: `# number=id` for integer columns that aren't quantities (years, IDs, zip codes, phone numbers)
 
 - **Severity:** major (non-blocking) · **Category:** rendering · machine-checkable (data-driven, falls back to LLM-judgment)
-- **Why this matters.** Malloy's default integer formatting adds thousand-separator commas. A year displays as `2,018` instead of `2018`, a zip code as `94,107` instead of `94107`, an account number as `1,234,567` instead of `1234567`. The number is *visibly wrong* on every chart and table until `# number=id` strips the formatting. Especially common with `year(ts)` extraction (`skill:malloy-gotchas-queries` § Time Truncation vs Extraction) and with any FK/PK column that surfaces on a chart axis or in a result table.
+- **Why this matters.** Malloy's default integer formatting adds thousand-separator commas. A year displays as `2,018` instead of `2018`, a zip code as `94,107` instead of `94107`, an account number as `1,234,567` instead of `1234567`. The number is *visibly wrong* on every chart and table until `# number=id` strips the formatting. Especially common with `year(ts)` extraction (`skill:malloy-queries` § More Compile Mistakes (truncate for charts, extract for comparisons)) and with any FK/PK column that surfaces on a chart axis or in a result table.
 - **Detection, preferred (data-driven).** For every integer dimension in scope, run `execute_query`:
 
   ```malloy
@@ -87,7 +87,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - Should-have-`# number=id` signals: name ends in `_id`, `_year`, `_zip` / `_zipcode`, `_phone`; column is a `year(...)` extraction; integer type with no arithmetic in any `aggregate:` referencing it.
   - Should-NOT-have-`# number=id` signals: name ends in `_count` / `_total` / `_amount` / `_price` / `_quantity` / `_revenue` / `_cost`.
 - **Fix:** add `# number=id` above the dimension or measure.
-- **See:** `skill:malloy-charts` § Field Formatting Tags · `skill:malloy-gotchas-queries` § Time Truncation vs Extraction (year-as-int discussion)
+- **See:** `skill:malloy-charts` § Field Formatting Tags · `skill:malloy-queries` § More Compile Mistakes (truncate for charts, extract for comparisons) (year-as-int discussion)
 
 ---
 
