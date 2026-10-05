@@ -17,13 +17,13 @@ SPDX-License-Identifier: MIT
 | The user wants                                       | Use                                              |
 | ---------------------------------------------------- | ------------------------------------------------ |
 | A recurring, at-a-glance view behind shared filters  | this skill (a dashboard)                         |
-| A narrative, with prose between the numbers          | a notebook (`skill:malloy-notebooks`)            |
+| Long prose between the numbers, or a notebook asked for by name | a notebook (`skill:malloy-notebooks`) |
 | Custom design, branding, or interactions beyond tags | an HTML data app (`skill:malloy-html-data-apps`) |
 | The model itself: sources, measures, joins           | `skill:malloy-modeling`                          |
 
 Notebooks and dashboards run the same engine, so **interactivity is not the axis**: both get filter
 controls, URL-addressable state, Apply batching, and `# drill`. Pick on the shape of the document.
-Scanned at a glance is a dashboard; read top to bottom is a notebook.
+Scanned at a glance is a dashboard; read top to bottom is a notebook. For new saved work, default to a dashboard and put the story in its doc-comment header and tile subtitles; write a notebook when the user asks for one or the file already exists.
 
 ## Build sequence
 

@@ -249,7 +249,7 @@ run: order_analysis -> summary
 
 **A `.malloy` notebook compiles as a model**, so the linter and `/compile` report its errors before you save. An existing `.malloynb` is not covered: its errors show only when a cell runs. Never write a new `.malloynb`.
 
-A notebook is also the home for a polished, narrated report: alternate prose (the story) with queries (the views), and let each view carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
+A polished report that is mostly numbers is a dashboard (`malloy-dashboards`). Write a notebook when the user asks for one, when one already exists, or when the report needs paragraphs between the queries: alternate prose (the story) with queries (the views), and let each view carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
 
 ### Interactive Filters
 
