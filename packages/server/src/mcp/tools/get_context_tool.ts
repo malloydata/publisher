@@ -544,6 +544,16 @@ function matchedTargetsFor(
  */
 const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
+/**
+ * The most dotted index rows (joined fields assembly cannot rebuild) one source
+ * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
+ * own fields. On a benchmark package whose joins are all inline tables,
+ * sharing one window let 625 such rows push the labelled fields from rank 4 to
+ * 10 down to rank 13 to 33; an own window of 3 (or 1) recovered the loss and
+ * left a joined field findable.
+ */
+export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
+
 /** The target index with the highest score, or undefined when there is none. */
 export function bestTargetOf(scores: Map<number, number>): number | undefined {
    let best: [number, number] | undefined;
@@ -2558,7 +2568,10 @@ const CARD_STAGES: CardStage[] = [];
  */
 const PIPELINE_SETTINGS: PipelineSettings = {
    joins: "assembly",
-   entityWindow: { perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET },
+   entityWindow: {
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+      joinedPerSourcePerTarget: MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+   },
    joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
    joinDamping: 0.9,
    scoring: "cosine",

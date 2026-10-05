@@ -277,7 +277,14 @@ export function assembleCards(
    state: RankedState,
    ctx: PipelineContext,
 ): CardState {
-   const perSourcePerTarget = ctx.settings.entityWindow.perSourcePerTarget;
+   // On the semantic path the card holds the source's own window plus the
+   // dotted rows' window, so a dotted row the scan kept is not then cut here for
+   // a higher-scored one. The lexical path has no separate window and keeps 10.
+   const perSourcePerTarget =
+      ctx.settings.entityWindow.perSourcePerTarget +
+      (state.retrieval === "semantic"
+         ? (ctx.settings.entityWindow.joinedPerSourcePerTarget ?? 0)
+         : 0);
    const cards = new Map<string, CardDraft>();
    const perTarget = new Map<string, Map<number, number>>();
    // Joined copies are made here only for semantic rows, which search direct
