@@ -29,6 +29,8 @@ The SDK builder opens a document held as text: `<DashboardEditor textSource={{ m
 
 Submitted text has no folder to take a kind from, so a `## artifact` tag that names no `kind` is a dashboard when it lists `tiles=[…]` or carries a `dashboard { … }` grid tag, and a notebook otherwise; the builder's "Show as: Dashboard" now writes `kind=dashboard` for a document held as text.
 
+The notebook GET now serves a layout notebook's (`tiles=[…]`) query cells like any other: each carries `queryInfo` and `proseLines: []`, where it carried neither, so a client no longer reads its cells as withheld. A cell the surface refuses still carries no `queryInfo`.
+
 ## Packages that version on their own line
 
 `@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.

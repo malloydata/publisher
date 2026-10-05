@@ -416,6 +416,29 @@ function declaredGivensPerCell(
    });
 }
 
+/** The `queryInfo` a plain cell gets from `anonymous_queries`, for a run compiled on its own on top of the model. */
+async function tileQueryInfo(
+   materializer: ModelMaterializer,
+   text: string,
+): Promise<Malloy.QueryInfo | undefined> {
+   try {
+      const def = (await materializer.extendModel(text).getModel())._modelDef;
+      const anonymous = modelInfoOf(def).anonymous_queries;
+      const last = anonymous?.[anonymous.length - 1];
+      const compiled = def.queryList[def.queryList.length - 1] as
+         | NamedQueryDef
+         | undefined;
+      return last && { ...last, name: compiled?.as || compiled?.name || "" };
+   } catch (error) {
+      // The cell still runs on its own; only its description is missing.
+      logger.warn("Could not describe a layout notebook tile's query", {
+         text,
+         error,
+      });
+      return undefined;
+   }
+}
+
 export interface RunnableNotebookCell {
    type: "code" | "markdown";
    /** Set on a served notebook's cells; a `.malloynb` cell has none. */
@@ -458,6 +481,8 @@ export interface RunnableNotebookCell {
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+   /** A layout tile's `queryInfo`, compiled on first read: its run is a string in the tag, so no `anonymous_queries` entry describes it. */
+   deriveQueryInfo?: () => Promise<Malloy.QueryInfo | undefined>;
 }
 
 /** What running one notebook cell answers; `kind` only on a served notebook's cell. */
@@ -6108,13 +6133,17 @@ export class Model {
                continue;
             }
             const text = `run: ${tile.query}`;
+            let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
             cells.push({
                type: "code",
                kind: "query",
                text,
+               proseLines: [],
                runnable: materializer.loadQuery(text),
                modelMaterializer: materializer,
                modelDef,
+               deriveQueryInfo: () =>
+                  (queryInfo ??= tileQueryInfo(materializer, text)),
             });
          }
       }
@@ -8634,9 +8663,13 @@ export class Model {
       const shownCells = new Set<number>();
       for (const [index, cell] of cells.entries()) {
          const shown =
-            cell.queryInfo !== undefined &&
+            (cell.queryInfo !== undefined ||
+               cell.deriveQueryInfo !== undefined) &&
             (await this.showsCellQueryInfo(index, cell));
          if (shown) shownCells.add(index);
+         const queryInfo = shown
+            ? (cell.queryInfo ?? (await cell.deriveQueryInfo?.()))
+            : undefined;
          notebookCells.push({
             type: cell.type,
             kind: cell.kind,
@@ -8646,7 +8679,7 @@ export class Model {
             codeLine: cell.codeLine,
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
+            queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
          } as ApiNotebookCell);
       }
 
@@ -9590,9 +9623,11 @@ export class Model {
                            location: anonymousQuery.location,
                         } as Malloy.QueryInfo;
                      }
-                  } catch (_error) {
-                     // If we can't extract query info (e.g., no query in cell), that's okay
-                     // This can happen for cells that only define sources
+                  } catch (error) {
+                     // A cell that only defines sources has no query to describe, so this is routine.
+                     logger.debug("No query info for a .malloynb cell", {
+                        error,
+                     });
                   }
 
                   return {
