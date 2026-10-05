@@ -20,7 +20,7 @@ it goes where the tag says, and otherwise it opens the rows behind the value.
 [`examples/storefront/dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy)
 is the shipped one.
 
-Publisher also serves `# artifact` on a `query:`, and it is worth knowing what that is: **a rendered
+Publisher still serves a legacy `# artifact` on a `query:` (do not author new ones; the tiles form is the only authored one), and it is worth knowing what that is: **a rendered
 Malloy query** — one result that `@malloydata/render` lays out from the query's own `# dashboard`
 tag, the same thing a notebook cell or the VS Code extension shows. That is Malloy's rendering
 feature, and this page covers it under
