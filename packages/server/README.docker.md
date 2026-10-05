@@ -47,6 +47,18 @@ docker run -d \
 
 See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`) lives in the [deployment guide](../../docs/deployment.md).
 
+### Verifying the image
+
+Released images are signed with [Sigstore cosign](https://docs.sigstore.dev/cosign/verifying/verify/) using GitHub Actions keyless signing, so there is no public key to distribute: the signing certificate names the workflow that built the image, and the signature is recorded in the public Rekor transparency log. To check that an image was published by this repository's release workflow:
+
+```bash
+cosign verify ms2data/malloy-publisher:X.Y.Z \
+  --certificate-identity https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The signature covers the multi-platform manifest list, which references each platform image and its SBOM and SLSA provenance attestations by digest. Those attestations can be read with `docker buildx imagetools inspect ms2data/malloy-publisher:X.Y.Z --format '{{ json .SBOM }}'` (or `.Provenance`). Images released before signing was introduced carry no signature.
+
 ## Runtime layout
 
 | Path inside container | What's there |
