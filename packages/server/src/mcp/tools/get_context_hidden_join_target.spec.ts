@@ -92,14 +92,26 @@ describe("a deny-all source joined under an alias", () => {
                [
                   `m.malloy\u0000orders`,
                   [
-                     { targetSource: HIDDEN, path: ["vault"], fanout: "one" },
-                     { targetSource: "ok_country", path: ["shipping"] },
+                     {
+                        targetSource: HIDDEN,
+                        targetModelPath: "m.malloy",
+                        path: ["vault"],
+                        fanout: "one",
+                     },
+                     {
+                        targetSource: "ok_country",
+                        targetModelPath: "m.malloy",
+                        path: ["shipping"],
+                     },
                   ],
                ],
             ]),
          },
       } as unknown as PipelineContext;
+      // The hidden target is named with its model path, so only the index
+      // check can remove it; the visible target, named the same way, stays.
       expect(sourceDescription(withReach, orders)).not.toContain(HIDDEN);
+      expect(sourceDescription(withReach, orders)).toContain("ok_country");
    });
 
    it("is not sent when the topology reaches a source that is not in the index", async () => {

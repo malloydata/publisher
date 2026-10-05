@@ -50,7 +50,11 @@ import {
 } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { KEY_SEPARATOR } from "./embedding_index";
-import { loadSourceSummaries } from "./source_summaries";
+import { indexSettingsOf } from "./index_settings";
+import {
+   SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+   loadSourceSummaries,
+} from "./source_summaries";
 
 let tempDir: string;
 let db: DuckDBConnection;
@@ -233,6 +237,17 @@ const rows = async () =>
    );
 
 // ---------------------------------------------------------------------------
+
+describe("source summaries for a local model", () => {
+   it("use the smaller prompt cap only when the provider is ollama", () => {
+      const cap = (provider: "ollama" | "openai") => {
+         _setChatModelForTests(chatFor().model, { provider });
+         return indexSettingsOf(pkgWith()).sourceSummary?.maxPromptChars;
+      };
+      expect(cap("ollama")).toBe(SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS);
+      expect(cap("openai")).toBeUndefined();
+   });
+});
 
 describe("source summaries in the sync", () => {
    it("runs after the keyphrases, before any vector, and reports its progress", async () => {

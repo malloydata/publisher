@@ -28,17 +28,31 @@ import {
 } from "./get_context_tool";
 
 /**
- * A card's relevance after reading one more row: a source's own row sets it,
- * and any scored row raises it. One definition, used here and by
- * toSourceResults, so a card and its wire form cannot disagree.
+ * Whether a source row carries a real verdict: a model rated it (source match
+ * sets `level`). A source row refine only put on the scale, as MEDIUM plus its
+ * cosine, has `raw` but no `level`: nobody judged it, so it must not decide
+ * its card.
+ */
+function isUnratedOnScale(row: ResultEntity): boolean {
+   return row.raw !== undefined && row.level === undefined;
+}
+
+/**
+ * A card's relevance after reading one more row. A source's own row sets it
+ * outright when it is a verdict on the source (a source match rating, or a
+ * plain cosine with no stage at all); any other scored row raises it. One
+ * definition, used here and by toSourceResults, so a card and its wire form
+ * cannot disagree.
  */
 export function foldRelevance(
    current: number | undefined,
    row: ResultEntity,
 ): number | undefined {
    if (row.score === undefined) return current;
-   // The source itself matched: its score belongs on the card outright.
-   if (row.kind === "source") return row.score;
+   // The source itself matched: its score belongs on the card outright. Not
+   // when the row is only an unrated one placed on the scale: a card whose
+   // field rated HIGH would otherwise drop to the placeholder MEDIUM band.
+   if (row.kind === "source" && !isUnratedOnScale(row)) return row.score;
    // A source with no hit of its own still ranks by its best entity, so a
    // caller reading source relevance never sees a matched source at null.
    return current === undefined || row.score > current ? row.score : current;
@@ -50,7 +64,7 @@ export function foldRaw(
    row: ResultEntity,
 ): number | undefined {
    if (row.raw === undefined) return current;
-   if (row.kind === "source") return row.raw;
+   if (row.kind === "source" && !isUnratedOnScale(row)) return row.raw;
    return current === undefined || row.raw > current ? row.raw : current;
 }
 

@@ -363,6 +363,56 @@ describe("stored keyphrases", () => {
       expect(next.progress).toEqual({ done: 20, total: 25, capped: true });
    });
 
+   it("counts requests, not batches: with a limit of 1, a JSON repair is not sent", async () => {
+      // A batch whose reply fails validation is re-asked once: two paid
+      // requests for one batch. The provider reports each through onRequest.
+      let sent = 0;
+      const inner = fakeChat();
+      const repairing: ChatModel = {
+         ...inner.model,
+         completeJson: async (req) => {
+            req.onRequest?.();
+            sent += 1;
+            req.onRequest?.();
+            sent += 1;
+            return inner.model.completeJson(req);
+         },
+      };
+      const out = await resolve(
+         [entity("a"), entity("b")],
+         settingsFor(repairing, { maxCallsPerSync: 1 }),
+      );
+      expect(sent).toBe(1);
+      expect(out.keyphrases.size).toBe(0);
+      expect(out.progress).toEqual({ done: 0, total: 2, capped: true });
+   });
+
+   it("sends no further batch once the package is going away", async () => {
+      let stop = false;
+      const inner = fakeChat();
+      const chat: ChatModel = {
+         ...inner.model,
+         completeJson: async (req) => {
+            const reply = await inner.model.completeJson(req);
+            stop = true;
+            return reply;
+         },
+      };
+      const many = Array.from({ length: 25 }, (_, i) => entity(`e${i}`));
+      const out = await resolveKeyphrases({
+         db,
+         environmentName: "env",
+         packageName: "kp",
+         entities: many,
+         settings: settingsFor(chat),
+         shouldStop: () => stop,
+      });
+      expect(inner.calls).toHaveLength(1);
+      expect(out.progress.done).toBe(10);
+      // Going away is not hitting the spend limit.
+      expect(out.progress.capped).toBe(false);
+   });
+
    it("runs batches concurrently up to the limit", async () => {
       let active = 0;
       let peak = 0;
@@ -552,6 +602,66 @@ const status = (
 ) => getEmbeddingIndexStatus(db, provider, "env", "sync", entities, pkg);
 
 describe("the sync", () => {
+   it("stops spending on a package deleted while its keyphrases are being written", async () => {
+      const inner = fakeChat();
+      let deleted: Promise<void> | undefined;
+      const chat: ChatModel = {
+         ...inner.model,
+         completeJson: async (req) => {
+            const reply = await inner.model.completeJson(req);
+            // The delete marks the package at once and waits for the sync's
+            // mutex; the sync must stop at its next request, not run all 3.
+            deleted ??= deletePackageEmbeddings(db, "env", "sync");
+            return reply;
+         },
+      };
+      _setChatModelForTests(chat, { concurrency: 1 });
+      const { provider, sent } = recordingEmbedder();
+      const many = Object.freeze(
+         Array.from({ length: 25 }, (_, i) => entity(`e${i}`)),
+      );
+      const pkg = pkgWith();
+      // One search starts the sync. No later search: it would start another
+      // for the package the delete just removed.
+      await trySemanticSearch({
+         db,
+         provider,
+         pkg,
+         environmentName: "env",
+         packageName: "sync",
+         entities: many,
+         queries: [{ targetIndex: 0, text: "find it", kinds: ["dimension"] }],
+         perSourceWindow: 10,
+      });
+      for (let i = 0; i < 400 && deleted === undefined; i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await embeddingSyncQueue.idle();
+      await deleted;
+      expect(inner.calls).toHaveLength(1);
+      // Nothing was embedded for the deleted package either.
+      expect(sent.filter((t) => t !== "find it")).toEqual([]);
+   });
+
+   it("counts the name rows only toward totalRows, so embeddedRows never passes it", async () => {
+      const chat = fakeChat();
+      _setChatModelForTests(chat.model, { concurrency: 1 });
+      const { provider } = recordingEmbedder();
+      const pkg = pkgWith({ representation: "facets" });
+      const two = Object.freeze([entity("alpha"), entity("beta")]);
+      await search(provider, pkg, two);
+      // Two undocumented entities: a name row and a keyphrase row each are
+      // stored, and the keyphrase rows are extras to the denominator.
+      const stored = await db.all<{ n: number }>(
+         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings",
+      );
+      expect(stored[0].n).toBe(4);
+      const s = await status(provider, pkg, two);
+      expect(s.totalRows).toBe(2);
+      expect(s.embeddedRows).toBe(2);
+      expect(s.status).toBe("ready");
+   });
+
    it("embeds the keyphrase, not the doc, and reports progress until ready", async () => {
       const chat = fakeChat();
       _setChatModelForTests(chat.model, { concurrency: 1 });

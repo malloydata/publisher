@@ -55,7 +55,11 @@ import type { ChatModel } from "../../providers/types";
 import { publicMessage } from "../../service/http_retry";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { KEY_SEPARATOR, type EmbeddableEntity } from "./embedding_index";
-import { runPooled } from "./get_context_llm";
+import {
+   SyncBudgetReached,
+   SyncRequestBudget,
+   runPooled,
+} from "./get_context_llm";
 import { scrubForEgress } from "./keyphrases";
 
 /** Most fields rendered for one source (and for each joined source). */
@@ -68,9 +72,19 @@ export const SOURCE_SUMMARY_JOIN_DEPTH = 3;
 export const SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS = 500;
 /**
  * The message sent for one source is cut to at most this many characters (about
- * 15,000 tokens), well inside every supported model's context window.
+ * 15,000 tokens). That fits the hosted models' context windows, which are far
+ * larger, and does NOT fit a local model run at its default window.
  */
 export const SOURCE_SUMMARY_MAX_PROMPT_CHARS = 60_000;
+/**
+ * The cap for a local model (Ollama). Its default context is 2,048 to 4,096
+ * tokens and a prompt past it is cut silently, so the summary would be written
+ * from a partial field list with no error. 6,000 characters is about 1,500
+ * tokens: room for the instructions and the reply inside the smaller default.
+ * A source with more fields than that shows fewer of them, with the line that
+ * says what was left out.
+ */
+export const SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS = 6_000;
 /** A summary longer than this is refused; the prompt asks for far less. */
 export const SOURCE_SUMMARY_MAX_CHARS = 4000;
 /** Reply budget: 500 tokens of prose, the one-liner and the JSON around them. */
@@ -101,6 +115,12 @@ export interface SourceSummarySettings {
    promptHash: string;
    concurrency: number;
    maxCallsPerSync: number;
+   /**
+    * The longest message sent for one source; default
+    * SOURCE_SUMMARY_MAX_PROMPT_CHARS. Part of the input hash, because it
+    * decides how much of the field list the model sees.
+    */
+   maxPromptChars?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +386,7 @@ export interface SourceSummaryInput {
  */
 export function buildSourceSummaryInputs(
    entities: readonly SummaryEntity[],
+   maxPromptChars: number = SOURCE_SUMMARY_MAX_PROMPT_CHARS,
 ): SourceSummaryInput[] {
    const { byKey, resolve } = indexSources(entities);
    const out: SourceSummaryInput[] = [];
@@ -381,14 +402,14 @@ export function buildSourceSummaryInputs(
          source: e.name,
          modelPath: e.modelPath,
          hasDoc: doc !== "",
-         prompt: boundedPrompt(e.name, doc, own, resolve),
+         prompt: boundedPrompt(e.name, doc, own, resolve, maxPromptChars),
       });
    }
    return out;
 }
 
 /**
- * The message for one source, at most SOURCE_SUMMARY_MAX_PROMPT_CHARS long. When
+ * The message for one source, at most `maxPromptChars` long. When
  * the full rendering is longer, fewer joined sources are shown (halving down to
  * none), then fewer fields (halving, never under 5), until it fits. The lines
  * that say what is not shown stay in, so the model does not take a part for the
@@ -399,6 +420,7 @@ function boundedPrompt(
    doc: string,
    own: SourceFields,
    resolve: ResolveJoin,
+   maxPromptChars: number,
 ): string {
    const limits: RenderLimits = {
       maxFields: SOURCE_SUMMARY_MAX_FIELDS,
@@ -411,16 +433,16 @@ function boundedPrompt(
          doc: docText,
          fields: renderSourceFields(own, resolve, limits),
       });
-      if (prompt.length <= SOURCE_SUMMARY_MAX_PROMPT_CHARS) return prompt;
+      if (prompt.length <= maxPromptChars) return prompt;
       if (limits.maxJoinedSources > 0) {
          limits.maxJoinedSources = Math.floor(limits.maxJoinedSources / 2);
       } else if (limits.maxFields > 5) {
          limits.maxFields = Math.max(5, Math.floor(limits.maxFields / 2));
       } else {
-         // Five fields of at most 500 characters each cannot reach the cap, so
-         // this is unreachable unless the constants change. Cut hard rather
-         // than loop.
-         return prompt.slice(0, SOURCE_SUMMARY_MAX_PROMPT_CHARS);
+         // Five fields of at most 500 characters each cannot reach the
+         // default cap, so this is unreachable unless the constants change (a
+         // small-context cap can reach it). Cut hard rather than loop.
+         return prompt.slice(0, maxPromptChars);
       }
    }
 }
@@ -447,10 +469,12 @@ export function sourceSummaryInputHash(
  */
 export function sourceSummaryInputsDigest(
    entities: readonly SummaryEntity[],
-   settings: Pick<SourceSummarySettings, "promptHash" | "modelId"> | undefined,
+   settings:
+      | Pick<SourceSummarySettings, "promptHash" | "modelId" | "maxPromptChars">
+      | undefined,
 ): string {
    if (!settings) return "";
-   const rows = buildSourceSummaryInputs(entities).map(
+   const rows = buildSourceSummaryInputs(entities, settings.maxPromptChars).map(
       (i) =>
          `${i.modelPath}\u0000${i.source}\u0000${sourceSummaryInputHash(i, settings)}`,
    );
@@ -472,14 +496,17 @@ const hashesCache = new WeakMap<
  */
 export function currentSummaryHashes(
    entities: readonly SummaryEntity[],
-   settings: Pick<SourceSummarySettings, "promptHash" | "modelId">,
+   settings: Pick<
+      SourceSummarySettings,
+      "promptHash" | "modelId" | "maxPromptChars"
+   >,
 ): ReadonlyMap<string, string> {
    const frozen = Object.isFrozen(entities);
-   const variant = `${settings.promptHash}\u0000${settings.modelId}`;
+   const variant = `${settings.promptHash}\u0000${settings.modelId}\u0000${settings.maxPromptChars ?? ""}`;
    const cached = frozen ? hashesCache.get(entities)?.get(variant) : undefined;
    if (cached) return cached;
    const hashes = new Map(
-      buildSourceSummaryInputs(entities).map((i) => [
+      buildSourceSummaryInputs(entities, settings.maxPromptChars).map((i) => [
          summaryKey(i.modelPath, i.source),
          sourceSummaryInputHash(i, settings),
       ]),
@@ -727,27 +754,40 @@ export interface SourceSummaryOutcome {
  * Bring the stored summaries in line with the package: keep the ones whose
  * input hash still matches, delete the rest (and those of sources that left),
  * and write one new summary per remaining source, one call each,
- * `concurrency` calls at a time, each saved as it returns. At most
- * `callBudget` calls run (the sync's `maxCallsPerSync` less what the keyphrase
- * step used); sources beyond that are left without a summary and reported
- * through `progress.capped`. A call that fails after the provider layer's
- * retries stops the step with a {@link SourceSummaryStageError}: loud, never a
- * silent downgrade, and what was saved stays.
+ * `concurrency` calls at a time, each saved as it returns. The calls draw on
+ * the sync's request budget (`maxCallsPerSync` HTTP requests, shared with the
+ * keyphrase step, a JSON repair counting as a second request); sources the
+ * budget does not reach are left without a summary and reported through
+ * `progress.capped`. A call that fails after the provider layer's retries
+ * stops the step with a {@link SourceSummaryStageError}: loud, never a silent
+ * downgrade, and what was saved stays.
  */
 export async function resolveSourceSummaries(args: {
    db: DuckDBConnection;
    environmentName: string;
    packageName: string;
-   /** Deduplicated entities, as the sync sees them. */
+   /**
+    * Every entity of the package, one per model file. Not deduplicated by
+    * (kind, source, name): two files can each define `orders`, and each gets
+    * its own summary read from its own fields and joins.
+    */
    entities: readonly EmbeddableEntity[];
    settings: SourceSummarySettings;
-   /** Calls this step may make; defaults to the settings' `maxCallsPerSync`. */
-   callBudget?: number;
+   /**
+    * The sync's request budget, shared with the keyphrase step. Absent: a
+    * fresh one of the settings' `maxCallsPerSync` requests.
+    */
+   budget?: SyncRequestBudget;
+   /** True when the package is going away: no further request is sent. */
+   shouldStop?: () => boolean;
    onProgress?: (progress: SourceSummaryProgress) => void;
 }): Promise<SourceSummaryOutcome> {
    const { db, environmentName, packageName, entities, settings, onProgress } =
       args;
-   const inputs = buildSourceSummaryInputs(entities);
+   const budget =
+      args.budget ?? new SyncRequestBudget(settings.maxCallsPerSync);
+   const requestsBefore = budget.requests;
+   const inputs = buildSourceSummaryInputs(entities, settings.maxPromptChars);
    const stored = await loadRows(db, environmentName, packageName);
    const storedByKey = new Map(
       stored.map((r) => [summaryKey(r.model_path, r.source_name), r]),
@@ -785,44 +825,45 @@ export async function resolveSourceSummaries(args: {
    onProgress?.({ ...progress });
    if (pending.length === 0) return { progress, calls: 0 };
 
-   const budget = Math.max(0, args.callBudget ?? settings.maxCallsPerSync);
-   const jobs = pending.slice(0, budget);
-   if (jobs.length < pending.length) {
-      progress.capped = true;
-      logger.warn(
-         "[get_context] Source summary generation stopped at the per-sync call limit; the rest are left for the next sync",
-         {
-            environmentName,
-            packageName,
-            limit: settings.maxCallsPerSync,
-            setting: "retrieval.llm.maxCallsPerSync",
-            remainingSources: pending.length - jobs.length,
+   try {
+      await runPooled(
+         pending,
+         settings.concurrency,
+         async ({ input, hash }) => {
+            // Out of budget, or the package is going away: this source and the
+            // rest are left for the next sync, which resumes from what is stored.
+            if (args.shouldStop?.() || budget.exhausted) return;
+            let reply;
+            try {
+               reply = await budget.spend((onRequest) =>
+                  settings.chat.completeJson({
+                     system: settings.instructions,
+                     prompt: input.prompt,
+                     maxTokens: SOURCE_SUMMARY_MAX_TOKENS,
+                     validate: validateSourceSummary(
+                        input.source,
+                        input.hasDoc,
+                     ),
+                     onRequest,
+                  }),
+               );
+            } catch (error) {
+               if (error instanceof SyncBudgetReached) return;
+               throw error;
+            }
+            await saveRow(
+               db,
+               environmentName,
+               packageName,
+               input,
+               hash,
+               settings.modelId,
+               reply.value,
+            );
+            progress.done += 1;
+            onProgress?.({ ...progress });
          },
       );
-   }
-
-   let calls = 0;
-   try {
-      await runPooled(jobs, settings.concurrency, async ({ input, hash }) => {
-         calls += 1;
-         const reply = await settings.chat.completeJson({
-            system: settings.instructions,
-            prompt: input.prompt,
-            maxTokens: SOURCE_SUMMARY_MAX_TOKENS,
-            validate: validateSourceSummary(input.source, input.hasDoc),
-         });
-         await saveRow(
-            db,
-            environmentName,
-            packageName,
-            input,
-            hash,
-            settings.modelId,
-            reply.value,
-         );
-         progress.done += 1;
-         onProgress?.({ ...progress });
-      });
    } catch (failure) {
       const message =
          failure instanceof Error ? failure.message : String(failure);
@@ -833,5 +874,22 @@ export async function resolveSourceSummaries(args: {
          `${after}: ${publicMessage(failure)}`,
       );
    }
-   return { progress, calls };
+   // What the budget did not reach. Published through onProgress too: the
+   // sync set the progress before this step started, so a `capped` set only
+   // here would never be seen.
+   if (progress.done < progress.total && !args.shouldStop?.()) {
+      progress.capped = true;
+      onProgress?.({ ...progress });
+      logger.warn(
+         "[get_context] Source summary generation stopped at the per-sync call limit; the rest are left for the next sync",
+         {
+            environmentName,
+            packageName,
+            limit: settings.maxCallsPerSync,
+            setting: "retrieval.llm.maxCallsPerSync",
+            remainingSources: progress.total - progress.done,
+         },
+      );
+   }
+   return { progress, calls: budget.requests - requestsBefore };
 }

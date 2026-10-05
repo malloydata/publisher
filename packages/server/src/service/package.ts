@@ -311,8 +311,9 @@ export class Package {
     */
    private manifestWarnings: string[] = [];
    /**
-    * The manifest's `retrieval` block as read at load. Replaced on reload,
-    * which is how an edit to it takes effect.
+    * The manifest's `retrieval` block as read at load (prompt files included).
+    * Replaced on reload, which is how an edit to it, or to a prompt file,
+    * takes effect.
     */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;

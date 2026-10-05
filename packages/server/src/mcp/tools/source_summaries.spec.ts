@@ -32,6 +32,7 @@ import {
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createSourceSummariesTable } from "../../storage/duckdb/schema";
 import { KEY_SEPARATOR, type EmbeddableEntity } from "./embedding_index";
+import { SyncRequestBudget } from "./get_context_llm";
 import {
    SOURCE_SUMMARY_JOIN_DEPTH,
    SOURCE_SUMMARY_MAX_CHARS,
@@ -39,12 +40,14 @@ import {
    SOURCE_SUMMARY_MAX_FIELDS,
    SOURCE_SUMMARY_MAX_JOINED_SOURCES,
    SOURCE_SUMMARY_MAX_PROMPT_CHARS,
+   SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
    SourceSummaryStageError,
    buildSourceSummaryInputs,
    countSummarizableSources,
    currentSummaryHashes,
    loadSourceSummaries,
    resolveSourceSummaries,
+   sourceSummaryInputHash,
    sourceSummaryInputsDigest,
    summaryKey,
    validateSourceSummary,
@@ -146,7 +149,7 @@ function settingsFor(
 const resolve = (
    entities: EmbeddableEntity[],
    settings: SourceSummarySettings,
-   extra: { callBudget?: number } = {},
+   extra: { budget?: SyncRequestBudget } = {},
 ) =>
    resolveSourceSummaries({
       db,
@@ -575,7 +578,9 @@ describe("generating summaries", () => {
             : e,
       );
       const chat = scriptedChat(summaryReply);
-      const out = await resolve(changed, settingsFor(chat), { callBudget: 1 });
+      const out = await resolve(changed, settingsFor(chat), {
+         budget: new SyncRequestBudget(1),
+      });
       expect(chat.prompts).toHaveLength(1);
       expect(out.progress).toEqual({ done: 1, total: 3, capped: true });
       const rows = await stored();
@@ -587,9 +592,58 @@ describe("generating summaries", () => {
 
    it("a call budget of 0 makes no call", async () => {
       const chat = scriptedChat(summaryReply);
-      const out = await resolve(shop(), settingsFor(chat), { callBudget: 0 });
+      const out = await resolve(shop(), settingsFor(chat), {
+         budget: new SyncRequestBudget(0),
+      });
       expect(chat.prompts).toHaveLength(0);
       expect(out.progress.capped).toBe(true);
+   });
+
+   it("counts requests, not sources: with a budget of 1, a JSON repair is not sent", async () => {
+      // The first reply is not JSON, so the provider re-asks: two paid
+      // requests for one source.
+      const chat = scriptedChat((prompt, n) =>
+         n === 1 ? "not json" : summaryReply(prompt),
+      );
+      const out = await resolve(shop(), settingsFor(chat), {
+         budget: new SyncRequestBudget(1),
+      });
+      expect(chat.prompts).toHaveLength(1);
+      expect(out.progress).toEqual({ done: 0, total: 3, capped: true });
+   });
+
+   it("publishes capped through onProgress when the budget is spent before it starts", async () => {
+      // The sync sets the progress before this step runs, so a `capped` that
+      // is only returned never reaches the status.
+      const seen: Array<{ done: number; total: number; capped: boolean }> = [];
+      await resolveSourceSummaries({
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: shop(),
+         settings: settingsFor(scriptedChat(summaryReply)),
+         budget: new SyncRequestBudget(0),
+         onProgress: (p) => seen.push({ ...p }),
+      });
+      expect(seen.at(-1)).toEqual({ done: 0, total: 3, capped: true });
+   });
+
+   it("sends no further request once the package is going away", async () => {
+      let stop = false;
+      const chat = scriptedChat((prompt) => {
+         stop = true;
+         return summaryReply(prompt);
+      });
+      const out = await resolveSourceSummaries({
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: shop(),
+         settings: settingsFor(chat),
+         shouldStop: () => stop,
+      });
+      expect(chat.prompts).toHaveLength(1);
+      expect(out.progress.capped).toBe(false);
    });
 
    it("reports progress as sources are saved", async () => {
@@ -822,6 +876,54 @@ function twoModels(): EmbeddableEntity[] {
       }),
    ];
 }
+
+describe("a local model's smaller context window", () => {
+   const manyFields = (): EmbeddableEntity[] => [
+      source("wide", "A wide source."),
+      ...Array.from({ length: 200 }, (_, i) =>
+         field("dimension", "wide", `column_${i}`, `Column number ${i}.`, {
+            dataType: "string",
+         }),
+      ),
+   ];
+
+   it("shows fewer fields so the message fits, and says what was left out", () => {
+      const full = buildSourceSummaryInputs(manyFields())[0].prompt;
+      const small = buildSourceSummaryInputs(
+         manyFields(),
+         SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+      )[0].prompt;
+      expect(full.length).toBeGreaterThan(
+         SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+      );
+      expect(small.length).toBeLessThanOrEqual(
+         SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+      );
+      expect(small).toContain("column_0");
+      expect(small).not.toContain("column_199");
+      expect(small.toLowerCase()).toContain("not shown");
+   });
+
+   it("is part of the input hash, so a stored summary written under the other cap is rewritten", () => {
+      const settings = { promptHash: "p", modelId: "m" };
+      const [a] = buildSourceSummaryInputs(manyFields());
+      const [b] = buildSourceSummaryInputs(
+         manyFields(),
+         SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+      );
+      expect(sourceSummaryInputHash(a, settings)).not.toBe(
+         sourceSummaryInputHash(b, settings),
+      );
+      expect(
+         currentSummaryHashes(Object.freeze(manyFields()), {
+            ...settings,
+            maxPromptChars: SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+         }),
+      ).not.toEqual(
+         currentSummaryHashes(Object.freeze(manyFields()), settings),
+      );
+   });
+});
 
 describe("a source name defined in two model files", () => {
    const inputs = () => buildSourceSummaryInputs(twoModels());

@@ -19,7 +19,12 @@ import {
    refineStage,
    selectCandidates,
 } from "./get_context_refine";
-import type { ResolvedRequest, ResultEntity } from "./get_context_tool";
+import {
+   MAX_ENTITIES_PER_SOURCE_TARGET,
+   MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+   type ResolvedRequest,
+   type ResultEntity,
+} from "./get_context_tool";
 import { mapRawScore } from "./get_context_scoring";
 
 type Search = ResolvedRequest["searches"][number];
@@ -107,29 +112,32 @@ const namesIn = (prompt: string) =>
    numberedLines(prompt).map(([, rest]) => rest.split(" ")[0]);
 
 describe("refine candidate selection", () => {
-   it("keeps the best 10 per source", () => {
-      const rows = Array.from({ length: 14 }, (_, i) =>
+   it("keeps the best 13 per source", () => {
+      const rows = Array.from({ length: 16 }, (_, i) =>
          row("s", `f${String(i).padStart(2, "0")}`, 0.9 - i * 0.01),
       );
       const picked = selectCandidates(rows, 0);
+      expect(REFINE_PER_SOURCE).toBe(13);
       expect(picked).toHaveLength(REFINE_PER_SOURCE);
       expect(picked.map((c) => c.row.name)).toEqual(
-         rows.slice(0, 10).map((r) => r.name),
+         rows.slice(0, REFINE_PER_SOURCE).map((r) => r.name),
       );
    });
 
    it("keeps the best 120 overall after the per-source cut", () => {
-      // 13 sources x 10 = 130 candidates survive the per-source cut.
-      const rows = Array.from({ length: 13 }, (_, s) =>
-         Array.from({ length: 12 }, (_, i) =>
+      // 11 sources x 13 = 143 candidates survive the per-source cut.
+      const rows = Array.from({ length: 11 }, (_, s) =>
+         Array.from({ length: 15 }, (_, i) =>
             row(`s${s}`, `f${i}`, 0.9 - s * 0.01 - i * 0.0001),
          ),
       ).flat();
       const picked = selectCandidates(rows, 0);
       expect(picked).toHaveLength(REFINE_TOTAL);
-      // The worst source (s12) lost its candidates first.
-      expect(picked.filter((c) => c.row.source === "s12")).toHaveLength(0);
-      expect(picked.filter((c) => c.row.source === "s11")).toHaveLength(10);
+      // The worst source (s10) lost its candidates first.
+      expect(picked.filter((c) => c.row.source === "s10")).toHaveLength(0);
+      expect(picked.filter((c) => c.row.source === "s8")).toHaveLength(
+         REFINE_PER_SOURCE,
+      );
    });
 
    it("dedupes by (name, source) at the best cosine", () => {
@@ -157,9 +165,9 @@ describe("refine candidate selection", () => {
 
 describe("refine stage", () => {
    it("sends batches of 15 and counts the calls", async () => {
-      // 3 sources x 10 candidates = 30 -> 2 batches; 4 sources -> 40 -> 3.
-      const rows = Array.from({ length: 4 }, (_, s) =>
-         Array.from({ length: 12 }, (_, i) =>
+      // 3 sources x 13 candidates = 39 -> 3 batches: 15, 15, 9.
+      const rows = Array.from({ length: 3 }, (_, s) =>
+         Array.from({ length: 15 }, (_, i) =>
             row(`s${s}`, `f${i}`, 0.9 - s * 0.01 - i * 0.001),
          ),
       ).flat();
@@ -170,7 +178,7 @@ describe("refine stage", () => {
       expect(sizes.sort((a, b) => b - a)).toEqual([
          REFINE_BATCH_SIZE,
          REFINE_BATCH_SIZE,
-         10,
+         9,
       ]);
    });
 
@@ -453,6 +461,14 @@ describe("refine stage", () => {
       // The MEDIUM band is 0.7 to 0.9. A bare cosine of 0.3 was 0.12.
       expect(source.score as number).toBeGreaterThanOrEqual(0.7);
       expect(field.score as number).toBeGreaterThan(source.score as number);
+   });
+});
+
+describe("refine's per-source cut", () => {
+   it("is the scan's own window plus its window for dotted rows, so no row the scan kept is cut before the model sees it", () => {
+      expect(REFINE_PER_SOURCE).toBe(
+         MAX_ENTITIES_PER_SOURCE_TARGET + MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+      );
    });
 });
 

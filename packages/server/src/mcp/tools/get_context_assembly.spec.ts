@@ -14,6 +14,7 @@ import {
    storeServing,
 } from "../../test_helpers/get_context_join_fixture";
 import { assembleCards, scopeKeysWithJoins } from "./get_context_assembly";
+import { mapRawScore } from "./get_context_scoring";
 import type {
    CardState,
    PipelineContext,
@@ -362,5 +363,57 @@ describe("assembleCards: a pinned dotted entity_name", () => {
          request: { sourceName: "ord", entityName: "name" },
       });
       expect(state.cards).toEqual([]);
+   });
+});
+
+describe("assembleCards: a source row nobody rated", () => {
+   // Refine puts an unrated source-target row on the scale as MEDIUM plus its
+   // cosine (2.3 here) so it publishes like the rest. It is a placeholder, not
+   // a verdict, so it must not set the card's relevance outright.
+   const sourceRow = (raw: number, level?: number): ResultEntity => {
+      const e = index.directEntities.find(
+         (c) => c.kind === "source" && c.name === "cust",
+      );
+      if (!e) throw new Error("no cust source entity");
+      return {
+         ...projectEntity(e, "env", "pkg"),
+         raw,
+         score: mapRawScore(raw),
+         ...(level !== undefined ? { level } : {}),
+      };
+   };
+   const field = (): ResultEntity => ({
+      ...ranked("cust", "name", 0.5),
+      raw: 3.5,
+      score: mapRawScore(3.5),
+      level: 3,
+   });
+   const cust = (state: CardState) => {
+      const card = state.cards.find((c) => c.source === "cust");
+      if (!card) throw new Error("no cust card");
+      return card;
+   };
+
+   it("leaves a card at its HIGH field's score instead of the placeholder's", () => {
+      const card = cust(assemble([field(), sourceRow(2.3)]));
+      expect(card.raw).toBe(3.5);
+      expect(card.relevance).toBe(mapRawScore(3.5));
+   });
+
+   it("does not depend on which row comes first", () => {
+      const card = cust(assemble([sourceRow(2.3), field()]));
+      expect(card.raw).toBe(3.5);
+      expect(card.relevance).toBe(mapRawScore(3.5));
+   });
+
+   it("still lets a source rated by source match set the card outright", () => {
+      const card = cust(assemble([field(), sourceRow(2.3, 2)]));
+      expect(card.raw).toBe(2.3);
+      expect(card.relevance).toBe(mapRawScore(2.3));
+   });
+
+   it("ranks the card by its best row when the source row is higher", () => {
+      const card = cust(assemble([field(), sourceRow(3.9)]));
+      expect(card.raw).toBe(3.9);
    });
 });

@@ -34,6 +34,7 @@ import { StageError, LlmMeter } from "./get_context_llm";
 import type { PipelineContext, RankedState } from "./get_context_pipeline";
 import {
    SOURCE_MATCH_BATCH_SIZE,
+   SOURCE_MATCH_SMALL_CONTEXT_SUMMARY_CHARS,
    SOURCE_MATCH_MAX_HIGH,
    selectSourceCandidates,
    sourceDescription,
@@ -202,6 +203,28 @@ describe("source match stage", () => {
          .split("\n</candidates>")[0]
          .split("\n\n");
       expect(blocks).toHaveLength(2);
+   });
+
+   it("cuts each summary for a local model, whose default context window truncates silently", async () => {
+      const summary = `Start. ${"More detail. ".repeat(100)}SUMMARY-TAIL`;
+      const chat = scriptedChat(() => "[]");
+      // The model's methods live on its prototype, so derive from it rather
+      // than copy it.
+      const model = Object.create(chat.model);
+      Object.defineProperty(model, "provider", { value: "ollama" });
+      const local = { ...chat, model };
+      const ctx = ctxFor({
+         entities: [source("orders", "One row per order.")],
+         chat: local,
+         summaries: { orders: summary },
+      });
+      await sourceMatchStage.run(empty, ctx);
+      const sent = chat.prompts[0].match(/^Summary: (.*)$/m)?.[1] ?? "";
+      expect(sent.startsWith("Start.")).toBe(true);
+      expect(sent).not.toContain("SUMMARY-TAIL");
+      expect(sent.length).toBeLessThanOrEqual(
+         SOURCE_MATCH_SMALL_CONTEXT_SUMMARY_CHARS + 3,
+      );
    });
 
    it("leaves a source with no stored summary exactly as it was", async () => {

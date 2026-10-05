@@ -39,6 +39,7 @@ import type { EgressPreset } from "../../retrieval_config";
 import type { KeyphraseMode } from "../../service/package_retrieval";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { EmbeddableEntity } from "./embedding_index";
+import { SyncBudgetReached, SyncRequestBudget } from "./get_context_llm";
 
 /** Entities per LLM call. */
 export const KEYPHRASE_BATCH_SIZE = 10;
@@ -406,9 +407,19 @@ export async function resolveKeyphrases(args: {
    entities: readonly EmbeddableEntity[];
    settings: KeyphraseSettings;
    onProgress?: (progress: KeyphraseProgress) => void;
+   /**
+    * The sync's request budget, shared with the steps after this one. Absent:
+    * a fresh one of `maxCallsPerSync` requests.
+    */
+   budget?: SyncRequestBudget;
+   /** True when the package is going away: no further request is sent. */
+   shouldStop?: () => boolean;
 }): Promise<KeyphraseOutcome> {
    const { db, environmentName, packageName, entities, settings, onProgress } =
       args;
+   const budget =
+      args.budget ?? new SyncRequestBudget(settings.maxCallsPerSync);
+   const requestsBefore = budget.requests;
    const keyphrases = new Map<string, string>();
    const needing: EmbeddableEntity[] = [];
    for (const entity of entities) {
@@ -456,45 +467,34 @@ export async function resolveKeyphrases(args: {
    onProgress?.({ ...progress });
    if (pending.length === 0) return { keyphrases, progress, calls: 0 };
 
-   const allBatches: (typeof pending)[] = [];
+   const batches: (typeof pending)[] = [];
    for (let i = 0; i < pending.length; i += KEYPHRASE_BATCH_SIZE) {
-      allBatches.push(pending.slice(i, i + KEYPHRASE_BATCH_SIZE));
-   }
-   const batches = allBatches.slice(0, settings.maxCallsPerSync);
-   if (batches.length < allBatches.length) {
-      progress.capped = true;
-      logger.warn(
-         "[get_context] Keyphrase generation stopped at the per-sync call limit; the rest are left for the next sync",
-         {
-            environmentName,
-            packageName,
-            limit: settings.maxCallsPerSync,
-            setting: "retrieval.llm.maxCallsPerSync",
-            remainingEntities:
-               pending.length - batches.length * KEYPHRASE_BATCH_SIZE,
-         },
-      );
+      batches.push(pending.slice(i, i + KEYPHRASE_BATCH_SIZE));
    }
 
    let failure: unknown;
    let next = 0;
    const worker = async () => {
       while (failure === undefined) {
+         if (args.shouldStop?.()) return;
          const index = next++;
          if (index >= batches.length) return;
          const batch = batches[index];
          const ids = batch.map((_, i) => String(i + 1));
          try {
-            const reply = await settings.chat.completeJson({
-               system: settings.instructions,
-               prompt: renderKeyphraseUserPrompt(
-                  batch.map((b, i) =>
-                     promptEntityOf(b.entity, settings.egress, ids[i]),
+            const reply = await budget.spend((onRequest) =>
+               settings.chat.completeJson({
+                  system: settings.instructions,
+                  prompt: renderKeyphraseUserPrompt(
+                     batch.map((b, i) =>
+                        promptEntityOf(b.entity, settings.egress, ids[i]),
+                     ),
                   ),
-               ),
-               maxTokens: 80 * batch.length + 100,
-               validate: validateReply(ids),
-            });
+                  maxTokens: 80 * batch.length + 100,
+                  validate: validateReply(ids),
+                  onRequest,
+               }),
+            );
             await saveBatch(
                db,
                environmentName,
@@ -513,6 +513,9 @@ export async function resolveKeyphrases(args: {
             progress.done += batch.length;
             onProgress?.({ ...progress });
          } catch (error) {
+            // Out of budget: this batch and the rest are left for the next
+            // sync, which resumes from what is stored. Not a failure.
+            if (error instanceof SyncBudgetReached) return;
             failure ??= error;
          }
       }
@@ -525,6 +528,24 @@ export async function resolveKeyphrases(args: {
          worker,
       ),
    );
+   if (
+      failure === undefined &&
+      progress.done < progress.total &&
+      !args.shouldStop?.()
+   ) {
+      progress.capped = true;
+      onProgress?.({ ...progress });
+      logger.warn(
+         "[get_context] Keyphrase generation stopped at the per-sync call limit; the rest are left for the next sync",
+         {
+            environmentName,
+            packageName,
+            limit: settings.maxCallsPerSync,
+            setting: "retrieval.llm.maxCallsPerSync",
+            remainingEntities: progress.total - progress.done,
+         },
+      );
+   }
    if (failure !== undefined) {
       const message =
          failure instanceof Error ? failure.message : String(failure);
@@ -535,5 +556,5 @@ export async function resolveKeyphrases(args: {
          `${after}: ${publicMessage(failure)}`,
       );
    }
-   return { keyphrases, progress, calls: batches.length };
+   return { keyphrases, progress, calls: budget.requests - requestsBefore };
 }

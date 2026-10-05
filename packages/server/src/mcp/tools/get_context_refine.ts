@@ -47,8 +47,15 @@ import {
 } from "./get_context_tool";
 import { scrubForEgress } from "./keyphrases";
 
-/** Most candidates one source sends to the model, per target. */
-export const REFINE_PER_SOURCE = 10;
+/**
+ * Most candidates one source sends to the model, per target: the scan's window
+ * for a source's own fields (10) plus the window it keeps for dotted index rows
+ * (3), so refine rates every row the scan kept. A literal, not the two
+ * constants added, because get_context_tool imports this file and would be
+ * read before it is set; the refine spec pins the sum. At 10 the dotted rows
+ * were cut here, before the model saw them.
+ */
+export const REFINE_PER_SOURCE = 13;
 /** Most candidates one target sends to the model, after the per-source cut. */
 export const REFINE_TOTAL = 120;
 /** Candidates per model call. */

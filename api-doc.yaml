@@ -3833,9 +3833,10 @@ components:
             With the default `retrieval.representation` of `single` an entity
             contributes one row, so this equals `totalEntities` once indexed.
             With `facets` an entity contributes one row for its name plus one
-            per chunk of its documentation (and one for its keyphrase), so this
-            exceeds `totalEntities` on a documented model and is not a count of
-            entities. Scoped by model only, not by
+            per chunk of its documentation, so this exceeds `totalEntities` on
+            a documented model and is not a count of entities. A keyphrase row
+            is an extra on top of those and is not counted here or in
+            `totalRows`. Scoped by model only, not by
             vector length, so it counts what is cached rather than what a
             search could read today: after a change to `EMBEDDING_DIMENSIONS`
             that no question has probed yet, rows of the old length are still

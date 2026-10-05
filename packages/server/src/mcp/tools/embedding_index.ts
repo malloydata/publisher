@@ -20,6 +20,7 @@ import { HttpRequestError, publicMessage } from "../../service/http_retry";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { SyncRequestBudget } from "./get_context_llm";
 import { indexSettingsOf, type IndexSettings } from "./index_settings";
 import {
    KeyphraseStageError,
@@ -1035,13 +1036,17 @@ async function computeDesiredSummary(
             "\n" +
             // What the source summary step shows the model (field types,
             // join targets, the prompt, the model); empty when it is off.
-            sourceSummaryInputsDigest(unique, settings.sourceSummary) +
+            // Read from the list with one entry per model file, not the
+            // deduplicated one: summaries are per file, and the sync and a
+            // request must see the same list or a stored summary fails its
+            // check on every request while the status reads ready.
+            sourceSummaryInputsDigest(entities, settings.sourceSummary) +
             "\n" +
             (await desiredFingerprintChunked(desired)),
       ),
       rows: desired.length,
       summarySources: settings.sourceSummary
-         ? countSummarizableSources(unique)
+         ? countSummarizableSources(entities)
          : 0,
    };
 }
@@ -1316,6 +1321,12 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   /**
+    * Every entity, one per model file. `entities` is deduplicated by (kind,
+    * source, name) for the embedding rows, which have no model path; source
+    * summaries are per model file and read this list.
+    */
+   allEntities: readonly EmbeddableEntity[],
    settings: IndexSettings,
    meta: PackageSyncMeta,
 ): Promise<void> {
@@ -1348,7 +1359,15 @@ async function syncPackageEmbeddings(
       // keyphrases cannot be produced is an error, never a quiet fallback to
       // doc-or-name vectors. Progress is on the meta for the status.
       let keyphrases: Map<string, string> | undefined;
-      let keyphraseCalls = 0;
+      // One request budget for both LLM steps, in HTTP requests: a JSON repair
+      // is a second paid request, and the summaries get what the keyphrases
+      // left. A package being deleted stops both between requests.
+      const budget = new SyncRequestBudget(
+         settings.keyphrases?.maxCallsPerSync ??
+            settings.sourceSummary?.maxCallsPerSync ??
+            0,
+      );
+      const shouldStop = () => meta.deleting === true;
       if (settings.keyphrases) {
          meta.keyphraseProgress = {
             done: 0,
@@ -1361,12 +1380,14 @@ async function syncPackageEmbeddings(
             packageName,
             entities,
             settings: settings.keyphrases,
+            budget,
+            shouldStop,
             onProgress: (p) => {
                meta.keyphraseProgress = p;
             },
          });
+         if (shouldStop()) throw new SyncAbandonedError();
          keyphrases = outcome.keyphrases;
-         keyphraseCalls = outcome.calls;
       } else {
          meta.keyphraseProgress = undefined;
       }
@@ -1378,20 +1399,22 @@ async function syncPackageEmbeddings(
       if (settings.sourceSummary) {
          meta.sourceSummaryProgress = {
             done: 0,
-            total: countSummarizableSources(entities),
+            total: countSummarizableSources(allEntities),
             capped: false,
          };
          await resolveSourceSummaries({
             db,
             environmentName,
             packageName,
-            entities,
+            entities: allEntities,
             settings: settings.sourceSummary,
-            callBudget: settings.sourceSummary.maxCallsPerSync - keyphraseCalls,
+            budget,
+            shouldStop,
             onProgress: (p) => {
                meta.sourceSummaryProgress = p;
             },
          });
+         if (shouldStop()) throw new SyncAbandonedError();
       } else {
          meta.sourceSummaryProgress = undefined;
       }
@@ -1565,8 +1588,9 @@ async function syncPackageEmbeddings(
       meta.synced = {
          // Computed exactly as the readiness check computes it: over the
          // unprefixed rows plus the settings key. The prefix is part of
-         // providerKey, not of the content fingerprint.
-         fingerprint: await fingerprintFor(entities, settings),
+         // providerKey, not of the content fingerprint. Over the same list the
+         // readiness check reads (one entry per model file), so the two agree.
+         fingerprint: await fingerprintFor(allEntities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
@@ -1604,6 +1628,8 @@ function kickSync(args: {
    environmentName: string;
    packageName: string;
    entities: EmbeddableEntity[];
+   /** One per model file; see syncPackageEmbeddings. */
+   allEntities: readonly EmbeddableEntity[];
    meta: PackageSyncMeta;
    fingerprint: string;
    providerKey: string;
@@ -1641,12 +1667,21 @@ async function runTrackedSync(
       environmentName: string;
       packageName: string;
       entities: EmbeddableEntity[];
+      allEntities: readonly EmbeddableEntity[];
       meta: PackageSyncMeta;
    },
    tracked: SyncState,
 ): Promise<void> {
-   const { db, provider, pkg, environmentName, packageName, entities, meta } =
-      args;
+   const {
+      db,
+      provider,
+      pkg,
+      environmentName,
+      packageName,
+      entities,
+      allEntities,
+      meta,
+   } = args;
    meta.syncStartedAtMs = Date.now();
    try {
       // The provider is already known to be down: record that as this
@@ -1663,6 +1698,7 @@ async function runTrackedSync(
          environmentName,
          packageName,
          entities,
+         allEntities,
          indexSettingsOf(pkg),
          meta,
       );
@@ -1797,7 +1833,16 @@ export function enqueuePackageSync(args: {
       syncState.set(pkg, tracked);
       // Run inline: this job IS the sync, so the queue stays serial.
       await runTrackedSync(
-         { db, provider, pkg, environmentName, packageName, entities, meta },
+         {
+            db,
+            provider,
+            pkg,
+            environmentName,
+            packageName,
+            entities,
+            allEntities: prepared.entities,
+            meta,
+         },
          tracked,
       );
    });
@@ -1950,6 +1995,7 @@ export async function trySemanticSearch(args: {
          environmentName,
          packageName,
          entities,
+         allEntities: args.entities,
          meta,
          fingerprint,
          providerKey,
@@ -2555,12 +2601,18 @@ export async function getEmbeddingIndexStatus(
    // `embeddedRows: 0`.
    const scope = [environmentName, packageName, provider.model];
 
+   // `totalRows` is the rows the representation makes from each entity's name
+   // and docs. A `keyphrase` row is an extra the LLM step adds on top, and is
+   // not in that count: counting it here made the numerator pass the
+   // denominator (4 of 2 for two entities with a name row and a keyphrase row
+   // each). Searches still read it.
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
               CAST(MAX(updated_at) AS VARCHAR) AS last
        FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?`,
-      scope,
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?
+         AND facet <> ?`,
+      [...scope, KEYPHRASE_FACET],
    );
    const embeddedRows = row?.n ?? 0;
    const lastSyncedAt = row?.last ?? undefined;

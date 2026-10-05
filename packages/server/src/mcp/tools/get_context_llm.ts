@@ -100,6 +100,60 @@ export async function runPooled<T, R>(
    return out;
 }
 
+/**
+ * The index sync has sent as many chat requests as `retrieval.llm.maxCallsPerSync`
+ * allows. The step that hit it stops and reports `capped`; it is not a failure.
+ */
+export class SyncBudgetReached extends Error {
+   constructor(readonly limit: number) {
+      super(`the sync already sent its ${limit} allowed LLM requests`);
+      this.name = "SyncBudgetReached";
+   }
+}
+
+/**
+ * The chat requests one index sync may still send, shared by its LLM steps
+ * (keyphrases, then source summaries). It counts HTTP requests, the unit
+ * `maxCallsPerSync` is documented in and the one `maxCallsPerRequest` counts:
+ * a retry and the re-ask that repairs a JSON reply are each one, so a job
+ * that needs a repair spends two. A model that reports no requests of its own
+ * (a test double) is counted as one request per job.
+ */
+export class SyncRequestBudget {
+   private used = 0;
+
+   constructor(readonly limit: number) {}
+
+   /** Requests sent so far. */
+   get requests(): number {
+      return this.used;
+   }
+
+   get exhausted(): boolean {
+      return this.used >= this.limit;
+   }
+
+   /**
+    * Run one LLM job. `fn` passes the `onRequest` it is given to the chat
+    * call, which reports each request before it is sent; the report throws
+    * {@link SyncBudgetReached} once the limit is spent, so a request past it
+    * is never sent.
+    */
+   async spend<T>(fn: (onRequest: () => void) => Promise<T>): Promise<T> {
+      if (this.exhausted) throw new SyncBudgetReached(this.limit);
+      let reported = 0;
+      try {
+         return await fn(() => {
+            if (this.exhausted) throw new SyncBudgetReached(this.limit);
+            this.used += 1;
+            reported += 1;
+         });
+      } finally {
+         if (reported === 0) this.used += 1;
+      }
+   }
+}
+
 export interface LlmUsage {
    /** HTTP requests sent to the vendor, retries and JSON repairs included. */
    calls: number;

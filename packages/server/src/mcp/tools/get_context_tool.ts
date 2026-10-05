@@ -668,7 +668,7 @@ function matchedTargetsFor(
  * card and hide a narrow one inside it -- the same failure the source window
  * below prevents between cards.
  */
-const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
 /**
  * The most dotted index rows (joined fields assembly cannot rebuild) one source

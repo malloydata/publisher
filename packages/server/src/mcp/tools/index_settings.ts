@@ -26,7 +26,10 @@ import {
    type PackageRepresentation,
 } from "../../service/package_retrieval";
 import type { KeyphraseSettings } from "./keyphrases";
-import type { SourceSummarySettings } from "./source_summaries";
+import {
+   SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
+   type SourceSummarySettings,
+} from "./source_summaries";
 
 export interface IndexSettings {
    representation: PackageRepresentation;
@@ -117,6 +120,11 @@ function sourceSummarySettingsFor(
       promptHash: sourceSummaryPromptHash(instructions),
       concurrency: llm.concurrency,
       maxCallsPerSync: llm.maxCallsPerSync,
+      // A local model runs at a small default context window and cuts a longer
+      // prompt without saying so; see SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS.
+      ...(llm.provider === "ollama"
+         ? { maxPromptChars: SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS }
+         : {}),
    };
 }
 

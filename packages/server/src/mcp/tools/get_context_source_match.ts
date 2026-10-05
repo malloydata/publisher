@@ -100,6 +100,28 @@ export function selectSourceCandidates(ctx: PipelineContext): Entity[] {
 }
 
 /**
+ * The (model path, source) keys of the sources in the package's index. Built
+ * once per index, not once per candidate: a package with hundreds of sources
+ * and no docs on them would otherwise rebuild it for each one, on every
+ * request.
+ */
+const indexedSourceKeysCache = new WeakMap<object, ReadonlySet<string>>();
+function indexedSourceKeys(pkgIndex: {
+   directEntities: readonly Entity[];
+}): ReadonlySet<string> {
+   let keys = indexedSourceKeysCache.get(pkgIndex);
+   if (!keys) {
+      keys = new Set(
+         pkgIndex.directEntities
+            .filter((c) => c.kind === "source")
+            .map((c) => sourceContextKey(c.modelPath, c.name)),
+      );
+      indexedSourceKeysCache.set(pkgIndex, keys);
+   }
+   return keys;
+}
+
+/**
  * Names of the sources `e` joins, from the topology, else from its join
  * entities. Only the names of sources in the package's index are kept: a
  * target that is not there (a deny-all source, which is dropped, or one the
@@ -109,11 +131,7 @@ export function selectSourceCandidates(ctx: PipelineContext): Entity[] {
  */
 function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
    const key = sourceContextKey(e.modelPath, e.name);
-   const indexed = new Set(
-      ctx.pkgIndex.directEntities
-         .filter((c) => c.kind === "source")
-         .map((c) => sourceContextKey(c.modelPath, c.name)),
-   );
+   const indexed = indexedSourceKeys(ctx.pkgIndex);
    const reached = ctx.pkgIndex.topology?.get(key) ?? [];
    const names = [
       ...new Set(
@@ -215,13 +233,34 @@ export function sourceDescription(ctx: PipelineContext, e: Entity): string {
  * blank line would split the candidate), or nothing when none is stored. The
  * documentation above it is cut to SOURCE_MATCH_DOC_MAX_CHARS; this is not.
  */
-function summaryOf(ctx: PipelineContext, e: Entity): { summary?: string } {
+function summaryOf(
+   ctx: PipelineContext,
+   e: Entity,
+   maxChars?: number,
+): { summary?: string } {
    const stored = ctx.sourceSummaries?.get(
       sourceContextKey(e.modelPath, e.name),
    );
    const text = scrubForEgress(stored?.summary ?? "");
-   return text === "" ? {} : { summary: text };
+   if (text === "") return {};
+   return {
+      summary:
+         maxChars !== undefined && text.length > maxChars
+            ? `${text.slice(0, maxChars)}...`
+            : text,
+   };
 }
+
+/**
+ * A summary may be up to 4,000 characters and a batch holds ten sources, so a
+ * batch can reach 40,000 characters. A local model (Ollama) runs at a default
+ * context of 2,048 to 4,096 tokens and cuts a longer prompt silently, which
+ * would drop the later candidates from the ranking with no error. For it each
+ * summary is cut to this many characters: ten candidates then fit the smaller
+ * default, with the documentation (at most SOURCE_MATCH_DOC_MAX_CHARS) and the
+ * instructions.
+ */
+export const SOURCE_MATCH_SMALL_CONTEXT_SUMMARY_CHARS = 300;
 
 /**
  * Validate a batch reply: an array of {index, score}. A wrong shape or a score
@@ -280,7 +319,13 @@ export const sourceMatchStage: RankStage = {
          modelPath: e.modelPath,
          source: e.name,
          description: sourceDescription(ctx, e),
-         ...summaryOf(ctx, e),
+         ...summaryOf(
+            ctx,
+            e,
+            cfg.chat.provider === "ollama"
+               ? SOURCE_MATCH_SMALL_CONTEXT_SUMMARY_CHARS
+               : undefined,
+         ),
       }));
       const cap = sourceCapPerTarget(ctx);
       const capped = cap !== null && candidates.length > cap;

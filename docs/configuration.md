@@ -307,7 +307,7 @@ What to know before turning it on:
   query embedding fails still returns an error, with `retrieval_reason: provider-error`. Do not read
   readiness off `embeddedEntities == totalEntities`: those count coverage by entity name, so they
   can be equal while a doc edit is still unembedded. Nor off `embeddedRows`, which counts every
-  cached vector under the current model regardless of its length, so a change to
+  cached name and doc vector under the current model regardless of its length, so a change to
   `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the old rows. The first read
   after a package loads builds that package's entity index and its content fingerprint (in
   chunks, so other requests are not blocked), which is work a plain metadata read would not
@@ -391,7 +391,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `llm.baseUrl`                                                       | Required for `openai-compatible`. Defaults: `openai` `https://api.openai.com/v1`, `ollama` `http://localhost:11434/v1`, `anthropic` `https://api.anthropic.com`, `google` `https://generativelanguage.googleapis.com`.    |
 | `llm.projectId`, `llm.location`                                     | Required for `vertex` (for example `us-central1`, or `global`).                                                                                                                                                           |
 | `llm.timeoutMs` / `concurrency`                                     | Per-attempt timeout (default `30000`) and how many calls run at once (default `4`).                                                                                                                                       |
-| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat calls in one index sync (default `300`). A package cannot raise it.                                                                                                                 |
+| `llm.maxCallsPerSync`                                               | Spend ceiling. At most this many chat requests in one index sync, keyphrases and source summaries together (default `300`). A retry and the re-ask that repairs a JSON reply each count, as for `maxCallsPerRequest`. A package cannot raise it.    |
 | `llm.maxCallsPerRequest`                                            | Spend ceiling. At most this many chat calls in one `get_context` request, counted across source match, refine and rerank (default `20`; a positive integer). A package cannot raise it. See "Refine and rerank".          |
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                             |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                        |
@@ -492,8 +492,8 @@ would ask for it. It is written at index time, once, and stored in the `entity_k
   call.
 
 `always` sends every entity to the LLM; `never` sends none. The keyphrase step runs before
-embedding, saves each batch as it returns and stops at `retrieval.llm.maxCallsPerSync` calls (the
-rest wait for the next sync, which starts on a server restart or after the package's content
+embedding, saves each batch as it returns and stops at `retrieval.llm.maxCallsPerSync` requests (a
+JSON repair is a second request; the rest wait for the next sync, which starts on a server restart or after the package's content
 changes; reloading an unchanged package does not start one. The package's status shows
 `keyphraseProgress.capped`).
 
@@ -541,7 +541,11 @@ their own summary, and a join expands the source in the file it names. A request
 summary only while it still matches the source as it is now, so a reload that changed a source
 stops its old summary being shown until the sync rewrites it. One field's `#(doc)` is cut to 500
 characters in the prompt, and a prompt over 60,000 characters shows fewer joined sources, then fewer
-fields, with a line that says what was left out.
+fields, with a line that says what was left out. For a local model (`llm.provider` `ollama`) the cap
+is 6,000 characters, and each stored summary is cut to 300 characters when source matching shows it
+to the model: Ollama's default context window (2,048 to 4,096 tokens) cuts a longer prompt silently,
+so the summary would be written from a partial field list with no error. If you serve a model with a
+larger window you cannot raise these caps; use a hosted model for large packages.
 
 A stored summary is reused until anything the model is shown changes (the source's doc, any field's
 name, type or doc, a join, the joined sources' fields), the prompt text or the model, so a restart,
@@ -552,7 +556,7 @@ the field list and the reply format are added by the server.
 
 The step runs after keyphrases and before any vector is written. It makes one call per source, up to
 `retrieval.llm.concurrency` at a time, saves each summary as it returns, and shares
-`retrieval.llm.maxCallsPerSync` with the keyphrase step (sources left over wait for the next sync, which starts on a server restart or after the package's
+`retrieval.llm.maxCallsPerSync` requests with the keyphrase step (sources left over wait for the next sync, which starts on a server restart or after the package's
 content changes; reloading an unchanged package does not start one;
 `embeddingIndex.sourceSummaryProgress.capped` says so, and a stored summary that is out of date and
 could not be rewritten is deleted, never served). If a call fails after its retries and re-ask, the
@@ -581,7 +585,8 @@ With no LLM configured neither runs, and the response is the one the server gave
 existed, byte for byte.
 
 **Refine** rates the candidate fields of each entity-search target (`dimension`, `measure`, `view`,
-`join`; not `source`). For each target the server takes the best 10 fields per source by cosine and
+`join`; not `source`). For each target the server takes the best 13 fields per source by cosine (the 10 a source's own fields get from the
+search, plus 3 joined fields it indexes directly) and
 the best 120 overall, sends them in batches of 15 (up to `retrieval.llm.concurrency` batches at a
 time), and asks the model to rate each `LOW`, `MEDIUM` or `HIGH` against the search text. A field
 rated below `refine.minLevel`, or not returned, is dropped for that target. A survivor's raw score
