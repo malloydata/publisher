@@ -1274,7 +1274,7 @@ interface JoinSchemaField {
  * way. A `one` hop keeps the parent's fan-out; any other relationship
  * replaces it.
  */
-function enterJoin(
+export function enterJoin(
    join: { name: string; relationship?: Relationship },
    from: { joinPath: string; fanout: Relationship },
 ): { joinPath: string; fanout: Relationship } {
