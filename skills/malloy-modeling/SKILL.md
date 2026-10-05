@@ -18,7 +18,7 @@ SPDX-License-Identifier: MIT
    - Modelling **a database with no package yet**: `get_context` has nothing to return, so use `search_database_schema` instead. It walks the connection's schemas and tables, ranks them against a plain-English description, and gives you each table's columns plus the `source:` line to start from. Take those names verbatim into step 5.
    Never guess field names either way.
 2. **Search docs proactively**: call `search_malloy_docs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
-3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
+3. **Search by topic name.** `search_malloy_docs` takes plain topics such as "window functions", "comparing timeframes", "cohort analysis", "percent of total", "histogram", "nesting", "rendering".
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
 5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-queries`, and `skill:malloy-charts` prevent the most common mistakes.
 

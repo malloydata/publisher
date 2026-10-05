@@ -33,7 +33,6 @@
     "malloy-modeling",
     "malloy-notebook-chat",
     "malloy-notebooks",
-    "malloy-patterns",
     "malloy-phrase-detection",
     "malloy-powerbi-review",
     "malloy-publish",
@@ -51,7 +50,6 @@
       "malloy-phrase-detection",
       "malloy-queries",
       "malloy-charts",
-      "malloy-patterns",
       "malloy-notebooks",
       "malloy-source-unreachable"
     ],
@@ -64,7 +62,6 @@
       "malloy-define",
       "malloy-scope",
       "malloy-discover",
-      "malloy-patterns",
       "malloy-charts",
       "malloy-debug",
       "malloy-analyze",

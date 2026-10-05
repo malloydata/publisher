@@ -67,7 +67,6 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-queries` | Query and view syntax: dates, aggregates, join paths, filters |
 | `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
-| `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
 | `skill:malloy-review` | Reviewing, auditing, or critiquing existing Malloy |
 
 **Serving and operating a package**
@@ -96,4 +95,4 @@ Publishing is out of scope for open-source Publisher v1. Self-hosters move a fin
 
 ## Syntax Help
 
-Call `search_malloy_docs` with your question. Use `skill:malloy-patterns` to discover available topics.
+Call `search_malloy_docs` with your question or a plain topic such as "window functions", "comparing timeframes", "cohort analysis" or "percent of total".
