@@ -80,6 +80,7 @@ MAX_CASE_SCAN_ROWS = 200000
 MAX_RECT_INDEX_ROWS = 200000
 MAX_VALIDATION_ITEMS = 20
 MAX_POSITION_ANALYSES = 20000
+MAX_FORMULA_NEST = 100
 NONNUMERIC_KINDS = ("s", "inlineStr", "str", "e", "b", "d")
 TEXT_CELL_KINDS = ("s", "inlineStr", "str", "b", "d")
 
@@ -4507,9 +4508,23 @@ def merge_position_flags(base, fresh):
         base.ci_sides.setdefault(k, v)
 
 
+def too_nested(text):
+    # Python's own recursion limit differs by version, so the depth is capped explicitly
+    depth = peak = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            peak = max(peak, depth)
+        elif ch == ")":
+            depth -= 1
+    return peak > MAX_FORMULA_NEST
+
+
 def analysis_for(cache, sheet, text, pos, ctx):
     # keyed by R1C1 text, so every copy of one formula shares one analysis
     try:
+        if too_nested(text):
+            raise RecursionError
         an = analyze_formula(text, sheet, pos[0], pos[1], ctx)
     except RecursionError:
         an = Analysis()
