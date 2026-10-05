@@ -12,7 +12,6 @@ import {
    MalloyError,
    Annotations,
    ModelDef,
-   modelDefToModelInfo,
    ModelMaterializer,
    NamedQueryDef,
    QueryData,
@@ -67,6 +66,7 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
@@ -108,6 +108,7 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
+   assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -122,8 +123,16 @@ import {
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
+   buildDashboardManifest,
+   normalizeTileExpression,
+   readDashboardModelFacts,
+   type CompiledTileGivens,
+   type DashboardManifest,
+   type DashboardModelFacts,
+} from "./dashboard";
+import {
+   artifactKindOfNotes,
    docNotesAboveArtifact,
    isArtifactNoteText,
    isNotebookReaderError,
@@ -734,6 +743,11 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   private compiledDashboardFacts:
+      | Promise<DashboardModelFacts | undefined>
+      | undefined;
+   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
+   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -743,6 +757,8 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
+   /** The tile layout of a served notebook written as one; undefined for one written as cells. */
+   private notebookLayout: DashboardManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -985,7 +1001,7 @@ export class Model {
       filterMap?: Map<string, FilterDefinition[]>,
       givens?: ApiGiven[],
       /**
-       * Precomputed `modelDefToModelInfo(modelDef)`. The package-load
+       * Precomputed `modelInfoOf(modelDef)`. The package-load
        * worker emits it as part of `SerializedModel` so we don't
        * re-derive it on every package load. Callers that build a
        * `Model` from a raw `modelDef` (e.g. test fixtures via
@@ -1065,8 +1081,7 @@ export class Model {
          this.authorizeReferencedGivenNames = new Set();
       }
       this.modelInfo =
-         modelInfo ??
-         (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
+         modelInfo ?? (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
 
       // One-time deprecation notice per Model instance. Surfaces only when
       // the model declares `#(filter)` annotations so operators migrating
@@ -4966,6 +4981,82 @@ export class Model {
    }
 
    /**
+    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * reads (`compiledTileGivens`), for the manifest discovery serves.
+    *
+    * The static walk misses a given read through a joined source's `where:`, a
+    * dimension defined with `$X`, or a gate, and cannot resolve a refinement;
+    * Malloy's `givenUsage` has all of those. About a millisecond per tile, and
+    * cached for this Model's life. A tile that fails to compile keeps the
+    * static answer.
+    */
+   public getCompiledDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
+         (facts) => (this.settledCompiledDashboardFacts = facts),
+      );
+      return this.compiledDashboardFacts;
+   }
+
+   private async compileDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      const facts = this.getDashboardModelFacts();
+      const materializer = this.modelMaterializer;
+      if (!facts || !materializer) return facts;
+      let tiles: string[];
+      try {
+         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+            tile.kind === "query" ? [tile.query] : [],
+         );
+      } catch {
+         // Discovery builds it again and reports the throw.
+         return facts;
+      }
+      const compiled = new Map<string, CompiledTileGivens>();
+      for (const tile of tiles) {
+         const key = normalizeTileExpression(tile);
+         if (compiled.has(key)) continue;
+         let prepared: {
+            _query?: {
+               givenUsage?: { id: string }[];
+               structRef?: unknown;
+            };
+            _modelDef?: ModelDef;
+         };
+         try {
+            prepared = (await materializer
+               .loadQuery(`run: ${tile}`)
+               .getPreparedQuery()) as typeof prepared;
+         } catch {
+            continue;
+         }
+         const usage = prepared._query?.givenUsage;
+         if (!usage) continue;
+         const registry =
+            prepared._modelDef?.givens ?? this.modelDef?.givens ?? {};
+         const reads = usage
+            .map((given) => registry[given.id]?.name)
+            .filter((name): name is string => name !== undefined);
+         const target = prepared._query?.structRef;
+         const sourceName =
+            typeof target === "string"
+               ? target
+               : (target as { as?: string; name?: string } | undefined)?.as ||
+                 (target as { name?: string } | undefined)?.name;
+         const gateReads = new Set<string>();
+         for (const expr of sourceName
+            ? (gateGivenSource(this.sources ?? [], sourceName) ?? [])
+            : []) {
+            for (const name of referencedGivenNames(expr)) gateReads.add(name);
+         }
+         compiled.set(key, { reads, gateReads: Array.from(gateReads) });
+      }
+      return { ...facts, compiledTileGivens: compiled };
+   }
+
+   /**
     * True when this model's curated discovery surface is empty: its export
     * closure yields no sources and no named queries. The common cause is an
     * import-only model (imports other files, declares/re-exports nothing);
@@ -5551,6 +5642,14 @@ export class Model {
       );
    }
 
+   /** The `kind` the model's own `## artifact` note declares, if any. */
+   public artifactKind(): string | undefined {
+      return (
+         this.modelDef &&
+         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
+      );
+   }
+
    private isDashboard(): boolean {
       return this.queryBoundary.dashboard === true;
    }
@@ -6000,6 +6099,7 @@ export class Model {
    public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
+      this.notebookLayout = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -6017,8 +6117,14 @@ export class Model {
       if (read.error) return refuse(read.error);
       const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
       this.notebookAnnotations = read.annotations;
-      this.setNotebookCells(
-         read.cells.map((cell): RunnableNotebookCell => {
+      const layout = this.readNotebookLayout();
+      this.notebookLayout = layout;
+      // A layout's prose and queries are its tiles, in tile order; the file's own cells are only its definitions.
+      const fileCells = layout
+         ? read.cells.filter((cell) => cell.kind === "definition")
+         : read.cells;
+      const cells: RunnableNotebookCell[] = fileCells.map(
+         (cell): RunnableNotebookCell => {
             if (cell.kind === "markdown") {
                return { type: "markdown", kind: "markdown", text: cell.text };
             }
@@ -6055,9 +6161,42 @@ export class Model {
                   name: compiled?.as || compiled?.name || "",
                },
             };
-         }),
+         },
       );
+      if (layout) {
+         for (const tile of layout.tiles ?? []) {
+            if (tile.kind === "text") {
+               cells.push({
+                  type: "markdown",
+                  kind: "markdown",
+                  text: tile.markdown,
+               });
+               continue;
+            }
+            const text = `run: ${tile.query}`;
+            cells.push({
+               type: "code",
+               kind: "query",
+               text,
+               runnable: materializer.loadQuery(text),
+               modelMaterializer: materializer,
+               modelDef,
+            });
+         }
+      }
+      this.setNotebookCells(cells);
       return "ok";
+   }
+
+   /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
+   private readNotebookLayout(): DashboardManifest | undefined {
+      // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
+      const facts =
+         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
+      const manifest = facts && buildDashboardManifest(facts);
+      return manifest?.kind === "notebook" && manifest.tiles
+         ? manifest
+         : undefined;
    }
 
    /** Why the reader refused this served notebook's cells, if it did. */
@@ -7099,7 +7238,10 @@ export class Model {
          ])[]) {
             if (!callerText) continue;
             try {
-               assertNoCallerAuthorizeAnnotation(callerText);
+               // A name is interpolated mid-line, so it is never lexed as text of its own.
+               if (field === "query")
+                  assertNoCallerAuthorizeAnnotation(callerText);
+               else assertNoAuthorizeTagLike(callerText);
             } catch (err) {
                // Recorded here, not at the throw: the parse `catch` below
                // rethrows a BadRequestError untouched and never reaches the
@@ -8452,8 +8594,8 @@ export class Model {
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
     * dashboard's text is always returned, because its editor saves through
-    * it; a served notebook has no editor, and its cells' text comes from the
-    * notebook GET.
+    * it; the notebook editor fetches a notebook's text with
+    * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;
@@ -8682,6 +8824,21 @@ export class Model {
             (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
          ),
          notebookCells,
+         ...(this.notebookLayout && {
+            dashboard: {
+               packageName: this.packageName,
+               name: this.notebookLayout.name,
+               path: this.modelPath,
+               kind: this.notebookLayout.kind,
+               title: this.notebookLayout.title,
+               description: this.notebookLayout.description,
+               tiles: this.notebookLayout.tiles,
+               dashboardColumns: this.notebookLayout.dashboardColumns,
+               startingGivens: this.notebookLayout.startingGivens,
+               autorun: this.notebookLayout.autorun,
+               givens: this.notebookLayout.givens,
+            },
+         }),
       };
       return notebook;
    }
@@ -9476,8 +9633,7 @@ export class Model {
                                  })
                                  .getModel()
                            )._modelDef;
-                           const importModelInfo =
-                              modelDefToModelInfo(importModel);
+                           const importModelInfo = modelInfoOf(importModel);
                            newSources = importModelInfo.entries
                               .filter((entry) => entry.kind === "source")
                               .filter(
@@ -9487,7 +9643,7 @@ export class Model {
                         }),
                      );
                   }
-                  const currentModelInfo = modelDefToModelInfo(currentModelDef);
+                  const currentModelInfo = modelInfoOf(currentModelDef);
                   newSources = newSources.concat(
                      currentModelInfo.entries
                         .filter((entry) => entry.kind === "source")

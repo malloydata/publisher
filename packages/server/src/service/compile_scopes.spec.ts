@@ -326,7 +326,7 @@ query: x is sales -> by_n
             severity: "error",
             message:
                'given "DEPARTMENT" suggests options from "sales -> ' +
-               'products.department", but "sales" has no join "products".',
+               'products.department", but that source has no field "products.department".',
             code: "dashboard-lint",
             model: "dashboards/x.malloy",
          },

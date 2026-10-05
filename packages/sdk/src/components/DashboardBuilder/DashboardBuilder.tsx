@@ -2,17 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 import { DragDropProvider } from "@dnd-kit/react";
-import { Alert, Box, Stack } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import {
    useCallback,
    useEffect,
    useMemo,
+   useRef,
    useState,
    type ReactNode,
 } from "react";
-import { DashboardProse } from "../Dashboard/Dashboard";
-import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
-import { now, type DashboardEventHandler } from "../Dashboard/telemetry";
+import {
+   DashboardGrid,
+   DEFAULT_COLUMNS,
+   nudgedSpan,
+} from "../Dashboard/DashboardGrid";
+import { tileTitle } from "../Dashboard/DashboardTile";
+import type { TileHeadingSlots } from "../Dashboard/TileCard";
+import type { SavesTo } from "./documentSession";
+import type { BuilderEvent } from "./telemetry";
 import {
    acceptsField,
    applyMapping,
@@ -23,16 +31,24 @@ import {
    type BuilderGiven,
    type MappingRow,
 } from "./controls";
+import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
+import { changedTileKey } from "./changedTile";
+import { InlineMarkdown } from "./InlineMarkdown";
+import { InlineText } from "./InlineText";
+import { OpenDraftContext, type OpenDraftSink } from "./openDraft";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import {
+   isQueryTile,
+   isTextTile,
    tileKey,
    type DashboardDocument,
    type DashboardTile,
    type LocalGiven,
+   type QueryTile,
 } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
-import { DiffDialog } from "./DiffDialog";
+import { SaveNotice } from "./SaveNotice";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { SettingsPopover, settingsOf } from "./SettingsPopover";
@@ -40,11 +56,12 @@ import { FilterStrip } from "./FilterStrip";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
+import { TextTileBody } from "./TextTileBody";
 import { useTileReorder } from "./useTileReorder";
-import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
-import { useBuilderShortcuts } from "./useBuilderShortcuts";
+import { useBuilderSession } from "./useBuilderSession";
 import { useDashboardEditor } from "./useDashboardEditor";
+import type { SaveHandler } from "./useDocumentEditor";
 
 export type { BuilderGiven } from "./controls";
 
@@ -64,30 +81,33 @@ export type { BuilderGiven } from "./controls";
  * draws its own card AND its own heading. Nesting one inside a card of ours
  * would show a card in a card under two titles — which is precisely not what a
  * reader sees. So every affordance is drawn AROUND whatever the caller renders:
- * an outline for selection, a grip and a menu in the corners, a handle at the
- * edge.
+ * an outline for selection, a grip and a menu in the corners.
  *
- * **Everything here is on the thing it changes.** Drag a tile's right edge to
- * set its width, and the tile itself to reorder — into the empty end of a row
- * to change which row it is in. The tile's own menu holds its title and
- * subtitle. FILTERS are configured in exactly one place, the strip under the
+ * **Everything here is on the thing it changes.** Set a tile's width from its menu, and drag
+ * the tile itself to reorder — into the empty end of a row
+ * to change which row it is in. Click a title, subtitle, description or text
+ * tile to edit it where it stands. FILTERS are configured in exactly one place, the strip under the
  * header: each chip opens the tiles-to-update window for that control,
  * which is where a tile is bound or unbound, and "Add filter" declares a new
  * one in this file — the convention {@link LocalGiven} describes — or binds one
  * the model offers. Nothing about filters is on the tiles themselves: a second
  * place to edit the same binding is a second place for it to be wrong.
  *
- * Tiles are added from the package's catalog and removed from their menu; a
- * save that adds or removes one shows the file's diff first, because those
- * moves relocate declarations and the comments beside them.
+ * Tiles are added from the package's catalog and removed from their menu.
  */
 export interface DashboardBuilderProps {
    /** The file being edited. */
    source: string;
    /** The document that file produced. */
    document: DashboardDocument;
-   /** Persist the patched file. Left out, the builder edits without saving. */
-   onSave?: (source: string) => Promise<void> | void;
+   /**
+    * Persist the patched file. Left out, the builder edits without saving.
+    * Undo save calls it too, with `purpose: "undo"` and the text from before
+    * the save, so it must write through the same channel and checks.
+    */
+   onSave?: SaveHandler<DashboardDocument>;
+   /** Whether the save notice (View change, Undo save) is showing, for a host that must not replace the document under it. */
+   onSaveNoticeChange?: (showing: boolean) => void;
    /**
     * The document as it stands, on every edit — including the first render.
     *
@@ -102,8 +122,13 @@ export interface DashboardBuilderProps {
    /**
     * Renders a tile, card and heading included — this is where a real
     * `DashboardTile` goes. Without it, tiles show what they will run.
+    *
+    * `heading` is the tile's title and subtitle as fields edited in place;
+    * absent for a tile whose title the model owns. A host that draws the
+    * heading itself passes it on (`DashboardTile`'s `heading`), or the tile
+    * cannot be retitled on the page.
     */
-   renderTile?: (tile: DashboardTile) => ReactNode;
+   renderTile?: (tile: QueryTile, heading?: TileHeadingSlots) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -144,8 +169,14 @@ export interface DashboardBuilderProps {
     * go. Absent, a drill can only filter this dashboard.
     */
    dashboards?: string[];
-   /** Saves and refusals, for the host to log; see `DashboardEvent`. */
-   onEvent?: DashboardEventHandler;
+   /** Saves and refusals, for the host to log; see `DashboardEvent`. A notebook-kind document reports `NotebookEvent`s instead. */
+   onEvent?: (event: BuilderEvent) => void;
+   /**
+    * The document is a conversion of a cell-format notebook: `from` is the text
+    * on disk, `to` the layout text it converts to. Save writes `to` with the
+    * edits spliced in, and Undo save puts `from` back.
+    */
+   conversion?: { from: string; to: string };
    /**
     * Whether the document differs from what was last saved, on every change
     * and on mount.
@@ -163,13 +194,20 @@ export interface DashboardBuilderProps {
     * this browser, and into a host store that holds the record are not the
     * same event.
     */
-   savesTo?: "package" | "browser" | "host";
+   savesTo?: SavesTo;
+   /** The backend's own words for where Save writes, in place of the generic line for `savesTo`. */
+   saveLabel?: string;
+   /** The file a save overwrites when `source` is a draft of it, so Undo save restores that file rather than the draft. */
+   replaces?: string;
+   /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
+   modelPath?: string;
    /**
-    * The host's own actions for the edit bar — Done — rendered beside
-    * undo, redo and save. The builder owns the edits; where the file goes
-    * afterwards is the host's, so its buttons sit in the host's slot.
+    * The host's own extra actions for the edit bar, rendered beside undo, redo
+    * and save. Leaving is `onExit`, not this: the builder draws Done itself.
     */
    toolbar?: ReactNode;
+   /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
+   onExit?: () => void;
 }
 
 export function DashboardBuilder({
@@ -178,32 +216,38 @@ export function DashboardBuilder({
    onSave,
    onChange,
    onDirtyChange,
+   onSaveNoticeChange,
    renderTile,
    controls,
    givens,
    catalog,
    toolbar,
+   onExit,
    dashboards,
    onEvent,
+   conversion,
    savesTo = "package",
+   saveLabel,
+   replaces,
+   modelPath,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),
+      ...(conversion ? { conversion } : {}),
+      ...(replaces !== undefined ? { replaces } : {}),
+      ...(modelPath !== undefined ? { modelPath } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
-   const [saving, setSaving] = useState(false);
-   const columns = editor.document.columns ?? DEFAULT_COLUMNS;
-   const { resize, gridBox, startResize, onResize, endResize } = useTileResize({
-      tiles: editor.document.tiles,
-      columns,
-      onStart: setSelected,
-      commit: (index, span) =>
-         editor.update((draft) => {
-            draft.tiles[index].colspan = span;
-         }),
-   });
+   // Undo and redo point at the tile they changed: lit briefly, and scrolled to.
+   const [flash, setFlash] = useState<string | undefined>(undefined);
+   const stepping = useRef(false);
+   const lastDocument = useRef(editor.document);
+   // A notebook is one column whatever the file says, and the builder never writes its width.
+   const notebook = editor.document.kind === "notebook";
+   const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
+   const gridBox = useRef<HTMLDivElement>(null);
    const { dragging, preview, onDragStart, onDragOver, onDragEnd } =
       useTileReorder({
          tiles: editor.document.tiles,
@@ -221,8 +265,14 @@ export function DashboardBuilder({
    const [menu, setMenu] = useState<
       { anchor: HTMLElement; index: number } | undefined
    >(undefined);
-   // The add-tile picker, and the diff a structural save shows first.
+   // The add-tile picker.
    const [addingTile, setAddingTile] = useState(false);
+   // Where the next added tile lands; undefined appends.
+   const [insertAt, setInsertAt] = useState<number | undefined>(undefined);
+   const openAdd = (at?: number) => {
+      setInsertAt(at);
+      setAddingTile(true);
+   };
    // The clickable-cells window, for one tile's source.
    const [drillSource, setDrillSource] = useState<string | undefined>(
       undefined,
@@ -231,22 +281,20 @@ export function DashboardBuilder({
    const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(
       null,
    );
-   const [pendingSave, setPendingSave] = useState<
-      { before: string; after: string } | undefined
-   >(undefined);
-
-   useEffect(() => {
-      onChange?.(editor.document);
-   }, [editor.document, onChange]);
-   // Also on mount, so a host that remounted the builder on new text is told
-   // the slate is clean rather than carrying the previous mount's answer.
-   useEffect(() => {
-      onDirtyChange?.(editor.dirty);
-   }, [editor.dirty, onDirtyChange]);
    // One object per document, or the popover's draft would reset on every
    // render of the builder while it is open.
    const settings = useMemo(
       () => settingsOf(editor.document),
+      [editor.document],
+   );
+
+   // Imported sources a tile or extension reads, which the settings cannot take off.
+   const sourcesInUse = useMemo(
+      () =>
+         new Set([
+            ...editor.document.sources.map((source) => source.base),
+            ...editor.document.tiles.filter(isQueryTile).map((t) => t.source),
+         ]),
       [editor.document],
    );
 
@@ -284,13 +332,31 @@ export function DashboardBuilder({
       [catalog, editor.document.sources],
    );
    const fieldsFor = useCallback(
-      (tile: DashboardTile) =>
+      (tile: QueryTile) =>
          fieldsBySource.get(tile.source) ??
          // A tile on an imported source with no extension of its own: its
          // source IS a model source, and may be in the catalog directly.
          filterableFields(catalog, tile.source),
       [fieldsBySource, catalog],
    );
+   // The catalog's view behind the tile whose menu is open, for the charts the
+   // picker may offer: a reference tile's base view, else a view of the tile's own name.
+   const menuAt =
+      menu === undefined ? undefined : editor.document.tiles[menu.index];
+   const menuTile = menuAt && isQueryTile(menuAt) ? menuAt : undefined;
+   const menuView = (() => {
+      if (!menuTile || !catalog) return undefined;
+      const base =
+         editor.document.sources.find((s) => s.name === menuTile.source)
+            ?.base ?? menuTile.source;
+      const viewName =
+         menuTile.declaration.kind === "reference"
+            ? menuTile.declaration.from
+            : menuTile.name;
+      return catalog.sources
+         .find((s) => s.name === base)
+         ?.views.find((v) => v.name === viewName);
+   })();
    // Bindings a tile's source cannot take, per control — a field it does not
    // have, or one of a type the given cannot compare: marked on the chip, so a
    // broken binding is seen before the package refuses it.
@@ -300,6 +366,7 @@ export function DashboardBuilder({
    ): string[] => {
       const out: string[] = [];
       for (const tile of editor.document.tiles) {
+         if (!isQueryTile(tile)) continue;
          const known = fieldsFor(tile);
          if (!known) continue;
          const types = new Map(known.map((field) => [field.name, field.type]));
@@ -326,45 +393,155 @@ export function DashboardBuilder({
       [controlList],
    );
 
-   const commitSave = useCallback(() => {
-      setPendingSave(undefined);
-      setSaving(true);
-      const started = now();
-      const { structural } = editor;
-      const tiles = editor.document.tiles.length;
-      void editor
-         .save()
-         .then((outcome) => {
-            if (outcome.ok === true)
-               onEvent?.({
-                  type: "dashboard.saved",
-                  tiles,
-                  structural,
-                  where: savesTo,
-                  durationMs: now() - started,
-               });
-            else
-               onEvent?.({
-                  type: "dashboard.save_refused",
-                  reason: outcome.reason,
-               });
-         })
-         .finally(() => setSaving(false));
-   }, [editor, onEvent, savesTo]);
-   const save = useCallback(() => {
-      if (!onSave || !editor.dirty || saving) return;
-      if (!editor.structural) {
-         commitSave();
-         return;
-      }
-      // A tile was added or removed: show what that does to the file first.
-      void editor.preview().then((result) => {
-         if (result.ok)
-            setPendingSave({ before: editor.source, after: result.source });
-         // A refusal surfaces through the same path a save's would.
-         else commitSave();
-      });
-   }, [onSave, editor, saving, commitSave]);
+   const shortcuts = useMemo(
+      () => ({
+         // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
+         escape: () => {
+            if (!menu && !filterDialog) setSelected(undefined);
+         },
+         nudge: (delta: 1 | -1) => {
+            // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
+            if (dragging || selected === undefined || notebook) return;
+            const tile = editor.document.tiles[selected];
+            if (
+               !tile ||
+               (isQueryTile(tile) && tile.declaration.kind === "inherited")
+            )
+               return;
+            const span = nudgedSpan(tile.colspan ?? 1, delta, columns);
+            if (span === (tile.colspan ?? 1)) return;
+            editor.update((draft) => {
+               draft.tiles[selected].colspan = span;
+            });
+         },
+      }),
+      [editor, menu, filterDialog, selected, columns, notebook, dragging],
+   );
+   useEffect(() => {
+      const before = lastDocument.current;
+      lastDocument.current = editor.document;
+      if (!stepping.current) return;
+      stepping.current = false;
+      const key = changedTileKey(before, editor.document);
+      if (key === undefined) return;
+      setFlash(key);
+      const target = Array.from(
+         gridBox.current?.querySelectorAll<HTMLElement>("[data-tile-key]") ??
+            [],
+      ).find((element) => element.dataset.tileKey === key);
+      // jsdom has no layout, so no scrollIntoView.
+      target?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+   }, [editor.document, gridBox]);
+   useEffect(() => {
+      if (flash === undefined) return;
+      const timer = setTimeout(() => setFlash(undefined), 1500);
+      return () => clearTimeout(timer);
+   }, [flash]);
+   const stepEditor = useMemo(
+      () => ({
+         ...editor,
+         undo: () => {
+            stepping.current = true;
+            editor.undo();
+         },
+         redo: () => {
+            stepping.current = true;
+            editor.redo();
+         },
+      }),
+      [editor],
+   );
+   const [draftDirty, setDraftDirty] = useState(false);
+   const draftCommit = useRef<(() => boolean) | undefined>(undefined);
+   const afterCommit = useRef<(() => void) | undefined>(undefined);
+   const openDraft = useMemo<OpenDraftSink>(
+      () => ({ setDirty: setDraftDirty, commitRef: draftCommit }),
+      [],
+   );
+   // A save reads the committed document, so an open draft is committed first and the save runs once that has rendered.
+   const prepare = useCallback(
+      (run: () => Promise<void> | void): Promise<void> | void => {
+         if (!draftCommit.current) return run();
+         if (!draftCommit.current()) return;
+         return new Promise<void>((resolve) => {
+            afterCommit.current = () => resolve(run());
+         });
+      },
+      [],
+   );
+   useEffect(() => {
+      if (draftDirty || !afterCommit.current) return;
+      const run = afterCommit.current;
+      afterCommit.current = undefined;
+      run();
+   }, [draftDirty, editor.dirty]);
+   const session = useBuilderSession<DashboardDocument>({
+      editor: stepEditor,
+      extraDirty: draftDirty,
+      prepare,
+      unit: { name: "tile", count: (document) => document.tiles.length },
+      onSave,
+      onExit,
+      onDirtyChange,
+      onSaveNoticeChange,
+      onChange,
+      shortcuts,
+      report: {
+         size: editor.document.tiles.length,
+         // A notebook-kind document keeps the `notebook.*` names hosts already count.
+         saved: ({ size, structural, durationMs, fromOpen }) =>
+            onEvent?.(
+               notebook
+                  ? {
+                       type: "notebook.saved",
+                       cells: size,
+                       structural,
+                       converted: fromOpen,
+                       where: savesTo,
+                       durationMs,
+                    }
+                  : {
+                       type: "dashboard.saved",
+                       tiles: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    },
+            ),
+         refused: (reason) =>
+            onEvent?.({
+               type: notebook
+                  ? "notebook.save_refused"
+                  : "dashboard.save_refused",
+               reason,
+            }),
+         undone: ({ size, structural, durationMs }) =>
+            onEvent?.(
+               notebook
+                  ? {
+                       type: "notebook.save_undone",
+                       cells: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    }
+                  : {
+                       type: "dashboard.save_undone",
+                       tiles: size,
+                       structural,
+                       where: savesTo,
+                       durationMs,
+                    },
+            ),
+         undoRefused: (reason) =>
+            onEvent?.({
+               type: notebook
+                  ? "notebook.save_undo_refused"
+                  : "dashboard.save_undo_refused",
+               reason,
+            }),
+      },
+   });
 
    /** A tile from the picker: on the extension of its source, or a new one. */
    const addTile = (tile: NewTile) => {
@@ -386,20 +563,83 @@ export function DashboardBuilder({
          // one under the same name; then kept distinct from its siblings.
          const used = new Set(
             draft.tiles
+               .filter(isQueryTile)
                .filter((t) => t.source === extension!.name)
                .map((t) => t.name),
          );
          let name = `${tile.view}_tile`;
          for (let n = 2; used.has(name); n++) name = `${tile.view}_tile_${n}`;
-         draft.tiles.push({
+         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
             name,
             source: extension.name,
             declaration: { kind: "reference", from: tile.view },
-            colspan: tile.colspan,
+            ...(notebook ? {} : { colspan: tile.colspan }),
             ...(tile.label ? { label: tile.label } : {}),
+            ...(tile.chart ? { chart: tile.chart } : {}),
+            ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
          });
       });
-      setSelected(editor.document.tiles.length);
+      setSelected(insertAt ?? editor.document.tiles.length);
+   };
+
+   /** An empty text tile at the end, named for the first free `text_N`. */
+   const addText = () => {
+      setAddingTile(false);
+      editor.update((draft) => {
+         const taken = new Set(
+            draft.tiles.filter(isTextTile).map((t) => t.name),
+         );
+         let n = 1;
+         while (taken.has(`text_${n}`)) n++;
+         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
+            kind: "text",
+            name: `text_${n}`,
+            markdown: "",
+            ...(notebook ? {} : { colspan: columns }),
+         });
+      });
+      setSelected(insertAt ?? editor.document.tiles.length);
+   };
+
+   /** Change one tile where it stands, found by key so a preview order cannot misdirect it. */
+   const editTile = (key: string, change: (tile: DashboardTile) => void) =>
+      editor.update((draft) => {
+         const tile = draft.tiles.find((each) => tileKey(each) === key);
+         if (tile) change(tile);
+      });
+
+   /** A query tile's title and subtitle as fields on the tile, unless the model owns them. */
+   const headingOf = (
+      tile: QueryTile,
+      fallback: string,
+   ): TileHeadingSlots | undefined => {
+      if (tile.declaration.kind === "inherited") return undefined;
+      const key = tileKey(tile);
+      const set = (field: "label" | "subtitle") => (next: string) =>
+         editTile(key, (each) => {
+            if (!isQueryTile(each)) return;
+            if (next === "") delete each[field];
+            else each[field] = next;
+         });
+      return {
+         title: (
+            <InlineText
+               value={tile.label ?? ""}
+               placeholder={fallback}
+               ariaLabel="Tile title"
+               onCommit={set("label")}
+            />
+         ),
+         subtitle: (
+            <InlineText
+               value={tile.subtitle ?? ""}
+               placeholder="Add a subtitle"
+               ariaLabel="Tile subtitle"
+               faintWhenEmpty
+               onCommit={set("subtitle")}
+            />
+         ),
+      };
    };
 
    const removeTile = (index: number) => {
@@ -409,38 +649,6 @@ export function DashboardBuilder({
          draft.tiles.splice(index, 1);
       });
    };
-
-   useBuilderShortcuts(
-      // One handlers object per change of what they read, so the key listener
-      // is not torn down and re-bound on every render.
-      useMemo(
-         () => ({
-            undo: editor.undo,
-            redo: editor.redo,
-            ...(onSave ? { save } : {}),
-            // Escape drops the selection — unless the menu or the filter
-            // window is open, in which case the key is theirs and they close
-            // on it themselves.
-            escape: () => {
-               if (!menu && !filterDialog) setSelected(undefined);
-            },
-            nudge: (delta: 1 | -1) => {
-               if (selected === undefined) return;
-               const tile = editor.document.tiles[selected];
-               if (!tile || tile.declaration.kind === "inherited") return;
-               const span = Math.min(
-                  Math.max((tile.colspan ?? 1) + delta, 1),
-                  columns,
-               );
-               if (span === (tile.colspan ?? 1)) return;
-               editor.update((draft) => {
-                  draft.tiles[selected].colspan = span;
-               });
-            },
-         }),
-         [editor, onSave, save, menu, filterDialog, selected, columns],
-      ),
-   );
 
    /** The filter window's result: bind, and declare when it is new or retagged. */
    const applyFilter = (
@@ -463,19 +671,12 @@ export function DashboardBuilder({
    };
 
    // What the grid lays out: the document, except mid-gesture, where it is
-   // the preview — the tile being resized at its previewed width, or the tiles
-   // in their previewed order. So the row reflows under the pointer exactly as
-   // it will once the edit lands.
-   const shown = (() => {
-      const tiles = editor.document.tiles;
-      if (resize !== undefined)
-         return tiles.map((each, index) =>
-            index === resize.index ? { ...each, colspan: resize.span } : each,
-         );
-      return preview ?? tiles;
-   })();
+   // the preview — the tiles in their previewed order. So the row reflows under
+   // the pointer exactly as it will once the edit lands.
+   const shown = preview ?? editor.document.tiles;
    // And, while a drag is live, the empty end of every row as a drop target.
    // Not otherwise: a gap is only a place to land while something is in hand.
+   const empty = editor.document.tiles.length === 0;
    const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
    return (
       // The padding is for the SELECTION RING. An outline is painted outside
@@ -489,196 +690,290 @@ export function DashboardBuilder({
       // plus its 2px width.
       // The bar carries its own gap to what it sits over, so the surface adds
       // none between the two.
-      <Stack sx={{ gap: 0 }}>
-         {/* Outside the ring's inset, so the bar lines up to the pixel with the
+      <OpenDraftContext.Provider value={openDraft}>
+         <Stack sx={{ gap: 0 }}>
+            {/* Outside the ring's inset, so the bar lines up to the pixel with the
              reader's — the whole point of it being the same bar. */}
-         <BuilderToolbar
-            canUndo={editor.canUndo}
-            canRedo={editor.canRedo}
-            onUndo={editor.undo}
-            onRedo={editor.redo}
-            dirty={editor.dirty}
-            saving={saving}
-            {...(onSave ? { onSave: save } : {})}
-            {...(toolbar ? { actions: toolbar } : {})}
-            {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
-            onSettings={setSettingsAnchor}
-         />
+            <BuilderToolbar
+               {...session.toolbarProps}
+               {...(toolbar ? { actions: toolbar } : {})}
+               {...(catalog ? { onAddTile: () => openAdd() } : {})}
+               onSettings={setSettingsAnchor}
+               savesTo={savesTo}
+               {...(saveLabel ? { saveLabel } : {})}
+            />
 
-         {/* The ring's inset, minus the top: nothing at the top of this stack
+            {/* The ring's inset, minus the top: nothing at the top of this stack
              can be selected (the prose and the control row are not tiles), and
              4px there would put the title 4px further from the bar than the
              reader's is. */}
-         <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
-            <DashboardProse
-               title={editor.document.title || "Untitled dashboard"}
-               {...(editor.document.description
-                  ? { description: editor.document.description }
-                  : {})}
-            />
-
-            <FilterStrip
-               controls={controlList}
-               tileCount={editor.document.tiles.length}
-               unknownFieldsOf={unknownFieldsOf}
-               onEdit={(control) => setFilterDialog({ control })}
-               onAdd={() => setFilterDialog({})}
-            >
-               {controls}
-            </FilterStrip>
-
-            {editor.error && (
-               // The edit is still here; the message says what stopped it reaching
-               // the file, which is a different thing from losing the work.
-               <Alert severity="warning">{editor.error}</Alert>
-            )}
-
-            <DragDropProvider
-               sensors={builderSensors}
-               onDragStart={onDragStart}
-               onDragOver={onDragOver}
-               onDragEnd={onDragEnd}
-            >
-               <Box ref={gridBox} sx={{ position: "relative" }}>
-                  {(resize !== undefined || dragging) && (
-                     <GridGuides columns={columns} />
-                  )}
-
-                  <DashboardGrid
-                     tiles={entries}
-                     columns={columns}
-                     keyOf={(entry) =>
-                        entry.kind === "gap"
-                           ? gapId(entry.after)
-                           : tileKey(entry.tile)
+            <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+               {editor.pendingOpen && (
+                  <Alert severity="info">
+                     This notebook is in the cell format. Saving rewrites it as
+                     a layout notebook, and a named query run once becomes that
+                     tile&apos;s view; Undo save puts it back.
+                  </Alert>
+               )}
+               <SaveNotice {...session.notice} />
+               <Box>
+                  <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                     <InlineText
+                        value={editor.document.title}
+                        placeholder={
+                           notebook ? "Untitled notebook" : "Untitled dashboard"
+                        }
+                        ariaLabel={
+                           notebook ? "Notebook title" : "Dashboard title"
+                        }
+                        onCommit={(next) =>
+                           editor.update((draft) => {
+                              draft.title = next;
+                           })
+                        }
+                     />
+                  </Typography>
+                  <InlineMarkdown
+                     variant="caption"
+                     markdown={editor.document.description ?? ""}
+                     placeholder="Add a description"
+                     onCommit={(next) =>
+                        editor.update((draft) => {
+                           if (next.trim() === "") delete draft.description;
+                           else draft.description = next;
+                        })
                      }
-                     renderTile={(entry) => {
-                        if (entry.kind === "gap")
-                           return <GapTarget after={entry.after} />;
-                        const { tile: each, index } = entry;
-                        return (
-                           <TileFrame
-                              tile={each}
-                              index={index}
-                              selected={index === selected}
-                              menuOpen={menu?.index === index}
-                              resizeSpan={
-                                 resize?.index === index
-                                    ? resize.span
-                                    : undefined
-                              }
-                              columns={columns}
-                              onSelect={() => setSelected(index)}
-                              onOpenMenu={(anchor) => {
-                                 setSelected(index);
-                                 setMenu({ anchor, index });
-                              }}
-                              onResizeStart={(event) =>
-                                 startResize(event, index)
-                              }
-                              onResizeMove={onResize}
-                              onResizeEnd={endResize}
-                           >
-                              {renderTile ? (
-                                 renderTile(each)
-                              ) : (
-                                 <TilePlaceholder tile={each} />
-                              )}
-                           </TileFrame>
-                        );
-                     }}
                   />
                </Box>
-            </DragDropProvider>
-            <FilterDialog
-               open={filterDialog !== undefined}
-               document={editor.document}
-               {...(filterDialog?.control
-                  ? { control: filterDialog.control }
-                  : {})}
-               available={available}
-               {...(catalog ? { fieldsFor } : {})}
-               onClose={() => setFilterDialog(undefined)}
-               onApply={applyFilter}
-               onRemove={dropControl}
-            />
-            <TileMenu
-               anchor={menu?.anchor ?? null}
-               tile={
-                  menu === undefined
-                     ? undefined
-                     : editor.document.tiles[menu.index]
-               }
-               onClose={() => setMenu(undefined)}
-               onCommit={(next) => {
-                  const at = menu?.index;
-                  if (at === undefined) return;
-                  editor.update((draft) => {
-                     draft.tiles[at] = next;
-                  });
-               }}
-               onRemove={() => {
-                  if (menu !== undefined) removeTile(menu.index);
-               }}
-               columns={columns}
-               onDrills={() => {
-                  if (menu !== undefined)
-                     setDrillSource(editor.document.tiles[menu.index]?.source);
-               }}
-            />
-            <DrillDialog
-               open={drillSource !== undefined}
-               document={editor.document}
-               source={editor.document.sources.find(
-                  (s) => s.name === drillSource,
+
+               {empty ? (
+                  <Stack
+                     sx={{
+                        alignItems: "flex-start",
+                        gap: 1,
+                        py: 3,
+                        px: 2,
+                        border: 1,
+                        borderStyle: "dashed",
+                        borderColor: "divider",
+                        borderRadius: 1,
+                     }}
+                  >
+                     <Typography variant="body2">
+                        This {notebook ? "notebook" : "dashboard"} is not served
+                        until it has a tile.
+                     </Typography>
+                     {catalog && (
+                        <Button
+                           size="small"
+                           variant="contained"
+                           onClick={() => openAdd()}
+                        >
+                           Add tile
+                        </Button>
+                     )}
+                  </Stack>
+               ) : (
+                  <FilterStrip
+                     controls={controlList}
+                     tileCount={editor.document.tiles.length}
+                     unknownFieldsOf={unknownFieldsOf}
+                     onEdit={(control) => setFilterDialog({ control })}
+                     onAdd={() => setFilterDialog({})}
+                     onRemove={dropControl}
+                  >
+                     {controls}
+                  </FilterStrip>
                )}
-               givenNames={controlList.map((c) => c.name)}
-               dashboards={dashboards ?? []}
-               onClose={() => setDrillSource(undefined)}
-               onApply={(drills) =>
-                  editor.update((draft) => {
-                     const kept = (draft.drills ?? []).filter(
-                        (d) => d.source !== drillSource,
-                     );
-                     const next = [...kept, ...drills];
-                     if (next.length === 0) delete draft.drills;
-                     else draft.drills = next;
-                  })
-               }
-            />
-            <SettingsPopover
-               anchor={settingsAnchor}
-               settings={settings}
-               onClose={() => setSettingsAnchor(null)}
-               onCommit={(next) =>
-                  editor.update((draft) => {
-                     draft.title = next.title;
-                     if (next.description === undefined)
-                        delete draft.description;
-                     else draft.description = next.description;
-                     if (next.columns === undefined) delete draft.columns;
-                     else draft.columns = next.columns;
-                     if (next.autorun === undefined) delete draft.autorun;
-                     else draft.autorun = next.autorun;
-                  })
-               }
-            />
-            <AddTileDialog
-               open={addingTile}
-               document={editor.document}
-               catalog={catalog}
-               columns={columns}
-               onClose={() => setAddingTile(false)}
-               onAdd={addTile}
-            />
-            <DiffDialog
-               open={pendingSave !== undefined}
-               before={pendingSave?.before ?? ""}
-               after={pendingSave?.after ?? ""}
-               onConfirm={commitSave}
-               onClose={() => setPendingSave(undefined)}
-            />
+
+               {editor.error && (
+                  // The edit is still here; the message says what stopped it reaching
+                  // the file, which is a different thing from losing the work.
+                  <Alert severity="warning">{editor.error}</Alert>
+               )}
+
+               <DragDropProvider
+                  sensors={builderSensors}
+                  onDragStart={onDragStart}
+                  onDragOver={onDragOver}
+                  onDragEnd={onDragEnd}
+               >
+                  <Box ref={gridBox} sx={{ position: "relative" }}>
+                     {!notebook && dragging && <GridGuides columns={columns} />}
+
+                     <DashboardGrid
+                        tiles={entries}
+                        columns={columns}
+                        keyOf={(entry) =>
+                           entry.kind === "gap"
+                              ? gapId(entry.after)
+                              : tileKey(entry.tile)
+                        }
+                        renderTile={(entry) => {
+                           if (entry.kind === "gap")
+                              return <GapTarget after={entry.after} />;
+                           const { tile: each, index } = entry;
+                           return (
+                              <TileFrame
+                                 tile={each}
+                                 index={index}
+                                 selected={index === selected}
+                                 flash={tileKey(each) === flash}
+                                 menuOpen={menu?.index === index}
+                                 {...(notebook && catalog
+                                    ? {
+                                         onInsertAfter: () =>
+                                            openAdd(index + 1),
+                                      }
+                                    : {})}
+                                 onSelect={() => setSelected(index)}
+                                 onOpenMenu={(anchor) => {
+                                    setSelected(index);
+                                    setMenu({ anchor, index });
+                                 }}
+                              >
+                                 {isTextTile(each) ? (
+                                    <TextTileBody
+                                       tile={each}
+                                       onChange={(markdown) =>
+                                          editTile(tileKey(each), (tile) => {
+                                             if (isTextTile(tile))
+                                                tile.markdown = markdown;
+                                          })
+                                       }
+                                    />
+                                 ) : renderTile && !editor.pendingOpen ? (
+                                    // Until the conversion is saved the package has none of its views to run.
+                                    renderTile(
+                                       each,
+                                       headingOf(
+                                          each,
+                                          tileTitle(
+                                             `${each.source} -> ${each.name}`,
+                                          ),
+                                       ),
+                                    )
+                                 ) : (
+                                    <TilePlaceholder
+                                       tile={each}
+                                       heading={headingOf(each, each.name)}
+                                       {...(editor.pendingOpen
+                                          ? {
+                                               note: "Preview appears after you Save",
+                                            }
+                                          : {})}
+                                    />
+                                 )}
+                              </TileFrame>
+                           );
+                        }}
+                     />
+                  </Box>
+               </DragDropProvider>
+               {notebook && catalog && !empty && (
+                  <Button
+                     size="small"
+                     startIcon={<AddIcon />}
+                     aria-label="Add tile at the end"
+                     onClick={() => openAdd()}
+                     sx={{ alignSelf: "center" }}
+                  >
+                     Add tile
+                  </Button>
+               )}
+               <FilterDialog
+                  open={filterDialog !== undefined}
+                  document={editor.document}
+                  {...(filterDialog?.control
+                     ? { control: filterDialog.control }
+                     : {})}
+                  available={available}
+                  {...(catalog ? { fieldsFor } : {})}
+                  onClose={() => setFilterDialog(undefined)}
+                  onApply={applyFilter}
+                  onRemove={dropControl}
+               />
+               <TileMenu
+                  anchor={menu?.anchor ?? null}
+                  tile={
+                     menu === undefined
+                        ? undefined
+                        : editor.document.tiles[menu.index]
+                  }
+                  onClose={() => setMenu(undefined)}
+                  onCommit={(next) => {
+                     const at = menu?.index;
+                     if (at === undefined) return;
+                     editor.update((draft) => {
+                        draft.tiles[at] = next;
+                     });
+                  }}
+                  onRemove={() => {
+                     if (menu !== undefined) removeTile(menu.index);
+                  }}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved dashboard needs at least one tile.",
+                       }
+                     : {})}
+                  columns={columns}
+                  view={menuView}
+                  onDrills={() => {
+                     setDrillSource(menuTile?.source);
+                  }}
+               />
+               <DrillDialog
+                  open={drillSource !== undefined}
+                  document={editor.document}
+                  source={editor.document.sources.find(
+                     (s) => s.name === drillSource,
+                  )}
+                  givenNames={controlList.map((c) => c.name)}
+                  dashboards={dashboards ?? []}
+                  onClose={() => setDrillSource(undefined)}
+                  onApply={(drills) =>
+                     editor.update((draft) => {
+                        const kept = (draft.drills ?? []).filter(
+                           (d) => d.source !== drillSource,
+                        );
+                        const next = [...kept, ...drills];
+                        if (next.length === 0) delete draft.drills;
+                        else draft.drills = next;
+                     })
+                  }
+               />
+               <SettingsPopover
+                  anchor={settingsAnchor}
+                  settings={settings}
+                  catalog={catalog}
+                  inUse={sourcesInUse}
+                  onClose={() => setSettingsAnchor(null)}
+                  onCommit={(next) =>
+                     editor.update((draft) => {
+                        if (next.kind === undefined) delete draft.kind;
+                        else draft.kind = next.kind;
+                        if (next.columns === undefined) delete draft.columns;
+                        else draft.columns = next.columns;
+                        if (next.autorun === undefined) delete draft.autorun;
+                        else draft.autorun = next.autorun;
+                        draft.imports = next.imports;
+                     })
+                  }
+               />
+               <AddTileDialog
+                  open={addingTile}
+                  document={editor.document}
+                  catalog={catalog}
+                  columns={columns}
+                  onClose={() => setAddingTile(false)}
+                  onAdd={addTile}
+                  onAddText={addText}
+               />
+               <UnsavedChangesDialog {...session.exitGuard.dialog} />
+            </Stack>
          </Stack>
-      </Stack>
+      </OpenDraftContext.Provider>
    );
 }

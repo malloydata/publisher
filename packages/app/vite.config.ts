@@ -49,7 +49,8 @@ export default ({ mode }) => {
          ? {
               proxy: {
                  "/api/v0": {
-                    target: "http://localhost:4000",
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
                     changeOrigin: true,
                  },
               },

@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { type LogMessage } from "@malloydata/malloy";
-import { DASHBOARDS_DIR, isDashboardModelPath } from "./dashboard";
+import { isDashboardModelPath } from "./dashboard";
 import {
    attachedNowhereFix,
    callAccessor,
    codePointMap,
+   DASHBOARDS_DIR,
+   documentKind,
    isArtifactNoteText,
+   isDocumentModelPath,
    isMarkdownNote,
-   isNotebookModelPath,
    isRuleNode,
    MARKDOWN_ROUTE,
    NOTEBOOKS_DIR,
@@ -46,6 +48,9 @@ const KNOWN_KINDS = ["notebook", "dashboard", "text"];
 
 const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
 
+const TILE_ENTRY_FIX =
+   'Fix: every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`), and a text entry is a bare name followed by `{ kind=text }` (`intro { kind=text }`).';
+
 /** The first `max` characters of a line, for quoting it in a message. */
 const quoted = (line: string, max = 60) => line.trim().slice(0, max);
 
@@ -72,8 +77,7 @@ export function lintNotebookText(
    modelPath: string,
    text: string,
 ): NotebookLintFinding[] {
-   const inNotebooks = isNotebookModelPath(modelPath);
-   if (!inNotebooks && !isDashboardModelPath(modelPath)) return [];
+   if (!isDocumentModelPath(modelPath)) return [];
    let parse;
    try {
       parse = translateToParse(text).parse;
@@ -100,6 +104,34 @@ export function lintNotebookText(
    const map = codePointMap(text);
    const tokenText = (token: ParseToken) =>
       text.slice(map[token.startIndex], map[token.stopIndex + 1]);
+   // The artifact tag decides what the file is; the folder only when the tag names no kind.
+   let tagKind: string | undefined;
+   let hasTiles = false;
+   for (let i = 0; i < tokens.length; i++) {
+      const name = symbolOf(tokens[i]);
+      if (name !== "DOC_ANNOTATION" && name !== "DOC_BLOCK_ANNOTATION_BEGIN")
+         continue;
+      let note = tokenText(tokens[i]);
+      for (
+         let j = i + 1;
+         name === "DOC_BLOCK_ANNOTATION_BEGIN" &&
+         j < tokens.length &&
+         symbolOf(tokens[j]) === "BLOCK_ANNOTATION_TEXT";
+         j++
+      )
+         note += tokenText(tokens[j]);
+      if (!isArtifactNoteText(note)) continue;
+      const tag = motlyTag([note])?.tag("artifact");
+      tagKind = tagText(tag, "kind");
+      // A tag that does not parse still says `tiles=`, and the layout lint explains its parse error.
+      hasTiles = (tag?.has("tiles") ?? false) || /\btiles\s*=/.test(note);
+      break;
+   }
+   const kind = documentKind(modelPath, tagKind);
+   // The cell format only: a notebook written as tiles is read and linted like a dashboard.
+   const inNotebooks = kind === "notebook" && !hasTiles;
+   const layoutNotebook = kind === "notebook" && hasTiles;
+   const page = kind === "notebook" ? "notebook" : "dashboard";
    const nodeText = (node: ParseNode) =>
       node.start && node.stop
          ? text.slice(map[node.start.startIndex], map[node.stop.stopIndex + 1])
@@ -170,7 +202,7 @@ export function lintNotebookText(
             docNotes.push({ line: lineOfNode(note), text: bodyText });
             if (!artifact && note.start && isArtifactNoteText(noteText)) {
                artifact = {
-                  text: noteText,
+                  text: bodyText,
                   line: lineOfNode(note),
                   startIndex: note.start.startIndex,
                };
@@ -202,6 +234,14 @@ export function lintNotebookText(
       }
       if (callAccessor(child, "defineGivenStatement")) {
          firstGiven ??= keywordLine(child, "GIVEN");
+      }
+      if (layoutNotebook && callAccessor(child, "runStatement")) {
+         const line = keywordLine(child, "RUN");
+         add(
+            line,
+            "notebook-layout-run",
+            "a `run:` is never shown in a notebook written as tiles, whose cells are the entries in `tiles=[…]`. Fix: define the query as a `view:` on a source, list `source -> view` in `tiles`, and delete the `run:`.",
+         );
       }
       if (callAccessor(child, "ignoredObjectAnnotations")) {
          const notes = leadingNotes(child);
@@ -461,7 +501,7 @@ export function lintNotebookText(
             add(
                token.line,
                "notebook-markdown-block-unnamed",
-               `\`${quoted(line)}\` is a floating \`(${routeOfNote(line)})\` line, which a dashboard does not show, since its text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the line.`,
+               `\`${quoted(line)}\` is a floating \`(${routeOfNote(line)})\` line, which a ${page} does not show, since its text tiles are named blocks listed in \`tiles=[…]\`. Fix: ${tileEntryFix("name")}, or delete the line.`,
             );
             continue;
          }
@@ -520,7 +560,7 @@ export function lintNotebookText(
       return `\`${quoted(note)}\` sits inside a statement, where nothing reads a \`(markdown)\` note, so it is not shown. Fix: ${
          inNotebooks
             ? "move it above the statement it describes"
-            : `a dashboard reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it`
+            : `a ${page} reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it`
       }.`;
    }
 
@@ -612,7 +652,7 @@ export function lintNotebookText(
                add(
                   line,
                   "notebook-markdown-block-unnamed",
-                  `an unnamed \`${spelled}\` block is not shown on a dashboard, whose text tiles are named blocks listed in \`tiles=[…]\` (text tiles do not render yet). Fix: ${tileEntryFix("name")}, or delete the block.`,
+                  `an unnamed \`${spelled}\` block is not shown on a ${page}, whose text tiles are named blocks listed in \`tiles=[…]\`. Fix: ${tileEntryFix("name")}, or delete the block.`,
                );
             }
          } else if (/^[ \t]*\(?markdown\)?(?=[ \t]|$)/i.test(rest)) {
@@ -689,22 +729,30 @@ export function lintNotebookText(
       add(
          below.line,
          "notebook-description-below-artifact",
-         "this `\"` note below `## artifact` is the dashboard's description only because nothing sits above the tag. Fix: move it above `## artifact`.",
+         `this \`"\` note below \`## artifact\` is the ${page}'s description only because nothing sits above the tag. Fix: move it above \`## artifact\`.`,
       );
    }
 
-   /** A `(markdown)` block is a tile only when `tiles` names it. */
+   /** A `(markdown)` block is a tile only when `tiles` names it with `{ kind=text }`. */
    function lintUnreferencedMarkdownBlocks(tagNote: { text: string }): void {
-      const tiles = motlyTag([tagNote.text])
-         ?.tag("artifact")
-         ?.array("tiles")
-         ?.map((tile) => tagText(tile));
+      if (motlyParseErrors([tagNote.text])[0] !== undefined) return;
+      const entries =
+         motlyTag([tagNote.text])?.tag("artifact")?.array("tiles") ?? [];
+      const textTiles = entries
+         .filter((tile) => tagText(tile, "kind") === "text")
+         .map((tile) => tagText(tile));
+      const bare = entries
+         .filter((tile) => tagText(tile, "kind") !== "text")
+         .map((tile) => tagText(tile));
       for (const block of readMarkdownBlocks(notebookParse, text)) {
-         if (block.name === undefined || tiles?.includes(block.name)) continue;
+         if (block.name === undefined || textTiles.includes(block.name))
+            continue;
          add(
             block.line,
             "notebook-markdown-block-unreferenced",
-            `the \`(${block.route})\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the dashboard (text tiles do not render yet). Fix: delete the block.`,
+            bare.includes(block.name)
+               ? `the \`(${block.route})\` block \`${block.name}\` is named by a tile with no \`kind=text\`, so that tile is read as a query and the block is not shown. Fix: write \`${block.name} { kind=text }\` in \`tiles\`.`
+               : `the \`(${block.route})\` block \`${block.name}\` is not named by any entry in \`tiles=[…]\`, so it is not shown on the ${page}. Fix: delete the block, or list \`${block.name} { kind=text }\` in \`tiles\`.`,
          );
       }
    }
@@ -715,58 +763,75 @@ export function lintNotebookText(
          add(
             tagNote.line,
             "notebook-artifact-unparsed",
-            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
+            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
             "error",
          );
          return;
       }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
-      const kind = tagText(tag, "kind");
+      const declared = tagText(tag, "kind");
       const properties = Object.keys(tag.dict ?? {});
+      const home = kind === "notebook" ? NOTEBOOKS_DIR : DASHBOARDS_DIR;
+      if (!modelPath.startsWith(`${home}/`)) {
+         add(
+            tagNote.line,
+            "notebook-other-folder",
+            `this ${kind} is served from ${modelPath.split("/")[0]}/, where the other kind is created. It works either way. Fix: move it to ${home}/ if you want folders to match kinds.`,
+         );
+      }
       if (inNotebooks) {
-         if (kind === undefined) {
+         if (declared === undefined) {
             add(
                tagNote.line,
                "notebook-kind-missing",
                `this notebook's artifact tag has no \`kind\`. ${ARTIFACT_KIND_FIX}`,
             );
-         } else if (kind !== "notebook") {
+         } else if (declared !== "notebook") {
             add(
                tagNote.line,
                "notebook-kind-unknown",
-               KNOWN_KINDS.includes(kind)
-                  ? `\`kind=${kind}\` is not a notebook kind. ${ARTIFACT_KIND_FIX}`
-                  : `\`kind=${kind}\` is not a kind Publisher knows (dashboard, notebook). ${ARTIFACT_KIND_FIX}`,
-            );
-         }
-         if (properties.includes("tiles")) {
-            add(
-               tagNote.line,
-               "notebook-tiles",
-               `\`tiles\` builds a dashboard grid and does nothing under ${NOTEBOOKS_DIR}/; a notebook's cells are the statements in the file. Fix: remove \`tiles\`, or move the file to ${DASHBOARDS_DIR}/.`,
+               KNOWN_KINDS.includes(declared)
+                  ? `\`kind=${declared}\` is not a notebook kind. ${ARTIFACT_KIND_FIX}`
+                  : `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). ${ARTIFACT_KIND_FIX}`,
             );
          }
          return;
       }
-      if (kind === "text") {
+      if (declared === "text") {
          add(
             tagNote.line,
             "notebook-kind-text-on-dashboard",
-            "`kind=text` marks a tile entry, so it does not mark this dashboard. Fix: remove `kind`, or write `kind=dashboard`.",
+            "`kind=text` marks a tile entry, so it does not mark this document. Fix: remove `kind`, or write `kind=dashboard` or `kind=notebook`.",
          );
-      } else if (kind === "notebook") {
-         add(
-            tagNote.line,
-            "notebook-kind-under-dashboards",
-            `\`kind=notebook\` marks a notebook, but this file is under ${DASHBOARDS_DIR}/, which serves dashboards. Fix: move the file to ${NOTEBOOKS_DIR}/, or remove \`kind\`.`,
-         );
-      } else if (kind !== undefined && !KNOWN_KINDS.includes(kind)) {
+      } else if (declared !== undefined && !KNOWN_KINDS.includes(declared)) {
          add(
             tagNote.line,
             "notebook-kind-unknown",
-            `\`kind=${kind}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
+            `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
          );
+      }
+      if (layoutNotebook) {
+         for (const entry of tag.array("tiles") ?? []) {
+            const ignored = ["colspan", "break"].filter((p) => entry.has(p));
+            if (ignored.length === 0) continue;
+            add(
+               tagNote.line,
+               "notebook-tile-layout-ignored",
+               `\`${ignored.join("`, `")}\` on the \`${tagText(entry) ?? "a"}\` entry is ignored, since a notebook is one column and every tile fills it. Fix: remove ${ignored.length > 1 ? "them" : "it"}.`,
+            );
+         }
+      }
+      const columns = motlyTag(modelNotes)?.tag("dashboard");
+      if (layoutNotebook && columns?.has("columns")) {
+         const width = tagNumeric(columns, "columns");
+         if (width !== 1) {
+            add(
+               tagNote.line,
+               "notebook-columns-ignored",
+               "`dashboard { columns }` other than 1 is ignored on a notebook, which is always one column. Fix: remove `dashboard { columns }`.",
+            );
+         }
       }
       // A single query has no grid, and dashboard.ts already says so.
       if (

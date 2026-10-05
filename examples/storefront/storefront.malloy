@@ -68,6 +68,7 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     // numbers, but the label lives in one place instead of on every view.
     #(doc) Product category of the item sold
     # label="Category"
+    # drill { to=self given=CATEGORY }
     category is products.category
     #(doc) Brand of the item sold
     # label="Brand"

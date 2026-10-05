@@ -10,7 +10,13 @@ import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
-import { TileCard, TileHeading } from "./TileCard";
+import { TileFilterTag } from "./TileFilterTag";
+import {
+   TileCard,
+   TileHeading,
+   type TileChrome,
+   type TileHeadingSlots,
+} from "./TileCard";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -22,10 +28,14 @@ export interface DashboardTileProps {
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
+   /** Annotation lines placed above the tile's `run:`, which stack on the view's own. */
+   annotation?: string;
    /** `# label` on the view the tile names, when it has one. */
    label?: string;
    /** `# subtitle` on it: a second line under the heading. */
    subtitle?: string;
+   /** The heading's text as nodes, which replace `label` and `subtitle` where a surface edits them in place. */
+   heading?: TileHeadingSlots;
    /** `# borderless` on it: no card around the result. */
    borderless?: boolean;
    /**
@@ -52,6 +62,10 @@ export interface DashboardTileProps {
     * the heading, on hover; absent, the heading has no button.
     */
    onExplore?: () => void;
+   /** `none` draws the result bare, its label a quiet caption above it. */
+   chrome?: TileChrome;
+   /** Labels of the page's filters this tile ignores, shown as a warning chip. */
+   ignoredFilters?: readonly string[];
 }
 
 /**
@@ -85,8 +99,10 @@ export function DashboardTile({
    modelPath,
    queryName,
    tile,
+   annotation,
    label,
    subtitle,
+   heading,
    borderless,
    givens,
    declaredTypes,
@@ -95,6 +111,8 @@ export function DashboardTile({
    maxResultSize,
    drill,
    onExplore,
+   chrome = "card",
+   ignoredFilters,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
    const state = useQueryResult({
@@ -103,7 +121,10 @@ export function DashboardTile({
       modelPath,
       versionId,
       queryName,
-      query: tile !== undefined ? `run: ${tile}` : undefined,
+      query:
+         tile !== undefined
+            ? `${annotation ? `${annotation}\n` : ""}run: ${tile}`
+            : undefined,
       // Narrowed to the givens this tile references: see `givenNames`.
       givens: givensToRequest(givens, declaredTypes, givenNames),
    });
@@ -111,7 +132,10 @@ export function DashboardTile({
    return (
       <TileCard
          borderless={borderless}
+         chrome={chrome}
          sx={{
+            // A table is as wide as its tile body, whatever its columns need.
+            "& .malloy-render, & .malloy-table": { width: "100%" },
             // The heading's button shows on hover and keyboard focus, the way
             // a tile's chrome does everywhere else; always-on it competes with
             // the title on every card at once.
@@ -125,8 +149,9 @@ export function DashboardTile({
       >
          {tile !== undefined && (
             <TileHeading
-               title={label ?? tileTitle(tile)}
-               subtitle={subtitle}
+               title={heading?.title ?? label ?? tileTitle(tile)}
+               subtitle={heading ? heading.subtitle : subtitle}
+               quiet={chrome === "none"}
                // The expression is what actually ran, so it stays reachable as
                // a tooltip rather than as the heading.
                tooltip={tile}
@@ -147,7 +172,9 @@ export function DashboardTile({
                }
             />
          )}
+         {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
          <ResultPanel
+            fill
             state={state}
             context={tile ?? queryName ?? modelPath}
             maxHeight={height}

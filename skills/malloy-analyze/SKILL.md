@@ -184,7 +184,7 @@ view: analysis_summary is {
 
 Document insights as view descriptions: `#(doc) Top 10% of customers drive 62% of revenue.`
 
-Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps.
+Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps (unless your host's instructions say it shows follow-up suggestions of its own, which then carry them).
 
 **Ready to formalize?** Hand off to the modeling skill's "Starting from Analysis" workflow (`skill:malloy-model`).
 
@@ -234,7 +234,7 @@ For complete chart reference including scatter_chart, shape_map, sparklines, and
 
 # NOTEBOOKS (.malloy)
 
-A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. Prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block; each `run:` is a query cell.
+A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. The format to author is a one-column layout of tiles: `tiles=[…]` in the tag lists prose blocks (`intro { kind=text }`, body in a `##|(markdown) intro` ... `|##` block) and `"source -> view"` queries, and `skill:malloy-notebooks` has the full format. The example below is the older cell form, which Publisher still reads: prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block, and each `run:` is a query cell.
 
 ```malloy
 ## artifact { kind=notebook title="Sales analysis" }
@@ -249,7 +249,7 @@ run: order_analysis -> summary
 
 **A `.malloy` notebook compiles as a model**, so the linter and `/compile` report its errors before you save. An existing `.malloynb` is not covered: its errors show only when a cell runs. Never write a new `.malloynb`.
 
-A notebook is also the home for a polished, narrated report: alternate `##(markdown)` prose (the story) with `run:` cells (the views), and let each `run:` carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
+A notebook is also the home for a polished, narrated report: alternate prose (the story) with queries (the views), and let each view carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
 
 ### Interactive Filters
 

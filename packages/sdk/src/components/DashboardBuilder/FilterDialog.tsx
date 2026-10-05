@@ -27,7 +27,13 @@ import {
    type ControlKind,
    type MappingRow,
 } from "./controls";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type DashboardTile,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
 import { AppDialog } from "../AppDialog";
 
 /**
@@ -70,7 +76,7 @@ export interface FilterDialogProps {
     * source the host has no catalog for, in which case any name is accepted
     * for it and nothing is searched.
     */
-   fieldsFor?: (tile: DashboardTile) => readonly CatalogField[] | undefined;
+   fieldsFor?: (tile: QueryTile) => readonly CatalogField[] | undefined;
    onClose: () => void;
    /**
     * Bind a control. `declare` is set when the control is new to this file, or
@@ -170,7 +176,7 @@ function FieldPicker({
  * situations, and saying "from the model" about the second one is untrue.
  */
 const unbindable = (tile: DashboardTile | undefined) =>
-   tile?.declaration.kind === "opaque"
+   tile && isQueryTile(tile) && tile.declaration.kind === "opaque"
       ? {
            label: "Not bindable",
            reason: `Its body is ${tile.declaration.why}, so a filter has no single place to go.`,
@@ -477,6 +483,7 @@ export function FilterDialog({
                </Stack>
                <Stack sx={{ gap: perTile ? 1 : 0 }}>
                   {document.tiles.map((tile, index) => {
+                     if (!isQueryTile(tile)) return null;
                      const row = rows[index];
                      const title = tile.label ?? tile.name;
                      const problem = perTile ? rowProblems[index] : undefined;

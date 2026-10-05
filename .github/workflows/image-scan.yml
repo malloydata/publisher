@@ -84,11 +84,13 @@ jobs:
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      # The ISO week, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
-      # layer rebuilds weekly instead of being served from the build cache forever.
-      - name: Week for the apt refresh
-        id: week
-        run: echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds daily instead of being served from the build cache forever.
+      # Daily rather than weekly so a Debian fix published mid-week is picked up by
+      # the next build instead of waiting for the week to roll over.
+      - name: Date for the apt refresh
+        id: day
+        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Build image
@@ -99,7 +101,7 @@ jobs:
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
-            APT_REFRESH=${{ steps.week.outputs.value }}
+            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: malloy-publisher:scan
           # Read-only: build.yml's docker_smoke_test builds the same amd64 image with the
           # same arguments and writes this cache. Writing it again here would store a

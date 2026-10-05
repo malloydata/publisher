@@ -18,6 +18,8 @@ export interface ResultPanelProps {
    maxHeight?: number;
    maxResultSize?: number;
    drill?: DrillBinding;
+   /** See `ResultContainer`: stretch the result to its cell. */
+   fill?: boolean;
    /**
     * Rewrites the result before it is rendered — a dashboard tile promotes a
     * one-row measure result to KPI cards this way. Memoized on the result
@@ -44,6 +46,7 @@ export function ResultPanel({
    maxHeight,
    maxResultSize,
    drill,
+   fill,
    transform,
 }: ResultPanelProps) {
    const { data, isSuccess, isError, error } = state;
@@ -68,6 +71,7 @@ export function ResultPanel({
          maxResultSize={maxResultSize}
          renderLogs={data.data.renderLogs}
          drill={drill}
+         fill={fill}
       />
    );
 }

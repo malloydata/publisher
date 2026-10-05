@@ -5,6 +5,31 @@ SPDX-License-Identifier: MIT
 
 # @malloy-publisher/skills
 
+## Start here
+
+1. **Learn.** Read the getting-started skill. Nothing to install, no server:
+
+   <https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md>
+
+   Every skill reads the same way. Put its name in place of `malloy-getting-started`.
+
+2. **Install.** If your agent has a shell, copy every skill to where it loads them:
+
+   ```bash
+   npx -y @malloy-publisher/skills@latest install           # into this project
+   npx -y @malloy-publisher/skills@latest install --global  # into your home directory
+   npx -y @malloy-publisher/skills@latest list              # every skill, with a description
+   ```
+
+   Keep the `@latest`. Without it, npx may reuse an old cached copy and install old skills.
+
+   `install` picks the agent from what it finds. A `CLAUDE.md` means `.claude/skills/`. An
+   `AGENTS.md` or `.cursor/` means `.agents/skills/`. With `--global` it looks for `~/.claude/`,
+   `~/.agents/`, or `~/.cursor/` instead. If it finds none, it stops and asks you to name one:
+   `install claude` or `install agents`.
+
+## What this package is
+
 The agent skills that ship with [Malloy Publisher](https://github.com/malloydata/publisher), as
 files you can install. They are task-specific guides for writing Malloy, building and reviewing
 models, exploring data, and authoring HTML data apps.
@@ -14,7 +39,7 @@ files. This package exists for the cases MCP does not cover: a host that reads s
 (Claude Code and the Publisher plugin), a scaffolder that installs them into a new project, or any
 tool that wants the files themselves rather than prompt text.
 
-## Install
+## Use the files from code
 
 ```bash
 npm install @malloy-publisher/skills

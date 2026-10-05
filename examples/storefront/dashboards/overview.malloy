@@ -36,10 +36,9 @@
 // with "Object annotation not connected to any object". The single-query form
 // is the other way round: its `#"` sits on the `query:` and attaches to that.
 //
-// This is the whole prose surface a dashboard has today, and it is per PAGE.
-// Prose next to one tile is a `# subtitle="…"` on that tile's view, one line.
-// A standalone text tile, prose BETWEEN tiles, needs a tile kind the format
-// cannot express yet.
+// This is the page-level prose, and it is per PAGE. Prose next to one tile is
+// a `# subtitle="…"` on that tile's view, one line. Prose BETWEEN tiles is a
+// text tile: a `kind=text` entry in `tiles=[…]` plus a `##|(markdown) name` block.
 ##" Revenue, margin and volume for the order lines the controls above select.
 ##"
 ##" **Key figures** is the summary; everything under it explains the summary.

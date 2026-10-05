@@ -4,7 +4,7 @@
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Box, Button, Tooltip, Typography } from "@mui/material";
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
 import { FloatingIconButton } from "../FloatingIconButton";
@@ -34,6 +34,13 @@ interface ResultContainerProps {
    // is the one render path dashboards and notebooks share, which is what lets
    // drill be implemented once for both.
    drill?: DrillBinding;
+   /**
+    * Stretch to the cell this sits in: a content-sized result is floored at
+    * the cell's height, so a short table reaches the bottom of its card. The
+    * parent has to be a flex column with a definite height, which a dashboard
+    * tile's card is. Leave it off wherever the result sets the surface's height.
+    */
+   fill?: boolean;
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -46,6 +53,7 @@ export default function ResultContainer({
    maxResultSize = 0,
    renderLogs,
    drill,
+   fill = false,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
    // Both start unknown and are filled in by the render: `sizing` as soon as
@@ -56,7 +64,19 @@ export default function ResultContainer({
       undefined,
    );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
+   const [cellHeight, setCellHeight] = useState<number | undefined>(undefined);
    const renderLogSummary = summarizeRenderLogs(renderLogs);
+
+   const hasResult = Boolean(result);
+   useEffect(() => {
+      const box = containerRef.current;
+      if (!fill || !box) return;
+      const observer = new ResizeObserver(([entry]) =>
+         setCellHeight(Math.round(entry.contentRect.height)),
+      );
+      observer.observe(box);
+      return () => observer.disconnect();
+   }, [fill, hasResult, userAcknowledged]);
 
    if (!result) {
       return null;
@@ -102,7 +122,20 @@ export default function ResultContainer({
       sizing,
       contentHeight,
       maxHeight,
+      fillHeight: fill ? cellHeight : undefined,
    });
+   const renderedResult = (
+      <Suspense fallback={loading}>
+         <RenderedResult
+            result={result}
+            height={renderedHeight}
+            onSizeChange={setContentHeight}
+            onSizing={setSizing}
+            drill={drill}
+            fill={fill}
+         />
+      </Suspense>
+   );
 
    return (
       <Box
@@ -113,18 +146,18 @@ export default function ResultContainer({
             border: "0px",
             borderRadius: 0,
             overflow: "hidden",
+            // Grows from the unfloored height, so a result that gets shorter
+            // lets its row shrink; the result is out of flow for the same reason.
+            ...(fill && {
+               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight })}px`,
+               minHeight: 0,
+            }),
          }}
       >
-         {result && (
-            <Suspense fallback={loading}>
-               <RenderedResult
-                  result={result}
-                  height={renderedHeight}
-                  onSizeChange={setContentHeight}
-                  onSizing={setSizing}
-                  drill={drill}
-               />
-            </Suspense>
+         {fill ? (
+            <Box sx={{ position: "absolute", inset: 0 }}>{renderedResult}</Box>
+         ) : (
+            renderedResult
          )}
          {renderLogSummary && (
             // Overlaid rather than stacked, so the note cannot change the height

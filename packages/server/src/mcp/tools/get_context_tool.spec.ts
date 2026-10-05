@@ -1636,10 +1636,23 @@ describe("get_context semantic retrieval", () => {
       return stubProviderFor(VECTORS, options);
    }
 
-   /** A store over the given package, backed by the temp DB. */
+   /**
+    * A store over the given package, backed by the temp DB. The package is
+    * served with the `facets` representation: the stub vectors above name the
+    * name row and the doc row of each entity separately, and these tests are
+    * about that faceted index. (The default is now `single`; its rows are
+    * covered in embedding_representation.spec.ts and the payload pin.)
+    */
    function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
+      const facetsPkg = Object.assign(pkg as object, {
+         getRetrievalSettings: () => ({
+            representation: "facets",
+            keyphrases: "never",
+            prompts: {},
+         }),
+      });
       return {
-         getEnvironment: async () => envWith(async () => pkg),
+         getEnvironment: async () => envWith(async () => facetsPkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
@@ -1711,6 +1724,89 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("orders equal semantic scores by source, whatever order the model declares them in", async () => {
+      // Two sources each declare `total_amount`, with identical text and so an
+      // identical vector: an exact score tie. The order of a tie was left to
+      // DuckDB (which broke it by name alone, and the names are equal here), so
+      // it followed insertion order and could differ between servers and
+      // between runs. It is now score, then source, then name.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "total amount": [1, 0],
+         "total order amount": [1, 0],
+      });
+      const sourceWith = (name: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "measure", name: "total_amount", annotations: [] },
+            ],
+         },
+      });
+      const run = async (declared: string[], packageName: string) => {
+         _setEmbeddingProviderForTests(provider);
+         const handler = captureHandler(
+            semanticStoreFor({
+               listModels: async () => [{ path: "t.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => declared.map(sourceWith),
+                  getQueries: () => [],
+               }),
+            }),
+         );
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: packageName }],
+         });
+         return sourceNames(payload);
+      };
+      const zebraFirst = await run(["zebra_sales", "alpha_sales"], "tie-a");
+      const alphaFirst = await run(["alpha_sales", "zebra_sales"], "tie-b");
+      expect(zebraFirst).toEqual(["alpha_sales", "zebra_sales"]);
+      expect(alphaFirst).toEqual(["alpha_sales", "zebra_sales"]);
+   });
+
+   it("treats only exactly equal scores as tied, not scores that round to the same four places", async () => {
+      // `zebra` has the slightly better match (cosine 0.9999875), `alpha` the
+      // slightly worse (0.9999595). Both publish as 1 at four decimals, so a
+      // tie-break on the published score would list alpha first by name. Their
+      // real scores differ, so zebra comes first.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "m one": [1, 0.005],
+         "m two": [1, 0.009],
+         "find it": [1, 0],
+      });
+      const sourceWith = (name: string, field: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "measure", name: field, annotations: [] }],
+         },
+      });
+      _setEmbeddingProviderForTests(provider);
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "t.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  sourceWith("alpha_sales", "m_two"),
+                  sourceWith("zebra_sales", "m_one"),
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("find it"),
+         scopes: [{ environment: "specs", package: "near-tie" }],
+      });
+      expect(sourceNames(payload)).toEqual(["zebra_sales", "alpha_sales"]);
+   });
+
    it("returns every resolving model path, like the lexical path does", async () => {
       // The vector cache holds ONE row per (kind, source, name) -- the text is
       // identical whichever file resolves the source -- and the scan fans that
@@ -1762,6 +1858,49 @@ describe("get_context semantic retrieval", () => {
       expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
       expect(payload.returned).toBe(2);
       expect(payload.total_available).toBe(2);
+   });
+
+   it("lists the model paths of one tied source in path order, not in the order the package lists them", async () => {
+      // One embedded row fans out to a card per model path that resolves the
+      // source, all with the same score. Their order was the package's own
+      // listing order.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            shared: [1, 0],
+            "shared: A source two files resolve.": [1, 0],
+            "the shared source": [1, 0],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "uses.malloy" },
+               { path: "defs.malloy" },
+            ],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "shared",
+                     annotations: ["#(doc) A source two files resolve."],
+                     schema: { fields: [] },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath-order" }],
+      });
+      expect(
+         payload.sources.map(
+            (c: { source_info: { resource_id: { model_path: string } } }) =>
+               c.source_info.resource_id.model_path,
+         ),
+      ).toEqual(["defs.malloy", "uses.malloy"]);
    });
 
    it("a source-scoped call does not delete the rest of the package's vectors", async () => {
@@ -2128,10 +2267,11 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "semantic-pkg" }],
       };
 
-      // Cold start: the sync kicks off in the background and this call
-      // answers lexically, marked as such.
+      // Cold start: the sync is still building, so this call says so and
+      // returns nothing, rather than answering lexically.
       const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
+      expect(first.retrieval).toBe("indexing");
+      expect(first.sources).toEqual([]);
 
       const payload = await callUntilSemantic(handler, params);
       const results = rankedEntities(payload);
@@ -2169,8 +2309,12 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "join-pkg" }],
       };
 
+      // The lexical answer is the no-provider mode now, so ask for it with
+      // no provider configured: it carries no `retrieval` marker at all.
+      _setEmbeddingProviderForTests(null);
       const lexical = parse(await handler(params));
-      expect(lexical.retrieval).toBe("lexical");
+      expect(lexical).not.toHaveProperty("retrieval");
+      _setEmbeddingProviderForTests(stubProvider());
       const semantic = await callUntilSemantic(handler, params);
 
       type Ranked = ReturnType<typeof rankedEntities>[number];
@@ -2312,28 +2456,38 @@ describe("get_context semantic retrieval", () => {
       ]);
    });
 
-   it("says WHY a configured server answered lexically, and stops once semantic", async () => {
-      // "lexical" alone is a dead end: an agent cannot tell a cold index,
-      // which clears in seconds and is worth one retry, from a down provider,
-      // which is not. Only the first is actionable, so only naming it helps.
+   it("says the index is still building while it builds, with progress, and stops once semantic", async () => {
+      // A cold index is not an error and not a lexical answer: it is an empty
+      // result that says how far the build has got and that asking again will
+      // work.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
          search_targets: anyKind("where do customers live"),
          scopes: [{ environment: "specs", package: "reason-pkg" }],
       };
-      const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
-      expect(first.retrieval_reason).toBe("indexing");
+      const result = await handler(params);
+      expect(result.isError).toBe(false);
+      const first = parse(result);
+      expect(first.retrieval).toBe("indexing");
+      expect(first.sources).toEqual([]);
+      expect(first.returned).toBe(0);
+      expect(first.retrieval_progress.total).toBeGreaterThan(0);
+      expect(first.retrieval_progress.embedded).toBeLessThanOrEqual(
+         first.retrieval_progress.total,
+      );
+      expect(first.warnings.join(" ")).toContain("still being built");
+      expect(first).not.toHaveProperty("retrieval_reason");
 
       const warm = await callUntilSemantic(handler, params);
       expect(warm).not.toHaveProperty("retrieval_reason");
+      expect(warm).not.toHaveProperty("retrieval_progress");
    });
 
-   it("reports a dead provider as provider-error, then as cooldown", async () => {
-      // Two different remedies behind one "lexical": the first call learns the
-      // endpoint is down, and every call in the window after it is being
-      // short-circuited deliberately rather than re-probing.
+   it("reports a dead provider as provider-error, then as cooldown, each as an error", async () => {
+      // Two different remedies: the first call learns the endpoint is down,
+      // and every call in the window after it is short-circuited deliberately
+      // rather than re-probing. Both are errors that name the reason.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
@@ -2343,12 +2497,53 @@ describe("get_context semantic retrieval", () => {
       await callUntilSemantic(handler, params);
 
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const failed = parse(await handler(params));
-      expect(failed.retrieval).toBe("lexical");
+      const failedResult = await handler(params);
+      expect(failedResult.isError).toBe(true);
+      const failed = parse(failedResult);
+      expect(failed.retrieval).toBe("error");
       expect(failed.retrieval_reason).toBe("provider-error");
+      expect(failed.sources).toEqual([]);
+      expect(failed.error).toContain("failed to embed the search text");
 
-      const cooled = parse(await handler(params));
+      const cooledResult = await handler(params);
+      expect(cooledResult.isError).toBe(true);
+      const cooled = parse(cooledResult);
       expect(cooled.retrieval_reason).toBe("cooldown");
+      expect(cooled.error).toContain("paused");
+   });
+
+   it("keeps a listing working while the index builds and while it is in error", async () => {
+      // A listing has no search text, so it needs no embeddings: it must not
+      // be refused just because the index cannot rank.
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const handler = captureHandler(semanticStore());
+      const search = {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
+      };
+      const listing = {
+         search_targets: [{ target_type: "source" }],
+         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
+      };
+
+      // Building: the search says so, the listing answers.
+      expect(parse(await handler(search)).retrieval).toBe("indexing");
+      const whileIndexing = await handler(listing);
+      expect(whileIndexing.isError).toBe(false);
+      expect(parse(whileIndexing).sources.length).toBeGreaterThan(0);
+      expect(parse(whileIndexing)).not.toHaveProperty("retrieval");
+
+      // The sync fails (the provider answers 500), so the search is now an
+      // error. Wait for the cooldown to be reached, then check the listing.
+      let result = await handler(search);
+      for (let i = 0; i < 400 && !result.isError; i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         result = await handler(search);
+      }
+      expect(result.isError).toBe(true);
+      const inError = await handler(listing);
+      expect(inError.isError).toBe(false);
+      expect(parse(inError).sources.length).toBeGreaterThan(0);
    });
 
    // A source that matches on its own terms becomes the CARD, not a row under
@@ -2436,15 +2631,17 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "cutoff-pkg" }],
       };
 
-      // Cold start answers lexically: there is no floor on that path, so
+      // Cold start ranks nothing: there is no floor on that path, so
       // reporting a count would be meaningless.
       const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
+      expect(first.retrieval).toBe("indexing");
       expect(first).not.toHaveProperty("below_cutoff_count");
 
-      // order_items, its join, and the field reached through that join are
-      // all orthogonal to this query, so they are dropped by the floor and
-      // counted rather than silently missing.
+      // order_items, its join and the field reached through the join are
+      // orthogonal to this query, so they are dropped by the floor and counted
+      // rather than silently missing. The joined field is weighed because this
+      // stand-in has no compiled model: nothing can rebuild it from a source
+      // of its own, so it stays in the semantic index (see directEntitiesOf).
       const payload = await callUntilSemantic(handler, params);
       expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
       expect(payload.below_cutoff_count).toBe(3);
@@ -2711,9 +2908,9 @@ describe("get_context semantic retrieval", () => {
       expect(drilled[0].source).toBe("fclt_building");
    });
 
-   it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
+   it("returns an error, not a lexical answer, when the provider goes down after indexing", async () => {
       // Index healthily first, so this pins the query-embed failure
-      // path, not just the cold start (which answers lexically anyway).
+      // path, not just the cold start.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
@@ -2723,43 +2920,40 @@ describe("get_context semantic retrieval", () => {
       await callUntilSemantic(handler, params);
 
       // Same model and config, but the endpoint now returns 500s: the
-      // per-call query embed fails and the call degrades to marked
-      // lexical with no scores.
+      // per-call query embed fails and the call is an error naming the
+      // provider failure, with no ranking of any kind.
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const payload = parse(
-         await handler({ ...params, search_targets: anyKind("state") }),
-      );
-      expect(payload.retrieval).toBe("lexical");
-      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-         true,
-      );
-      for (const r of rankedEntities(payload)) {
-         expect(r.relevance).toBeUndefined();
-      }
+      const result = await handler({
+         ...params,
+         search_targets: anyKind("state"),
+      });
+      expect(result.isError).toBe(true);
+      const payload = parse(result);
+      expect(payload.retrieval).toBe("error");
+      expect(payload.retrieval_reason).toBe("provider-error");
+      expect(payload.sources).toEqual([]);
    });
 
-   it("degrades to lexical when the storage handle is unavailable", async () => {
+   it("returns an error (never lexical) when the storage handle is unavailable", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const store = semanticStore();
       delete (store as { storageManager?: unknown }).storageManager;
       const handler = captureHandler(store);
-      const payload = parse(
-         await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "specs", package: "no-storage-pkg" }],
-         }),
-      );
-      expect(payload.retrieval).toBe("lexical");
-      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-         true,
-      );
+      const result = await handler({
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "specs", package: "no-storage-pkg" }],
+      });
+      expect(result.isError).toBe(true);
+      const payload = parse(result);
+      expect(payload.retrieval_reason).toBe("unavailable");
+      expect(payload.sources).toEqual([]);
    });
 
-   it("degrades to lexical (never throws) when the real config is malformed", async () => {
+   it("returns an error naming the variable (never throws) when the real config is malformed", async () => {
       // Exercises the tool-path catch with REAL env parsing, not the
       // _setEmbeddingProviderForTests override: a malformed base makes
-      // getEmbeddingProvider() throw, and tier 4 must swallow it and
-      // answer marked lexical (embeddingConfigured() is still true).
+      // getEmbeddingProvider() throw, and tier 4 must report it as an error
+      // that names the variable (embeddingConfigured() is still true).
       const saved = {
          key: process.env.EMBEDDING_API_KEY,
          base: process.env.EMBEDDING_API_BASE,
@@ -2769,16 +2963,15 @@ describe("get_context semantic retrieval", () => {
       _clearEmbeddingProviderForTests();
       try {
          const handler = captureHandler(semanticStore());
-         const payload = parse(
-            await handler({
-               search_targets: anyKind("state"),
-               scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
-            }),
-         );
-         expect(payload.retrieval).toBe("lexical");
-         expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-            true,
-         );
+         const result = await handler({
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
+         });
+         expect(result.isError).toBe(true);
+         const payload = parse(result);
+         expect(payload.retrieval_reason).toBe("unavailable");
+         expect(payload.error).toContain("EMBEDDING_API_BASE");
+         expect(payload.sources).toEqual([]);
       } finally {
          if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
          else process.env.EMBEDDING_API_KEY = saved.key;

@@ -16,7 +16,12 @@ import {
    type ControlKind,
    type MappingRow,
 } from "./controls";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
 
 type Source = { kind: "existing"; name: string } | { kind: "new" };
 
@@ -42,7 +47,7 @@ export function useFilterForm({
    document: DashboardDocument;
    control: BuilderControl | undefined;
    available: readonly BuilderControl[];
-   fieldsFor?: (tile: DashboardTile) => readonly CatalogField[] | undefined;
+   fieldsFor?: (tile: QueryTile) => readonly CatalogField[] | undefined;
    onApply: (given: string, rows: MappingRow[], declare?: LocalGiven) => void;
 }) {
    // What the window SHOWS: the control while open, and the same control while
@@ -66,15 +71,19 @@ export function useFilterForm({
    const [field, setField] = useState("");
    const [rows, setRows] = useState<MappingRow[]>([]);
    const [perTile, setPerTile] = useState(false);
+   // Problems stay quiet on a new form until the author edits a field, so it is not a wall of red.
+   const [touched, setTouched] = useState(false);
 
    /** The model source a tile's extension is built on, which its fields live on. */
-   const baseOf = (tile: DashboardTile) =>
+   const baseOf = (tile: QueryTile) =>
       document.sources.find((source) => source.name === tile.source)?.base ??
       tile.source;
 
    // Reset on open, on what is true now.
    useEffect(() => {
       if (!open) return;
+      // An existing control was not just created, so a binding that no longer resolves shows at once.
+      setTouched(control !== undefined);
       if (control) {
          setSource({ kind: "existing", name: control.name });
          setLabel(control.label ?? "");
@@ -136,12 +145,16 @@ export function useFilterForm({
    const commonOp =
       rows.find((row) => row.include)?.op ?? defaultOperator(target?.type);
 
-   const setRow = (index: number, patch: Partial<MappingRow>) =>
+   const setRow = (index: number, patch: Partial<MappingRow>) => {
+      setTouched(true);
       setRows((previous) =>
          previous.map((row, i) => (i === index ? { ...row, ...patch } : row)),
       );
-   const setCommonOp = (next: string) =>
+   };
+   const setCommonOp = (next: string) => {
+      setTouched(true);
       setRows((previous) => previous.map((row) => ({ ...row, op: next })));
+   };
    /** Rows follow a given's type: the comparison it needs, or none. */
    const retype = (type: string | undefined) => {
       const op = defaultOperator(type);
@@ -150,11 +163,13 @@ export function useFilterForm({
       );
    };
    const pickExisting = (given: BuilderControl) => {
+      setTouched(true);
       setSource({ kind: "existing", name: given.name });
       setField(given.field ?? "");
       retype(given.type);
    };
    const pickKind = (next: ControlKind) => {
+      setTouched(true);
       setKind(next);
       retype(newLocalGiven({ name: "X", label, kind: next, field }).type);
    };
@@ -166,10 +181,15 @@ export function useFilterForm({
    // bindable one while nothing is ticked yet, so the picker has something to
    // offer before the first tick.
    const ticked = document.tiles.filter(
-      (_, i) => (rows[i]?.include ?? false) && bindable[i],
+      (tile, i): tile is QueryTile =>
+         (rows[i]?.include ?? false) && bindable[i] && isQueryTile(tile),
    );
    const pool =
-      ticked.length > 0 ? ticked : document.tiles.filter((_, i) => bindable[i]);
+      ticked.length > 0
+         ? ticked
+         : document.tiles.filter(
+              (tile, i): tile is QueryTile => bindable[i] && isQueryTile(tile),
+           );
    // What the common picker offers: every field any tile in the pool can take,
    // once by name. Undefined when no tile has a list, which is "accept anything".
    const commonFields = useMemo(() => {
@@ -197,13 +217,15 @@ export function useFilterForm({
       }
       return ticked[0] ? baseOf(ticked[0]) : document.sources[0]?.base;
    })();
-   const setAll = (include: boolean) =>
+   const setAll = (include: boolean) => {
+      setTouched(true);
       setRows((previous) =>
          previous.map((row, i) => ({
             ...row,
             include: include && bindable[i],
          })),
       );
+   };
 
    // The rows as they will be APPLIED: the common field on every row until
    // the author has asked to set them one by one.
@@ -228,7 +250,7 @@ export function useFilterForm({
       acceptsField(target?.type, candidate.type);
    const problemWith = (
       name: string,
-      tile: DashboardTile | undefined,
+      tile: QueryTile | undefined,
    ): string | undefined => {
       if (name.trim() === "") return "Pick the field this filter compares.";
       const list = tile ? fieldsFor?.(tile) : undefined;
@@ -246,6 +268,7 @@ export function useFilterForm({
    // a number range, a date and it becomes a date picker. Explicit kind changes
    // still win afterwards; this only moves a kind the field cannot take.
    const pickField = (next: string) => {
+      setTouched(true);
       setField(next);
       if (editing || source.kind !== "new") return;
       const fieldType = typeOf(next);
@@ -258,17 +281,22 @@ export function useFilterForm({
       if (fieldType && !acceptsField(kindType, fieldType))
          pickKind(kindForFieldType(fieldType));
    };
-   const rowProblems = effective.map((row, i) =>
+   const queryTileAt = (i: number) => {
+      const tile = document.tiles[i];
+      return tile && isQueryTile(tile) ? tile : undefined;
+   };
+   const problems = effective.map((row, i) =>
       row.include && bindable[i]
-         ? problemWith(row.field, document.tiles[i])
+         ? problemWith(row.field, queryTileAt(i))
          : undefined,
    );
-   const fieldsResolve = rowProblems.every((problem) => problem === undefined);
+   const fieldsResolve = problems.every((problem) => problem === undefined);
+   const rowProblems = touched ? problems : problems.map(() => undefined);
    // In the common case one box speaks for every row, so its message is the
    // rows' message; the box is only marked once a tile is ticked to bind.
    // Every ticked tile has to take it; the first that cannot says why.
    const commonProblem =
-      !perTile && included > 0
+      touched && !perTile && included > 0
          ? ticked.map((tile) => problemWith(field, tile)).find(Boolean)
          : undefined;
 

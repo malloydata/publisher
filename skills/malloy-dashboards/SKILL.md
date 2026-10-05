@@ -127,18 +127,20 @@ Three things the form costs, so you are not surprised by them:
 - **Filtering lives on the tiles**, not on the page: each view's `+ { where: ... }` names the
   controls it answers to. Below is why, and the one thing that does not work.
 
-### Text tiles: prose between tiles (decided, not rendered yet)
+### Text tiles: prose between tiles
 
-Prose between tiles is a named `(markdown)` block that `tiles=` lists with `kind=text`:
+Prose between tiles is a named `(markdown)` block that `tiles=` lists with `kind=text`; it renders as a tile of its own, and its body is markdown:
 
 ```malloy
-## artifact { title="Storefront overview" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
+## artifact { title="Storefront overview" tiles=[intro { kind=text colspan=6 break }, "overview -> kpis"] } dashboard { columns=12 }
 ##|(markdown) intro
 ## How to read this page
 |##
 ```
 
-The name is one bare word on the opener line, the body starts on the next line, and the `|##` closer sits at the opener's column. Keep the parentheses: `##|markdown` draws a malformed-route warning. Publisher does not render text tiles yet, so a listed block is left out of the page and the lint says so; write one when the page needs the prose, and expect the tile to appear once rendering ships. A `(markdown)` block that no `tiles` entry names is a lint finding too, so delete it rather than leave it. The dashboard's own description is separate: the unnamed `"` notes above `## artifact`. Earlier spellings are still read: `##|(text) name` is a text tile, like `##|(markdown) name`. Write `(markdown)`.
+The entry is `name { kind=text colspan=6 break }`: `colspan` and `break` lay it out like a query tile, and nothing else on the entry is read. The name is one bare word on the opener line, the body starts on the next line, and the `|##` closer sits at the opener's column. A heading goes inside the block, because a bare `## Heading` line is a model tag. Keep the parentheses: `##|markdown` draws a malformed-route warning. The lint reports an entry with no block, a block written twice, and a `(markdown)` block that no `tiles` entry names, so delete the last rather than leave it. The dashboard's own description is separate: the unnamed `"` notes above `## artifact`. Earlier spellings are still read: `##|(text) name` is a text tile, like `##|(markdown) name`. Write `(markdown)`.
+
+In the API a text tile has `kind: "text"`, a `name` and `markdown`, and no `query`; code that runs a dashboard's tiles skips it.
 
 ### Also served: `# artifact` on a `query:`
 
@@ -347,7 +349,7 @@ value, that the prefix "is not a well-formed route", because a route ends at the
 complaint is a **compile** diagnostic on a compile that still succeeds, not a package warning, so
 step 6 will not show it. Pick by which reader you care about.
 
-`dimension=` can name a field through a join, the same path a `group_by:` takes. Quote it, because
+`dimension=` can name a field of a directly joined source (one join level). Quote it, because
 an unquoted dotted value does not parse as a tag:
 `suggest { source=sales dimension="products.department" }`.
 
@@ -364,8 +366,9 @@ Two per-dashboard options on the artifact tag:
   that a reader notices two round trips.
 - `givens { CATEGORY=f'Outerwear' }` sets starting values, not a redeclaration. A URL parameter wins.
 
-A notebook takes both at the file level, as `## autorun=false` and `## givens { CATEGORY=f'Outerwear' }`,
-and behaves identically.
+A served `.malloy` notebook takes both inside its `## artifact { … }` tag, as `autorun=false` and
+`givens { CATEGORY=f'Outerwear' }`, and behaves identically. A file-level `## autorun=false` does
+nothing there; only a legacy `.malloynb` reads options at the file level.
 
 ## Drill
 

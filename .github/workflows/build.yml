@@ -286,11 +286,13 @@ jobs:
         id: duckdb
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
-      # The ISO week, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
-      # layer rebuilds weekly instead of being served from the build cache forever.
-      - name: Week for the apt refresh
-        id: week
-        run: echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds daily instead of being served from the build cache forever.
+      # Daily rather than weekly so a Debian fix published mid-week is picked up by
+      # the next build instead of waiting for the week to roll over.
+      - name: Date for the apt refresh
+        id: day
+        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
         shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
@@ -300,7 +302,7 @@ jobs:
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
-            APT_REFRESH=${{ steps.week.outputs.value }}
+            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -529,14 +531,67 @@ jobs:
           # write reported under loadErrors.
           set -e
           docker exec malloy-publisher-smoke sh -c '
-            for f in /publisher/publisher.db /publisher/publisher_data; do
+            for f in /publisher/publisher.db /publisher/publisher_data /publisher/ducklake_data; do
               [ -e "$f" ] || { echo "$f does not exist"; exit 1; }
               owner=$(stat -c %u "$f")
               [ "$owner" = 1000 ] || { echo "$f is owned by uid $owner"; exit 1; }
             done
             touch /publisher/publisher_data/.write-probe && rm /publisher/publisher_data/.write-probe' \
             || { echo "✗ the server is not writing as uid 1000"; exit 1; }
-          echo "✓ publisher.db and the publisher_data volume are owned by uid 1000"
+          echo "✓ publisher.db, publisher_data and ducklake_data are owned by uid 1000"
+      - name: Assert a fresh volume on ducklake_data takes a DuckLake write as uid 1000
+        # What the prepared directory is for: a named volume mounted there is
+        # seeded owned by uid 1000, so a DuckLake storage destination with a
+        # local bucketUrl can write Parquet into it with no chown. Uses the
+        # image's baked duckdb CLI and the ducklake extension offline, with a
+        # metadata-file catalog so no Postgres is needed. DATA_INLINING_ROW_LIMIT
+        # 0 forces a real Parquet file; a small table would otherwise be
+        # inlined into the metadata and the data path never written.
+        run: |
+          set -e
+          docker volume create smoke-ducklake >/dev/null
+          trap 'docker volume rm -f smoke-ducklake >/dev/null' EXIT
+          docker run --rm --network none -v smoke-ducklake:/publisher/ducklake_data \
+            --entrypoint duckdb malloy-publisher:smoke-test -noheader -list -c "
+              LOAD ducklake;
+              ATTACH 'ducklake:/publisher/ducklake_data/meta.ducklake' AS l
+                (DATA_PATH '/publisher/ducklake_data/data/', DATA_INLINING_ROW_LIMIT 0);
+              CREATE TABLE l.t AS SELECT range AS x FROM range(1000);
+              SELECT count(*) FROM l.t;" | grep -qx 1000 \
+            || { echo "✗ a fresh ducklake_data volume is not writable by uid 1000"; exit 1; }
+          docker run --rm -v smoke-ducklake:/d --entrypoint sh malloy-publisher:smoke-test \
+            -c 'find /d -name "*.parquet" -user 1000 | grep -q .' \
+            || { echo "✗ no Parquet file written as uid 1000"; exit 1; }
+          echo "✓ a fresh ducklake_data volume takes a DuckLake write as uid 1000"
+      - name: Assert the image runs on Bun and carries no Node or Python runtime
+        run: |
+          # The server is a Bun process and nothing in it spawns `node`, so the
+          # image installs no Node: the NodeSource package would also bring in
+          # python3 and its unfixed Debian CVEs. This pins that decision. Three
+          # things are checked against the running container: PID 1 is Bun (the
+          # image's CMD), a `node` command resolves to the Bun fallback the
+          # oven/bun base provides rather than to a real Node, and python3 is
+          # absent. Reaching 'serving' alone shows the server boots, not that
+          # a real Node did not quietly come back.
+          set -e
+          docker exec malloy-publisher-smoke sh -c '
+            exe=$(basename "$(readlink /proc/1/exe)")
+            [ "$exe" = bun ] || { echo "PID 1 is $exe, not bun"; exit 1; }
+            runtime=$(node -e "console.log(typeof Bun)")
+            [ "$runtime" = object ] || { echo "node resolves to a runtime where typeof Bun is $runtime, not Bun"; exit 1; }
+            if command -v python3 >/dev/null 2>&1; then echo "python3 is installed: $(command -v python3)"; exit 1; fi' \
+            || { echo "FAIL: the image is expected to run on Bun with no Node or Python runtime"; exit 1; }
+          echo "OK: PID 1 is Bun, node resolves to Bun, and python3 is absent"
+      - name: Assert package mounts need no writes, and a refused access names its errno
+        # The step above proves the server CAN write where the image prepared
+        # it to. This one proves a root-owned or read-only package mount still
+        # loads (nothing is written beside a zip), and that a write the uid-1000
+        # server cannot make -- a publisher_data volume left root-owned by a
+        # 0.8.x, an unreadable config or credentials file -- is reported with
+        # its errno rather than a bare 500. Its own containers and volumes, on
+        # their own ports, so the container above is untouched. Extracted to a
+        # script so it runs identically on a laptop.
+        run: scripts/docker-smoke-fs-write-errors.sh malloy-publisher:smoke-test
       - name: Container logs (always)
         if: always()
         run: docker logs malloy-publisher-smoke || true

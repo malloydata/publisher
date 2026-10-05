@@ -21,6 +21,8 @@
  * opening it half-understood. See {@link readDashboardDocument}.
  */
 
+import type { ChartState } from "./chartLine";
+
 /** One `import` line. The file needs both forms, and for different reasons. */
 export type DashboardImport =
    /** `import "../givens.malloy"` — the whole file's declarations. */
@@ -122,8 +124,10 @@ export type TileDeclaration =
    | { kind: "opaque"; why: string }
    | { kind: "inherited" };
 
-/** One tile: a view shown on the page, plus how it is presented. */
-export interface DashboardTile {
+/** A tile that runs a view: a view shown on the page, plus how it is presented. */
+export interface QueryTile {
+   /** Absent means a query tile, the API's default. */
+   kind?: "query";
    /**
     * The view name. For a tile declared in this file, assigned ONCE when the
     * tile is added and never recomputed — deriving it from position would
@@ -151,10 +155,47 @@ export interface DashboardTile {
    filters?: Array<{ field: string; given: string; op?: string }>;
    label?: string;
    subtitle?: string;
+   /**
+    * The chart line on the tile's wrapper. `"default"` removes the writer's line
+    * and, on a tile read from a file with none, is what absent means; an absent
+    * `chart` handed to the writer means unchanged. `"custom"` is a line the
+    * builder does not model, which it keeps and never writes.
+    */
+   chart?: ChartState;
+   /** The chart lines behind a `"custom"` chart, as written; read-only, so a picker can say what it will not change. */
+   chartLines?: string[];
+   /** The chart tags the tile's view carries, when the catalog knows them: the writer negates only these. Never read from a file. */
+   chartCarried?: string[];
    colspan?: number;
    break?: boolean;
    borderless?: boolean;
 }
+
+/**
+ * A markdown tile: prose between the query tiles, written as a `##|(markdown) <name>` block
+ * and listed in `tiles=[…]` as `<name> { kind=text }`. Its width and row break live on that
+ * list entry, since a block has no tags.
+ */
+export interface TextTile {
+   kind: "text";
+   /** The block's name and the list entry's: a bare identifier, unique among the text tiles. */
+   name: string;
+   markdown: string;
+   colspan?: number;
+   break?: boolean;
+}
+
+export type DashboardTile = QueryTile | TextTile;
+
+export const isTextTile = (tile: DashboardTile): tile is TextTile =>
+   tile.kind === "text";
+
+export const isQueryTile = (tile: DashboardTile): tile is QueryTile =>
+   tile.kind !== "text";
+
+/** What a tile is called in the builder's own labels: a query tile's title, else its name. */
+export const tileLabel = (tile: DashboardTile) =>
+   isQueryTile(tile) ? (tile.label ?? tile.name) : tile.name;
 
 /**
  * A source extension the dashboard DECLARES, holding tiles that read it.
@@ -182,11 +223,13 @@ export interface DashboardSource {
     * the model.
     */
    dimensions?: DashboardDimension[];
+   /** Givens the extension's own `where:`s read, which filter every tile on it. Read-only: never written. */
+   scopedBy?: string[];
 }
 
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
-export const tileKey = (tile: { source: string; name: string }) =>
-   `${tile.source}.${tile.name}`;
+export const tileKey = (tile: DashboardTile) =>
+   isTextTile(tile) ? `text.${tile.name}` : `${tile.source}.${tile.name}`;
 
 /** `dimension: <name> is <expression>` in the dashboard's own extension. */
 export interface DashboardDimension {
@@ -194,11 +237,16 @@ export interface DashboardDimension {
    expression: string;
 }
 
+/** Which surface the file is: a notebook is the same file with one column. */
+export type DocumentKind = "dashboard" | "notebook";
+
 export interface DashboardDocument {
+   /** `## artifact { kind=… }`; the reader leaves it out for a dashboard. */
+   kind?: DocumentKind;
    title: string;
    /** The narrative header, as markdown. Emitted as `##"` lines. */
    description?: string;
-   /** `# dashboard { columns=N }`. */
+   /** `# dashboard { columns=N }` as the file has it; a notebook's grid is one column whatever it says. */
    columns?: number;
    /** `## artifact { autorun=false }`. Absent means autorun. */
    autorun?: boolean;

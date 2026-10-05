@@ -64,6 +64,24 @@ it("links a served notebook by slug and a .malloynb by path", async () => {
    ]);
 });
 
+it("links a notebook by its slug whichever folder holds it", async () => {
+   listed = [{ path: "dashboards/story.malloy", title: "Story" }];
+   const onClick = mock((_to: string) => {});
+   render(
+      <Package
+         resourceUri="publisher://environments/env/packages/pkg"
+         onClickPackageFile={onClick}
+      />,
+      { wrapper: serverWrapper },
+   );
+
+   fireEvent.click(await screen.findByText("Story"));
+
+   expect(onClick.mock.calls.map((call) => call[0])).toEqual([
+      "/env/pkg/notebooks/story",
+   ]);
+});
+
 it("pins notebooks/README.malloy to the front page, matching case-insensitively", async () => {
    listed = [{ path: "notebooks/Readme.malloy" }];
    render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {

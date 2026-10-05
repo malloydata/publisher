@@ -62,8 +62,10 @@ The fields the server reads:
 | `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md). |
 | `materialization` | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md). |
 | `scope` | `"package"` (the default) or `"version"`. Any other value fails the package load. |
+| `retrieval` | How `get_context` searches and indexes this package: `representation` (`single` or `facets`), `keyphrases` (`auto`, `never`, `always`), `refine`, `rerank`, `sourceMatch` and `sourceSummary` (each `{ "enabled": "auto" \| true \| false }`, with `minLevel` on `refine` and `topSources` on `rerank`), and `prompts` (a file path inside the package for each of `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load. See [get-context-pipeline.md](get-context-pipeline.md) and [configuration.md](configuration.md). |
 
-Unknown keys are ignored and preserved. The bundled examples carry a `version` field as a
+Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
+package load with a message naming the valid ones. The bundled examples carry a `version` field as a
 convention, but nothing reads it. (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it.)
 

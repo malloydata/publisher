@@ -50,6 +50,9 @@ function lazyHistogram(
       }));
 }
 
+/** Which kind of file was written: the `kind` label on every write metric. */
+export type DashboardWriteKind = "dashboard" | "notebook";
+
 /**
  * How a write ended.
  *
@@ -57,8 +60,9 @@ function lazyHistogram(
  * - `conflict` — the precondition refused it: the file exists and no hash was
  *   sent, or the hash no longer matches. Nothing was written.
  * - `compile_failed` — the text does not compile. Nothing was written.
- * - `refused` — the request never reached the package: a frozen config, a path
- *   that is not a dashboard, a body with no source.
+ * - `refused` — the request was refused before anything was written: a frozen
+ *   config, a path that is not a dashboard or notebook, a body with no source,
+ *   or a notebook write over a file the package does not serve as one.
  * - `rolled_back` — it compiled and was written, the package would not reload
  *   with it, and the previous text was put back.
  */
@@ -72,12 +76,12 @@ export type DashboardWriteOutcome =
 
 const writeCounter = lazyCounter(
    "publisher_dashboard_writes_total",
-   "Dashboard write attempts. Label: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back').",
+   "Dashboard and notebook write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'), kind ('dashboard'|'notebook').",
 );
 
 const writeDuration = lazyHistogram(
    "publisher_dashboard_write_duration_ms",
-   "Wall-clock duration of a dashboard write, compile and package reload included. Label: outcome.",
+   "Wall-clock duration of a dashboard or notebook write, compile and package reload included. Labels: outcome, kind.",
    "ms",
 );
 
@@ -85,9 +89,10 @@ const writeDuration = lazyHistogram(
 export function recordDashboardWrite(
    outcome: DashboardWriteOutcome,
    durationMs: number,
+   kind: DashboardWriteKind,
 ): void {
-   writeCounter().add(1, { outcome });
-   writeDuration().record(durationMs, { outcome });
+   writeCounter().add(1, { outcome, kind });
+   writeDuration().record(durationMs, { outcome, kind });
 }
 
 /** Drop memoized instruments so a test can install a fresh MeterProvider. */
