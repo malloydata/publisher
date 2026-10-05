@@ -156,6 +156,12 @@ export interface ResultEntity {
     */
    code?: string;
    score?: number;
+   /**
+    * The score before it was rounded to the four places the response publishes.
+    * Ordering uses it, so two rows whose scores differ in the fifth place are
+    * not treated as tied. Never serialized.
+    */
+   rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -2269,7 +2275,11 @@ function runListing(
 // The stages and retrievers runContextQuery runs. PR 1 registers no stage of
 // either kind; a new stage is one file and one line here.
 const QUERY_STAGES: QueryStage[] = [];
-const RETRIEVERS: Retriever[] = [semanticRetriever, lexicalRetriever];
+// A function, not a constant: get_context_retrievers imports this file, so the
+// two retrievers must not be read while this module is still being evaluated.
+// A constant here made importing the retrievers first throw "Cannot access
+// 'semanticRetriever' before initialization".
+const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
 const RANK_STAGES: RankStage[] = [];
 const CARD_STAGES: CardStage[] = [];
 
@@ -2382,7 +2392,7 @@ async function runContextQuery(
    // seconds and is worth retrying, from a down provider, which is not.
    let retrievalReason: RetrievalReason | undefined;
    let ranked: RankedState | undefined;
-   for (const retriever of RETRIEVERS) {
+   for (const retriever of retrievers()) {
       const result = await retriever.retrieve(ctx);
       if ("unavailable" in result) {
          // "unconfigured" is not a reason to report: no provider, no marker.

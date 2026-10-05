@@ -41,15 +41,17 @@ function compareText(a: string, b: string): number {
 
 /**
  * The order of semantic rows: score descending, then source, name, kind and
- * model path. The score is the rounded one the response publishes, so two rows
- * that show the same relevance are listed in a fixed order, not in whatever
- * order the scan happened to return them. The scan has the same tie-break in
- * SQL (it decides which tied rows fit a window); this one covers the fan-out of
- * one embedded row to several model paths, which the scan cannot see.
+ * model path. The score compared is the unrounded one, so only rows with
+ * exactly the same score count as tied and are listed in a fixed order, not in
+ * whatever order the scan happened to return them; rows that differ in the
+ * fifth decimal keep the order their scores give them. The scan has the same
+ * tie-break in SQL (it decides which tied rows fit a window); this one covers
+ * the fan-out of one embedded row to several model paths, which the scan
+ * cannot see.
  */
 function compareRanked(a: ResultEntity, b: ResultEntity): number {
    return (
-      (b.score ?? 0) - (a.score ?? 0) ||
+      (b.rawScore ?? b.score ?? 0) - (a.rawScore ?? a.score ?? 0) ||
       compareText(a.source ?? "", b.source ?? "") ||
       compareText(a.name, b.name) ||
       compareText(a.kind, b.kind) ||
@@ -178,6 +180,7 @@ export const semanticRetriever: Retriever = {
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
                         score: Math.round(hit.score * 10_000) / 10_000,
+                        rawScore: hit.score,
                         targetScores: hit.targetScores,
                      }));
                   });
