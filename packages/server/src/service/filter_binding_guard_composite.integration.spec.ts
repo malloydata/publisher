@@ -24,9 +24,12 @@ INSERT INTO orders_monthly VALUES (1, 100), (2, 200), (2, 300), (2, 400);
 
 CREATE OR REPLACE TABLE customers (customer_id INTEGER, segment VARCHAR);
 INSERT INTO customers VALUES (1, 'retail'), (2, 'wholesale');
+
+CREATE OR REPLACE TABLE orgs (org_id INTEGER);
+INSERT INTO orgs VALUES (1), (1), (2), (2), (2);
 `;
 
-const MODEL_TEXT = `##! experimental { composite_sources }
+const MODEL_TEXT = `##! experimental { composite_sources parameters }
 
 source: customers is duckdb.table('customers') extend { primary_key: customer_id }
 
@@ -76,6 +79,59 @@ source: orders_rebound_dependency is orders_retail_customer extend {
    rename: raw_customer_id is customer_id
    dimension: customer_id is 1
 }
+
+source: c3 is compose(
+   duckdb.table('orgs') extend { dimension: is_plain is true },
+   duckdb.table('orgs') extend { dimension: allowed is org_id = 1 },
+   duckdb.table('orgs') extend { dimension: allowed is true }
+) extend {
+   measure: n is count()
+}
+source: f3 is c3 extend { where: allowed }
+
+source: by_flag is compose(
+   duckdb.table('orders_daily') extend { dimension: is_any is true },
+   duckdb.table('orders_daily') extend { dimension: is_large is amount > 15 }
+) extend {
+   measure: n is count()
+}
+source: large_flagged is by_flag extend { where: is_large }
+
+source: by_size_unfiltered is compose(
+   duckdb.table('orders_daily') extend { dimension: is_any is true },
+   duckdb.table('orders_daily') extend { dimension: is_large is true }
+) extend {
+   measure: n is count()
+}
+source: large_unfiltered is by_size_unfiltered extend { where: is_large }
+source: large_unfiltered_fake is large_unfiltered extend {
+   rename: raw_large is is_large
+   dimension: is_large is true
+}
+
+source: nested is compose(
+   compose(
+      duckdb.table('orders_daily') extend { dimension: is_daily is true },
+      duckdb.table('orders_monthly') extend { dimension: is_monthly is true }
+   ),
+   duckdb.table('orders_daily') extend { dimension: is_other is true }
+) extend {
+   measure: n is count()
+}
+source: nested_monthly is nested extend { where: is_monthly }
+
+source: customer_orders is customers extend {
+   join_many: o is by_size on customer_id = o.customer_id
+}
+
+source: pt(x::number) is duckdb.table('orders_daily') extend { where: amount > x }
+source: pc is compose(
+   pt(x is 5) extend { dimension: is_low is true },
+   pt(x is 15) extend { dimension: is_high is true }
+) extend {
+   measure: n is count()
+}
+source: pc_high is pc extend { where: is_high }
 `;
 
 async function newDuckdb(): Promise<DuckDBConnection> {
@@ -209,6 +265,98 @@ describe("filter binding: an inherited where: on a composite source", () => {
    });
 });
 
+describe("filter binding: members that define the filtered field differently", () => {
+   it("serves the definition of the member the query resolves to", async () => {
+      await withModel(async (model) => {
+         expect(await count(model, "run: f3 -> { aggregate: n }")).toBe(2);
+      });
+   });
+
+   it("still refuses a rebinding that copies another member's definition", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: f3 extend { rename: raw_allowed is allowed; dimension: allowed is true } -> { aggregate: n }",
+         );
+      });
+   });
+
+   it("serves a member-defined filter when no member filters its own rows", async () => {
+      await withModel(async (model) => {
+         expect(
+            await count(model, "run: large_flagged -> { aggregate: n }"),
+         ).toBe(2);
+      });
+   });
+
+   it("still refuses a rebinding when no member filters its own rows", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: large_unfiltered_fake -> { aggregate: n }",
+         );
+      });
+   });
+});
+
+describe("filter binding: a nested composite", () => {
+   it("serves a where: on a field a nested member declares", async () => {
+      await withModel(async (model) => {
+         expect(
+            await count(model, "run: nested_monthly -> { aggregate: n }"),
+         ).toBe(4);
+      });
+   });
+
+   it("still refuses a rebinding of that field", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: nested_monthly extend { rename: raw_monthly is is_monthly; dimension: is_monthly is true } -> { aggregate: n }",
+         );
+      });
+   });
+});
+
+describe("filter binding: a composite reached through a join", () => {
+   it("serves a member that filters its own rows", async () => {
+      await withModel(async (model) => {
+         expect(
+            await count(
+               model,
+               "run: customer_orders -> { group_by: o.is_large; aggregate: n is o.count() }",
+            ),
+         ).toBe(2);
+      });
+   });
+
+   it("still refuses a caller join that rebinds the column a member's where: reads", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: customers extend { join_many: o is by_size extend { rename: raw_amount is amount; dimension: amount is 100 } on customer_id = o.customer_id } -> { group_by: o.is_large; aggregate: n is o.count() }",
+         );
+      });
+   });
+});
+
+describe("filter binding: a composite of parameterized members", () => {
+   it("is not served: Malloy drops a member's arguments when resolving it", async () => {
+      await withModel(async (model) => {
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: pc_high -> { aggregate: n }",
+               {},
+               true,
+               {},
+            ),
+         ).rejects.toThrow();
+      });
+   });
+});
+
 describe("filter binding: a where: declared on a composite member", () => {
    it("serves a query resolved to a member that filters its own rows", async () => {
       await withModel(async (model) => {
@@ -232,6 +380,15 @@ describe("filter binding: a where: declared on a composite member", () => {
    it("still refuses a rebinding that moves the query onto the other member", async () => {
       await withModel(async (model) => {
          await expectDenied(model, "run: large_fake -> { aggregate: n }");
+      });
+   });
+
+   it("still refuses a rebinding that copies the member's own where:", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: large_only extend { rename: raw_large is is_large; dimension: is_large is true; where: amount > 15 } -> { aggregate: n }",
+         );
       });
    });
 });

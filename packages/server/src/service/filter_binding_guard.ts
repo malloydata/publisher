@@ -422,81 +422,57 @@ function isCompositePlaceholder(field: FieldDef): boolean {
    return (field as { e?: { node?: unknown } }).e?.node === "compositeField";
 }
 
-/** Structural, not by identity: the declaring composite can come from a
- *  sibling model's compile. Every member condition must still apply, so the
- *  executed rows never exceed the member's. */
-function couldExecuteAsMember(member: SourceDef, executed: SourceDef): boolean {
-   if (member.name !== executed.name) return false;
-   const m = member as unknown as Record<string, unknown>;
-   const e = executed as unknown as Record<string, unknown>;
-   if (!recordEntriesEqual(m.parameters, e.parameters)) return false;
-   if (!recordEntriesEqual(m.arguments, e.arguments)) return false;
-   const applied = (executed.filterList ?? []).map((c) =>
-      JSON.stringify(strip(c)),
-   );
-   return (member.filterList ?? []).every((c) =>
-      applied.includes(JSON.stringify(strip(c))),
-   );
+function isComposite(struct: SourceDef | undefined): struct is SourceDef {
+   return (struct as { type?: string } | undefined)?.type === "composite";
 }
 
-function candidateMembers(
+function compositeMembers(
    composite: SourceDef,
-   executed: SourceDef,
    out: SourceDef[] = [],
    depth = 0,
 ): SourceDef[] {
    if (depth > MAX_JOIN_RECURSION_DEPTH) return out;
    const members = (composite as { sources?: readonly SourceDef[] }).sources;
    for (const member of members ?? []) {
-      if ((member as { type: string }).type === "composite") {
-         candidateMembers(member, executed, out, depth + 1);
-      } else if (couldExecuteAsMember(member, executed)) {
-         out.push(member);
-      }
+      out.push(member);
+      if (isComposite(member)) compositeMembers(member, out, depth + 1);
    }
    return out;
 }
 
-function memberDeclaringCondition(
-   composite: SourceDef,
-   executed: SourceDef,
-   condition: FilterCondition,
-): SourceDef | undefined {
-   const written = JSON.stringify(strip(condition));
-   return candidateMembers(composite, executed).find((member) =>
-      (member.filterList ?? []).some(
-         (own) => JSON.stringify(strip(own)) === written,
-      ),
-   );
-}
-
-/** A placeholder becomes the candidate member's own field only when the
- *  executed field is identical to it; otherwise it stays, and fails the
- *  comparison. */
+/** Malloy hands the resolved member's fields and conditions to the executed
+ *  struct by reference, so identity proves one came from a member and not
+ *  from a later redefinition. `composite` must come from the executed
+ *  struct's own compile; a sibling model's never shares its objects. */
 function withCompositeMembersResolved(
    declaring: SourceDef,
    executed: SourceDef,
+   composite: SourceDef | undefined,
 ): SourceDef {
-   if ((declaring as { type: string }).type !== "composite") return declaring;
-   const members = candidateMembers(declaring, executed);
-   if (members.length === 0) return declaring;
+   if (!isComposite(declaring) || !isComposite(composite)) return declaring;
+   const memberFields = new Set(
+      compositeMembers(composite).flatMap((member) => member.fields ?? []),
+   );
    let resolved = false;
    const fields = (declaring.fields ?? []).map((field) => {
       if (!isCompositePlaceholder(field)) return field;
-      const name = activeName(field);
       const executedField = executed.fields?.find(
-         (f) => activeName(f) === name,
+         (f) => activeName(f) === activeName(field),
       );
-      for (const member of members) {
-         const own = member.fields?.find((f) => activeName(f) === name);
-         if (own && fieldsIdentical(own, executedField)) {
-            resolved = true;
-            return own;
-         }
-      }
-      return field;
+      if (!executedField || !memberFields.has(executedField)) return field;
+      resolved = true;
+      return executedField;
    });
    return resolved ? { ...declaring, fields } : declaring;
+}
+
+function memberDeclaringCondition(
+   composite: SourceDef,
+   condition: FilterCondition,
+): SourceDef | undefined {
+   return compositeMembers(composite).find((member) =>
+      member.filterList?.includes(condition),
+   );
 }
 
 /**
@@ -509,10 +485,12 @@ export function assertFilterConditionBindsToDeclaringSource(
    declaringStructAsWritten: SourceDef,
    executedStruct: SourceDef,
    condition: FilterCondition,
+   executedComposite: SourceDef | undefined = undefined,
 ): void {
    const declaringStruct = withCompositeMembersResolved(
       declaringStructAsWritten,
       executedStruct,
+      executedComposite,
    );
    const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
@@ -1270,8 +1248,9 @@ export function assertInheritedSourceFiltersBind(
    depth = 0,
    visited: Set<SourceDef> = new Set(),
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
-   // A member's own `where:` has no derivation link back to the member.
-   compositeRunTarget: SourceDef | undefined = undefined,
+   // `struct` before composite resolution, from the same compile: the
+   // composite a resolved member came from, or `struct` itself.
+   unresolved: SourceDef | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;
    if (depth > MAX_JOIN_RECURSION_DEPTH) {
@@ -1280,6 +1259,7 @@ export function assertInheritedSourceFiltersBind(
       );
    }
    visited.add(struct);
+   const composite = isComposite(unresolved) ? unresolved : undefined;
    for (const condition of struct.filterList ?? []) {
       // A grafted condition's `.at` is where the graft compiled it, never
       // inside `struct`'s own span even when the gate genuinely IS
@@ -1301,12 +1281,17 @@ export function assertInheritedSourceFiltersBind(
          resolveSibling,
       );
       if (origin !== struct) {
-         assertFilterConditionBindsToDeclaringSource(origin, struct, condition);
+         assertFilterConditionBindsToDeclaringSource(
+            origin,
+            struct,
+            condition,
+            composite,
+         );
          continue;
       }
       if (isOwnFreshFilter(struct, condition, freshness)) continue;
-      const member = compositeRunTarget
-         ? memberDeclaringCondition(compositeRunTarget, struct, condition)
+      const member = composite
+         ? memberDeclaringCondition(composite, condition)
          : undefined;
       if (member) {
          assertFilterConditionBindsToDeclaringSource(member, struct, condition);
@@ -1323,6 +1308,9 @@ export function assertInheritedSourceFiltersBind(
    // an unresolvable target, so this skips rather than crashing.
    for (const field of struct.fields ?? []) {
       if (isJoined(field) && isSourceDef(field)) {
+         const unresolvedJoin = unresolved?.fields?.find(
+            (f) => isJoined(f) && activeName(f) === activeName(field),
+         );
          assertInheritedSourceFiltersBind(
             field as unknown as SourceDef,
             modelDef,
@@ -1331,6 +1319,7 @@ export function assertInheritedSourceFiltersBind(
             depth + 1,
             visited,
             alreadyProven,
+            unresolvedJoin as unknown as SourceDef | undefined,
          );
       }
    }

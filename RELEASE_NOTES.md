@@ -54,7 +54,9 @@ A new named volume on `/publisher/publisher_data` needs nothing: Docker seeds it
 
 ## [Unreleased] — A `where:` on a composite source is served again
 
-Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again. Rebinding a field such a filter reads is still refused. Upgrading is enough. See #1277.
+Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again, including for a composite reached through a join. Rebinding a field such a filter reads is still refused. Upgrading is enough. See #1277.
+
+Two composite shapes still fail, in Malloy rather than in this check: members that take parameters (Malloy drops a member's arguments when it resolves the composite), and a `join_many` to a composite that carries its own `where:` (Malloy generates invalid SQL for it).
 
 ## [0.8.5] — The generated SDK client is built by OpenAPI Generator 7.25.0
 
