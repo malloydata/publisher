@@ -105,18 +105,28 @@ def rows_from_result(body: Any) -> list[dict[str, Any]]:
 
 
 def query(base: str, environment: str, package: str, model: str, malloy: str,
-          timeout: int = 180) -> list[dict[str, Any]]:
-    """Run a Malloy query. Raises on transport, HTTP or parse failure."""
+          timeout: int = 180, givens: dict[str, Any] | None = None
+          ) -> list[dict[str, Any]]:
+    """Run a Malloy query. Raises on transport, HTTP or parse failure.
+
+    `givens` are the model's runtime parameters, sent as the request's own
+    `givens` field. A query written against a given and run without it returns
+    unfiltered rows, so a caller re-running someone else's query passes theirs.
+    """
+    body: dict[str, Any] = {"query": malloy, "compactJson": True}
+    if givens:
+        body["givens"] = givens
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
-        data=json.dumps({"query": malloy, "compactJson": True}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
 
 
 def try_query(base: str, environment: str, package: str, model: str,
-              malloy: str, timeout: int = 120
+              malloy: str, timeout: int = 120,
+              givens: dict[str, Any] | None = None
               ) -> tuple[list[dict[str, Any]], str | None]:
     """Run a Malloy query. Returns (rows, error); never raises.
 
@@ -125,7 +135,7 @@ def try_query(base: str, environment: str, package: str, model: str,
     """
     try:
         return query(base, environment, package, model, malloy,
-                     timeout=timeout), None
+                     timeout=timeout, givens=givens), None
     except urllib.error.HTTPError as exc:
         return [], f"HTTP {exc.code}: {exc.read().decode()[:300]}"
     except Exception as exc:                        # noqa: BLE001

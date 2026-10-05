@@ -54,6 +54,17 @@ function isParseFailure(problem: LogMessage): boolean {
    return problem.code === SYNTAX_ERROR_CODE && problem.severity === "error";
 }
 
+/**
+ * Whether `problems` holds at least one error and every error is a parse
+ * failure. A parse failure is a function of the submitted text alone: the
+ * parser stops before it reads a source, a field or a connection, so the list
+ * cannot say anything about the model it was compiled against.
+ */
+export function onlyParseFailures(problems: readonly LogMessage[]): boolean {
+   const errors = problems.filter((problem) => problem.severity === "error");
+   return errors.length > 0 && errors.every(isParseFailure);
+}
+
 /** The restricted-construct rejections among `problems`, if any. */
 function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
    return problems.filter(

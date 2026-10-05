@@ -40,8 +40,8 @@ Any time you `group_by` a joined field, create an alias and use it in `order_by`
 ## `having:` vs `where:`: Aggregate Filters
 
 ```malloy
-// WRONG: "Aggregate expressions not allowed in where"
-view: x is { group_by: cat, aggregate: n is count(), where: n > 10 }
+// WRONG: "Aggregate expressions are not allowed in `where:`; use `having:`"
+view: x is { group_by: cat, aggregate: n is count(), where: count() > 10 }
 // RIGHT
 view: x is { group_by: cat, aggregate: n is count(), having: n > 10 }
 ```
