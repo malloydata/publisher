@@ -11,7 +11,6 @@ import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
-   EmbeddingProvider,
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
@@ -24,10 +23,24 @@ import {
    entityRowKey,
    KEY_SEPARATOR,
    getEmbeddingIndexStatus,
-   trySemanticSearch,
    type EmbeddingIndexStatus,
    type SemanticUnavailableReason,
 } from "./embedding_index";
+import { assembleCards, foldRelevance } from "./get_context_assembly";
+import {
+   runCardStages,
+   runQueryStages,
+   runRankStages,
+   type CardState,
+   type CardStage,
+   type PipelineContext,
+   type PipelineSettings,
+   type QueryStage,
+   type RankStage,
+   type RankedState,
+   type Retriever,
+} from "./get_context_pipeline";
+import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -35,7 +48,7 @@ import {
  * views, fields, and joins come from the compiled SourceInfo
  * (Model.getSourceInfos()); named queries from Model.getQueries().
  */
-interface Entity {
+export interface Entity {
    id: string;
    kind: "source" | "view" | "query" | "dimension" | "measure" | "join";
    name: string;
@@ -125,7 +138,7 @@ function encodeIdSegment(segment: string): string {
  * semantic results. This never reaches the wire: toSourceResults converts a
  * list of these into the response shape, which is where identity is assigned.
  */
-interface ResultEntity {
+export interface ResultEntity {
    kind: string;
    name: string;
    source: string | undefined;
@@ -143,6 +156,12 @@ interface ResultEntity {
     */
    code?: string;
    score?: number;
+   /**
+    * The score before it was rounded to the four places the response publishes.
+    * Ordering uses it, so two rows whose scores differ in the fifth place are
+    * not treated as tied. Never serialized.
+    */
+   rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -161,6 +180,14 @@ interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
+   /** Unused until a stage sets it. LOW=1, MEDIUM=2, HIGH=3 after refine. */
+   level?: number;
+   /** Unused until a stage sets it. Refine's sentence for matched_targets. */
+   reason?: string;
+   /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
+   joinHops?: number;
+   /** Unused until value attach runs. Nested dimension values. */
+   values?: Array<{ value: string; score: number }>;
 }
 
 /**
@@ -271,7 +298,7 @@ interface SourceContextAuthorize {
  * window, and this bounds the scan it can ask for. Defined once because the
  * parameter schema, the truncation warning and that scan must agree.
  */
-const MAX_LIMIT = 150;
+export const MAX_LIMIT = 150;
 
 /**
  * Sources a ranked search returns when the caller sets no limit. A listing
@@ -287,7 +314,7 @@ const DEFAULT_RANKED_LIMIT = 20;
  * own within seconds and is worth one retry, while the rest are conditions
  * an immediate retry cannot fix.
  */
-type RetrievalReason =
+export type RetrievalReason =
    | "indexing"
    | "cooldown"
    | "too-many-entities"
@@ -299,7 +326,7 @@ type RetrievalReason =
  * widened to "provider-error" because from the caller's side that is what it
  * is: the embedding endpoint failed, not this tool.
  */
-const REASON_BY_UNAVAILABLE: Record<
+export const REASON_BY_UNAVAILABLE: Record<
    SemanticUnavailableReason,
    RetrievalReason
 > = {
@@ -459,7 +486,8 @@ function toSourceResults(
       if (r.kind === "source") {
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
-         if (r.score !== undefined) entry.relevance = r.score;
+         const relevance = foldRelevance(entry.relevance, r);
+         if (relevance !== undefined) entry.relevance = relevance;
          if (r.doc) entry.source_info.docs = r.doc;
          continue;
       }
@@ -477,14 +505,8 @@ function toSourceResults(
          ...(r.aliases ? { aliases: r.aliases } : {}),
       };
       (entry.entities ??= []).push(entity);
-      // A source with no hit of its own still ranks by its best entity, so a
-      // caller reading source relevance never sees a matched source at null.
-      if (
-         r.score !== undefined &&
-         (entry.relevance === undefined || r.score > entry.relevance)
-      ) {
-         entry.relevance = r.score;
-      }
+      const relevance = foldRelevance(entry.relevance, r);
+      if (relevance !== undefined) entry.relevance = relevance;
    }
    return Array.from(bySource.values());
 }
@@ -525,85 +547,8 @@ function matchedTargetsFor(
  */
 const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
-/**
- * Window a ranked list into `limit` SOURCE cards, capping the entities each
- * one carries per target.
- *
- * `limit` counts sources because that is what the published contract says it
- * counts, and because counting entities makes targets compete for one pool:
- * with a shared budget of 4, asking for a measure alone returned 3 hits while
- * asking for it alongside a dimension and a view returned 2. The caller had
- * added questions, not removed any, so the answer to the first one should not
- * have shrunk. Bucketing by source removes the competition rather than
- * refereeing it -- targets no longer spend from the same pool, so a target's
- * answer inside a set is the answer it gives alone.
- *
- * Source order is the order sources first appear in the ranked list, which is
- * already best-first; re-sorting here could disagree with the ranking that
- * produced it.
- *
- * A bucket is one (model path, source) pairing, not one source name: that is
- * what `toSourceResults` turns into a card, so it is the unit `limit` has to
- * count and the unit `returned`/`total_available` have to report. Keying on
- * the name alone let one bucket fan out into several cards downstream, which
- * both overran `limit` and made the two counters disagree — `returned`
- * counting cards while `total_available` counted names.
- */
-function windowBySource(
-   rows: ResultEntity[],
-   sourceLimit: number,
-): {
-   rows: ResultEntity[];
-   totalSources: number;
-   returnedSources: number;
-   entitiesDropped: number;
-} {
-   const order: string[] = [];
-   const bySource = new Map<string, ResultEntity[]>();
-   for (const r of rows) {
-      const key = sourceContextKey(r.modelPath, r.source ?? "");
-      let bucket = bySource.get(key);
-      if (!bucket) {
-         bucket = [];
-         bySource.set(key, bucket);
-         order.push(key);
-      }
-      bucket.push(r);
-   }
-   const keptSources = order.slice(0, sourceLimit);
-   const kept: ResultEntity[] = [];
-   let entitiesDropped = 0;
-   for (const key of keptSources) {
-      const perTarget = new Map<number, number>();
-      for (const r of bySource.get(key) ?? []) {
-         // A source row becomes the card itself, so it never spends a slot.
-         if (r.kind === "source") {
-            kept.push(r);
-            continue;
-         }
-         // -1 buckets a row no target claims, so it shares one cap rather
-         // than none. Both ranked paths set bestTarget, so on them this is
-         // only a guard.
-         const target = r.bestTarget ?? -1;
-         const taken = perTarget.get(target) ?? 0;
-         if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
-            entitiesDropped += 1;
-            continue;
-         }
-         perTarget.set(target, taken + 1);
-         kept.push(r);
-      }
-   }
-   return {
-      rows: kept,
-      totalSources: order.length,
-      returnedSources: keptSources.length,
-      entitiesDropped,
-   };
-}
-
 /** The target index with the highest score, or undefined when there is none. */
-function bestTargetOf(scores: Map<number, number>): number | undefined {
+export function bestTargetOf(scores: Map<number, number>): number | undefined {
    let best: [number, number] | undefined;
    for (const entry of scores) {
       if (!best || entry[1] > best[1]) best = entry;
@@ -626,7 +571,7 @@ function bestTargetOf(scores: Map<number, number>): number | undefined {
  * them in here would invite exactly the mistake of publishing a lexical score
  * as a relevance.
  */
-function projectEntity(
+export function projectEntity(
    e: Entity,
    environmentName: string,
    packageName: string,
@@ -648,47 +593,82 @@ function projectEntity(
 }
 
 /**
- * The tail both ranked paths share: window by source, then serialize.
- * Semantic and lexical retrieval differ in how they SCORE, not in what happens
- * to the rows afterwards, so the ordering lives here once instead of being
- * restated at two call sites.
+ * The largest whole-card prefix of `cards` whose JSON fits in
+ * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
+ * than the first card still answers. A null budget returns the input as is.
+ * Nothing calls this with a number yet: settings.maxChars is null.
+ */
+export function fitBudget(
+   cards: SourceCard[],
+   maxChars: number | null,
+   reserveChars: number,
+): { cards: SourceCard[]; dropped: number } {
+   if (maxChars === null) return { cards, dropped: 0 };
+   const room = maxChars - reserveChars;
+   // A JSON array costs 2 for the brackets plus one comma between cards.
+   let used = 2;
+   let keep = 0;
+   for (const card of cards) {
+      used += JSON.stringify(card).length + (keep > 0 ? 1 : 0);
+      if (used > room && keep > 0) break;
+      keep += 1;
+   }
+   return { cards: cards.slice(0, keep), dropped: cards.length - keep };
+}
+
+/**
+ * The tail both ranked paths share: page the cards, serialize them, then fit
+ * the byte budget. Semantic and lexical retrieval differ in how they SCORE,
+ * not in what happens to the rows afterwards, so the ordering lives here once
+ * instead of being restated at two call sites.
  *
- * Nothing is folded across sources. Two sources exposing a same-named measure
- * are two different numbers -- `in_store_sales.sales` and `online_sales.sales`,
- * or a source and a filtered extension of it -- and the response nests each
- * under its own card with its own `source_info.docs`, which is what tells a
- * caller which to use. An earlier version merged them into one row naming the
- * others; it was written when this returned a flat `results[]` with no source
- * cards to separate them, and it dropped the losing row's doc, data_type and
- * entity_id to do it.
+ * `limit` counts SOURCE cards, because that is what the published contract
+ * says it counts. Counting entities made targets compete for one pool: with
+ * a budget of 4, asking for a measure alone returned 3 hits while asking for
+ * it alongside a dimension and a view returned 2. Cards are paged in the
+ * order sources first appear in the ranked rows, which is already best-first;
+ * re-sorting here could disagree with the ranking that produced it.
+ * `totalSources` counts the same unit, so `returned` and `total_available`
+ * cannot disagree.
  *
  * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
- * `retrieval_reason` are each meaningful on one path only.
+ * `retrieval_reason` are each meaningful on one path only. Assembly
+ * (get_context_assembly.ts) has already grouped rows by source and capped
+ * each card per target; nothing is folded across sources.
  */
-function finishRanked(args: {
-   rows: ResultEntity[];
-   max: number;
-   sourceContext: Map<string, SourceContextEntry>;
-   environmentName: string;
-   packageName: string;
-   searchTexts: Map<number, string>;
-   includeCode: boolean;
-   droppedSources: Set<string>;
-}): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
-   const windowed = windowBySource(args.rows, args.max);
+function shapeCards(
+   state: CardState,
+   ctx: PipelineContext,
+): {
+   sources: SourceCard[];
+   totalSources: number;
+   entitiesDropped: number;
+   budgetDropped: number;
+} {
+   const { request, pkgIndex, settings } = ctx;
+   const paged = state.cards.slice(0, request.limit);
    const sources = toSourceResults(
-      windowed.rows,
-      args.sourceContext,
-      args.environmentName,
-      args.packageName,
-      args.searchTexts,
-      args.includeCode,
-      args.droppedSources,
+      paged.flatMap((card) => card.rows),
+      pkgIndex.sourceContext,
+      request.environmentName,
+      request.packageName,
+      // One lookup from target index back to the text the caller wrote, so
+      // matched_targets can name a target without re-walking the request.
+      new Map(
+         request.searches.map((search) => [search.targetIndex, search.text]),
+      ),
+      request.includeCode,
+      pkgIndex.droppedSources,
    );
+   const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
    return {
-      sources,
-      totalSources: windowed.totalSources,
-      entitiesDropped: windowed.entitiesDropped,
+      sources: fitted.cards,
+      totalSources: state.cards.length,
+      entitiesDropped: paged.reduce(
+         (sum, card) => sum + card.entitiesDropped,
+         0,
+      ),
+      budgetDropped: fitted.dropped,
    };
 }
 
@@ -849,7 +829,7 @@ interface ResolvedSearch {
  * per tier, so the listing and ranked paths cannot disagree about what the
  * caller asked for.
  */
-interface ResolvedRequest {
+export interface ResolvedRequest {
    /**
     * Only `source` targets, none with text: the catalog browse. It is the one
     * request with a deterministic order that can be resumed, so it is the only
@@ -940,7 +920,7 @@ export function comparePaths(a: string, b: string): number {
 }
 
 /** Does this entity survive the scope's model/source/entity refinements? */
-function matchesScope(
+export function matchesScope(
    e: { source?: string; name: string; modelPath: string; kind: string },
    request: ResolvedRequest,
 ): boolean {
@@ -967,7 +947,7 @@ function matchesScope(
  * keeps the row and the fan-out then keeps only that path's entity — dropping
  * the row here would take the pinned card with it.
  */
-function scopeKeysFor(
+export function scopeKeysFor(
    entities: Iterable<Entity>,
    request: ResolvedRequest,
 ): Array<{ kind: string; source: string; name: string }> {
@@ -1788,7 +1768,20 @@ function collapseAliases(entities: Entity[]): Entity[] {
    return entities.filter((e) => !dropped.has(droppedKey(e)));
 }
 
-interface PackageIndex {
+/** One source reachable from a root source by joins. */
+export interface JoinReach {
+   /** sourceContextKey of the source the fields live on. */
+   targetKey: string;
+   /** Join names from the root, root not included. Aliases, not source names. */
+   path: string[];
+   /** Widest relationship on the path; "many" anywhere means fan-out. */
+   fanout: Relationship;
+}
+
+/** For each root source key, every source reachable by joins. */
+export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
+
+export interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
    /**
@@ -1799,6 +1792,17 @@ interface PackageIndex {
     * in embedding_index).
     */
    retrievalEntities: readonly Entity[];
+   /**
+    * `retrievalEntities` without the joined copies (those with a joinPath),
+    * frozen once so it can be fingerprinted and cached the same way. Nothing
+    * searches it yet.
+    */
+   directEntities: readonly Entity[];
+   /**
+    * Which sources each source reaches by joins. Empty while joined copies
+    * are index rows; nothing reads it yet.
+    */
+   topology: JoinTopology;
    index: lunr.Index;
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
@@ -1819,7 +1823,7 @@ interface PackageIndex {
  * joining on it is not injective — ("a|b", "c") and ("a", "b|c") produce one
  * key. A control character cannot appear in an identifier, nor in a path.
  */
-function sourceContextKey(modelPath: string, source: string): string {
+export function sourceContextKey(modelPath: string, source: string): string {
    return [modelPath, source].join(KEY_SEPARATOR);
 }
 
@@ -1829,7 +1833,7 @@ function sourceContextKey(modelPath: string, source: string): string {
  * cards for one entity distinct. Same separator, same injectivity argument as
  * {@link sourceContextKey}.
  */
-function entityCardKey(e: {
+export function entityCardKey(e: {
    modelPath: string;
    kind: string;
    source?: string;
@@ -1942,10 +1946,15 @@ async function getPackageIndex(
          });
       }
    });
+   const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
       byId,
-      retrievalEntities: Object.freeze(Array.from(byId.values())),
+      retrievalEntities,
+      directEntities: Object.freeze(
+         retrievalEntities.filter((e) => !e.joinPath),
+      ),
+      topology: new Map(),
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
@@ -2019,69 +2028,72 @@ function listPackagesError(uri: string, error: unknown) {
 }
 
 /**
- * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
- * resolved request, so a ranking decision and a request-parsing decision stay
- * separately reviewable. Retrieval runs over the package's model entities
- * (sources, views, dimension/measure fields, joins, named queries), semantic
- * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
- * The entity index is built once per Package and cached (see getPackageIndex),
- * rebuilding automatically when the package reloads.
- *
- * There is no progressive-discovery tier here any more: the catalog is
- * `list_packages`, and every request that reaches this names one package,
- * because `scopes` requires it.
+ * The warnings that open every payload, in order: staleness, then the caller's
+ * extras, then whatever the path itself adds.
  */
-async function runContextQuery(
-   request: ResolvedRequest,
+function makeWarningsFor(ctx: PipelineContext) {
+   /**
+    * Spread into a payload to attach `warnings`. Returns {} when there is
+    * nothing to say, so a healthy package's payload carries no key at all
+    * rather than an empty array a caller has to test.
+    *
+    * A list rather than one joined string: staleness and truncation are
+    * separate facts with separate remedies, and joining them made the
+    * second read as a continuation of the first.
+    */
+   return (...extra: (string | undefined)[]) => {
+      const warnings = [...ctx.warnings, ...extra].filter(
+         (warning): warning is string => Boolean(warning),
+      );
+      return warnings.length > 0 ? { warnings } : {};
+   };
+}
+
+/**
+ * The warning for a capped result set, or undefined when nothing was
+ * cut. It names the remedy that works here: raising the limit, or
+ * narrowing the question. Telling an agent to "search more
+ * specifically" when the cut was a flat cap sends it to re-query at
+ * the one stage that cannot change the outcome.
+ */
+const truncationWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
+      : undefined;
+
+/**
+ * The two cuts a ranked response can make, each named in its own unit. They
+ * have different remedies -- one is the page size, the other is per source
+ * -- and the old single warning reported both as "entities" while the
+ * envelope beside it counted sources.
+ */
+const sourceCutWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
+      : undefined;
+/**
+ * A browse that stopped early. Its remedy is NOT the ranked one: a listing
+ * has a resumable order, so the rest is one `offset` away and raising the
+ * limit is the wrong advice -- it caps at 150 either way, and paging is
+ * what actually reaches source 151.
+ */
+const listingPageWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
+      : undefined;
+const entityCutWarning = (dropped: number) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
+      : undefined;
+
+/**
+ * Whether the package's most recent reload failed, as a warning to attach.
+ */
+async function staleNoteFor(
    environmentStore: EnvironmentStore,
-   extraWarnings: string[] = [],
-): Promise<ReturnType<typeof jsonResource>> {
-   const { environmentName, packageName, sourceName } = request;
-   const max = request.limit;
-   // One lookup from target index back to the text the caller wrote, so
-   // matched_targets can name a target without re-walking the request.
-   const searchTextsByIndex = new Map(
-      request.searches.map((search) => [search.targetIndex, search.text]),
-   );
-   logger.info("[MCP Tool getContext] Retrieving context", {
-      environmentName,
-      packageName,
-      sourceName,
-      searches: request.searches.length,
-      listingOnly: request.listingOnly,
-   });
-
-   // Tiers 3 and 4 need the package's entity index.
-   let pkgIndex: PackageIndex;
-   try {
-      pkgIndex = await getPackageIndex(
-         environmentStore,
-         environmentName,
-         packageName,
-      );
-   } catch (error) {
-      logger.warn("[MCP Tool getContext] index build failed", {
-         environmentName,
-         packageName,
-         sourceName,
-         error: error instanceof Error ? error.message : String(error),
-      });
-      return contextError(
-         buildMalloyUri(
-            { environment: environmentName, package: packageName },
-            "get-context",
-         ),
-         `${environmentName}/${packageName}`,
-         error,
-      );
-   }
-
-   const { byId, index, sourceContext, droppedSources } = pkgIndex;
-   const uri = buildMalloyUri(
-      { environment: environmentName, package: packageName },
-      "get-context",
-   );
-
+   environmentName: string,
+   packageName: string,
+): Promise<string | undefined> {
    // A stale package answers every tier below exactly like a current one:
    // the index is the last model that compiled, so the names are real and
    // the queries succeed, and the numbers are from before the last save.
@@ -2110,200 +2122,261 @@ async function runContextQuery(
          error: error instanceof Error ? error.message : String(error),
       });
    }
+   return staleNote;
+}
+
+/** Tier 3: nothing to rank, so enumerate what the targets name. */
+function runListing(
+   ctx: PipelineContext,
+   uri: string,
+): ReturnType<typeof jsonResource> {
+   const { request, pkgIndex } = ctx;
+   const { environmentName, packageName, sourceName } = request;
+   const { byId, sourceContext, droppedSources } = pkgIndex;
+   const warningsFor = makeWarningsFor(ctx);
+   // With sourceName set this is the drill-down, so it lists every
+   // entity the named source offers: the source row itself, then its
+   // views, dimensions, measures, and any named query built on it.
+   // Filtering to kind === "source" here as well returned exactly one
+   // row — the source — which the caller already had from the tier-3
+   // listing, and never the fields the tool description promises.
+   // collectEntities pushes a source ahead of its own fields, and
+   // Array.from preserves that insertion order, so the source's doc
+   // still leads the drill-down.
+   //
+   // Enumeration: return everything unless the caller sets an explicit
+   // limit. slice(0, undefined) keeps the whole list, so discovery is
+   // not silently capped the way ranked retrieval (tier 4) is.
+   // A drill-down (sourceName, no query) lists every entity the
+   // named source offers, so the card carries its views, dimensions,
+   // measures, joins and named queries. Listing only the source row
+   // there returned what the caller already had from the package
+   // listing and never the fields the tool description promises.
+   // collectEntities pushes a source ahead of its own fields, and
+   // Array.from preserves that insertion order, so toSourceResults
+   // sees the source before the entities that nest under it.
+   //
+   // Enumeration: return everything unless the caller sets an explicit
+   // limit. slice(0, undefined) keeps the whole list, so discovery is
+   // not silently capped the way ranked retrieval (tier 4) is.
+   const inScope = Array.from(byId.values()).filter(
+      (e) =>
+         // A scoped source's own row always survives: it becomes the
+         // card rather than competing for an entity slot.
+         ((sourceName && e.kind === "source" && e.source === sourceName) ||
+            request.kinds.has(e.kind)) &&
+         matchesScope(e, request),
+   );
+   // The limit caps entities. A drill-down's source row becomes the
+   // card rather than an entity, so it does not spend a slot; a
+   // package listing has only source rows, so there the cap is on
+   // cards, which is what the listing is made of.
+   // A browse is the one listing with a stable order, so it is the one
+   // that can be resumed. Skipping into any other shape would silently
+   // drop rows whose position is not reproducible between two calls.
+   const paged = request.pureSourceListing
+      ? inScope.slice(request.offset)
+      : inScope;
+   let entityBudget = request.limit;
+   const capped = paged.filter((e) => {
+      if (sourceName && e.kind === "source") return true;
+      if (entityBudget <= 0) return false;
+      entityBudget -= 1;
+      return true;
+   });
    /**
-    * Spread into a payload to attach `warnings`. Returns {} when there is
-    * nothing to say, so a healthy package's payload carries no key at all
-    * rather than an empty array a caller has to test.
+    * Rows the cap actually spends from, which is the unit both sides of the
+    * truncation warning have to be counted in.
     *
-    * A list rather than one joined string: staleness and truncation are
-    * separate facts with separate remedies, and joining them made the
-    * second read as a continuation of the first.
+    * A scoped source's own row never spends a slot, so it is EXCLUDED from
+    * both counts rather than subtracted from one. Subtracting assumed the
+    * row was there: scope to a source that does not exist and `capped` is
+    * empty, so `capped.length - 1` was -1, and the warning fired claiming
+    * "Returned -1 of 0 matching entities" on a result that lost nothing.
     */
-   const warningsFor = (...extra: (string | undefined)[]) => {
-      const warnings = [staleNote, ...extraWarnings, ...extra].filter(
-         (warning): warning is string => Boolean(warning),
-      );
-      return warnings.length > 0 ? { warnings } : {};
+   const spendable = (rows: typeof inScope) =>
+      sourceName ? rows.filter((e) => e.kind !== "source").length : rows.length;
+   const cappable = spendable(inScope);
+   // The overview is where an agent decides how to combine sources,
+   // so each one states its relationships here rather than making
+   // that a second call. toSourceResults carries the complete joins
+   // list onto every entry, so empty means none declared.
+   const sources = toSourceResults(
+      capped.map((e) => projectEntity(e, environmentName, packageName)),
+      sourceContext,
+      environmentName,
+      packageName,
+      new Map(),
+      request.includeCode,
+      droppedSources,
+   );
+   // A listing is deterministic catalog order, not a ranking, and
+   // Publisher has no query-usage signal to fill the hosted API's
+   // `prominence` with, so it names the ordering and omits the
+   // score rather than inventing a number nobody should rank on.
+   // Both counts are in CARDS, the unit the payload is made of, so the
+   // drill-down counts its source ROWS rather than the whole scope (which
+   // also holds the entities nesting inside them; the entity cap is
+   // reported separately). One row per model path resolving the source, so
+   // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
+   // report one path.
+   // next_offset is present only while sources remain past this page, and
+   // only on the browse, matching where `offset` is honoured.
+   const consumed = request.offset + sources.length;
+   // Counted as distinct pairings rather than as source rows, so it stays
+   // right if a drill-down ever reaches an entity whose own source row was
+   // filtered out: toSourceResults would still raise a card for it.
+   const cardsInScope = sourceName
+      ? new Set(
+           inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
+        ).size
+      : inScope.length;
+   const listingEnvelope = {
+      ranking: "prominence" as const,
+      total_available: cardsInScope,
+      returned: sources.length,
+      ...(request.pureSourceListing && consumed < inScope.length
+         ? { next_offset: consumed }
+         : {}),
    };
-
-   /**
-    * The warning for a capped result set, or undefined when nothing was
-    * cut. It names the remedy that works here: raising the limit, or
-    * narrowing the question. Telling an agent to "search more
-    * specifically" when the cut was a flat cap sends it to re-query at
-    * the one stage that cannot change the outcome.
-    */
-   const truncationWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
-         : undefined;
-
-   /**
-    * The two cuts a ranked response can make, each named in its own unit. They
-    * have different remedies -- one is the page size, the other is per source
-    * -- and the old single warning reported both as "entities" while the
-    * envelope beside it counted sources.
-    */
-   const sourceCutWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
-         : undefined;
-   /**
-    * A browse that stopped early. Its remedy is NOT the ranked one: a listing
-    * has a resumable order, so the rest is one `offset` away and raising the
-    * limit is the wrong advice -- it caps at 150 either way, and paging is
-    * what actually reaches source 151.
-    */
-   const listingPageWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
-         : undefined;
-   const entityCutWarning = (dropped: number) =>
-      dropped > 0
-         ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
-         : undefined;
-
-   // Tier 3: nothing to rank -> enumerate what the targets name.
-   if (request.listingOnly) {
-      // With sourceName set this is the drill-down, so it lists every
-      // entity the named source offers: the source row itself, then its
-      // views, dimensions, measures, and any named query built on it.
-      // Filtering to kind === "source" here as well returned exactly one
-      // row — the source — which the caller already had from the tier-3
-      // listing, and never the fields the tool description promises.
-      // collectEntities pushes a source ahead of its own fields, and
-      // Array.from preserves that insertion order, so the source's doc
-      // still leads the drill-down.
-      //
-      // Enumeration: return everything unless the caller sets an explicit
-      // limit. slice(0, undefined) keeps the whole list, so discovery is
-      // not silently capped the way ranked retrieval (tier 4) is.
-      // A drill-down (sourceName, no query) lists every entity the
-      // named source offers, so the card carries its views, dimensions,
-      // measures, joins and named queries. Listing only the source row
-      // there returned what the caller already had from the package
-      // listing and never the fields the tool description promises.
-      // collectEntities pushes a source ahead of its own fields, and
-      // Array.from preserves that insertion order, so toSourceResults
-      // sees the source before the entities that nest under it.
-      //
-      // Enumeration: return everything unless the caller sets an explicit
-      // limit. slice(0, undefined) keeps the whole list, so discovery is
-      // not silently capped the way ranked retrieval (tier 4) is.
-      const inScope = Array.from(byId.values()).filter(
-         (e) =>
-            // A scoped source's own row always survives: it becomes the
-            // card rather than competing for an entity slot.
-            ((sourceName && e.kind === "source" && e.source === sourceName) ||
-               request.kinds.has(e.kind)) &&
-            matchesScope(e, request),
-      );
-      // The limit caps entities. A drill-down's source row becomes the
-      // card rather than an entity, so it does not spend a slot; a
-      // package listing has only source rows, so there the cap is on
-      // cards, which is what the listing is made of.
-      // A browse is the one listing with a stable order, so it is the one
-      // that can be resumed. Skipping into any other shape would silently
-      // drop rows whose position is not reproducible between two calls.
-      const paged = request.pureSourceListing
-         ? inScope.slice(request.offset)
-         : inScope;
-      let entityBudget = request.limit;
-      const capped = paged.filter((e) => {
-         if (sourceName && e.kind === "source") return true;
-         if (entityBudget <= 0) return false;
-         entityBudget -= 1;
-         return true;
-      });
-      /**
-       * Rows the cap actually spends from, which is the unit both sides of the
-       * truncation warning have to be counted in.
-       *
-       * A scoped source's own row never spends a slot, so it is EXCLUDED from
-       * both counts rather than subtracted from one. Subtracting assumed the
-       * row was there: scope to a source that does not exist and `capped` is
-       * empty, so `capped.length - 1` was -1, and the warning fired claiming
-       * "Returned -1 of 0 matching entities" on a result that lost nothing.
-       */
-      const spendable = (rows: typeof inScope) =>
-         sourceName
-            ? rows.filter((e) => e.kind !== "source").length
-            : rows.length;
-      const cappable = spendable(inScope);
-      // The overview is where an agent decides how to combine sources,
-      // so each one states its relationships here rather than making
-      // that a second call. toSourceResults carries the complete joins
-      // list onto every entry, so empty means none declared.
-      const sources = toSourceResults(
-         capped.map((e) => projectEntity(e, environmentName, packageName)),
-         sourceContext,
-         environmentName,
-         packageName,
-         new Map(),
-         request.includeCode,
-         droppedSources,
-      );
-      // A listing is deterministic catalog order, not a ranking, and
-      // Publisher has no query-usage signal to fill the hosted API's
-      // `prominence` with, so it names the ordering and omits the
-      // score rather than inventing a number nobody should rank on.
-      // Both counts are in CARDS, the unit the payload is made of, so the
-      // drill-down counts its source ROWS rather than the whole scope (which
-      // also holds the entities nesting inside them; the entity cap is
-      // reported separately). One row per model path resolving the source, so
-      // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
-      // report one path.
-      // next_offset is present only while sources remain past this page, and
-      // only on the browse, matching where `offset` is honoured.
-      const consumed = request.offset + sources.length;
-      // Counted as distinct pairings rather than as source rows, so it stays
-      // right if a drill-down ever reaches an entity whose own source row was
-      // filtered out: toSourceResults would still raise a card for it.
-      const cardsInScope = sourceName
-         ? new Set(
-              inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
-           ).size
-         : inScope.length;
-      const listingEnvelope = {
-         ranking: "prominence" as const,
-         total_available: cardsInScope,
-         returned: sources.length,
-         ...(request.pureSourceListing && consumed < inScope.length
-            ? { next_offset: consumed }
-            : {}),
-      };
-      // An empty enumeration is ambiguous to an agent: "no data here" and
-      // "the package exposes nothing" look identical. The package DID
-      // load (a failed load throws out of getPackageIndex above), so an
-      // empty result means its models expose no sources: a curation gap
-      // (index.malloy's export {}), not an empty database. Say so, only in the
-      // empty case, so the populated payload stays byte-identical.
-      // `kinds` is empty only when EVERY target named a type this server does
-      // not index, and unsupportedTargetWarnings has already said so exactly.
-      // Adding the curation line there contradicts it and misdiagnoses a
-      // healthy package: a `dimensional_value` search against storefront
-      // reported that its seven sources were a curation gap.
-      if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
-         return jsonResource(uri, {
-            sources,
-            ...listingEnvelope,
-            ...warningsFor(
-               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
-            ),
-         });
-      }
+   // An empty enumeration is ambiguous to an agent: "no data here" and
+   // "the package exposes nothing" look identical. The package DID
+   // load (a failed load throws out of getPackageIndex above), so an
+   // empty result means its models expose no sources: a curation gap
+   // (index.malloy's export {}), not an empty database. Say so, only in the
+   // empty case, so the populated payload stays byte-identical.
+   // `kinds` is empty only when EVERY target named a type this server does
+   // not index, and unsupportedTargetWarnings has already said so exactly.
+   // Adding the curation line there contradicts it and misdiagnoses a
+   // healthy package: a `dimensional_value` search against storefront
+   // reported that its seven sources were a curation gap.
+   if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
          ...warningsFor(
-            // A pure browse pages; every other listing shape is capped in
-            // entities and says so.
-            request.pureSourceListing
-               ? listingPageWarning(sources.length, inScope.length)
-               : truncationWarning(spendable(capped), cappable),
+            "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
          ),
       });
    }
+   return jsonResource(uri, {
+      sources,
+      ...listingEnvelope,
+      ...warningsFor(
+         // A pure browse pages; every other listing shape is capped in
+         // entities and says so.
+         request.pureSourceListing
+            ? listingPageWarning(sources.length, inScope.length)
+            : truncationWarning(spendable(capped), cappable),
+      ),
+   });
+}
+
+// The stages and retrievers runContextQuery runs. PR 1 registers no stage of
+// either kind; a new stage is one file and one line here.
+const QUERY_STAGES: QueryStage[] = [];
+// A function, not a constant: get_context_retrievers imports this file, so the
+// two retrievers must not be read while this module is still being evaluated.
+// A constant here made importing the retrievers first throw "Cannot access
+// 'semanticRetriever' before initialization".
+const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
+const RANK_STAGES: RankStage[] = [];
+const CARD_STAGES: CardStage[] = [];
+
+/** Today's behaviour, spelled out. Changing a value here changes responses. */
+const PIPELINE_SETTINGS: PipelineSettings = {
+   joins: "index",
+   entityWindow: {
+      where: "post-rank",
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+   },
+   joinMaxDepth: MAX_JOIN_PATH_DEPTH,
+   joinDamping: null,
+   scoring: "cosine",
+   maxChars: null,
+   reserveChars: 1_000,
+};
+
+/**
+ * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
+ * resolved request, so a ranking decision and a request-parsing decision stay
+ * separately reviewable. Retrieval runs over the package's model entities
+ * (sources, views, dimension/measure fields, joins, named queries), semantic
+ * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
+ * The entity index is built once per Package and cached (see getPackageIndex),
+ * rebuilding automatically when the package reloads.
+ *
+ * There is no progressive-discovery tier here any more: the catalog is
+ * `list_packages`, and every request that reaches this names one package,
+ * because `scopes` requires it.
+ */
+async function runContextQuery(
+   resolved: ResolvedRequest,
+   environmentStore: EnvironmentStore,
+   extraWarnings: string[] = [],
+): Promise<ReturnType<typeof jsonResource>> {
+   const { environmentName, packageName, sourceName } = resolved;
+   logger.info("[MCP Tool getContext] Retrieving context", {
+      environmentName,
+      packageName,
+      sourceName,
+      searches: resolved.searches.length,
+      listingOnly: resolved.listingOnly,
+   });
+
+   // Tiers 3 and 4 need the package's entity index.
+   let pkgIndex: PackageIndex;
+   try {
+      pkgIndex = await getPackageIndex(
+         environmentStore,
+         environmentName,
+         packageName,
+      );
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] index build failed", {
+         environmentName,
+         packageName,
+         sourceName,
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return contextError(
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "get-context",
+         ),
+         `${environmentName}/${packageName}`,
+         error,
+      );
+   }
+
+   const uri = buildMalloyUri(
+      { environment: environmentName, package: packageName },
+      "get-context",
+   );
+
+   const staleNote = await staleNoteFor(
+      environmentStore,
+      environmentName,
+      packageName,
+   );
+   const ctx: PipelineContext = {
+      request: resolved,
+      environmentStore,
+      pkgIndex,
+      warnings: [staleNote, ...extraWarnings].filter(
+         (warning): warning is string => Boolean(warning),
+      ),
+      embeddingConfigured: embeddingConfigured(),
+      settings: PIPELINE_SETTINGS,
+   };
+   const warningsFor = makeWarningsFor(ctx);
+
+   // Query stages may rewrite what is searched for; none is registered yet.
+   ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
+   const request = ctx.request;
+
+   // Tier 3: nothing to rank -> enumerate what the targets name.
+   if (request.listingOnly) return runListing(ctx, uri);
 
    // Tier 4: retrieval over the package's entities. With an
    // embedding provider configured, ranking is semantic (DuckDB
@@ -2313,211 +2386,37 @@ async function runContextQuery(
    // `retrieval` marker and per-entity `score` appear ONLY when a
    // provider is configured, so the unconfigured payload stays
    // byte-identical to the lexical-only releases.
-   const configured = embeddingConfigured();
-   // A drill-down is confined to one source, so the scan needs no over-fetch
-   // to reach a spread of source cards.
-   const scoped = Boolean(sourceName);
-   /** Ranked but NOT yet collapsed or windowed; finishRanked does both. */
-   let semanticRanked: ResultEntity[] | undefined;
-   let belowCutoffCount = 0;
-   // The denominator belowCutoffCount is read against; see
-   // SemanticSearchResult. Undefined on the lexical path, where there
-   // is no floor and so no count to anchor.
-   let totalEntities: number | undefined;
+   //
    // Why a configured server answered lexically. Without it "lexical"
    // is a dead end: an agent cannot tell a cold index, which clears in
    // seconds and is worth retrying, from a down provider, which is not.
    let retrievalReason: RetrievalReason | undefined;
-   if (configured) {
-      let provider: EmbeddingProvider | null = null;
-      try {
-         provider = getEmbeddingProvider();
-      } catch (error) {
-         retrievalReason = "unavailable";
-         logger.warn(
-            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-            {
-               error: error instanceof Error ? error.message : String(error),
-            },
-         );
-      }
-      if (provider) {
-         try {
-            // One pass per target, merged on score. A max ACROSS passes is
-            // meaningful here and only here: cosine is an absolute scale,
-            // so 0.7 from the measure target and 0.7 from the dimension
-            // target mean the same thing. (The lexical path below has to
-            // normalize first, because lunr scores are relative to their
-            // own query.) The next commit collapses these passes into one
-            // batched embed and one scan; the merge rule does not change.
-            const merged = new Map<string, ResultEntity>();
-            let searchFailure: RetrievalReason | undefined;
-            let unionTotalEntities: number | undefined;
-            let unionBelowCutoff: number | undefined;
-            {
-               // ONE call for every target: it batches the embeddings into a
-               // single provider request and scores them in a single pass
-               // over the vector cache, returning each hit's per-target
-               // scores. The raw text embeds better than the lunr-sanitized
-               // form; sanitize() only exists to strip lunr operators.
-               const semantic = await trySemanticSearch({
-                  db: environmentStore.storageManager.getDuckDbConnection(),
-                  provider,
-                  pkg: pkgIndex.pkg,
-                  environmentName,
-                  packageName,
-                  entities: pkgIndex.retrievalEntities,
-                  // Each target carries the kinds it may claim, and the scan
-                  // applies that BEFORE cutting the target's window. Applied
-                  // here afterwards, a `measure` target whose nearest rows were
-                  // dimensions came back empty with below_cutoff_count 0.
-                  queries: request.searches.map((search) => ({
-                     targetIndex: search.targetIndex,
-                     text: search.text,
-                     kinds: search.kinds,
-                  })),
-                  // Over-fetch, because `max` counts SOURCE CARDS while
-                  // this limit counts entity ROWS, and windowBySource admits
-                  // up to MAX_ENTITIES_PER_SOURCE_TARGET rows per source per
-                  // target. Fetching exactly `max` rows lets them all land in
-                  // one source and return a single card where `max` were
-                  // asked for. A drill-down is confined to one source, so
-                  // there the extra rows are waste.
-                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
-                  // "" means no drill-down, matching the lexical
-                  // path's truthiness filter.
-                  sourceName: sourceName || undefined,
-                  // The rest of the scope, as rows the scan can join on. The
-                  // cache has no model_path column and an entity_name scope
-                  // exempts source rows, so neither is expressible as a
-                  // predicate -- but both have to be applied INSIDE the scan
-                  // anyway, because that is where belowCutoffCount and
-                  // totalEntities are counted. Filtering only the returned
-                  // rows left those two describing the unpinned set: an
-                  // entity_name that matched nothing answered with no sources
-                  // beside a belowCutoffCount of 0, which the tool
-                  // description tells the agent means "nothing cleared the
-                  // floor", so it had no reason to retry with another name.
-                  scopeKeys:
-                     request.modelPath || request.entityName
-                        ? scopeKeysFor(byId.values(), request)
-                        : undefined,
-               });
-               if ("hits" in semantic) {
-                  // One row per (kind, source, name) is EMBEDDED — the
-                  // text is identical for every model path that reaches
-                  // the entity, so the vector is stored once — but
-                  // several live entities can share that key, one per
-                  // path. Fan the hit out to all of them; a 1:1 map
-                  // silently kept only whichever was seen last.
-                  const byKey = new Map<string, Entity[]>();
-                  for (const e of byId.values()) {
-                     const k = entityRowKey(e.kind, e.source ?? "", e.name);
-                     const at = byKey.get(k);
-                     if (at) at.push(e);
-                     else byKey.set(k, [e]);
-                  }
-                  // Rows are only a vector cache: modelPath and doc
-                  // come from the live entity, and a hit with no live
-                  // entity (deleted since the last sync) is dropped.
-                  const ranked = semantic.hits.flatMap((hit) => {
-                     const matches = (
-                        byKey.get(
-                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                        ) ?? []
-                     )
-                        // The scan filters on sourceName only, so the scope's
-                        // model_path and entity_name have to be applied to
-                        // what it returns -- the same place the lexical path
-                        // applies them (see matchesScope's other call site).
-                        // Without this, pinning an entity narrowed nothing
-                        // wherever an embedding provider is configured, and
-                        // a caller who pinned one entity got the whole ranked
-                        // set back, definitions included, because a pinned
-                        // entity_name also turns include_code on.
-                        .filter((e) => matchesScope(e, request));
-                     return matches.map((e) => ({
-                        ...projectEntity(e, environmentName, packageName),
-                        score: Math.round(hit.score * 10_000) / 10_000,
-                        targetScores: hit.targetScores,
-                     }));
-                  });
-                  for (const row of ranked) {
-                     // The scan scored this row only against targets that may
-                     // claim its kind, so every score it carries is from a
-                     // target that can return it, and its `score` is already
-                     // the best of those.
-                     // Keyed per CARD, like the fan-out just above produced:
-                     // one embedded row legitimately becomes several live
-                     // entities, one per model path. Keying this on the bare
-                     // (kind, source, name) collapsed them straight back into
-                     // one and kept whichever landed last -- undoing the
-                     // fan-out, and making the semantic path answer with one
-                     // model_path where the lexical path answers with every
-                     // resolving one. lunr has no such problem because its
-                     // ref IS the per-path entity id.
-                     const key = entityCardKey(row);
-                     merged.set(key, {
-                        ...row,
-                        bestTarget: bestTargetOf(row.targetScores ?? new Map()),
-                     });
-                  }
-                  // The denominator counts the package's entities, not the
-                  // query's hits, so it is the same whichever target asked.
-                  unionTotalEntities = semantic.totalEntities;
-                  unionBelowCutoff = semantic.belowCutoffCount;
-               } else {
-                  searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
-               }
-            }
-            if (merged.size > 0 || searchFailure === undefined) {
-               const ranked = [...merged.values()].sort(
-                  (a, b) => (b.score ?? 0) - (a.score ?? 0),
-               );
-               // Collapse, windowing and serialization are finishRanked's,
-               // shared with the lexical path so the two cannot drift.
-               semanticRanked = ranked;
-               totalEntities = unionTotalEntities;
-               // Straight from the scan, which counts entities whose BEST
-               // score across the targets that may claim them fell under the
-               // floor. Deriving it from the returned rows would fold the page
-               // limit into it and report a crowded-out entity -- one that
-               // cleared the floor and simply did not fit -- as rejected,
-               // which is the opposite of what this number tells a caller.
-               // The whole scope goes into the scan (sourceName as a column
-               // predicate, the rest as scopeKeys), so the count and the rows
-               // still describe the same set.
-               belowCutoffCount = unionBelowCutoff ?? 0;
-            } else {
-               retrievalReason = searchFailure;
-            }
-         } catch (error) {
-            // Defensive: trySemanticSearch does not throw, but the
-            // storage handle lookup can (e.g. before initialization
-            // or under a partial test double). Semantic retrieval
-            // must never take tier 4 down with it.
-            retrievalReason = "unavailable";
-            logger.warn(
-               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-               {
-                  error: error instanceof Error ? error.message : String(error),
-               },
-            );
+   let ranked: RankedState | undefined;
+   for (const retriever of retrievers()) {
+      const result = await retriever.retrieve(ctx);
+      if ("unavailable" in result) {
+         // "unconfigured" is not a reason to report: no provider, no marker.
+         if (result.unavailable !== "unconfigured") {
+            retrievalReason = result.unavailable;
          }
+         continue;
       }
+      ranked = {
+         ...result,
+         retrieval: retriever.name,
+         retrievalReason,
+      };
+      break;
    }
+   if (!ranked) throw new Error("No retriever produced a result");
+   ranked = await runRankStages(RANK_STAGES, ranked, ctx);
 
-   if (semanticRanked !== undefined) {
-      const { sources, totalSources, entitiesDropped } = finishRanked({
-         rows: semanticRanked,
-         max,
-         sourceContext,
-         environmentName,
-         packageName,
-         searchTexts: searchTextsByIndex,
-         includeCode: request.includeCode,
-         droppedSources,
-      });
+   // Grouping into cards, paging and serialization are shared by both
+   // retrievers so the two cannot drift.
+   let cards = assembleCards(ranked, ctx);
+   cards = await runCardStages(CARD_STAGES, cards, ctx);
+   const { sources, totalSources, entitiesDropped } = shapeCards(cards, ctx);
+   if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
          ranking: "relevance" as const,
@@ -2529,9 +2428,9 @@ async function runContextQuery(
          // with total_entities, without which the count is a bare number
          // an agent cannot scale -- see SemanticSearchResult for why
          // the ratio, not the count, carries the signal.
-         below_cutoff_count: belowCutoffCount,
-         ...(totalEntities !== undefined
-            ? { total_entities: totalEntities }
+         below_cutoff_count: ranked.belowCutoffCount,
+         ...(ranked.totalEntities !== undefined
+            ? { total_entities: ranked.totalEntities }
             : {}),
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
@@ -2543,83 +2442,6 @@ async function runContextQuery(
          ),
       });
    }
-
-   // One lunr pass per target, merged. Each target's hits are normalized
-   // against ITS OWN top hit before merging, which is what makes two
-   // targets' scores comparable at all: raw lunr scores are relative to
-   // the query that produced them. All targets share one index, so the
-   // IDF corpus is the same and the normalization is the only correction
-   // needed.
-   const bestByRef = new Map<string, Map<number, number>>();
-   for (const search of request.searches) {
-      const sanitized = sanitize(search.text);
-      if (!sanitized) continue;
-      let targetHits: lunr.Index.Result[] = [];
-      try {
-         targetHits = index.search(sanitized);
-      } catch (error) {
-         logger.warn("[MCP Tool getContext] lunr search failed", {
-            query: search.text,
-            error: error instanceof Error ? error.message : String(error),
-         });
-         continue;
-      }
-      const top = targetHits[0]?.score ?? 0;
-      for (const hit of targetHits) {
-         const entity = byId.get(hit.ref);
-         // A target only claims the kinds it selects, so a `measure`
-         // target never surfaces a dimension that happened to match.
-         if (!entity || !search.kinds.includes(entity.kind)) continue;
-         const score = top > 0 ? hit.score / top : 0;
-         const scores = bestByRef.get(hit.ref) ?? new Map<number, number>();
-         scores.set(
-            search.targetIndex,
-            Math.max(scores.get(search.targetIndex) ?? 0, score),
-         );
-         bestByRef.set(hit.ref, scores);
-      }
-   }
-   // Already normalized per target and merged, so this is the ranked list
-   // rather than raw lunr output -- no fake lunr Result needs constructing
-   // to carry it.
-   const ranking = [...bestByRef.entries()]
-      .flatMap(([ref, targetScores]) => {
-         const e = byId.get(ref);
-         // Defensive: skip a ref missing from the entity map.
-         if (!e) return [];
-         // Drill-down: narrow to one source when sourceName is set.
-         if (sourceName && e.source !== sourceName) return [];
-         if (!matchesScope(e, request)) return [];
-         // The row ranks on its best target, the same MAX-over-facets rule
-         // the semantic path uses one level down.
-         const score = Math.max(...targetScores.values());
-         return [{ e, score, targetScores }];
-      })
-      .sort((a, b) => b.score - a.score);
-
-   const scored: ResultEntity[] = ranking.map(({ e, targetScores }) => ({
-      ...projectEntity(e, environmentName, packageName),
-      // WHICH target found the row is carried, for the per-target window;
-      // HOW WELL is not. targetScores would reach the wire as
-      // matched_targets[].relevance, whose relevance is required and would
-      // therefore publish a lexical score -- the exact number this path
-      // withholds from the entity's own `relevance`, because a lunr score is
-      // relative to its own query and comparing two of them means nothing.
-      // Budgeting needs only the index, so the two concerns separate cleanly.
-      bestTarget: bestTargetOf(targetScores),
-   }));
-   // The tail is the semantic path's, which is why it is the same function:
-   // each target gets its own share of every source here too.
-   const { sources, totalSources, entitiesDropped } = finishRanked({
-      rows: scored,
-      max,
-      sourceContext,
-      environmentName,
-      packageName,
-      searchTexts: searchTextsByIndex,
-      includeCode: request.includeCode,
-      droppedSources,
-   });
    const envelope = {
       sources,
       ranking: "relevance" as const,
@@ -2632,11 +2454,13 @@ async function runContextQuery(
    );
    return jsonResource(
       uri,
-      configured
+      ctx.embeddingConfigured
          ? {
               ...envelope,
               retrieval: "lexical",
-              ...(retrievalReason ? { retrieval_reason: retrievalReason } : {}),
+              ...(ranked.retrievalReason
+                 ? { retrieval_reason: ranked.retrievalReason }
+                 : {}),
               ...lexicalWarnings,
            }
          : { ...envelope, ...lexicalWarnings },

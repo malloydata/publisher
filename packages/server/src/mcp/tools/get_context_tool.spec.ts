@@ -1689,6 +1689,89 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("orders equal semantic scores by source, whatever order the model declares them in", async () => {
+      // Two sources each declare `total_amount`, with identical text and so an
+      // identical vector: an exact score tie. The order of a tie was left to
+      // DuckDB (which broke it by name alone, and the names are equal here), so
+      // it followed insertion order and could differ between servers and
+      // between runs. It is now score, then source, then name.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "total amount": [1, 0],
+         "total order amount": [1, 0],
+      });
+      const sourceWith = (name: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "measure", name: "total_amount", annotations: [] },
+            ],
+         },
+      });
+      const run = async (declared: string[], packageName: string) => {
+         _setEmbeddingProviderForTests(provider);
+         const handler = captureHandler(
+            semanticStoreFor({
+               listModels: async () => [{ path: "t.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => declared.map(sourceWith),
+                  getQueries: () => [],
+               }),
+            }),
+         );
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: packageName }],
+         });
+         return sourceNames(payload);
+      };
+      const zebraFirst = await run(["zebra_sales", "alpha_sales"], "tie-a");
+      const alphaFirst = await run(["alpha_sales", "zebra_sales"], "tie-b");
+      expect(zebraFirst).toEqual(["alpha_sales", "zebra_sales"]);
+      expect(alphaFirst).toEqual(["alpha_sales", "zebra_sales"]);
+   });
+
+   it("treats only exactly equal scores as tied, not scores that round to the same four places", async () => {
+      // `zebra` has the slightly better match (cosine 0.9999875), `alpha` the
+      // slightly worse (0.9999595). Both publish as 1 at four decimals, so a
+      // tie-break on the published score would list alpha first by name. Their
+      // real scores differ, so zebra comes first.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "m one": [1, 0.005],
+         "m two": [1, 0.009],
+         "find it": [1, 0],
+      });
+      const sourceWith = (name: string, field: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "measure", name: field, annotations: [] }],
+         },
+      });
+      _setEmbeddingProviderForTests(provider);
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "t.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  sourceWith("alpha_sales", "m_two"),
+                  sourceWith("zebra_sales", "m_one"),
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("find it"),
+         scopes: [{ environment: "specs", package: "near-tie" }],
+      });
+      expect(sourceNames(payload)).toEqual(["zebra_sales", "alpha_sales"]);
+   });
+
    it("returns every resolving model path, like the lexical path does", async () => {
       // The vector cache holds ONE row per (kind, source, name) -- the text is
       // identical whichever file resolves the source -- and the scan fans that
@@ -1740,6 +1823,49 @@ describe("get_context semantic retrieval", () => {
       expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
       expect(payload.returned).toBe(2);
       expect(payload.total_available).toBe(2);
+   });
+
+   it("lists the model paths of one tied source in path order, not in the order the package lists them", async () => {
+      // One embedded row fans out to a card per model path that resolves the
+      // source, all with the same score. Their order was the package's own
+      // listing order.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            shared: [1, 0],
+            "shared: A source two files resolve.": [1, 0],
+            "the shared source": [1, 0],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "uses.malloy" },
+               { path: "defs.malloy" },
+            ],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "shared",
+                     annotations: ["#(doc) A source two files resolve."],
+                     schema: { fields: [] },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath-order" }],
+      });
+      expect(
+         payload.sources.map(
+            (c: { source_info: { resource_id: { model_path: string } } }) =>
+               c.source_info.resource_id.model_path,
+         ),
+      ).toEqual(["defs.malloy", "uses.malloy"]);
    });
 
    it("a source-scoped call does not delete the rest of the package's vectors", async () => {
