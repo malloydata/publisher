@@ -12,7 +12,6 @@
     "eval-report",
     "malloy",
     "malloy-analysis",
-    "malloy-analysis-report",
     "malloy-analyze",
     "malloy-charts",
     "malloy-dashboards",
@@ -52,7 +51,6 @@
       "malloy-phrase-detection",
       "malloy-queries",
       "malloy-charts",
-      "malloy-analysis-report",
       "malloy-patterns",
       "malloy-notebooks",
       "malloy-source-unreachable"
@@ -77,7 +75,6 @@
       "malloy-publish",
       "malloy-document",
       "malloy-review",
-      "malloy-analysis-report",
       "malloy-analysis",
       "malloy-queries",
       "malloy-phrase-detection",
