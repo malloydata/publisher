@@ -85,12 +85,12 @@ export function DashboardView({
    const specs = useMemo(
       () =>
          (manifest.givens ?? []).filter(
-            // A `#(secure)` given is the host's to set; a viewer gets no control for it.
+            // In text-source mode, a `#(secure)` given is the host's to set: no control for it.
             (spec) =>
-               spec.secure !== true &&
+               !(preamble !== undefined && spec.secure === true) &&
                !(spec.name !== undefined && hiddenGivens?.includes(spec.name)),
          ),
-      [manifest, hiddenGivens],
+      [manifest, hiddenGivens, preamble],
    );
 
    // The control row's state, options and `to=self` drill: the same hook the

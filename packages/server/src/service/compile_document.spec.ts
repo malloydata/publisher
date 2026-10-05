@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { CompileRefusedError } from "../errors";
-import type { CompiledDocument } from "./compile_document";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { Runtime } from "@malloydata/malloy";
+import { AccessDeniedError, CompileRefusedError } from "../errors";
+import { compileDocument, type CompiledDocument } from "./compile_document";
 import type { DashboardQueryTileSpec } from "./dashboard";
 import { Environment } from "./environment";
 
@@ -208,6 +210,98 @@ run: open_src -> { aggregate: c }
       });
    });
 
+   describe("data roots a document may not declare", () => {
+      beforeEach(async () => {
+         await install({ "model.malloy": MODEL });
+      });
+
+      const roots = [
+         "duckdb.table('/etc/hosts')",
+         "duckdb.sql('select 1 as region')",
+      ];
+
+      for (const root of roots) {
+         it(`refuses a tile over ${root}, so no givenNames or givens row can answer for it`, async () => {
+            await expect(
+               compile(
+                  `## artifact { kind=dashboard tiles=["${root} -> { select: region }"] }\n`,
+                  { ROLE: "analyst" },
+               ),
+            ).rejects.toBeInstanceOf(CompileRefusedError);
+         });
+
+         it(`refuses a cell over ${root}`, async () => {
+            await expect(
+               compile(
+                  `## artifact { kind=notebook }\nrun: ${root} -> { select: region }\n`,
+                  { ROLE: "analyst" },
+               ),
+            ).rejects.toBeInstanceOf(CompileRefusedError);
+         });
+      }
+
+      it("refuses a tile that reaches a root through a source the document defines", async () => {
+         await expect(
+            compile(
+               `## artifact { kind=dashboard tiles=["d -> v"] }\nsource: d is duckdb.table('/etc/hosts') extend { view: v is { select: * } }\n`,
+            ),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+
+      it("leaves an ordinary tile's givens exactly as they were", async () => {
+         const result = await compile(
+            `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,
+         );
+         expect(tilesOf(result)[0].givenNames).toEqual(["REGION"]);
+         expect(manifestOf(result).givens?.map((g) => g.name)).toEqual([
+            "REGION",
+         ]);
+      });
+   });
+
+   describe("restricted cells that share lines or names", () => {
+      beforeEach(async () => {
+         await install({ "model.malloy": MODEL });
+      });
+
+      it("blanks only the restricted statement, so an open one on its line still compiles", async () => {
+         const { document, problems } = await compile(
+            `## artifact { kind=notebook }\nsource: d is gated extend { } run: open_src -> {\n  aggregate: c\n}\n`,
+            { ROLE: "nobody" },
+         );
+         expect(problems.filter((p) => p.code === "syntax-error")).toEqual([]);
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            undefined,
+         ]);
+      });
+
+      it("taints the statement's own name and not the fields declared inside it", async () => {
+         const { document } = await compile(
+            `## artifact { kind=notebook }\nsource: d is gated extend { measure: n is count() }\nrun: open_src -> { aggregate: n is count() }\nrun: d -> { aggregate: n }\n`,
+            { ROLE: "nobody" },
+         );
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            undefined,
+            true,
+         ]);
+      });
+
+      it("taints a backtick-quoted name", async () => {
+         const { document, problems } = await compile(
+            `## artifact { kind=notebook }\nsource: \`d x\` is gated extend { }\nrun: \`d x\` -> { select: x }\nrun: open_src -> { aggregate: c }\n`,
+            { ROLE: "nobody" },
+         );
+         expect(problems).toEqual([]);
+         expect(document?.cells.map((c) => c.restricted)).toEqual([
+            true,
+            true,
+            undefined,
+         ]);
+      });
+   });
+
    describe("query boundary", () => {
       beforeEach(async () => {
          await install(
@@ -237,6 +331,27 @@ export { customers }
          expect(problems.map((p) => p.code)).toEqual(["query-not-queryable"]);
       });
 
+      it("refuses a tile or cell that reaches a hidden source only through a derivation the document defines", async () => {
+         const tile = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { tiles=["h2 -> hv"] }\nsource: h2 is helper extend { }\n`,
+         );
+         expect(tile.document).toBeUndefined();
+         expect(tile.problems.map((p) => p.code)).toEqual([
+            "query-not-queryable",
+         ]);
+         const cell = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { kind=notebook }\nsource: h2 is helper extend { }\nrun: h2 -> { aggregate: c }\n`,
+         );
+         expect(cell.document).toBeUndefined();
+         expect(cell.problems.map((p) => p.code)).toEqual([
+            "query-not-queryable",
+         ]);
+      });
+
       it("admits a document whose tiles read the surface", async () => {
          const result = await env.compileSource(
             "pkg",
@@ -246,5 +361,69 @@ export { customers }
          expect(result.problems).toEqual([]);
          expect(tilesOf(result)).toHaveLength(1);
       });
+   });
+});
+
+describe("compileDocument's compiled authorize backstop", () => {
+   // The text gate is name-based; this drives the second line of defence alone,
+   // by letting every name through the text gate and denying at the runnable.
+   const url = "file:///base.malloy";
+   const files: Record<string, string> = {
+      [url]: `source: s is duckdb.sql("select 1 as a") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+source: t is duckdb.sql("select 1 as a") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+`,
+   };
+
+   const run = async (denySource: string) => {
+      const connection = new DuckDBConnection("duckdb", ":memory:");
+      const runtime = new Runtime({
+         urlReader: { readURL: async (u: URL) => files[u.toString()] },
+         connection,
+      });
+      const denied: string[] = [];
+      try {
+         return await compileDocument({
+            base: runtime.loadModel(new URL(url)),
+            source:
+               '## artifact { kind=notebook tiles=["s -> v", "t -> v"] }\n',
+            modelName: "model.malloy",
+            gates: {
+               text: async () => {},
+               constructs: async () => {},
+               boundary: () => {},
+               boundaryCompiled: () => {},
+               compiled: async (runnable) => {
+                  const prepared = (await runnable.getPreparedQuery()) as {
+                     _query?: { structRef?: unknown };
+                  };
+                  const ref = prepared._query?.structRef;
+                  const name = typeof ref === "string" ? ref : "";
+                  denied.push(name);
+                  if (name === denySource) throw new AccessDeniedError("no");
+               },
+            },
+         });
+      } finally {
+         await connection.close();
+      }
+   };
+
+   it("restricts the tile whose compiled source is denied, bare, and leaves the other", async () => {
+      const result = await run("s");
+      const tiles = (result?.document?.manifest?.tiles ??
+         []) as DashboardQueryTileSpec[];
+      expect(tiles[0]).toEqual({
+         kind: "query",
+         query: "s -> v",
+         restricted: true,
+      });
+      expect(tiles[1].restricted).toBeUndefined();
+      expect(tiles[1].givenNames).toEqual([]);
    });
 });

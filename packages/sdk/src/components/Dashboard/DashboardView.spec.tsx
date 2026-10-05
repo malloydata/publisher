@@ -280,3 +280,32 @@ describe("DashboardView in text-source mode", () => {
       expect((await screen.findAllByText("denied")).length).toBeGreaterThan(0);
    });
 });
+
+it("leaves a #(secure) given's control alone outside text-source mode", async () => {
+   render(
+      <DashboardView
+         manifest={
+            {
+               name: "ops",
+               path: "dashboards/ops.malloy",
+               givens: [
+                  {
+                     name: "ORG",
+                     type: "string",
+                     label: "Organization",
+                     secure: true,
+                  },
+               ],
+               tiles: [{ kind: "query", query: "a -> v", givenNames: ["ORG"] }],
+            } as DashboardManifest
+         }
+         environmentName="env"
+         packageName="pkg"
+         documentName="ops"
+      />,
+      { wrapper: serverWrapper },
+   );
+   expect((await screen.findAllByText("Organization")).length).toBeGreaterThan(
+      0,
+   );
+});

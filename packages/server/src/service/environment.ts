@@ -1091,6 +1091,9 @@ export class Environment {
             return { problems };
          }
 
+         // The model the append-scope fragment is judged against, loaded once for the gate and for a document.
+         let appendBase: ReturnType<Runtime["loadModel"]> | undefined;
+
          // Containment for caller-submitted fragments. Scope "append" is the
          // one scope whose text is a FRAGMENT checked against a curated model
          // rather than a file the author owns, so it has no legitimate need to
@@ -1120,9 +1123,8 @@ export class Environment {
             // error carries no evidence either way.
             let baseModel: MalloyModel;
             try {
-               baseModel = await runtime
-                  .loadModel(pathToFileURL(modelPath))
-                  .getModel();
+               appendBase = runtime.loadModel(pathToFileURL(modelPath));
+               baseModel = await appendBase.getModel();
             } catch (error) {
                // Three different failures arrive here and they are not one
                // answer. Refusing uniformly would tell a caller their text was
@@ -1212,8 +1214,11 @@ export class Environment {
          if (documentCandidate && source !== undefined) {
             const gate = gateModel;
             const exact = hasExactGateModel;
+            const base =
+               appendBase ?? runtime.loadModel(pathToFileURL(modelPath));
+            const baseModel = await base.getModel();
             const result = await compileDocument({
-               base: runtime.loadModel(pathToFileURL(modelPath)),
+               base,
                source,
                modelName,
                gates: {
@@ -1250,6 +1255,15 @@ export class Environment {
                                      ),
                           )
                         : Promise.resolve(),
+                  constructs: (text) =>
+                     assertNoRestrictedConstructs(runtime, baseModel, text),
+                  boundaryCompiled: (compiledSource, query, definitions) => {
+                     gate?.assertQueryBoundaryCompiled(
+                        compiledSource,
+                        query,
+                        definitions,
+                     );
+                  },
                   boundary: (query, definitions) => {
                      gate?.assertQueryBoundaryEarly(
                         undefined,

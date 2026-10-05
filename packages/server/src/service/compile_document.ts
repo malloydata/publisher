@@ -17,9 +17,15 @@ import {
    type DashboardManifest,
 } from "./dashboard";
 import { gateGivenSource } from "./given";
+import {
+   buildDerivationBaseMap,
+   scanIdentifiers,
+   stripMalloyCommentsAndLiterals,
+} from "./query_text";
 import { ownModelNoteObjects } from "./annotations";
 import {
    artifactKindOfNotes,
+   cellOffsets,
    claimsToBeANotebook,
    documentKind,
    isNotebookReaderError,
@@ -56,6 +62,14 @@ export interface DocumentGates {
    compiled(runnable: { getPreparedQuery(): Promise<unknown> }): Promise<void>;
    /** Throws NotQueryableError when `query` targets a source off the package's query surface. */
    boundary(query: string, definitions: string): void;
+   /** The same check on the source the compiled query reads, which sees through a derivation the text hides. */
+   boundaryCompiled(
+      compiledSource: string | undefined,
+      query: string,
+      definitions: string,
+   ): void;
+   /** Throws CompileRefusedError when `text` uses a construct append-scope text may not (a data root of its own). */
+   constructs(text: string): Promise<void>;
 }
 
 export interface DocumentCell {
@@ -80,30 +94,42 @@ export interface DocumentCompileResult {
    document?: CompiledDocument;
 }
 
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/g;
-const DECLARED_NAME = /\b([A-Za-z_][A-Za-z0-9_]*)\s+is\b/g;
+const DECLARATION =
+   /\b(?:source|query)\s*:\s*(`(?:[^`\\]|\\.)*`|[\p{L}_][\p{L}\p{N}_]*)\s+is\b/giu;
 
-/** Blank the given 1-based inclusive line ranges, keeping every other line's number. */
-function blankLines(
-   text: string,
-   ranges: readonly { startLine: number; endLine: number }[],
-): string {
-   if (ranges.length === 0) return text;
-   const lines = text.split("\n");
-   for (const { startLine, endLine } of ranges) {
-      for (let i = startLine - 1; i < endLine && i < lines.length; i++) {
-         lines[i] = "";
+/** Blank the given character ranges, keeping every newline so no line or column moves. */
+function blankSpans(text: string, cells: readonly NotebookCellSpan[]): string {
+   if (cells.length === 0) return text;
+   // Offsets are UTF-16 units, so blank over the unit array.
+   const units = text.split("");
+   for (const cell of cells) {
+      const [start, end] = cellOffsets.get(cell) ?? [0, 0];
+      for (let i = start; i < end && i < units.length; i++) {
+         if (units[i] !== "\n" && units[i] !== "\r") units[i] = " ";
       }
    }
-   return lines.join("\n");
+   return units.join("");
 }
 
-function names(text: string, pattern: RegExp): Set<string> {
-   const found = new Set<string>();
-   for (const match of text.matchAll(pattern)) {
-      found.add(match[1] ?? match[0]);
+/** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
+function declaredNames(text: string): Set<string> {
+   const found = new Set<string>(buildDerivationBaseMap(text).keys());
+   for (const match of stripMalloyCommentsAndLiterals(text).matchAll(
+      DECLARATION,
+   )) {
+      const name = match[1];
+      found.add(name.startsWith("`") ? name.slice(1, -1) : name);
    }
    return found;
+}
+
+/** The structRef name of a prepared query, the source Malloy actually reads. */
+function readsSource(prepared: unknown): string | undefined {
+   const ref = (prepared as { _query?: { structRef?: unknown } })._query
+      ?.structRef;
+   if (typeof ref === "string") return ref;
+   const named = ref as { as?: string; name?: string } | undefined;
+   return named?.as || named?.name;
 }
 
 async function denied(gates: DocumentGates, text: string): Promise<boolean> {
@@ -165,14 +191,12 @@ export async function compileDocument(input: {
    const tainted = new Set<string>();
    const mentionsTainted = (text: string) =>
       tainted.size > 0 &&
-      [...names(text, IDENTIFIER)].some((name) => tainted.has(name));
+      [...scanIdentifiers(text)].some((name) => tainted.has(name));
    for (const cell of code) {
       if (mentionsTainted(cell.text) || (await denied(gates, cell.text))) {
          restrictedCells.add(cell);
          if (cell.kind === "definition") {
-            for (const name of names(cell.text, DECLARED_NAME)) {
-               tainted.add(name);
-            }
+            for (const name of declaredNames(cell.text)) tainted.add(name);
          }
       }
    }
@@ -193,6 +217,14 @@ export async function compileDocument(input: {
       )
       .map((cell) => cell.text)
       .join("\n");
+   // A tile expression is a string in the tag, so the construct gate that read
+   // the submitted text as Malloy never saw it. Each readable tile is judged
+   // here, after the definitions it may name, before anything compiles it.
+   for (const expression of tileExpressions) {
+      if (restrictedTiles.has(normalizeTileExpression(expression))) continue;
+      await gates.constructs(`${definitions}\nrun: ${expression}`);
+   }
+
    const boundaryProblems: LogMessage[] = [];
    const checkBoundary = (query: string, line: number | undefined) => {
       try {
@@ -229,7 +261,7 @@ export async function compileDocument(input: {
 
    // Phase 2: compile what the caller may read, as an extension of the base so
    // the base's own `run:` statements and `##` notes never join the document.
-   const compiledText = blankLines(source, [...restrictedCells]);
+   const compiledText = blankSpans(source, [...restrictedCells]);
    const extended = base.extendModel(compiledText);
    let model: Awaited<ReturnType<typeof extended.getModel>>;
    try {
@@ -254,24 +286,50 @@ export async function compileDocument(input: {
          else throw error;
       }
    };
+   const compiledBoundary = (prepared: unknown, query: string) => {
+      try {
+         gates.boundaryCompiled(readsSource(prepared), query, definitions);
+      } catch (error) {
+         if (!(error instanceof NotQueryableError)) throw error;
+         boundaryProblems.push({
+            code: "query-not-queryable",
+            severity: "error",
+            message: error.message,
+         } as LogMessage);
+      }
+   };
    for (const cell of code) {
       if (cell.kind !== "query" || restrictedCells.has(cell)) continue;
-      await settle(extended.loadQuery(cell.text), () =>
-         restrictedCells.add(cell),
-      );
+      // Restricted mode, so a construct the text gate could not see still cannot compile.
+      const runnable = extended.loadRestrictedQuery(cell.text);
+      let denied = false;
+      await settle(runnable, () => {
+         denied = true;
+         restrictedCells.add(cell);
+      });
+      if (denied) continue;
+      try {
+         compiledBoundary(await runnable.getPreparedQuery(), cell.text);
+      } catch (error) {
+         if (!(error instanceof MalloyError)) throw error;
+      }
    }
    const compiledTiles = await compileTileGivens(
       tileExpressions,
-      extended,
+      { loadQuery: (text) => extended.loadRestrictedQuery(text) },
       registry,
       (sourceName) => gateGivenSource(sources, sourceName),
       restrictedTiles,
       async (tile, prepared) => {
-         await settle({ getPreparedQuery: async () => prepared }, () =>
-            restrictedTiles.add(normalizeTileExpression(tile)),
-         );
+         let denied = false;
+         await settle({ getPreparedQuery: async () => prepared }, () => {
+            denied = true;
+            restrictedTiles.add(normalizeTileExpression(tile));
+         });
+         if (!denied) compiledBoundary(prepared, `run: ${tile}`);
       },
    );
+   if (boundaryProblems.length > 0) return { problems: boundaryProblems };
 
    const spans = [...restrictedCells];
    const problems = model.problems.filter((problem) => {

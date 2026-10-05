@@ -254,10 +254,11 @@ what is inside it, label the fields in the view.
 
 ## Layout: the four tags that make a page line up
 
-Two more options on the `# dashboard` tag decide what a page looks like rather than what a tile does:
-`gap` for the spacing between tiles (`# dashboard { columns=12 gap=16 }`, `gap=0` for none), and
-`table { max_height=N | none }` for how tall a table tile may get before it scrolls inside its own card.
-A table is capped by default rather than growing to fit its rows.
+On the single-query `# dashboard` form, two more options decide what a page looks like rather than what a
+tile does: `gap` for the spacing between nests (`# dashboard { columns=12 gap=16 }`, `gap=0` for none), and
+`table { max_height=N | none }` for how tall a table may get before it scrolls inside its own card. A table
+is capped by default rather than growing to fit its rows. The renderer reads both off the query's own
+`# dashboard` tag; a `tiles=[…]` dashboard lays out its grid itself and reads only `columns`.
 
 Cards and tiles share one grid, and the same four tags work on both forms: on a `# dashboard` query
 the renderer reads them off each nest, and on a dashboard's `tiles=[…]` Publisher reads them off the

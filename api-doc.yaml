@@ -1892,8 +1892,11 @@ paths:
         and `##` notes never mix in. The compile runs nothing, including a
         control's `suggest` query. A cell or tile whose source the caller may
         not read is not compiled at all and comes back `restricted` with no
-        diagnostic; the rest of the document compiles. In a document, problem
-        positions are lines of the submitted text.
+        diagnostic; the rest of the document compiles. A cell that names a source
+        that is both gated and hidden from the caller answers 404 for the whole
+        request, as it does without a document. In a document, problem positions
+        are lines of the submitted text, problems carry no `model` tag, and
+        `includeSql` returns no `sql`.
       parameters:
         - name: environmentName
           in: path

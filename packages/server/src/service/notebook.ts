@@ -316,6 +316,14 @@ export interface NotebookCellSpan {
    queryIndex?: number;
 }
 
+/**
+ * The 0-based `[start, end)` character offsets of a code cell's `text` in the
+ * file it was read from. Kept beside the cell rather than on it so a cell stays
+ * exactly what it is served as; for blanking a cell without touching a
+ * neighbor on its line.
+ */
+export const cellOffsets = new WeakMap<NotebookCellSpan, [number, number]>();
+
 /** Why the reader refused a notebook: the 1-based line, and a message that names the fix. */
 export interface NotebookReaderError {
    line: number;
@@ -495,6 +503,8 @@ type ReaderItem =
         caption?: string;
         startLine: number;
         endLine: number;
+        start: number;
+        end: number;
      }
    | { kind: "note"; note: ReaderNote };
 
@@ -771,6 +781,8 @@ export function readNotebookCells(
             ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
+            start: span.start,
+            end: span.end,
          });
          continue;
       }
@@ -873,7 +885,7 @@ export function readNotebookCells(
          lineRun = undefined;
          const queryIndex = item.run ? runsSeen++ : undefined;
          // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
-         cells.push(
+         const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
                     kind: "query",
@@ -905,8 +917,9 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                 },
-         );
+                 };
+         cellOffsets.set(pushed, [item.start, item.end]);
+         cells.push(pushed);
          return;
       }
       const { note } = item;

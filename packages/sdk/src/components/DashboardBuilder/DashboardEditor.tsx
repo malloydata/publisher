@@ -1060,10 +1060,10 @@ function Surface({
          ).filter(
             // A `#(secure)` given is the host's to set; a viewer gets no control for it.
             (spec) =>
-               spec.secure !== true &&
+               !(textSource && spec.secure === true) &&
                !(spec.name !== undefined && hidden.has(spec.name)),
          ),
-      [manifest, opened.conversion, modelGivens, hidden],
+      [manifest, opened.conversion, modelGivens, hidden, textSource],
    );
    const runnable = useMemo(
       () =>
