@@ -108,7 +108,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 **Present choices as A/B/C.** When asking the user to choose, use lettered options with one-line descriptions. Mark your recommendation.
 
-**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. Suggest notebooks at the end.
+**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. At the end, offer a dashboard over the model for views people will come back to (`skill:malloy-dashboards`); offer a notebook only for a narrative with prose between the numbers.
 
 ## Route by Intent
 
@@ -117,7 +117,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
-| "Build a dashboard", "create views" on existing model | `skill:malloy-dashboards`, plus `skill:malloy-charts` or `skill:malloy-notebooks` as needed |
+| "Build a dashboard", "create views" on existing model | `skill:malloy-dashboards` for a saved dashboard; `skill:malloy-charts` for views in the model. A notebook (`skill:malloy-notebooks`) only when the user asks for one or the package already has them |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |
 
 **If the user's first message is a data question** (not "build me a model"), route to `skill:malloy-model-as-you-go`. It answers with `skill:malloy-analysis` and grows the model from what each answer assumed, so there is nothing to formalize afterwards.
