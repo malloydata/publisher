@@ -63,6 +63,8 @@ export interface UseDocumentControlsOptions {
    versionId?: string;
    /** How the document names itself in a refused-drill warning. */
    documentName: string;
+   /** Text-source mode: the document's definitions, which a suggest runs after as the viewer's own text. */
+   preamble?: string;
 }
 
 export interface DocumentControls extends UseGivensStateResult {
@@ -92,6 +94,7 @@ export function useDocumentControls({
    modelPath,
    versionId,
    documentName,
+   preamble,
 }: UseDocumentControlsOptions): DocumentControls {
    const declaredTypes = useMemo(
       () =>
@@ -137,6 +140,7 @@ export function useDocumentControls({
       versionId,
       // So a suggest over a gated or scoped source carries the givens it needs.
       { values: state.applied, declaredTypes },
+      preamble,
    );
 
    const { canSelf, onSelf } = useDrillSelf({

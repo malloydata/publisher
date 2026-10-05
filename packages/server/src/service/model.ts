@@ -125,9 +125,8 @@ import {
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    buildDashboardManifest,
-   normalizeTileExpression,
+   compileTileGivens,
    readDashboardModelFacts,
-   type CompiledTileGivens,
    type DashboardManifest,
    type DashboardModelFacts,
 } from "./dashboard";
@@ -4983,45 +4982,12 @@ export class Model {
          // Discovery builds it again and reports the throw.
          return facts;
       }
-      const compiled = new Map<string, CompiledTileGivens>();
-      for (const tile of tiles) {
-         const key = normalizeTileExpression(tile);
-         if (compiled.has(key)) continue;
-         let prepared: {
-            _query?: {
-               givenUsage?: { id: string }[];
-               structRef?: unknown;
-            };
-            _modelDef?: ModelDef;
-         };
-         try {
-            prepared = (await materializer
-               .loadQuery(`run: ${tile}`)
-               .getPreparedQuery()) as typeof prepared;
-         } catch {
-            continue;
-         }
-         const usage = prepared._query?.givenUsage;
-         if (!usage) continue;
-         const registry =
-            prepared._modelDef?.givens ?? this.modelDef?.givens ?? {};
-         const reads = usage
-            .map((given) => registry[given.id]?.name)
-            .filter((name): name is string => name !== undefined);
-         const target = prepared._query?.structRef;
-         const sourceName =
-            typeof target === "string"
-               ? target
-               : (target as { as?: string; name?: string } | undefined)?.as ||
-                 (target as { name?: string } | undefined)?.name;
-         const gateReads = new Set<string>();
-         for (const expr of sourceName
-            ? (gateGivenSource(this.sources ?? [], sourceName) ?? [])
-            : []) {
-            for (const name of referencedGivenNames(expr)) gateReads.add(name);
-         }
-         compiled.set(key, { reads, gateReads: Array.from(gateReads) });
-      }
+      const compiled = await compileTileGivens(
+         tiles,
+         materializer,
+         this.modelDef?.givens,
+         (source) => gateGivenSource(this.sources ?? [], source),
+      );
       return { ...facts, compiledTileGivens: compiled };
    }
 

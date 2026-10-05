@@ -1884,6 +1884,16 @@ paths:
         access to all sources, imports, and queries defined in the model.
         Relative imports resolve correctly against sibling model files.
         Returns compilation status and any problems (errors or warnings) found.
+
+        When the submitted source (scope `append`) carries a model-level
+        `## artifact` tag, it is read as a document and the response gains a
+        `document`: the cells and manifest the same text would serve once saved,
+        read from the submitted text alone so the model's own `run:` statements
+        and `##` notes never mix in. The compile runs nothing, including a
+        control's `suggest` query. A cell or tile whose source the caller may
+        not read is not compiled at all and comes back `restricted` with no
+        diagnostic; the rest of the document compiles. In a document, problem
+        positions are lines of the submitted text.
       parameters:
         - name: environmentName
           in: path
@@ -4195,6 +4205,12 @@ components:
             the `query` field of a `POST …/models/{path}/query` body, prefixed
             with `run:`. Sending it in `queryName`, the field
             `DashboardManifest.query` takes, is rejected.
+        restricted:
+          type: boolean
+          description: >-
+            Set on a tile of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. The tile carries its `query` and
+            nothing derived from the source: no `givenNames`, no layout tags.
         givenNames:
           type: array
           items:
@@ -4523,6 +4539,11 @@ components:
           description: Annotations attached to the given declaration
           items:
             type: string
+        secure:
+          type: boolean
+          description: >-
+            True when the declaration carries `#(secure)`: its value is the
+            host's to set, so a control never offers it. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal
@@ -4862,6 +4883,12 @@ components:
             maxItems: 2
             items:
               type: integer
+        restricted:
+          type: boolean
+          description: >-
+            Set on a cell of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. It was not compiled, so nothing else
+            is known about what it reads.
         codeLine:
           type: integer
           description:
@@ -6224,6 +6251,30 @@ components:
           description:
             Generated SQL for the compiled query. Only present when includeSql
             is true and compilation succeeds with a runnable query.
+        document:
+          $ref: "#/components/schemas/CompiledDocument"
+
+    CompiledDocument:
+      type: object
+      description: >-
+        The document a compiled source describes, in the shape the same text
+        serves once saved. Present only when the source carries a model-level
+        `## artifact` tag and compiled far enough to read.
+      properties:
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: From the tag's `kind`; a notebook when it names none.
+        manifest:
+          $ref: "#/components/schemas/DashboardManifest"
+        cells:
+          type: array
+          description: >-
+            The file's own cells. A document laid out as tiles lists only its
+            definition cells, as a saved one does; its prose and queries are
+            `manifest.tiles`.
+          items:
+            $ref: "#/components/schemas/NotebookCell"
 
     CompileProblem:
       type: object

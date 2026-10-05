@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - Compile returns the document it describes
+
+`POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.
+
+The SDK builder opens a document held as text: `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` and `<DashboardView preamble runModelPath hiddenGivens />` run every tile, cell and control option as the viewer's own text. Existing responses and props are unchanged. `malloy-notebook-chat` is no longer part of the shared skills; it only makes sense in a host that binds a chat to a notebook.
+
 ## Packages that version on their own line
 
 `@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.

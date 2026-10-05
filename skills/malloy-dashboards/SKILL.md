@@ -18,14 +18,18 @@ SPDX-License-Identifier: MIT
 | ---------------------------------------------------- | ------------------------------------------------ |
 | A recurring, at-a-glance view behind shared filters  | this skill (a dashboard)                         |
 | A narrative, with prose between the numbers          | a notebook (`skill:malloy-notebooks`)            |
-| Custom design, branding, or interactions beyond tags | an HTML data app (`skill:malloy-html-data-apps`) |
-| The model itself: sources, measures, joins           | `skill:malloy-modeling`                          |
+| Custom design, branding, or interactions beyond tags | an HTML data app                                 |
+| The model itself: sources, measures, joins           | `skill:malloy-model`                             |
 
 Notebooks and dashboards run the same engine, so **interactivity is not the axis**: both get filter
 controls, URL-addressable state, Apply batching, and `# drill`. Pick on the shape of the document.
 Scanned at a glance is a dashboard; read top to bottom is a notebook.
 
 ## Build sequence
+
+Tool names below are bare (`get_context`, `compile_model`, `reload_package`). Match each against the
+tools you actually have: a host may prefix or rename them. Where none matches, use the REST
+endpoint named beside it.
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
    `get_context` if you have it, otherwise the REST model endpoint for `index.malloy` (it answers
@@ -42,8 +46,8 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    control tags: see "Filter controls" below for the syntax and what each tag renders as. That is
    the convention because the dashboard builder edits the dashboard file and nothing else, so a
    filter it can add, change or remove is a declaration in that file. Bind them on the tiles (step
-   4). Reuse the package's `givens.malloy` only for a control several surfaces genuinely share, and
-   then import it whole, knowing the builder can bind those givens but not edit them.
+   4). A given the model already declares and reads is not declared again: import it by name, and
+   the builder can bind it but not edit it. See "Givens that stay in the model".
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
    Name the sources you need: `import { order_items, products } from '../storefront.malloy'`.
    Each tile binds its controls with a refinement, `view: t is v + { where: category ~ $CATEGORY }`,
@@ -57,7 +61,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    name, so the file compiles and the package loads, but running the picker fails with
    `Undefined source '<name>'`. The package warnings name this one too, saying which source to
    import. Import the source that suggest query reads, not just the query.
-5. **COMPILE IT** with `compile_model` (or `POST …/models/<path>/compile`), against the source text,
+5. **COMPILE IT** with your compile tool (`POST …/models/<path>/compile` over REST), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
    `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so
    every imported name and the query name collide with the saved copy and you get a wall of
@@ -70,8 +74,8 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    default `append` scope refuses one, so the new-file case fails on the import and again on the
    path that does not exist yet. `append` is for a fragment checked against a model that is
    already on disk, which a dashboard file is not.
-6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `reload_package`, or
-   `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
+6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** Your reload tool, or
+   `GET …/packages/<pkg>?reload=true` over REST. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
    when there are none**, so an empty response is the pass, not a sign you are reading the wrong
    field. Then read `GET …/packages/<pkg>/dashboards/<name>`: its `givens` are exactly the controls
@@ -148,7 +152,8 @@ One query whose result is the whole page, laid out by `@malloydata/render` from 
 `# dashboard` tag. This is Malloy's rendering feature, the same thing a notebook cell shows, not a
 second way to build a dashboard, and it cannot span sources. Publisher serves it, so you will meet it
 in existing packages, and the layout tags below are shared with it. Do not author a new dashboard
-this way.
+this way. The two also fail differently: a guessed field inside a single query fails the whole package
+load, while a bad tile in `tiles=[…]` fails alone, in its own cell.
 
 ```malloy
 ##! experimental.givens
@@ -219,6 +224,26 @@ remove it, since it never edits imports or model files.
 
 Note `SINCE` is a `date` rather than a `filter<>`, so it compares with `>=` rather than `~`.
 
+### Givens that stay in the model
+
+A given stays in the model, declared once there, when any of these reads it: a model source, view or
+measure; an `#(authorize)` or `#(access_filter)` gate; or an HTML data app. The dashboard imports it by
+name (`import { CATEGORY } from '../givens.malloy'`) and never re-declares it. Getting this wrong fails
+in two different ways:
+
+- **Import a name and also declare it: a compile error** naming the clash. Drop the local declaration.
+- **Declare a name the model already reads, without importing it: no error at all.** The dashboard now
+  has a second given that shares only the name. Its control renders and moves, and the model's own
+  `where:` or gate never sees the value, so the filtering silently does nothing.
+
+Declare locally only what no model code reads: a control that exists for this page's tiles. A drill
+into this page seeds a given by name, so the page declares that same name as `filter<T>`, with the
+type the clicked value fits (`filter<string>` for a category).
+
+A composite declares in its own file any source it scopes itself, such as
+`source: overview is order_items extend { … }` above, so the givens its tiles bind are in the same file
+that binds them.
+
 **`# dashboard { columns=N }` is the spelling of the grid width**, on both forms, beside the
 artifact tag. `dashboard_columns=N` inside the artifact tag is a deprecated alias: it is read when
 `columns` is absent and draws a warning, and when the two disagree it is an error naming both values.
@@ -228,6 +253,11 @@ A tile keeps its view's own field names on axes and column headers. `# label` ti
 what is inside it, label the fields in the view.
 
 ## Layout: the four tags that make a page line up
+
+Two more options on the `# dashboard` tag decide what a page looks like rather than what a tile does:
+`gap` for the spacing between tiles (`# dashboard { columns=12 gap=16 }`, `gap=0` for none), and
+`table { max_height=N | none }` for how tall a table tile may get before it scrolls inside its own card.
+A table is capped by default rather than growing to fit its rows.
 
 Cards and tiles share one grid, and the same four tags work on both forms: on a `# dashboard` query
 the renderer reads them off each nest, and on a dashboard's `tiles=[…]` Publisher reads them off the
@@ -274,6 +304,9 @@ Then the traps:
 - **No `# size=fill` on a dashboard tile.** Inside a dashboard it measures against the container the
   whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already
   size to their colspan.
+- **A table tile sitting in the left part of a wide card with the rest blank** is not filled by the
+  dashboard. `# table { size=fill }` on the view forces it. That is the table's own tag, and it is a
+  different thing from the `# size=fill` above, which is the chart one this page warns against.
 - **A KPI card's label is one line that ellipses** rather than wrapping, so a long label in a narrow
   card is truncated with no other sign. Widen the card or shorten the label.
 - **A ratio needs a number format.** `order_count / customer_count` renders as `10.695` on a card;
@@ -321,9 +354,9 @@ choosing them.
 
 ## Filter controls
 
-Controls come from the `given:` declarations the tiles reference. Declare them in the dashboard
-file, which is what the builder edits; a package `givens.malloy` is for controls the data app and
-notebooks share, and a dashboard importing it whole gets the same controls but cannot edit them.
+Controls come from the `given:` declarations the tiles reference. Declare the new ones in the
+dashboard file, which is what the builder edits; a given the model already declares is imported by name
+and gets the same control, which the builder can bind but not edit.
 The tags on the declaration are the control contract:
 
 ```malloy
@@ -349,12 +382,17 @@ value, that the prefix "is not a well-formed route", because a route ends at the
 complaint is a **compile** diagnostic on a compile that still succeeds, not a package warning, so
 step 6 will not show it. Pick by which reader you care about.
 
+On the `query=` form of `suggest`, `dimension` names a column of that query's output, not a path into
+the model, and only the last segment of it is read. Match it to the suggest query's `group_by`. When it
+matches no column the picker falls back to the first column of the result: silently right for a
+one-column suggest query, silently wrong for a multi-column one.
+
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
 `range_min`/`range_max` on a `filter<number>` renders a two-handled range slider; a `filter<date>` or
 `filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare
 `date` or `timestamp` renders a date picker. Which controls appear is per-dashboard, decided by which
 givens the query references.
-`skill:malloy-modeling` and `docs/givens.md` cover givens themselves.
+`skill:malloy-model` and `docs/givens.md` cover givens themselves.
 
 Two per-dashboard options on the artifact tag:
 
@@ -477,7 +515,9 @@ at all appears there too, without `stale`, and is absent from the listing entire
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file,
 usually a missing or misspelled `# artifact` tag. That is the same mechanism that deliberately skips
 an untagged shared include, and it is also how you hide a dashboard on purpose: drop its tag. The
-package surface never hides a dashboard. Every tagged dashboard is listed and served.
+package surface never hides a dashboard. Every tagged dashboard is listed and served. Dropping the tag
+hides it as a dashboard, but not always as a file: with no `index.malloy`, or with a legacy `explores`
+that lists it, the untagged file is then listed and published as an ordinary model.
 
 **A tile over a hidden source answers 404.** When the package has an `index.malloy`, tiles, a
 single-query dashboard's query, and filter `suggest` lists read only the sources it exports. The
@@ -488,7 +528,9 @@ load warns once per tile that will fail, for example:
 Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.
 ```
 
-The fix is the one the warning names: add the source to the `export { ... }` in `index.malloy`. A
+The fix is the one the warning names: add the source to the `export { ... }` in `index.malloy`. In a
+package that gates a source with `#(authorize)` or `#(access_filter)`, the warning says "a source"
+instead of naming it. A
 `suggest` over a hidden source gets the same warning, ending "so its list will be empty". Do not
 add an `explores` to `publisher.json` to serve a dashboard; it is deprecated and no longer needed.
 

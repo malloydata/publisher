@@ -208,6 +208,12 @@ export interface DashboardBuilderProps {
    toolbar?: ReactNode;
    /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
    onExit?: () => void;
+   /**
+    * Why "Add filter" is off, or absent when it is on. A document kept as bare
+    * text has no `given:` of its own to write, so only the model's givens can
+    * be bound, from the chips.
+    */
+   addFilterDisabledReason?: string;
 }
 
 export function DashboardBuilder({
@@ -230,6 +236,7 @@ export function DashboardBuilder({
    saveLabel,
    replaces,
    modelPath,
+   addFilterDisabledReason,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -780,6 +787,9 @@ export function DashboardBuilder({
                      unknownFieldsOf={unknownFieldsOf}
                      onEdit={(control) => setFilterDialog({ control })}
                      onAdd={() => setFilterDialog({})}
+                     {...(addFilterDisabledReason
+                        ? { addDisabledReason: addFilterDisabledReason }
+                        : {})}
                      onRemove={dropControl}
                   >
                      {controls}

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
-import { IconButton, Tooltip } from "@mui/material";
+import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
@@ -11,6 +11,7 @@ import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 import { TileFilterTag } from "./TileFilterTag";
+import { isForbidden, RESTRICTED_NOTICE, withPreamble } from "./textSource";
 import {
    TileCard,
    TileHeading,
@@ -66,6 +67,14 @@ export interface DashboardTileProps {
    chrome?: TileChrome;
    /** Labels of the page's filters this tile ignores, shown as a warning chip. */
    ignoredFilters?: readonly string[];
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the tile's
+    * `run:` so the tile runs as the viewer's own text. Absent, the tile runs
+    * the model's view by expression as it always has.
+    */
+   preamble?: string;
+   /** The server marked this tile unreadable for the viewer: nothing is run. */
+   restricted?: boolean;
 }
 
 /**
@@ -113,21 +122,33 @@ export function DashboardTile({
    onExplore,
    chrome = "card",
    ignoredFilters,
+   preamble,
+   restricted,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
-   const state = useQueryResult({
-      environmentName,
-      packageName,
-      modelPath,
-      versionId,
-      queryName,
-      query:
-         tile !== undefined
-            ? `${annotation ? `${annotation}\n` : ""}run: ${tile}`
-            : undefined,
-      // Narrowed to the givens this tile references: see `givenNames`.
-      givens: givensToRequest(givens, declaredTypes, givenNames),
-   });
+   const state = useQueryResult(
+      {
+         environmentName,
+         packageName,
+         modelPath,
+         versionId,
+         queryName,
+         query:
+            tile !== undefined
+               ? withPreamble(
+                    preamble ?? "",
+                    `${annotation ? `${annotation}\n` : ""}run: ${tile}`,
+                 )
+               : undefined,
+         // Narrowed to the givens this tile references: see `givenNames`.
+         givens: givensToRequest(givens, declaredTypes, givenNames),
+      },
+      { enabled: restricted !== true },
+   );
+   // A 403 is the viewer's access, which only text-source mode runs as them.
+   const noAccess =
+      restricted === true ||
+      (preamble !== undefined && state.isError && isForbidden(state.error));
 
    return (
       <TileCard
@@ -173,20 +194,30 @@ export function DashboardTile({
             />
          )}
          {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
-         <ResultPanel
-            fill
-            state={state}
-            context={tile ?? queryName ?? modelPath}
-            maxHeight={height}
-            maxResultSize={maxResultSize}
-            drill={drill}
-            // A composite tile that is one row of measures draws as KPI cards,
-            // the way Malloyyo splices the same tile into its grid, rather than
-            // as a one-row table. Composite only: the single-query form is one
-            // result the renderer lays out from the query's own tags, and its
-            // aggregates are already tiles.
-            transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
-         />
+         {noAccess ? (
+            <Box sx={{ p: 2 }}>
+               <Typography variant="body2" role="status" color="text.secondary">
+                  {RESTRICTED_NOTICE}
+               </Typography>
+            </Box>
+         ) : (
+            <ResultPanel
+               fill
+               state={state}
+               context={tile ?? queryName ?? modelPath}
+               maxHeight={height}
+               maxResultSize={maxResultSize}
+               drill={drill}
+               // A composite tile that is one row of measures draws as KPI cards,
+               // the way Malloyyo splices the same tile into its grid, rather than
+               // as a one-row table. Composite only: the single-query form is one
+               // result the renderer lays out from the query's own tags, and its
+               // aggregates are already tiles.
+               transform={
+                  tile !== undefined ? promoteMeasureRowToKpis : undefined
+               }
+            />
+         )}
       </TileCard>
    );
 }

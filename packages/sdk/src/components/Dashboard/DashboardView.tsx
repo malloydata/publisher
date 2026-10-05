@@ -47,6 +47,16 @@ export interface DashboardViewProps {
    onEvent?: DashboardEventHandler;
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
+   /**
+    * Text-source mode: the document's definitions (see `documentPreamble`),
+    * sent ahead of each tile's `run:` so every query runs as the viewer's own
+    * text. Rows and Explore, which reopen a tile by name, are off in this mode.
+    */
+   preamble?: string;
+   /** Text-source mode: the model the text runs on top of, in place of `manifest.path`. */
+   runModelPath?: string;
+   /** Givens the host sets itself: no control is shown for them. */
+   hiddenGivens?: readonly string[];
 }
 
 /**
@@ -68,8 +78,20 @@ export function DashboardView({
    maxResultSize,
    onEvent,
    chrome = "card",
+   preamble,
+   runModelPath,
+   hiddenGivens,
 }: DashboardViewProps) {
-   const specs = useMemo(() => manifest.givens ?? [], [manifest]);
+   const specs = useMemo(
+      () =>
+         (manifest.givens ?? []).filter(
+            // A `#(secure)` given is the host's to set; a viewer gets no control for it.
+            (spec) =>
+               spec.secure !== true &&
+               !(spec.name !== undefined && hiddenGivens?.includes(spec.name)),
+         ),
+      [manifest, hiddenGivens],
+   );
 
    // The control row's state, options and `to=self` drill: the same hook the
    // notebook uses, so a control behaves identically on both surfaces.
@@ -87,9 +109,10 @@ export function DashboardView({
       autorun: manifest.autorun !== false,
       environmentName,
       packageName,
-      modelPath: manifest.path,
+      modelPath: runModelPath ?? manifest.path,
       versionId,
       documentName,
+      ...(preamble !== undefined ? { preamble } : {}),
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
 
@@ -140,7 +163,7 @@ export function DashboardView({
       onSelf,
       canSelf,
       selfLabel: "Filter this dashboard",
-      onRows,
+      ...(preamble === undefined ? { onRows } : {}),
    });
    // Each tile's clicks carry the tile they came from, so the rows behind a
    // value know which source to run against.
@@ -164,7 +187,7 @@ export function DashboardView({
       );
    }
 
-   const modelPath = manifest.path;
+   const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
    const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
 
@@ -245,13 +268,17 @@ export function DashboardView({
                            tile.givenNames,
                            specs,
                         )}
-                        onExplore={() => {
-                           setExploring(tile.query);
-                           onEvent?.({
-                              type: "dashboard.explored",
-                              tile: tile.query ?? "",
-                           });
-                        }}
+                        {...(preamble !== undefined
+                           ? { preamble, restricted: tile.restricted }
+                           : {
+                                onExplore: () => {
+                                   setExploring(tile.query);
+                                   onEvent?.({
+                                      type: "dashboard.explored",
+                                      tile: tile.query ?? "",
+                                   });
+                                },
+                             })}
                      />
                   )
                }

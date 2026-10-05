@@ -534,7 +534,7 @@ function markdownLineBody(noteText: string): string {
  */
 export function readNotebookCells(
    parse: NotebookParse,
-   modelDef: Pick<ModelDef, "queryList">,
+   modelDef: Pick<ModelDef, "queryList"> | undefined,
    text: string,
 ): NotebookReadResult {
    const refuse = (error: NotebookReaderError): NotebookReadResult => ({
@@ -854,7 +854,8 @@ export function readNotebookCells(
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
-   if (runCount !== modelDef.queryList.length) {
+   // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
+   if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
          message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,

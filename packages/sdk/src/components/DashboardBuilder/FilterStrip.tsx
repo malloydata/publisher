@@ -24,6 +24,7 @@ export function FilterStrip({
    unknownFieldsOf,
    onEdit,
    onAdd,
+   addDisabledReason,
    onRemove,
    children,
 }: {
@@ -33,6 +34,8 @@ export function FilterStrip({
    unknownFieldsOf: (name: string, type: string | undefined) => string[];
    onEdit: (control: BuilderControl) => void;
    onAdd: () => void;
+   /** Why adding is off; set, the button is disabled and says so. */
+   addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
    /** The host's live control row. */
@@ -137,6 +140,9 @@ export function FilterStrip({
                      onClick={() => onAdd()}
                      ariaLabel="Add filter"
                      ariaHasPopup="dialog"
+                     {...(addDisabledReason
+                        ? { disabled: true, disabledReason: addDisabledReason }
+                        : {})}
                   />
                </Box>
             </Stack>

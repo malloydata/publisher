@@ -13,7 +13,9 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import type { BuilderEvent } from "./telemetry";
 import { now } from "../../utils/clock";
 import { encodeResourceUri } from "../../utils/formatting";
+import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
+import { documentPreamble } from "../Dashboard/textSource";
 import {
    isDocumentNotFound,
    useOptionalDocumentStorage,
@@ -67,6 +69,24 @@ import type { SaveContext, SaveHandler } from "./useDocumentEditor";
  * editor (its value is written into each tile's query) but reaches the package
  * only when the file is saved into it.
  */
+/**
+ * Open a document the host keeps as TEXT, rather than a file in a package.
+ *
+ * The text comes from the host's authoritative {@link DocumentStorage} and is
+ * compiled by the server, as the viewer, on top of `modelPath`: the model whose
+ * sources the document may name. The manifest is that compile's `document`, and
+ * every tile, cell and control option runs as the document's definitions
+ * followed by one `run:`, so each viewer sees what their own identity allows.
+ * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
+ * and only the model's givens can be bound.
+ */
+export interface TextSourceOptions {
+   /** The model the text is compiled and run on top of. */
+   modelPath: string;
+   /** Givens the host sets itself: no control is shown for them. */
+   hiddenGivens?: readonly string[];
+}
+
 export type DashboardEditorProps = (
    | {
         /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
@@ -114,7 +134,12 @@ export type DashboardEditorProps = (
     * without this a host cannot tell whether leaving costs anything.
     */
    onDirtyChange?: (dirty: boolean) => void;
+   /** Edit a document held as text; see {@link TextSourceOptions}. */
+   textSource?: TextSourceOptions;
 };
+
+/** A compile with no readable document: no manifest, but the text still opens. */
+const NO_MANIFEST: DashboardManifest = {};
 
 const LEGACY_REFUSAL =
    "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` notebook under notebooks/ to edit it here.";
@@ -123,7 +148,14 @@ const WITHHELD_REFUSAL =
    "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";
 
 export function DashboardEditor(props: DashboardEditorProps) {
-   const { onExit, onEvent, onDirtyChange, kind = "dashboard", path } = props;
+   const {
+      onExit,
+      onEvent,
+      onDirtyChange,
+      kind = "dashboard",
+      path,
+      textSource,
+   } = props;
    const notebook = kind === "notebook";
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
@@ -172,7 +204,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
             versionId,
             notebook ? true : undefined,
          ),
-      enabled: uriNamesBoth && !legacyFormat,
+      enabled: uriNamesBoth && !legacyFormat && !textSource,
    });
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
@@ -413,8 +445,21 @@ export function DashboardEditor(props: DashboardEditorProps) {
          });
    }, [legacyFormat]);
 
+   // The record is the only document a text source has, so it must exist and be one the host calls authoritative.
+   useEffect(() => {
+      if (!textSource || !draftChecked || opened || readFailure !== undefined)
+         return;
+      if (!authoritative)
+         setOpenError(
+            "a document held as text needs a storage whose workspace is authoritative. Fix: mark the workspace that keeps it `authoritative`.",
+         );
+      else if (draft === undefined)
+         setOpenError("the host's storage has no document at this location.");
+   }, [textSource, draftChecked, opened, readFailure, authoritative, draft]);
+
    const withheld =
       notebook &&
+      !textSource &&
       !opened &&
       draftChecked &&
       !fromDraft &&
@@ -569,7 +614,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
    );
    const canWriteWorkspace = workspace?.writeable === true;
    // Unknown while `/status` loads, and a package write needs a yes.
-   const takesWrites = mutable === true;
+   const takesWrites = mutable === true && !textSource;
    const { savesTo, pinnedPackageSave, writer } = saveTarget({
       authoritative,
       mutable: takesWrites,
@@ -617,7 +662,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
          ? workspace.description
          : undefined;
    const caption =
-      !authoritative && mutable === undefined
+      !authoritative && !textSource && mutable === undefined
          ? isLoadingStatus
             ? "Checking whether this server takes writes."
             : "This server did not say whether it takes writes, so Save is off."
@@ -655,7 +700,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
             context={`Opening the ${noun}`}
          />
       );
-   if (!opened && (!packageText || !draftChecked))
+   if (!opened && (!(textSource || packageText) || !draftChecked))
       // The bar first, so the page it is opening into is already the right
       // shape: the reader's view had a bar in this spot, and a spinner where
       // the bar was made the switch look like a page reload.
@@ -737,6 +782,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                environmentName={environmentName}
                packageName={packageName}
                modelPath={modelPath}
+               {...(textSource ? { textSource } : {})}
                slug={dashboardName}
                modelGivens={
                   (modelQuery.data?.data as { givens?: Given[] } | undefined)
@@ -775,6 +821,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
  * a literal, so it works the moment it is added.
  */
 function Surface({
+   textSource,
    kind,
    modelGivens,
    environmentName,
@@ -793,6 +840,7 @@ function Surface({
    onExit,
    note,
 }: {
+   textSource?: TextSourceOptions;
    kind: DocumentKind;
    /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
    modelGivens?: Given[];
@@ -828,7 +876,11 @@ function Surface({
       [opened.generation, opened.document],
    );
 
-   const { data, isSuccess, isError } = useQueryWithApiError({
+   const {
+      data,
+      isSuccess: manifestLoaded,
+      isError: manifestFailed,
+   } = useQueryWithApiError({
       queryKey: [
          "dashboard-editor-manifest",
          environmentName,
@@ -866,9 +918,48 @@ function Surface({
          );
       },
       // The server does not serve a dashboard with no tiles, so asking would 404.
-      enabled: served,
+      enabled: served && !textSource,
    });
-   const manifest = data;
+   // A text source takes its manifest from compiling the text as the viewer.
+   const runModelPath = textSource?.modelPath ?? modelPath;
+   const compiled = useCompiledDocument(
+      {
+         environmentName,
+         packageName,
+         modelPath: runModelPath,
+         source: opened.source,
+      },
+      { enabled: textSource !== undefined },
+   );
+   const compiledDocument = compiled.data?.document;
+   const manifest: DashboardManifest | undefined = textSource
+      ? compiled.isSuccess
+         ? (compiledDocument?.manifest ?? NO_MANIFEST)
+         : undefined
+      : data;
+   const isSuccess = textSource ? compiled.isSuccess : manifestLoaded;
+   const isError = textSource ? compiled.isError : manifestFailed;
+   const preamble = textSource
+      ? documentPreamble(compiledDocument?.cells)
+      : undefined;
+   const compileErrors = (compiled.data?.result.problems ?? []).filter(
+      (problem) => problem.severity === "error",
+   );
+   const hidden = useMemo(
+      () => new Set(textSource?.hiddenGivens ?? []),
+      [textSource],
+   );
+   const restrictedTiles = useMemo(
+      () =>
+         new Set(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.restricted && tile.query
+                  ? [tileExpressionKey(tile.query)]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
 
    // The package's other dashboards, by slug: where a clicked cell can go.
    const { data: dashboardList } = useQueryWithApiError({
@@ -963,8 +1054,16 @@ function Surface({
       [onSave, savesTo],
    );
    const modelSpecs = useMemo(
-      () => manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : []),
-      [manifest, opened.conversion, modelGivens],
+      () =>
+         (
+            manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
+         ).filter(
+            // A `#(secure)` given is the host's to set; a viewer gets no control for it.
+            (spec) =>
+               spec.secure !== true &&
+               !(spec.name !== undefined && hidden.has(spec.name)),
+         ),
+      [manifest, opened.conversion, modelGivens, hidden],
    );
    const runnable = useMemo(
       () =>
@@ -987,9 +1086,10 @@ function Surface({
       autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
-      modelPath: manifest?.path,
+      modelPath: textSource ? runModelPath : manifest?.path,
       versionId,
       documentName: slug,
+      ...(preamble !== undefined ? { preamble } : {}),
    });
 
    const manifestSettled = !served || isSuccess || isError;
@@ -1024,7 +1124,13 @@ function Surface({
                   environmentName={environmentName}
                   packageName={packageName}
                   versionId={versionId}
-                  modelPath={modelPath}
+                  modelPath={runModelPath}
+                  {...(preamble !== undefined ? { preamble } : {})}
+                  {...(restrictedTiles.has(
+                     tileExpressionKey(`${tile.source} -> ${tile.name}`),
+                  )
+                     ? { restricted: true }
+                     : {})}
                   tile={query.expression}
                   {...(query.annotation
                      ? { annotation: query.annotation }
@@ -1051,7 +1157,9 @@ function Surface({
          environmentName,
          packageName,
          versionId,
-         modelPath,
+         runModelPath,
+         preamble,
+         restrictedTiles,
          applied,
          declaredTypes,
          specs,
@@ -1060,7 +1168,25 @@ function Surface({
 
    return (
       <Stack sx={{ gap: 1 }}>
+         {textSource && compileErrors.length > 0 && (
+            <Alert severity="error">
+               The server could not compile this document:{" "}
+               {compileErrors.map((problem) => problem.message).join("; ")}
+            </Alert>
+         )}
+         {textSource && compiled.isError && (
+            <Alert severity="error">
+               The server could not compile this document:{" "}
+               {compiled.error?.message}
+            </Alert>
+         )}
          <DashboardBuilder
+            {...(textSource
+               ? {
+                    addFilterDisabledReason:
+                       "This document holds no given: of its own. Bind a filter the model offers from its chip.",
+                 }
+               : {})}
             source={opened.source}
             document={opened.document}
             renderTile={renderTile}

@@ -44,7 +44,7 @@ names the two spellings that are. The dated list of everything else that differs
 storefront/
   publisher.json           # package manifest
   storefront.malloy        # sources, measures, reusable views, # drill tags
-  givens.malloy            # given: declarations the data app and notebooks share
+  givens.malloy            # given: declarations that model code reads, imported by name
   dashboards/
     overview.malloy        # a dashboard: declares its filters, names its tiles
     category.malloy
@@ -245,9 +245,9 @@ Two spellings that bite:
 
 Controls are the `given:` declarations the tiles reference. **Declare them in the dashboard file**:
 that is the convention, because it is the one file the dashboard builder edits, and a filter the
-builder adds has to be a declaration in it. A package-wide `givens.malloy` is for controls several
-surfaces share, the data app and notebooks here, and a dashboard can still import and bind those; it
-just cannot add to them. Either way the tags on the declaration are its control contract:
+builder adds has to be a declaration in it. A given the model already reads stays in the model, imported
+by name and never declared a second time (the rule is spelled out below), and a dashboard can still bind it;
+it just cannot add to it. Either way the tags on the declaration are its control contract:
 
 ```malloy
 ##! experimental.givens
@@ -334,9 +334,9 @@ depth-1 `where:` statement inside the body's own first stage instead, since ther
 refine. Either way it is exactly what the builder reads and writes; a `where:` anywhere else in an
 inline body (nested inside a `nest:`, part of a compound predicate, or in a second pipeline stage) is
 left alone and is not a binding the builder will touch. Model-level scoping (a `where:` inside a
-source, reading the model's givens) is the other design and still works: import that source and
-`import '../givens.malloy'` whole, and the controls render for the givens the tiles reach. The two do
-not mix on one given.
+source, reading the model's givens) is the other design and still works: import that source and the
+givens it reads, and the controls render for the givens the tiles reach. The two do not mix on one
+given.
 
 **A tile whose body has no one place for a binding keeps everything but its filter.** A `->`
 pipeline from a named view, or a chained `vx + { … } + { … }` where neither block is where a binding
@@ -348,9 +348,18 @@ tags live on the model's own view and the builder does not write model files.
 
 **Declare in the dashboard when the dashboard is the thing being edited.** The builder adds and
 removes filters by writing `given:` declarations and tile bindings into the dashboard file, and it
-never edits imports or model files, so a control that lives in `givens.malloy` is one it can bind but
-not add, change or remove. Keep declarations in the model when several surfaces really share a
-control, and when row-level access or `#(access_filter)` reads the given, since those are model concerns.
+never edits imports or model files, so a control declared in the model is one it can bind but not add,
+change or remove.
+
+**A given stays in the model when anything in the model reads it:** a source, view or measure, an
+`#(authorize)` or `#(access_filter)` gate, or an HTML data app. The dashboard then imports it by name and
+never re-declares it. Two ways to get that wrong, and they fail differently. Importing a name and also
+declaring it is a compile error that names the clash. Declaring a name the model already reads, without
+importing it, is no error at all: the dashboard gets a second given that shares only the name, its control
+moves, and the model's own `where:` or gate never sees the value. A `# drill` into a dashboard seeds a given
+by name, so the destination declares that same name as `filter<T>`. A composite that scopes its own source
+declares that source in its file, so the givens its tiles bind sit beside it. Declare locally only what no
+model code reads. Row-level access and `#(access_filter)` are model concerns for the same reason.
 A `filter<…>` given binds with `~`; a plain `date` or `number` given is a value, not a filter
 expression, and binds with `>=`, `<=` or `=`.
 
@@ -880,6 +889,38 @@ a package that would otherwise take the editor's writes and Save turns itself of
 caption saying why, rather than opening the editor onto a compare-and-swap it can never win. Pinning
 has no effect on a save that goes into a host's own document store or a browser draft instead:
 neither touches the package's write endpoint.
+
+## Documents held as text
+
+A host that keeps documents in its own store, rather than as files in a package, still gets one format
+(a `.malloy` file with an `## artifact` tag), one parser (Publisher's) and one viewer and editor (the SDK
+builder). Each person who opens the document runs it as themselves.
+
+`POST …/models/{path}/compile` at scope `append` reads the submitted text as a document when it carries a
+model-level `## artifact` tag, and answers with a `document` beside `status` and `problems`: the `kind`
+(the tag's `kind`, a notebook when it names none), the `manifest` the same text would serve once saved, and
+the file's own `cells`. It is read from the submitted text alone, on top of the model in the URL, so the
+model's own `run:` statements and `##` notes never join the document. Nothing runs, including a control's
+`suggest` query. Problem positions are lines of the submitted text. The text carries no `import`, `##!` or
+`given:`, which `append` refuses; the model supplies them.
+
+**A tile or cell the caller may not read is not compiled.** Where `#(authorize)` denies the caller a tile's
+source, that tile comes back `restricted: true` and the rest of the document compiles. A restricted tile
+carries its expression and nothing derived from the source (no `givenNames`, no layout tags), and a
+restricted cell is still listed. No diagnostic is returned for either, because a gated source's columns would
+otherwise leak through the error text. A source defined from a gated one in the same document is restricted
+along with it. A tile over a source off the package's query surface is an error problem
+(`query-not-queryable`) and no `document`, so a document that compiles also runs on a curated package.
+
+A given declared `#(secure)` carries `secure: true` on `Given`: its value is the host's to set, so no control
+is offered for it.
+
+The SDK reads this with `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` (the text comes from
+the host's authoritative `DocumentStorage`) and `<DashboardView preamble runModelPath hiddenGivens />`. Every
+tile, cell and control option runs as the document's definitions followed by one `run:`, sent to
+`modelPath`. A restricted tile, or a tile the server answers 403, shows "You don't have access to this
+data". "Add filter" is off, since the document holds no `given:` of its own to write; the model's givens can
+still be bound. `hiddenGivens` names givens the host sets itself, which get no control.
 
 ## Where dashboards stop
 

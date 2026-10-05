@@ -4,6 +4,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { Given } from "../client";
+import { withPreamble } from "../components/Dashboard/textSource";
 import { givensToRequest } from "../components/given/paramCodec";
 import { useServer } from "../components/ServerProvider";
 import type { GivenValue } from "./givenValue";
@@ -120,6 +121,11 @@ export function useSuggestOptions(
     * caller that omits it gets the pre-gating behaviour.
     */
    applied?: AppliedGivens,
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the suggest as
+    * the viewer's own text. Absent, a suggest runs by name or by view as before.
+    */
+   preamble?: string,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -167,6 +173,8 @@ export function useSuggestOptions(
                // Only the givens the suggest carries, so a change to any OTHER
                // control leaves the cached list alone.
                givens === undefined ? null : JSON.stringify(givens),
+               // Only a text source keys on its definitions, so no other key changes shape.
+               ...(preamble === undefined ? [] : [preamble]),
             ],
             enabled: modelPath !== undefined,
             // Option lists change with the data, not with the filters, so they
@@ -179,7 +187,7 @@ export function useSuggestOptions(
                   environmentName,
                   packageName,
                   modelPath as string,
-                  suggest.query !== undefined
+                  suggest.query !== undefined && preamble === undefined
                      ? {
                           queryName: suggest.query,
                           compactJson: true,
@@ -187,9 +195,14 @@ export function useSuggestOptions(
                           givens,
                        }
                      : {
-                          query: buildSuggestQuery(
-                             suggest.source as string,
-                             suggest.dimension as string,
+                          query: withPreamble(
+                             preamble ?? "",
+                             suggest.query !== undefined
+                                ? `run: ${suggest.query}`
+                                : buildSuggestQuery(
+                                     suggest.source as string,
+                                     suggest.dimension as string,
+                                  ),
                           ),
                           compactJson: true,
                           versionId,

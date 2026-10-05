@@ -124,6 +124,8 @@ export interface MalloyGivenApi extends GivenControlSpec {
    name: string;
    type: string;
    annotations?: string[];
+   /** True when the declaration carries `#(secure)`: its value is the host's to set, so a control never offers it. */
+   secure?: boolean;
    /**
     * The given's default as a Malloy source literal — one literal per declared
     * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
@@ -287,6 +289,7 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       // Reads the reserved plain-`#` notes the line above drops, which is where
       // the control tags live.
       ...readGivenControlSpec(allNotes.map((note) => note.text)),
+      ...(allNotes.some((note) => note.route === "secure") && { secure: true }),
       // `_internal.defaultText` is the already-rendered source literal of the
       // given's default. It lives on Malloy's private `_internal` (the public
       // surface exposes only the parsed `.default` AST node, not a stringified

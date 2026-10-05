@@ -40,6 +40,7 @@ import type {
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
+import { referencedGivenNames } from "./authorize";
 import {
    DASHBOARDS_DIR,
    dashboardDescriptionNotes,
@@ -134,6 +135,12 @@ export interface DashboardQueryTileSpec extends DashboardTileLayout {
     * which controls a tile ignores.
     */
    givenNames?: string[];
+   /**
+    * The caller may not read this tile's source. Set only by a compile of
+    * caller-submitted text; carries nothing else of the tile, so the answer
+    * discloses neither the gated view's layout tags nor the givens it reads.
+    */
+   restricted?: boolean;
 }
 
 /** A tile that shows markdown: its `##|(markdown) name` block, laid out by its own `tiles=[…]` entry. */
@@ -434,6 +441,17 @@ function readArtifactTag(
       givens,
       autorun,
    };
+}
+
+/** The run expressions of a composite artifact tag's query tiles, read off the file's own `##` notes. */
+export function readDocumentTileExpressions(
+   notes: readonly string[],
+): string[] {
+   const tag = motlyTag(notes);
+   const composite = tag ? readArtifactTag(tag, () => undefined) : undefined;
+   return (composite?.tiles ?? []).flatMap((entry) =>
+      entry.kind === "text" ? [] : [entry.expression],
+   );
 }
 
 /** The `##|(markdown) name` blocks among a file's own model notes, in file order. */
@@ -966,6 +984,9 @@ function givenSpec(
       annotations: declaration.annotations.filter(
          (text) => /^##?\(/.test(text) && !isMarkdownNote(text),
       ),
+      ...(declaration.annotations.some((text) => /^#\(secure\)/.test(text)) && {
+         secure: true,
+      }),
       ...control,
    };
 }
@@ -1003,6 +1024,10 @@ export function factsCarryArtifactTag(facts: DashboardModelFacts): boolean {
  */
 export function buildDashboardManifest(
    facts: DashboardModelFacts,
+   options?: {
+      /** Normalized tile expressions the caller may not read; they come back bare. */
+      restrictedTiles?: ReadonlySet<string>;
+   },
 ): DashboardManifest | undefined {
    const name = dashboardSlug(facts.modelPath);
    const base = {
@@ -1034,6 +1059,9 @@ export function buildDashboardManifest(
             };
          }
          const query = entry.expression;
+         if (options?.restrictedTiles?.has(normalizeTileExpression(query))) {
+            return { kind: "query", query, restricted: true };
+         }
          const givenNames = resolveTileGivens(query, facts);
          const layout = resolveTileLayout(query, facts);
          return {
@@ -1043,7 +1071,7 @@ export function buildDashboardManifest(
             ...layout,
          };
       });
-      const queries = queryTiles(tiles);
+      const queries = queryTiles(tiles).filter((tile) => !tile.restricted);
       const doc = docCommentTitleAndDescription(
          facts.descriptionNotes ?? facts.modelAnnotations,
          composite.title,
@@ -1845,4 +1873,57 @@ export function lintSelfDrills(
       }
    }
    return Array.from(findings.values());
+}
+
+/**
+ * What each tile's COMPILED query reads, keyed by normalized tile expression.
+ * A tile that does not compile is left out and keeps the static answer; one in
+ * `skip` is never compiled, so a caller who may not read it gets no diagnostic.
+ * `onPrepared` sees each compiled tile, for a caller that gates on it.
+ */
+export async function compileTileGivens(
+   tiles: readonly string[],
+   materializer: {
+      loadQuery(text: string): { getPreparedQuery(): Promise<unknown> };
+   },
+   fallbackRegistry: ModelDef["givens"] | undefined,
+   gatesOf: (sourceName: string) => readonly string[] | undefined,
+   skip?: ReadonlySet<string>,
+   onPrepared?: (tile: string, prepared: unknown) => Promise<void>,
+): Promise<Map<string, CompiledTileGivens>> {
+   const compiled = new Map<string, CompiledTileGivens>();
+   for (const tile of tiles) {
+      const key = normalizeTileExpression(tile);
+      if (compiled.has(key) || skip?.has(key)) continue;
+      let prepared: {
+         _query?: { givenUsage?: { id: string }[]; structRef?: unknown };
+         _modelDef?: ModelDef;
+      };
+      try {
+         prepared = (await materializer
+            .loadQuery(`run: ${tile}`)
+            .getPreparedQuery()) as typeof prepared;
+      } catch {
+         continue;
+      }
+      await onPrepared?.(tile, prepared);
+      const usage = prepared._query?.givenUsage;
+      if (!usage) continue;
+      const registry = prepared._modelDef?.givens ?? fallbackRegistry ?? {};
+      const reads = usage
+         .map((given) => registry[given.id]?.name)
+         .filter((name): name is string => name !== undefined);
+      const target = prepared._query?.structRef;
+      const sourceName =
+         typeof target === "string"
+            ? target
+            : (target as { as?: string; name?: string } | undefined)?.as ||
+              (target as { name?: string } | undefined)?.name;
+      const gateReads = new Set<string>();
+      for (const expr of sourceName ? (gatesOf(sourceName) ?? []) : []) {
+         for (const name of referencedGivenNames(expr)) gateReads.add(name);
+      }
+      compiled.set(key, { reads, gateReads: Array.from(gateReads) });
+   }
+   return compiled;
 }

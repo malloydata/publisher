@@ -8,7 +8,12 @@ import type {
    ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
+import { compileDocument, type CompiledDocument } from "./compile_document";
+import {
+   claimsToBeANotebook,
+   isNotebookModelPath,
+   notebookReaderProblem,
+} from "./notebook";
 import { isDashboardModelPath } from "./dashboard";
 import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
@@ -597,7 +602,11 @@ export class Environment {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-   ): Promise<{ problems: TaggedLogMessage[]; sql?: string }> {
+   ): Promise<{
+      problems: TaggedLogMessage[];
+      sql?: string;
+      document?: CompiledDocument;
+   }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
       if (!COMPILE_SCOPES.includes(scope)) {
@@ -790,37 +799,46 @@ export class Environment {
                hasExactGateModel = true;
             }
          }
-         if (gateModel && hasExactGateModel && source !== undefined) {
-            // Only the authorize gate (the *who* axis) applies to /compile.
-            // The query boundary (`explores`/`queryableSources`, the *what*
-            // axis) deliberately does NOT: compile is the authoring loop
-            // (validate -> save -> reload), and gating it made a curated
-            // package un-authorable — a QA session (HANDOFF CR-5) had every
-            // per-file compile 404 with "Query target is not queryable" the
-            // moment `queryableSources: "declared"` was set. The boundary is
-            // discovery curation, not access control (the skills say so
-            // outright); the accepted trade is that /compile can reveal a
-            // non-exported source's schema (and, with includeSql, SQL) —
-            // sources whose confidentiality matters are gated by
-            // `#(authorize)`, which still applies here in full.
-            await denyHiddenAsNotQueryable(
-               () => {
-                  gateModel.assertQueryBoundaryEarly(
-                     undefined,
-                     undefined,
-                     source,
-                  );
-               },
-               () =>
-                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                     // File and package scope compile the whole file (or, at
-                     // package scope with a source, the whole replacement) —
-                     // a locked name that is not the statement Malloy runs
-                     // must not refuse it, and its joins are author joins.
-                     wholeFile: scope !== "append",
-                  }),
-            );
-         }
+         // A document is gated cell by cell and tile by tile below, so one
+         // restricted cell does not refuse the cells the caller may read.
+         const documentCandidate =
+            scope === "append" &&
+            source !== undefined &&
+            claimsToBeANotebook(source);
+         const runEarlyGate = async (): Promise<void> => {
+            if (gateModel && hasExactGateModel && source !== undefined) {
+               // Only the authorize gate (the *who* axis) applies to /compile.
+               // The query boundary (`explores`/`queryableSources`, the *what*
+               // axis) deliberately does NOT: compile is the authoring loop
+               // (validate -> save -> reload), and gating it made a curated
+               // package un-authorable — a QA session (HANDOFF CR-5) had every
+               // per-file compile 404 with "Query target is not queryable" the
+               // moment `queryableSources: "declared"` was set. The boundary is
+               // discovery curation, not access control (the skills say so
+               // outright); the accepted trade is that /compile can reveal a
+               // non-exported source's schema (and, with includeSql, SQL) —
+               // sources whose confidentiality matters are gated by
+               // `#(authorize)`, which still applies here in full.
+               await denyHiddenAsNotQueryable(
+                  () => {
+                     gateModel.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        source,
+                     );
+                  },
+                  () =>
+                     gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                        // File and package scope compile the whole file (or, at
+                        // package scope with a source, the whole replacement) —
+                        // a locked name that is not the statement Malloy runs
+                        // must not refuse it, and its joins are author joins.
+                        wholeFile: scope !== "append",
+                     }),
+               );
+            }
+         };
+         if (!documentCandidate) await runEarlyGate();
 
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
@@ -1189,6 +1207,68 @@ export class Environment {
                }
                throw error;
             }
+         }
+
+         if (documentCandidate && source !== undefined) {
+            const gate = gateModel;
+            const exact = hasExactGateModel;
+            const result = await compileDocument({
+               base: runtime.loadModel(pathToFileURL(modelPath)),
+               source,
+               modelName,
+               gates: {
+                  text: (text) =>
+                     gate && exact
+                        ? denyHiddenAsNotQueryable(
+                             () => {
+                                gate.assertQueryBoundaryEarly(
+                                   undefined,
+                                   undefined,
+                                   text,
+                                );
+                             },
+                             () =>
+                                gate.assertAuthorizedForText(
+                                   text,
+                                   givens ?? {},
+                                ),
+                          )
+                        : Promise.resolve(),
+                  compiled: (runnable) =>
+                     gate
+                        ? denyHiddenAsNotQueryable(
+                             () => gate.assertCompiledTargetQueryable(runnable),
+                             () =>
+                                exact
+                                   ? gate.assertAuthorizedForRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     )
+                                   : gate.assertAuthorizedFromCompiledRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     ),
+                          )
+                        : Promise.resolve(),
+                  boundary: (query, definitions) => {
+                     gate?.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        query,
+                        definitions,
+                     );
+                  },
+               },
+            });
+            if (result) {
+               return {
+                  problems: result.problems.map((problem) => ({
+                     ...problem,
+                  })) as TaggedLogMessage[],
+                  ...(result.document && { document: result.document }),
+               };
+            }
+            await runEarlyGate();
          }
 
          // Attempt to compile
