@@ -103,6 +103,15 @@ describe("getSemanticIndexMaxEntities (the startup read)", () => {
       expect(DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES).toBe(5000);
    });
 
+   it("gives the default for a file that cannot be parsed, so the server can start and say why", () => {
+      // Throwing here, at module load, killed the process before /status
+      // existed; the unreadable-config smoke test caught it.
+      fs.writeFileSync(path.join(root, "publisher.config.json"), "{ not json");
+      expect(getSemanticIndexMaxEntities(root)).toBe(
+         DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+      );
+   });
+
    it("throws the actionable message for an invalid value", () => {
       writeConfig({
          frozenConfig: false,
