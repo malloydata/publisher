@@ -422,7 +422,7 @@ function isCompositePlaceholder(field: FieldDef): boolean {
    return (field as { e?: { node?: unknown } }).e?.node === "compositeField";
 }
 
-function isComposite(struct: SourceDef | undefined): struct is SourceDef {
+function isComposite(struct: SourceDef | undefined): boolean {
    return (struct as { type?: string } | undefined)?.type === "composite";
 }
 
@@ -440,18 +440,30 @@ function compositeMembers(
    return out;
 }
 
-/** Malloy hands the resolved member's fields and conditions to the executed
- *  struct by reference, so identity proves one came from a member and not
- *  from a later redefinition. `composite` must come from the executed
- *  struct's own compile; a sibling model's never shares its objects. */
+/** Identity tells a member's field from a redefinition. The objects come
+ *  from `composite`, compiled with `executed`; only leaves identical to a
+ *  declaring leaf count, so a caller's `compose(...)` adds none. */
 function withCompositeMembersResolved(
    declaring: SourceDef,
    executed: SourceDef,
    composite: SourceDef | undefined,
 ): SourceDef {
-   if (!isComposite(declaring) || !isComposite(composite)) return declaring;
+   if (!composite || !isComposite(declaring) || !isComposite(composite)) {
+      return declaring;
+   }
+   const leaf = (member: SourceDef) => !isComposite(member);
+   const declared = new Set(
+      compositeMembers(declaring)
+         .filter(leaf)
+         .map((member) => JSON.stringify(strip(member))),
+   );
    const memberFields = new Set(
-      compositeMembers(composite).flatMap((member) => member.fields ?? []),
+      compositeMembers(composite)
+         .filter(
+            (member) =>
+               leaf(member) && declared.has(JSON.stringify(strip(member))),
+         )
+         .flatMap((member) => member.fields ?? []),
    );
    let resolved = false;
    const fields = (declaring.fields ?? []).map((field) => {
@@ -1248,8 +1260,7 @@ export function assertInheritedSourceFiltersBind(
    depth = 0,
    visited: Set<SourceDef> = new Set(),
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
-   // `struct` before composite resolution, from the same compile: the
-   // composite a resolved member came from, or `struct` itself.
+   // `struct` before composite resolution, from the same compile.
    unresolved: SourceDef | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;
