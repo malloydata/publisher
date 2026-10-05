@@ -37,6 +37,17 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
+
+Publisher now builds on `@malloydata/*` 0.0.435, up from 0.0.434. No Malloy API that Publisher calls changed, and a model that compiled on 0.0.434 compiles the same way, except a Trino or Presto source on a table whose `DESCRIBE` returns no columns (the last item below). The changes that reach a running server are in the Postgres and Trino drivers:
+
+- **A Postgres query that fails no longer leaves its session open** ([malloydata/malloy#3109](https://github.com/malloydata/malloy/pull/3109)). On 0.0.434 the driver closed its database session only after a query succeeded. A query that failed after connecting (malformed SQL, a permission error, a column type the driver cannot map) left the session open on the database until the server's idle timeout or an operator ended it. Every plain Postgres connection was affected, and so was the schema lookup and row streaming on an SSH-proxied one, so a model or agent that kept retrying a failing query could use up the database's `max_connections`. Sessions now close on failure, and when a consumer stops reading a stream early. If you have been seeing idle Publisher sessions pile up in `pg_stat_activity`, this is the likely cause.
+- **A Postgres session the database drops mid-query no longer raises an uncaught exception** ([malloydata/malloy#3109](https://github.com/malloydata/malloy/pull/3109)). When the connection was cut (a failover, `pg_terminate_backend`, a network drop), the driver emitted an `error` event that nothing handled. Publisher does not catch uncaught exceptions, so that event could stop the server process. The query now fails with the connection error and the server keeps running.
+- **Trino `map` and `json` columns return their values** ([malloydata/malloy#3100](https://github.com/malloydata/malloy/pull/3100)). On 0.0.434 a column of either type read back as `null` in every row. It now returns the object or parsed JSON document the Trino client decoded. A data app or dashboard that showed nothing for such a column will start showing values, and code that relied on the `null` will see an object.
+- **A Trino or Presto table whose `DESCRIBE` returns no columns is now an error** ([malloydata/malloy#3091](https://github.com/malloydata/malloy/pull/3091)). On 0.0.434 the empty result was cached as a table with no fields, so the source compiled and every field reference failed with `'<field>' is not defined`, and stayed that way until the cache was cleared. The source now fails to compile with `Could not fetch schema for table <name>: DESCRIBE returned no columns`, nothing is cached, and the next compile tries again.
+
+The release also adds an experimental SQL Server dialect. Publisher does not offer a SQL Server connection type, so it has no effect here.
+
 ## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
 
 With no embedding provider and no LLM configured, `get_context` ranks by words as before, and a listing request is unchanged. Everything below applies once a provider is configured. Read the first four items if you poll the status API, run a server with an embedding provider, or write `publisher.json` files.

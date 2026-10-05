@@ -47,6 +47,7 @@ import {
    humanizeName,
    trySemanticSearch,
 } from "./embedding_index";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 let tempDir: string;
 let db: DuckDBConnection;
@@ -1954,12 +1955,19 @@ describe("trySemanticSearch", () => {
    });
 
    it("does not re-purge once per cooldown window: suppression outlasts the cooldown", async () => {
-      // The core of blocker 4. cooldown 15ms, suppression 400ms: after
-      // the cooldown clears (but well inside the suppression window) a
-      // fresh mismatch must BACK OFF, not re-purge. With the co-anchored
-      // bug (equal windows) the first post-cooldown call re-purges and
-      // full-re-embeds; this test fails against that.
-      _setTimingForTests({ cooldownMs: 15, purgeSuppressionMs: 400 });
+      // The core of blocker 4. After the cooldown clears (but inside the
+      // suppression window) a fresh mismatch must BACK OFF, not re-purge.
+      // With the co-anchored bug (equal windows) the first post-cooldown
+      // call re-purges and full-re-embeds; this test fails against that.
+      //
+      // Neither window is left to the clock. Suppression is held longer than
+      // the test runs, and each cycle ends the cooldown for exactly its first
+      // question. Real-time windows (15ms cooldown, 400ms suppression) let a
+      // slow runner outlast the suppression window and see the re-purge it
+      // then correctly allows, and let a poll landing after the cooldown
+      // restart the heal instead of reading the back-off.
+      const HELD_MS = 60_000;
+      _setTimingForTests({ cooldownMs: 15, purgeSuppressionMs: HELD_MS });
       const base = {
          db,
          environmentName: "env",
@@ -1989,14 +1997,19 @@ describe("trySemanticSearch", () => {
       expect(purgeAt).toBeGreaterThan(0);
 
       // Query back at 3 dims (rows are 4-dim, so stale) across several
-      // cooldown-expiry cycles, all inside the 400ms suppression window.
+      // cooldown-expiry cycles, all inside the suppression window.
       const pkgQ = instance();
       for (let cycle = 0; cycle < 4; cycle++) {
+         // The previous cycle's cooldown is over for this question and for
+         // the sync it queues, which checks the cooldown when it runs.
+         _setTimingForTests({ cooldownMs: 0 });
          let r = await trySemanticSearch({
             ...base,
             provider: narrow.provider,
             pkg: pkgQ,
          });
+         await embeddingSyncQueue.idle();
+         _setTimingForTests({ cooldownMs: HELD_MS });
          for (
             let j = 0;
             j < 200 && "unavailable" in r && r.unavailable === "indexing";
@@ -2010,7 +2023,6 @@ describe("trySemanticSearch", () => {
             });
          }
          expect(r).toEqual({ unavailable: "cooldown" });
-         await new Promise((resolve) => setTimeout(resolve, 20)); // clear the 15ms cooldown
       }
 
       // Never re-purged: lastPurgeAtMs unchanged and the 4-dim rows survive
