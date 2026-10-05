@@ -316,8 +316,7 @@ rows.
   `# label=`, or the card is headed `total_sales`.
 - **Only table cells are marked drillable.** See "Drill".
 
-`skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
-choosing them.
+`skill:malloy-charts` covers the renderer tags and choosing them.
 
 ## Filter controls
 

@@ -1,6 +1,6 @@
 ---
 name: malloy-charts
-description: Chart selection for a Malloy view, plus the renderer reference for bar_chart, line_chart, scatter_chart, maps and layouts. For choosing a visualization or adding a chart annotation.
+description: Read before choosing a chart or adding a chart annotation. Chart types, tag syntax and scale rules, KPI cards, dashboards, sparklines, and the renderer mistakes that fail silently.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -43,8 +43,8 @@ SPDX-License-Identifier: MIT
 
 **Constraints:**
 - ONE aggregate per chart view (charts render only the first; use `y=['a','b']` for multi-measure)
-- No fixed scale on measure definitions: use `# currency` not `# currency=usd0m`
-- One tag per line
+- No fixed scale on measure definitions: use `# currency` not `# currency=usd0m`. The same measure renders at many granularities, and `usd0m` turns $500 into `$0.0M`. Add a scale only in a view, after confirming the value range with a query.
+- One tag per line, each directly above the field it styles. Two `#` tags on one line do not work.
 - Alias joined fields in `group_by` before `order_by`
 - Define measures in source, not in views
 
@@ -127,6 +127,8 @@ view: summary is {
 ```
 
 **Properties:** `.size`, `.sparkline=<nested_view_name>`, `.comparison_field`, `.comparison_label`, `.down_is_good`
+
+Put `# label` on every measure. Without it the card shows the raw field name, which is often unclear.
 
 ### `# dashboard`
 
@@ -319,18 +321,25 @@ view: revenue_by_month is {
 
 **Precedence**, highest to lowest, per key: `# theme.*` on the view, then `## theme.*` model default, then the instance theme, then Publisher's built-in defaults. A per-chart annotation overrides the instance for the keys it sets; unset keys fall through to the instance. (This is the reverse of a bare `@malloydata/render` embed, where the embedder wins: Publisher reads the annotation itself and layers it on top.)
 
-Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The malloy-gotchas-rendering skill lists the annotation forms that look valid but do nothing.
+Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. Annotation forms that look valid but do nothing, such as a flat `# theme.tableHeaderColor`, are dropped without an error.
 
 
 ## Advanced Patterns
 
 ### Sparklines in KPI Cards
 
+A sparkline needs two things: a `# hidden` nested view and a `.sparkline=` property naming it. If it does not show, check that `# hidden` is on the nested view and that its name matches `.sparkline=`.
+
 ```malloy
 # big_value { sparkline=trend }
 view: revenue_kpi is {
-  aggregate: # label="Revenue" # currency revenue
-  nest: # line_chart { size=spark } # hidden
+  aggregate:
+    # label="Revenue"
+    # currency
+    revenue
+  nest:
+    # line_chart { size=spark }
+    # hidden
     trend is { group_by: order_date, aggregate: revenue, order_by: order_date }
 }
 ```
@@ -340,7 +349,12 @@ view: revenue_kpi is {
 ```malloy
 # big_value { comparison_field=prior_month comparison_label="vs Last Month" }
 view: rev_delta is {
-  aggregate: # label="Revenue" # currency revenue, # hidden prior_month
+  aggregate:
+    # label="Revenue"
+    # currency
+    revenue
+    # hidden
+    prior_month
 }
 ```
 

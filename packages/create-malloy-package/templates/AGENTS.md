@@ -207,7 +207,7 @@ correctness.
 
 Read the gotchas before you write, not after you fail: `malloy-gotchas-modeling` for
 sources, dimensions, measures and joins, `malloy-queries` for views and
-queries, and `malloy-gotchas-rendering` for chart and formatting tags. They hold the
+queries, and `malloy-charts` for chart and formatting tags. They hold the
 traps that cost the most time on a first model, including the two that a column of
 real data usually springs:
 

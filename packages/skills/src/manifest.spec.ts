@@ -73,7 +73,6 @@ const PACKAGED_SKILLS = [
    "malloy-analysis",
    "malloy-analysis-pitfalls",
    "malloy-charts",
-   "malloy-gotchas-rendering",
    "malloy-patterns",
    "malloy-phrase-detection",
    "malloy-queries",

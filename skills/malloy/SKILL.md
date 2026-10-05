@@ -68,7 +68,6 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 |-------|-------------|
 | `skill:malloy-queries` | Query and view syntax: dates, aggregates, join paths, filters |
 | `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins |
-| `skill:malloy-gotchas-rendering` | Before adding chart annotations or formatting tags |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
 | `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
 | `skill:malloy-review` | Reviewing, auditing, or critiquing existing Malloy |

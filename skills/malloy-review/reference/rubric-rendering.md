@@ -22,7 +22,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Why this is a problem.** A scale like `# currency=usd1m` (display in millions) is correct for one specific value range, but a measure can be reused across many views. As soon as a view filters down, one customer, one month, one product, one region, the rendered values may fall well below the baked-in scale and round visibly: `$500` displays as `$0.0M`, `$1,200,000` collapses to `$1M` and loses precision. The scale belongs on the view (after you've seen the actual range), not on the measure definition where it can't anticipate every downstream filter.
 - **Detection:** any explicit value on a `# currency`, `# number`, or `# percent` tag immediately above a `measure:` or `dimension:` declaration, e.g. `# currency=usd1m`, `# number=0,000`, `# percent=0.00`. The bare forms (`# currency`, `# number`, `# percent`) are correct and must not be flagged.
 - **Fix:** drop the `=<scale>` from the measure or dimension. Add it at the view level for the specific views where the value range is known to fit.
-- **See:** `skill:malloy-gotchas-rendering` § No Fixed Scale on Measures
+- **See:** `skill:malloy-charts` § Decision Tree (Constraints)
 
 ---
 
@@ -32,7 +32,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Detection:** AST, a view with `# big_value` tag whose `aggregate:` declarations lack a `# label="..."` tag.
 - **Fix:** add `# label="..."` above each aggregate.
 - **Why non-blocking:** verified against Malloy 0.0.370, the view compiles fine and the card still renders without `# label`. Malloy falls back to the raw field name on the card (`total_revenue` instead of `Total Revenue`), which is a clarity hit but not a render failure. Treat it as a polish recommendation, not a merge gate.
-- **See:** `skill:malloy-gotchas-rendering` § `# big_value` Needs `# label` on Each Measure
+- **See:** `skill:malloy-charts` § `# big_value`
 
 ---
 
@@ -41,7 +41,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (blocking) · **Category:** rendering · machine-checkable
 - **Detection:** AST, `sparkline=` is a `# big_value` property; sparklines aren't a generic chart feature, and `sparkline=` on any other view tag is silently ignored by the renderer. For any view tagged `# big_value` with `sparkline=<name>`, verify the view contains a `nest:` whose alias matches `<name>` and whose tag block carries both a chart tag (e.g. `# line_chart`, `# bar_chart`) and `# hidden`.
 - **Fix:** put `# hidden` on the nested chart view, and make sure the nested view's name matches the `sparkline=<name>` reference on the parent.
-- **See:** `skill:malloy-gotchas-rendering` § Sparkline Setup · `skill:malloy-charts` § Sparklines in KPI Cards
+- **See:** `skill:malloy-charts` § Sparklines in KPI Cards
 
 ---
 
@@ -50,7 +50,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** rendering · machine-checkable
 - **Detection:** regex, `comparison_field` and `comparison_label` are `# big_value` properties (along with `down_is_good` and the sparkline pair from R-03); they aren't a generic chart feature. For any view tagged `# big_value` whose tag block contains a `comparison_field=` property, verify a `comparison_label=` is also present in the same tag block (multi-line braced form counts).
 - **Fix:** add `comparison_label="..."` with a human-readable description (e.g., `"vs Last Month"`).
-- **See:** `skill:malloy-gotchas-rendering` § Comparison Deltas · `skill:malloy-charts` § KPIs with Comparison Deltas
+- **See:** `skill:malloy-charts` § KPIs with Comparison Deltas
 
 ---
 
