@@ -28,6 +28,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../errors";
+import { onlyParseFailures } from "./compile_restriction";
 import { Environment } from "./environment";
 
 // The curated model. It publishes `base_source` and nothing else; every
@@ -464,5 +465,36 @@ source: published is duckdb.sql("select 1 as id") extend {
          );
          expect(problems.filter((p) => p.severity === "error")).toEqual([]);
       });
+   });
+});
+
+describe("onlyParseFailures", () => {
+   const problem = (code: string, severity: "error" | "warn" = "error") =>
+      ({ code, severity, message: "m" }) as never;
+
+   it("is true only when every error is a parse failure", () => {
+      expect(onlyParseFailures([problem("syntax-error")])).toBe(true);
+      expect(
+         onlyParseFailures([problem("syntax-error"), problem("syntax-error")]),
+      ).toBe(true);
+      // A warning beside a parse failure does not change what the text is.
+      expect(
+         onlyParseFailures([
+            problem("syntax-error"),
+            problem("some-lint", "warn"),
+         ]),
+      ).toBe(true);
+   });
+
+   it("is false when any error was found after the parse, or there is none", () => {
+      expect(onlyParseFailures([])).toBe(false);
+      expect(onlyParseFailures([problem("field-not-found")])).toBe(false);
+      expect(
+         onlyParseFailures([
+            problem("syntax-error"),
+            problem("source-or-query-not-found"),
+         ]),
+      ).toBe(false);
+      expect(onlyParseFailures([problem("syntax-error", "warn")])).toBe(false);
    });
 });
