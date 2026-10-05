@@ -74,15 +74,16 @@ Run the query with `execute_query`. Scope it to the environment, package, and mo
 
 ## 5. Verify before trusting
 
-Your first result is a draft, not an answer. The difference between a useful analysis and a misleading one almost always comes down to this step. Load `skill:malloy-analysis-pitfalls` for the full list of traps.
+Your first result is a draft, not an answer. The difference between a useful analysis and a misleading one almost always comes down to this step.
 
 - **Ground it.** Before interpreting any result, query and state the dataset scope: the time range (`min`/`max` of the primary date dimension) and the row or entity count. Every number is meaningless without it.
 - **Ask "what would make this wrong?"** then run the query that would expose that problem. A plausible-looking wrong answer is the most dangerous kind.
 - **Check the common failure modes:**
-  - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
-  - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
+  - Fan-out / double-counting: if you joined across grain, compare `count()` with `count(base_key)`, the base source's own key (in Malloy `count(field)` is already the distinct count). A large gap means base rows are repeated and aggregates are inflated. The check reads one way only: `count(joined.field)` is a distinct count at the joined grain, so it is normally much SMALLER than `count()`, and that is not missing data. Measure coverage at the base grain instead: `count() { where: joined.field is null }`.
+  - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one. Confirm which dimension the user's word ("brand") maps to when several fields have similar names, and apply the filter the question implies ("last quarter" with no time filter returns all-time data). A view can have a `where:` built in (`recent_orders`, `active_customers`): read its code, and query the base source with explicit filters if it conflicts with the ask.
   - Null-driven loss: `count() { where: the_field is null }` shows how many rows a key field drops (`count(the_field)` counts distinct values, so subtracting it from `count()` is not a null count).
-  - Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
+  - Parts that do not sum to the whole: if you split a total into categories, confirm they add up. If a doc says the parts are not additive (one event logged on two layers, a non-additive measure), do not print a total row across that dimension, least of all one nobody asked for; give the per-category figures and say why.
+  - Row counts and magnitudes: an unexpectedly high row count suggests fan-out and a low one an over-tight filter. A total that is suspiciously large or small is usually a missing or extra filter, a unit mix-up (dollars against cents) or fan-out. Zero rows is usually a query problem, not "there is no data": recheck the filters and field names before saying so. Do not compare a full period with a partial one.
   - The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
 - **Quick reference by query type:**
   - Top-N by metric: filter to the #1 result and recount it independently.

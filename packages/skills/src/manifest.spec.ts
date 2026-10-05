@@ -71,7 +71,6 @@ const PACKAGED_DESCRIPTION_BUDGET = 200;
  */
 const PACKAGED_SKILLS = [
    "malloy-analysis",
-   "malloy-analysis-pitfalls",
    "malloy-charts",
    "malloy-patterns",
    "malloy-phrase-detection",

@@ -53,7 +53,7 @@ verify it, present it. Two of its rules matter most here:
 
 - **Every number you present comes out of a query.** Adding up the rows of a `limit: 15` table
   by hand drops everything below the cut, and nobody can re-run it.
-- **Your first result is a draft.** Work `skill:malloy-analysis-pitfalls` before presenting.
+- **Your first result is a draft.** Work step 5 of `skill:malloy-analysis` (verify before trusting) before presenting.
 
 ### Name the decisions the answer rests on
 

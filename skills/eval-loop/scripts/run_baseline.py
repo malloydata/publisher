@@ -229,7 +229,7 @@ REPO_ROOT = SKILLS_ROOT.parent
 # prompt stops having to define everything, and a judge that needs to understand
 # a Malloy query can reach for the skills beside it instead of being handed a
 # transcription of them.
-JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-queries")
+JUDGE_SKILLS = ("eval-judge", "malloy-queries")
 
 
 def usage_fields(usage: dict[str, Any] | None) -> dict[str, Any]:
