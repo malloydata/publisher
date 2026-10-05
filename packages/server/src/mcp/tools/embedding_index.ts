@@ -473,8 +473,8 @@ function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
 }
 
 /**
- * One hash over the whole desired row set: every row's key and its content
- * hash. Two entity sets share a fingerprint exactly when a sync over either
+ * The fingerprint's input: every desired row's key and its content hash,
+ * hashed together by desiredFingerprintChunked. Two entity sets share a fingerprint exactly when a sync over either
  * is a no-op for the other, which is what lets a reloaded package keep the
  * index the replaced instance built.
  *
@@ -482,10 +482,6 @@ function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
  * order is a detail of how the caller walked the model, and a reload that
  * merely reordered two sources must not read as a content change.
  */
-function desiredFingerprint(desired: DesiredFacet[]): string {
-   return fingerprintOfRows(desiredRowStrings(desired));
-}
-
 function desiredRowStrings(desired: readonly DesiredFacet[]): string[] {
    return desired.map(
       (d) =>
@@ -535,13 +531,14 @@ async function desiredFingerprintChunked(
    desired: readonly DesiredFacet[],
 ): Promise<string> {
    const rows: string[] = [];
-   for (let i = 0; i < desired.length; i += FINGERPRINT_CHUNK_ENTITIES * 4) {
-      rows.push(
-         ...desiredRowStrings(
-            desired.slice(i, i + FINGERPRINT_CHUNK_ENTITIES * 4),
-         ),
-      );
-      await yieldToEventLoop();
+   const chunk = FINGERPRINT_CHUNK_ENTITIES * 4;
+   for (let i = 0; i < desired.length; i += chunk) {
+      rows.push(...desiredRowStrings(desired.slice(i, i + chunk)));
+      // Only between chunks. A small package never yields here, so a search
+      // that computes its fingerprint cannot be overtaken by a sync finishing
+      // meanwhile (which moves the generation it captured at entry and makes
+      // the call answer `indexing` once more).
+      if (i + chunk < desired.length) await yieldToEventLoop();
    }
    return fingerprintOfRows(rows);
 }

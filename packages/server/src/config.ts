@@ -1361,11 +1361,30 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 /**
  * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
  * from publisher.config.json, or {@link DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES}.
- * Read once at startup. Throws, with the fix, on an invalid value.
+ * Read once at startup. Throws, with the fix, on an invalid value; a config
+ * file that cannot be read or parsed gives the default.
  */
-export const getSemanticIndexMaxEntities = (serverRoot: string): number =>
-   getPublisherConfig(serverRoot).retrieval?.indexing?.maxEntities ??
-   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+export const getSemanticIndexMaxEntities = (serverRoot: string): number => {
+   try {
+      return (
+         getPublisherConfig(serverRoot).retrieval?.indexing?.maxEntities ??
+         DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES
+      );
+   } catch (error) {
+      // A file that cannot be read or parsed is reported where the config is
+      // actually used (the manifest read refuses to start and /status names the
+      // cause). This runs at module load, before /status exists, so throwing
+      // here would kill the process with no way to see why. An invalid
+      // `retrieval` value is a different error and still stops the server.
+      if (
+         error instanceof Error &&
+         error.message.startsWith("Failed to parse ")
+      ) {
+         return DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+      }
+      throw error;
+   }
+};
 
 /**
  * Sanitize a raw theme value pulled from JSON. Returns a Theme on success
