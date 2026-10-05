@@ -4,26 +4,29 @@
 /**
  * The two ways get_context ranks a package's entities: semantic (cosine over
  * cached embeddings) and lexical (lunr). Each is a Retriever, so the
- * orchestrator in get_context_tool.ts can try them in order and fall back
- * without knowing how either one scores. Later stages (refine/prune, rerank,
- * value attach) do not belong here; they plug in as RankStage after retrieval.
- *
- * The bodies are the code that used to sit inline in runContextQuery, moved
- * rather than rewritten.
+ * orchestrator in get_context_tool.ts can pick one without knowing how either
+ * scores: semantic when an embedding provider is configured (and it never
+ * falls back to lexical, which would rank differently from the finished
+ * index), lexical otherwise. Later stages (refine/prune, rerank) do not belong
+ * here; they plug in as RankStage or CardStage after retrieval.
  */
 
 import type lunr from "lunr";
-import {
-   getEmbeddingProvider,
-   type EmbeddingProvider,
-} from "../../service/embedding_provider";
+import type { EmbeddingModel } from "../../providers/types";
+import { getEmbeddingProvider } from "../../service/embedding_provider";
 import { logger } from "../../logger";
-import { entityRowKey, trySemanticSearch } from "./embedding_index";
+import {
+   entityRowKey,
+   getEmbeddingIndexStatus,
+   trySemanticSearch,
+   type EmbeddingIndexStatus,
+} from "./embedding_index";
+import { compareRanked, scopeKeysWithJoins } from "./get_context_assembly";
 import type { PipelineContext, Retriever } from "./get_context_pipeline";
 import {
-   MAX_LIMIT,
    REASON_BY_UNAVAILABLE,
    bestTargetOf,
+   embeddedEntitiesOf,
    entityCardKey,
    matchesScope,
    projectEntity,
@@ -34,29 +37,31 @@ import {
    type RetrievalReason,
 } from "./get_context_tool";
 
-/** Plain code-unit order, so the result does not depend on the host's locale. */
-function compareText(a: string, b: string): number {
-   return a < b ? -1 : a > b ? 1 : 0;
-}
-
 /**
- * The order of semantic rows: score descending, then source, name, kind and
- * model path. The score compared is the unrounded one, so only rows with
- * exactly the same score count as tied and are listed in a fixed order, not in
- * whatever order the scan happened to return them; rows that differ in the
- * fifth decimal keep the order their scores give them. The scan has the same
- * tie-break in SQL (it decides which tied rows fit a window); this one covers
- * the fan-out of one embedded row to several model paths, which the scan
- * cannot see.
+ * The package's index state, read to explain why a search could not be
+ * answered (progress while indexing, the last error and when the next try is).
+ * Undefined when it cannot be read; the caller then words the reason without it.
  */
-function compareRanked(a: ResultEntity, b: ResultEntity): number {
-   return (
-      (b.rawScore ?? b.score ?? 0) - (a.rawScore ?? a.score ?? 0) ||
-      compareText(a.source ?? "", b.source ?? "") ||
-      compareText(a.name, b.name) ||
-      compareText(a.kind, b.kind) ||
-      compareText(a.modelPath, b.modelPath)
-   );
+async function indexStatusFor(
+   ctx: PipelineContext,
+   provider: EmbeddingModel,
+): Promise<EmbeddingIndexStatus | undefined> {
+   const { request, environmentStore, pkgIndex } = ctx;
+   try {
+      return await getEmbeddingIndexStatus(
+         environmentStore.storageManager.getDuckDbConnection(),
+         provider,
+         request.environmentName,
+         request.packageName,
+         embeddedEntitiesOf(pkgIndex, ctx.settings),
+         pkgIndex.pkg,
+      );
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] Could not read the index state", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+   }
 }
 
 export const semanticRetriever: Retriever = {
@@ -64,37 +69,36 @@ export const semanticRetriever: Retriever = {
    async retrieve(ctx: PipelineContext) {
       const { request, environmentStore, pkgIndex } = ctx;
       const { environmentName, packageName, sourceName } = request;
-      const max = request.limit;
       const { byId } = pkgIndex;
-      // A drill-down is confined to one source, so the scan needs no over-fetch
-      // to reach a spread of source cards.
-      const scoped = Boolean(sourceName);
+      // Joined copies are made at assembly, so the scan reads direct fields
+      // only and the scope has to be written in terms of what assembly can
+      // reach (see scopeKeysWithJoins). Otherwise the scan is the index's.
+      const assembling = ctx.settings.joins === "assembly";
       if (!ctx.embeddingConfigured) return { unavailable: "unconfigured" };
-      let provider: EmbeddingProvider | null = null;
+      let provider: EmbeddingModel | null = null;
       try {
          provider = getEmbeddingProvider();
       } catch (error) {
+         const message = error instanceof Error ? error.message : String(error);
          logger.warn(
-            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-            {
-               error: error instanceof Error ? error.message : String(error),
-            },
+            "[MCP Tool getContext] Embedding configuration invalid; semantic search unavailable",
+            { error: message },
          );
-         return { unavailable: "unavailable" };
+         return { unavailable: "unavailable", detail: message };
       }
       if (provider) {
          try {
-            // One pass per target, merged on score. A max ACROSS passes is
-            // meaningful here and only here: cosine is an absolute scale,
-            // so 0.7 from the measure target and 0.7 from the dimension
-            // target mean the same thing. (The lexical path below has to
-            // normalize first, because lunr scores are relative to their
-            // own query.) The next commit collapses these passes into one
-            // batched embed and one scan; the merge rule does not change.
+            // Every target is scored in one scan and the rows are merged on
+            // score. A max ACROSS targets is meaningful here and only here:
+            // cosine is an absolute scale, so 0.7 from the measure target and
+            // 0.7 from the dimension target mean the same thing. (The lexical
+            // path below has to normalize first, because lunr scores are
+            // relative to their own query.)
             const merged = new Map<string, ResultEntity>();
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
             let unionBelowCutoff: number | undefined;
+            let cutBySource: Map<string, number> | undefined;
             {
                // ONE call for every target: it batches the embeddings into a
                // single provider request and scores them in a single pass
@@ -107,7 +111,7 @@ export const semanticRetriever: Retriever = {
                   pkg: pkgIndex.pkg,
                   environmentName,
                   packageName,
-                  entities: pkgIndex.retrievalEntities,
+                  entities: embeddedEntitiesOf(pkgIndex, ctx.settings),
                   // Each target carries the kinds it may claim, and the scan
                   // applies that BEFORE cutting the target's window. Applied
                   // here afterwards, a `measure` target whose nearest rows were
@@ -117,17 +121,17 @@ export const semanticRetriever: Retriever = {
                      text: search.text,
                      kinds: search.kinds,
                   })),
-                  // Over-fetch, because `max` counts SOURCE CARDS while
-                  // this limit counts entity ROWS, and windowBySource admits
-                  // up to MAX_ENTITIES_PER_SOURCE_TARGET rows per source per
-                  // target. Fetching exactly `max` rows lets them all land in
-                  // one source and return a single card where `max` were
-                  // asked for. A drill-down is confined to one source, so
-                  // there the extra rows are waste.
-                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
+                  // Per source and per target, never global: `limit` counts
+                  // SOURCE CARDS and is applied after assembly, so the scan
+                  // must not decide how many sources are returned.
+                  perSourceWindow: ctx.settings.entityWindow.perSourcePerTarget,
+                  // Dotted rows the index keeps get their own window, so they
+                  // cannot take the source's own fields' slots.
+                  perSourceJoinedWindow:
+                     ctx.settings.entityWindow.joinedPerSourcePerTarget,
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
-                  sourceName: sourceName || undefined,
+                  sourceName: assembling ? undefined : sourceName || undefined,
                   // The rest of the scope, as rows the scan can join on. The
                   // cache has no model_path column and an entity_name scope
                   // exempts source rows, so neither is expressible as a
@@ -139,10 +143,18 @@ export const semanticRetriever: Retriever = {
                   // beside a belowCutoffCount of 0, which the tool
                   // description tells the agent means "nothing cleared the
                   // floor", so it had no reason to retry with another name.
-                  scopeKeys:
-                     request.modelPath || request.entityName
-                        ? scopeKeysFor(byId.values(), request)
-                        : undefined,
+                  scopeKeys: assembling
+                     ? sourceName || request.modelPath || request.entityName
+                        ? scopeKeysWithJoins(
+                             pkgIndex.directEntities,
+                             pkgIndex.topology,
+                             request,
+                             ctx.settings.joinMaxDepth,
+                          )
+                        : undefined
+                     : request.modelPath || request.entityName
+                       ? scopeKeysFor(byId.values(), request)
+                       : undefined,
                });
                if ("hits" in semantic) {
                   // One row per (kind, source, name) is EMBEDDED — the
@@ -175,8 +187,12 @@ export const semanticRetriever: Retriever = {
                         // wherever an embedding provider is configured, and
                         // a caller who pinned one entity got the whole ranked
                         // set back, definitions included, because a pinned
-                        // entity_name also turns include_code on.
-                        .filter((e) => matchesScope(e, request));
+                        // entity_name also turns include_code on. When
+                        // assembly makes the joined copies it applies the
+                        // scope itself, to the copies as well: a row of a
+                        // source outside the scope may still be the field a
+                        // scoped source reaches through a join.
+                        .filter((e) => assembling || matchesScope(e, request));
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
                         score: Math.round(hit.score * 10_000) / 10_000,
@@ -208,6 +224,7 @@ export const semanticRetriever: Retriever = {
                   // query's hits, so it is the same whichever target asked.
                   unionTotalEntities = semantic.totalEntities;
                   unionBelowCutoff = semantic.belowCutoffCount;
+                  cutBySource = semantic.cutBySource;
                } else {
                   searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
                }
@@ -229,21 +246,32 @@ export const semanticRetriever: Retriever = {
                   rows: ranked,
                   belowCutoffCount: unionBelowCutoff ?? 0,
                   totalEntities: unionTotalEntities,
+                  entitiesCutBySource: cutBySource,
                };
             }
-            return { unavailable: searchFailure };
+            return {
+               unavailable: searchFailure,
+               status: await indexStatusFor(ctx, provider),
+            };
          } catch (error) {
             // Defensive: trySemanticSearch does not throw, but the
             // storage handle lookup can (e.g. before initialization
-            // or under a partial test double). Semantic retrieval
-            // must never take tier 4 down with it.
+            // or under a partial test double). Reported as unavailable
+            // rather than allowed to take the tool down.
+            const message =
+               error instanceof Error ? error.message : String(error);
             logger.warn(
-               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-               {
-                  error: error instanceof Error ? error.message : String(error),
-               },
+               "[MCP Tool getContext] Semantic retrieval unavailable",
+               { error: message },
             );
-            return { unavailable: "unavailable" };
+            // The cause goes to the log, not the response: it is an internal
+            // exception message, which differs by runtime and says nothing a
+            // caller can act on.
+            return {
+               unavailable: "unavailable",
+               detail:
+                  "the semantic index storage could not be reached (see the server log)",
+            };
          }
       }
       return { unavailable: "unconfigured" };

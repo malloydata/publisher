@@ -126,9 +126,14 @@ class IndexStatus(unittest.TestCase):
         self.assertIsNone(serve.index_status({"embeddingIndex": None}))
 
     def test_only_indexing_is_non_terminal(self):
+        self.assertEqual(serve.TERMINAL_INDEX_STATES,
+                         frozenset({"ready", "lexical", "error"}))
         self.assertNotIn("indexing", serve.TERMINAL_INDEX_STATES)
-        for state in ("ready", "cooldown", "oversize"):
-            self.assertIn(state, serve.TERMINAL_INDEX_STATES)
+
+    def test_the_retired_values_are_not_terminal_states_any_more(self):
+        # They are now `error` reasons, not statuses.
+        for old in ("cooldown", "oversize", "too-many-entities"):
+            self.assertNotIn(old, serve.TERMINAL_INDEX_STATES)
 
 
 class WarmRetrievalSeparatesFailureFromAbsence(unittest.TestCase):
@@ -187,10 +192,63 @@ class WarmRetrievalSeparatesFailureFromAbsence(unittest.TestCase):
         self.assertIn("environment and package names", line)
 
     def test_a_parsed_payload_with_no_index_still_reports_absence(self):
-        # The meaning `index_status` DOES have must survive the separation.
+        # An older server: no `embeddingIndex` field at all. Not waited on.
         status, line = self.warm([{"someOtherField": 1}])
         self.assertIsNone(status)
-        self.assertIn("no embedding provider", line)
+        self.assertIn("no embedding provider or predates the status field",
+                      line)
+        self.assertIn("LEXICAL", line)
+
+    def test_ready_is_the_only_state_that_licenses_semantic_findings(self):
+        status, line = self.warm([{"embeddingIndex": {"status": "ready"}}])
+        self.assertEqual(status, "ready")
+        self.assertEqual(line, "retrieval index ready: rankings are semantic")
+
+    def test_indexing_is_polled_until_it_becomes_ready(self):
+        status, line = self.warm([
+            {"embeddingIndex": {"status": "indexing"}},
+            {"embeddingIndex": {"status": "indexing"}},
+            {"embeddingIndex": {"status": "ready"}}])
+        self.assertEqual(status, "ready")
+        self.assertIn("semantic", line)
+
+    def test_lexical_is_terminal_and_says_there_is_no_provider(self):
+        # Only one response is scripted: a second read would raise
+        # StopIteration, so passing proves the loop stopped on `lexical`.
+        status, line = self.warm([{"embeddingIndex": {"status": "lexical"}}])
+        self.assertEqual(status, "lexical")
+        self.assertIn("no embedding provider is configured", line)
+        self.assertIn("do not report discoverability findings", line)
+        self.assertNotIn("semantic index", line)
+
+    def test_error_is_terminal_and_prints_the_reason_and_the_message(self):
+        status, line = self.warm([{"embeddingIndex": {
+            "status": "error", "reason": "provider-error",
+            "lastError": {"message": "401 invalid api key",
+                          "retryAt": "2026-10-01T00:00:00Z"}}}])
+        self.assertEqual(status, "error")
+        self.assertIn("reason: provider-error", line)
+        self.assertIn("401 invalid api key", line)
+        self.assertIn("do not report discoverability findings", line)
+
+    def test_error_with_a_cooldown_reason_names_it(self):
+        _status, line = self.warm([{"embeddingIndex": {
+            "status": "error", "reason": "cooldown",
+            "lastError": {"message": "rate limited"}}}])
+        self.assertIn("reason: cooldown", line)
+
+    def test_error_with_neither_reason_nor_message_still_prints_something(self):
+        status, line = self.warm([{"embeddingIndex": {"status": "error"}}])
+        self.assertEqual(status, "error")
+        self.assertIn("reason: unknown", line)
+        self.assertIn("no message given", line)
+
+    def test_indexing_that_never_settles_is_reported_as_not_an_answer(self):
+        status, line = self.warm(
+            [{"embeddingIndex": {"status": "indexing"}}] * 4000, wait=0.2)
+        self.assertEqual(status, "indexing")
+        self.assertIn("still indexing after", line)
+        self.assertIn("nothing measured now is semantic", line)
 
 
 class ServerCmd(unittest.TestCase):

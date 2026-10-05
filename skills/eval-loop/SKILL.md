@@ -344,9 +344,11 @@ the run measure something other than what it names:
    and confirm a trace lookup answers, so a call's ranked results can be
    recovered afterwards.
 
-   **Open-source Publisher has none.** `PUBLISHER_MCP_TRACE=retrieval` is set by
-   `serve.py` and read by nothing: the trace store was written and never merged,
-   so there is no trace tool and `traceId` is null on every local attempt. This
+   **Open-source Publisher has no trace lookup.** `PUBLISHER_MCP_TRACE=retrieval`
+   is set by `serve.py` and makes Publisher write one "Retrieval trace" line per
+   ranked call to its log (stage counts and timings, not the ranked results).
+   Nothing reads that line yet: there is no trace store and no trace tool, so
+   `traceId` is null on every local attempt. This
    does not block a scored run, because attribution never depended on it:
    `rankedSummary` is copied onto the `tool_call` event at capture, precisely so
    the evidence survives without a store. So do not refuse a local run for want

@@ -843,11 +843,37 @@ def wait_alive(a: argparse.Namespace, tries: int = 3, pause: float = 10.0) -> bo
     return False
 
 
-# Only `indexing` is worth a retry. The other lexical reasons are settled
-# states -- a provider cool-down, a package over the entity cap, a hard error
-# -- and waiting on them burns the clock to arrive at the same answer. That
-# rule is the server's own, stated in `get_context`'s tool description.
-RETRY_REASON = "indexing"
+# When an embedding provider is configured, `get_context` never answers
+# lexically. While the index builds it returns a normal result with
+# `retrieval: "indexing"`, empty `sources` and `retrieval_progress`; that is
+# the only state worth waiting on. After a failure it returns
+# `retrieval: "error"` with a `retrieval_reason`, and retrying that burns the
+# clock to arrive at the same answer. With no provider the `retrieval` field is
+# absent. That rule is the server's own, stated in `get_context`'s tool
+# description.
+RETRY_MODE = "indexing"
+
+# What to do about each `retrieval_reason` an error result can carry.
+ERROR_ADVICE = {
+    "too-many-entities": ("the package has more entities than the index will "
+                          "embed. Raise retrieval.indexing.maxEntities in the "
+                          "Publisher config and restart it"),
+    "cooldown": ("the embedding provider failed and the package is waiting "
+                 "out a cool-down (about 60 seconds). Wait, then re-run"),
+    "provider-error": ("the embedding provider rejected the request (often a "
+                       "bad EMBEDDING_API_KEY or EMBEDDING_MODEL). Fix the "
+                       "provider settings and re-run"),
+    "unavailable": ("semantic search cannot serve this package. Read the "
+                    "Publisher log for the cause, fix it and re-run"),
+}
+
+
+def retrieval_error_message(reason: str | None) -> str:
+    """The stop message for a `retrieval: "error"` result."""
+    advice = ERROR_ADVICE.get(reason or "",
+                              "read the Publisher log for the cause")
+    return (f"retrieval_reason {reason or 'not given'!r}: {advice}. "
+            f"Waiting does not change it")
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
@@ -935,7 +961,7 @@ def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
-    """One cheap `get_context`, reduced to (mode, reason).
+    """One cheap `get_context`, reduced to (mode, detail).
 
     `retrieval` ABSENT means no embedding provider is configured, which the
     tool pins deliberately: absent, never defaulted, so a caller cannot read a
@@ -953,14 +979,27 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
 
 
 def retrieval_of(payload: Any) -> tuple[str | None, str | None]:
-    """(mode, reason) out of a `get_context` payload, however it was fetched.
+    """(mode, detail) out of a `get_context` payload, however it was fetched.
+
+    Mode is `retrieval` as the server sent it: "semantic", "indexing",
+    "error", or None when the field is absent (no embedding provider).
+    Detail depends on the mode: for "indexing" the progress as
+    "embedded/total"; for "error" the `retrieval_reason`; otherwise None.
 
     Split from `retrieval_probe` so a payload that arrived through the CLI
-    reads the same two fields by the same rule as one fetched over raw HTTP.
+    reads the same fields by the same rule as one fetched over raw HTTP.
     """
     if not isinstance(payload, dict):
         return None, "get_context returned no object"
-    return payload.get("retrieval"), payload.get("retrieval_reason")
+    mode = payload.get("retrieval")
+    if mode == "indexing":
+        prog = payload.get("retrieval_progress")
+        if isinstance(prog, dict):
+            return mode, f"{prog.get('embedded', '?')}/{prog.get('total', '?')}"
+        return mode, None
+    if mode == "error":
+        return mode, payload.get("retrieval_reason")
+    return mode, None
 
 
 def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
@@ -968,33 +1007,33 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                          confirmations: int = 2) -> tuple[bool, str]:
     """Hold the arm until retrieval answers the way it will for the whole run.
 
-    A restart leaves the semantic index COLD even when its rows survived. The
-    sync memo is per-process and in memory, so the first `get_context` after a
-    boot kicks a sync it deliberately never awaits and answers lexically --
-    `embedding_index.ts` says so: "cold starts answer lexically". A call that
-    lands while a sync moves the generation is marked lexical for the same
-    reason. So the first few calls of a run are lexical whatever the database
-    holds, and nothing in the transcript says the arm was measured across the
-    changeover: it reads as a run that mixed two retrievers, with the mixture
-    depending on how fast the answerer got going.
+    A restart leaves the semantic index COLD even when its rows survived.
+    While an embedding provider is configured, the server does not answer
+    lexically in the meantime: a call returns `retrieval: "indexing"` with no
+    sources and a progress count, and works once the sync finishes. A run that
+    starts answering during that window would see empty results for its first
+    cases and real ones after, and nothing in the transcript says the arm was
+    measured across the changeover.
 
     That is a measurement defect rather than a slow start, which is why it is
     a gate and not a warning. Four runs came back inconclusive to it.
 
-    `confirmations` consecutive semantic reads, not one, because a sync
-    completing can bump the generation and the call that straddles it is marked
-    lexical (`embedding_index.ts`, the generation re-check). One semantic read
-    says a call WAS semantic; two in a row say the next one will be. The run is
-    the expensive thing here, so a second probe is cheap insurance.
+    `confirmations` consecutive semantic reads, not one: a sync completing can
+    move the generation under a call that straddles it. One semantic read says
+    a call WAS semantic; two in a row say the next one will be. The run is the
+    expensive thing here, so a second probe is cheap insurance.
+
+    An `error` result stops the gate at once with the `retrieval_reason` and
+    what to do about it; it is never retried.
 
     Returns (ready, what it found). Ready is also TRUE for a server with no
     embedding provider: lexical for every call is a consistent run and a
-    legitimate thing to measure -- what must not happen is half of each.
+    legitimate thing to measure.
     """
     last, seen = "no probe completed", 0
     for i in range(tries):
         try:
-            mode, reason = retrieval_probe(a)
+            mode, detail = retrieval_probe(a)
         except AuthRequired:
             # Not a warming index and not a flaky server: waiting cannot change
             # it, and every remaining try would spend 10s to be refused again.
@@ -1016,10 +1055,14 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                 last = f"semantic {seen}/{confirmations}"
                 continue          # no pause between confirmations
             seen = 0
-            if reason and reason != RETRY_REASON:
-                return False, (f"retrieval is lexical for {reason!r}, which "
-                               f"waiting does not change")
-            last = f"lexical ({reason or 'no reason given'})"
+            if mode == "error":
+                return False, retrieval_error_message(detail)
+            if mode != RETRY_MODE:
+                return False, (f"unrecognised retrieval value {mode!r} "
+                               f"({detail or 'no detail'}); this runner "
+                               f"expects semantic, indexing or error")
+            last = (f"indexing ({detail} entities embedded)" if detail
+                    else "indexing")
         if i < tries - 1:
             time.sleep(pause)
     return False, f"still not ready after {tries} probes: {last}"
@@ -1110,8 +1153,8 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
     `serve.py --warm-retrieval` does not supersede this, so both stay. That
     reads the SERVER's `embeddingIndex.status`, which says the index is built;
     this probes what the answerer will actually observe, and a call that lands
-    while a sync bumps the generation comes back lexical against a `ready`
-    index.
+    while a sync moves the generation can still come back `indexing` against
+    a `ready` index.
 
     Returns the line for `run.json`. An opt-out reads differently from a gate
     that passed, which is the whole point of recording it -- and so does a gate
@@ -1131,15 +1174,19 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
         return "not run (no answering phase)"
     if a.no_retrieval_gate:
         note = "skipped by --no-retrieval-gate"
-        print(f"  ! {note}: the first calls after a restart answer lexically "
-              f"by design, so this arm may measure two retrievers and report "
-              f"one number")
+        print(f"  ! {note}: the first calls after a restart return "
+              f"`retrieval: indexing` with no sources, so this arm may "
+              f"measure empty results as well as real ones")
         return note
     # The reachability probe already made this exact call through the CLI,
     # which is the only client here that carries credentials. Reading its reply
     # is a real confirmation and costs nothing; making a second one over raw
     # HTTP cannot be authenticated at all.
     probed = getattr(a, "probe_payload", None)
+    if probed is not None and retrieval_of(probed)[0] == "error":
+        raise SystemExit(
+            f"retrieval is in error, so no case could be answered "
+            f"semantically.\n  {retrieval_error_message(retrieval_of(probed)[1])}")
     if probed is not None and retrieval_of(probed)[0] == "semantic":
         note = ("ready: semantic, from the hosted reachability probe "
                 "(1 confirmation, not 2: the second probe cannot be "
@@ -1446,7 +1493,9 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 
     `semantic` or `lexical` when every ranking call agreed, `mixed` when they
     did not (the embedding path fell over partway, which is exactly the case a
-    reader must not average across), and `unreported` when nothing in the run
+    reader must not average across), `unavailable` when ANY call was answered
+    `indexing` or `error` (the server could not rank at all, so that call has
+    no result to score and reads as a miss), and `unreported` when nothing in the run
     ranked at all: usually no embedding provider configured, which is the
     silent degradation eval-mvp's standing gate exists to catch, and which
     `retrieval_probe` settles before the arm starts by always passing a
@@ -1456,13 +1505,17 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
     semantic 100 / lexical 0 / unreported 43 as `mixed`, and told it not to
     report the discoverability findings it had just paid for.
     """
-    tally = {"semantic": 0, "lexical": 0, "unreported": 0}
+    tally = {"semantic": 0, "lexical": 0, "indexing": 0, "error": 0,
+             "unreported": 0}
     for att in attempts:
         for c in att.get("calls") or []:
             if c.get("tool") != "get_context":
                 continue
             mode = c.get("retrieval_mode")
-            tally[mode if mode in ("semantic", "lexical") else "unreported"] += 1
+            tally[mode if mode in ("semantic", "lexical", "indexing", "error")
+                  else "unreported"] += 1
+    if tally["indexing"] or tally["error"]:
+        return "unavailable", tally
     seen = [k for k in ("semantic", "lexical") if tally[k]]
     if not seen:
         return "unreported", tally
@@ -1719,8 +1772,15 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     lines += cascade_lines(cascade)
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
+              f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
               f" unreported {tally['unreported']})"]
-    if retrieval_mode != "semantic":
+    if retrieval_mode == "unavailable":
+        lines += ["                ! some searches were answered `indexing` or "
+                  "`error`, so they returned nothing to score and count as "
+                  "misses. This run does not measure retrieval; wait for the "
+                  "index to be ready and re-run. flip_table.py refuses a pair "
+                  "with an arm like this."]
+    elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
                   "across that reads as a model change; flip_table.py refuses "
@@ -2199,6 +2259,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # retrieval score never counts it as a search that
                         # found nothing.
                         calls.append({**info, "error": text[:300],
+                                      "retrieval_mode":
+                                          (payload or {}).get("retrieval"),
                                       "rankedSummary": None})
                         continue
                     # The host may have spilled the body to a file. Read it
@@ -2216,10 +2278,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
-                    # it: "semantic", "lexical" when the embedding path is down,
-                    # and absent on a server with no provider at all. Local
-                    # retrieval degrades to lexical SILENTLY without an
-                    # embedding key, which reads as a model regression when two
+                    # it: "semantic", "indexing" or "error" when a provider is
+                    # configured, and absent on a server with no provider (lexical).
+                    # Local retrieval is lexical without an embedding key, which reads as a model regression when two
                     # runs are compared across it, so a run that cannot say
                     # which retriever it used cannot anchor a comparison.
                     calls.append({**info, "error": text[:300] if failed else None,
@@ -3068,9 +3129,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-retrieval-gate", action="store_true",
                     help="answer cases without waiting for the semantic index "
                          "to warm. The gate exists because a restart leaves it "
-                         "cold and the first calls answer lexically by design, "
-                         "so an arm started immediately measures two "
-                         "retrievers and reports one number. run.json records "
+                         "cold and the first calls return `retrieval: indexing` "
+                         "with no sources, so an arm started immediately "
+                         "measures empty results as well as real ones. run.json records "
                          "that you opted out, which is a different fact from a "
                          "gate that passed")
     ap.add_argument("--definitions", default=None,

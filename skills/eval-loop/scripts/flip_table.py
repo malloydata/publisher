@@ -214,9 +214,10 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
                    allow: bool) -> int:
     """Refuse a pair whose runs used different retrievers.
 
-    Local retrieval falls back to lexical SILENTLY when no embedding key is
-    set, and partway through a run when the provider fails. Either way the two
-    arms searched differently, and the flips that produces read as a model
+    Local retrieval is lexical when no embedding key is set. With a key, the
+    server never answers lexically: it returns `indexing` or `error` instead,
+    which reads as an empty or failed call. Either way the two arms searched
+    differently, and the flips that produces read as a model
     change. eval-mvp's standing gate: no A/B is scored under an unavailable
     semantic path. A run written before the harness recorded this carries
     nothing, and an unrecorded mode is not evidence that it matched -- so that
@@ -230,6 +231,22 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
               f"checked. Re-run with a harness that records it before quoting "
               f"this pair.")
         return 0
+    if "unavailable" in (ma, mb):
+        # An arm with calls answered `indexing` or `error` scored those calls
+        # as misses, so its numbers say the index was not ready, not how well
+        # the model did. Equal modes do not rescue the pair: two arms that
+        # were both unavailable are two unmeasured arms.
+        bad = la if ma == "unavailable" else lb
+        print(f"\n  ! {bad} had searches answered `indexing` or `error` "
+              f"(modes: {la} {ma}, {lb} {mb}). Those calls returned nothing "
+              f"to score and count as misses, so these flips are not a "
+              f"measurement of the change.")
+        if allow:
+            print("    --allow-retrieval-mismatch given; reporting anyway.")
+            return 0
+        print("    Wait for the index to be ready and re-run the arm, or pass "
+              "--allow-retrieval-mismatch to report anyway.")
+        return 2
     if ma == mb and ma != "mixed":
         if ma != "semantic":
             print(f"\n  ! both arms retrieved {ma}, not semantic. The pair is "

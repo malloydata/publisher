@@ -3,6 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "path";
+import type { EmbeddingModel } from "../../providers/types";
 import { fileURLToPath } from "url";
 import { z } from "zod/v3";
 import lunr from "lunr";
@@ -20,6 +21,7 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
+   enqueuePackageSync,
    entityRowKey,
    KEY_SEPARATOR,
    getEmbeddingIndexStatus,
@@ -39,8 +41,25 @@ import {
    type RankStage,
    type RankedState,
    type Retriever,
+   type Unavailable,
 } from "./get_context_pipeline";
+import { activeLlmSettings } from "../../providers/active";
+import { HttpRequestError } from "../../service/http_retry";
+import { LlmMeter, StageError } from "./get_context_llm";
+import { refineStage } from "./get_context_refine";
+import { rerankStage } from "./get_context_rerank";
+import {
+   sourceMatchActive,
+   sourceMatchStage,
+} from "./get_context_source_match";
+import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
+import { indexSettingsOf } from "./index_settings";
+import {
+   currentSummaryHashes,
+   loadSourceSummaries,
+   type StoredSourceSummary,
+} from "./source_summaries";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -62,6 +81,15 @@ export interface Entity {
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
    relationship?: Relationship;
+   // On `kind: "join"` entities: the source the join leads to, when the
+   // compiled model names one (the topology below has it; a model with no
+   // compiled IR does not). Read by the source summary to nest a joined
+   // source's fields; never serialized.
+   joinTarget?: string;
+   // On `kind: "join"` entities: the package-relative path of the file that
+   // defines `joinTarget`. Together they identify the source; the name alone
+   // cannot when two files define a source of the same name.
+   joinTargetModelPath?: string;
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
@@ -146,6 +174,12 @@ export interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   /**
+    * The `#(doc)` text alone, with no annotation fallback (see Entity.embedDoc).
+    * The LLM stages read this, never `doc`, which can carry raw annotation
+    * lines. Never serialized.
+    */
+   embedDoc?: string;
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
@@ -180,10 +214,23 @@ export interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
-   /** Unused until a stage sets it. LOW=1, MEDIUM=2, HIGH=3 after refine. */
+   /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
    level?: number;
-   /** Unused until a stage sets it. Refine's sentence for matched_targets. */
-   reason?: string;
+   /**
+    * Set by refine only: the unpublished score, `level + cosine`, 1 to 4. When
+    * it is set, `score` is this value through the knots (see
+    * get_context_scoring). Assembly damps joined copies on this number, and
+    * rerank sorts cards by the best of it.
+    */
+   raw?: number;
+   /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
+   targetRaw?: Map<number, number>;
+   /**
+    * Set by refine: the model's one-sentence reason for each target that
+    * rated this row, behind `matched_targets[].match_reason`. Absent when
+    * refine did not run or the model gave no reason.
+    */
+   targetReasons?: Map<number, string>;
    /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
    joinHops?: number;
    /** Unused until value attach runs. Nested dimension values. */
@@ -309,10 +356,10 @@ export const MAX_LIMIT = 150;
 const DEFAULT_RANKED_LIMIT = 20;
 
 /**
- * Why a server that HAS an embedding provider answered lexically. Reported
- * so an agent can act on it: "indexing" is a cold index that clears on its
- * own within seconds and is worth one retry, while the rest are conditions
- * an immediate retry cannot fix.
+ * Why a server that HAS an embedding provider could not rank a search. Reported
+ * so an agent can act on it: "indexing" is an index still building, answered
+ * with an empty result (retrieval: "indexing") that is worth asking again, while the rest are errors
+ * (retrieval_reason) an immediate retry cannot fix.
  */
 export type RetrievalReason =
    | "indexing"
@@ -358,7 +405,8 @@ export const REASON_BY_UNAVAILABLE: Record<
  *    `include_code`), and the response-level `retrieval`
  *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
  * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
- *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
+ *    `summary`, `prominence`, `values`, `values_indexed`. (`match_reason`
+ *    rides on `matched_targets` only when refine ran and gave one.)
  *    That spec omits null fields, so absence is in-contract on both sides.
  */
 interface ResourceId {
@@ -370,7 +418,16 @@ interface ResourceId {
 
 interface SourceCardInfo {
    resource_id: ResourceId;
+   /**
+    * The LLM's one-line summary of the source when one is stored; otherwise the
+    * first line of its doc (absent when undocumented).
+    */
    one_line_summary?: string;
+   /**
+    * The LLM's full summary of the source. Only when one is stored AND the
+    * request pins the source or a source search matched at most one source.
+    */
+   summary?: string;
    docs?: string;
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
@@ -379,6 +436,13 @@ interface SourceCardInfo {
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
+}
+
+interface MatchedTarget {
+   search_text: string;
+   relevance: number;
+   /** Refine's one-sentence reason. Present only when refine ran and gave one. */
+   match_reason?: string;
 }
 
 interface SourceCardEntity {
@@ -402,7 +466,7 @@ interface SourceCardEntity {
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
-   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   matched_targets?: MatchedTarget[];
    aliases?: string[];
 }
 
@@ -435,6 +499,8 @@ function toSourceResults(
    includeCode = false,
    /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
    droppedSources: Set<string> = new Set(),
+   /** Stored LLM source summaries, when the package has any. */
+   summaries?: SummaryView,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -456,6 +522,8 @@ function toSourceResults(
       let entry = bySource.get(key);
       if (!entry) {
          const ctx = sourceContext.get(key);
+         const stored = summaries?.stored.get(key);
+         const oneLine = stored?.oneLineSummary ?? ctx?.oneLineSummary;
          entry = {
             source_info: {
                resource_id: {
@@ -464,8 +532,9 @@ function toSourceResults(
                   model_path: modelPathFallback,
                   source: name,
                },
-               ...(ctx?.oneLineSummary
-                  ? { one_line_summary: ctx.oneLineSummary }
+               ...(oneLine ? { one_line_summary: oneLine } : {}),
+               ...(stored && summaries?.full.has(key)
+                  ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
@@ -512,6 +581,55 @@ function toSourceResults(
 }
 
 /**
+ * The stored LLM summaries a response may use, and for which sources it may
+ * carry the full text. Built by {@link summaryViewFor}; absent when the package
+ * has no stored summary, which leaves every card as it always was.
+ */
+interface SummaryView {
+   /** Every current stored summary of the package, by sourceContextKey. */
+   stored: ReadonlyMap<string, StoredSourceSummary>;
+   /** Keys of the cards that carry `summary`, not just `one_line_summary`. */
+   full: ReadonlySet<string>;
+}
+
+/**
+ * The full summary rides only on a card the caller has narrowed to: the scope
+ * pins the source, or a source search matched at most one source. A broader
+ * answer carries the one-liner alone, so the response stays a list of sources
+ * to choose from instead of a page of prose.
+ */
+export function summaryViewFor(
+   stored: ReadonlyMap<string, StoredSourceSummary> | undefined,
+   request: Pick<ResolvedRequest, "sourceName">,
+   cards: ReadonlyArray<{
+      key: string;
+      source: string;
+      rows: readonly ResultEntity[];
+   }>,
+): SummaryView | undefined {
+   if (!stored || stored.size === 0) return undefined;
+   const full = new Set<string>();
+   if (request.sourceName) {
+      for (const card of cards) {
+         if (card.source === request.sourceName) full.add(card.key);
+      }
+   }
+   // A source row is there only because a source target matched it. Counted by
+   // source name: the same source resolved from two files is one answer.
+   const matched = new Set(
+      cards
+         .filter((card) => card.rows.some((r) => r.kind === "source"))
+         .map((card) => card.source),
+   );
+   if (matched.size <= 1) {
+      for (const card of cards) {
+         if (matched.has(card.source)) full.add(card.key);
+      }
+   }
+   return { stored, full };
+}
+
+/**
  * Which of the caller's search targets matched this row, and how well.
  *
  * Only targets that carry text can match, so a listing produces none and the
@@ -523,15 +641,20 @@ function toSourceResults(
 function matchedTargetsFor(
    r: ResultEntity,
    searchTexts: Map<number, string>,
-): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+): { matched_targets?: MatchedTarget[] } {
    if (!r.targetScores || r.targetScores.size === 0) return {};
    const matched = [...r.targetScores.entries()]
       .sort((a, b) => a[0] - b[0])
       .flatMap(([index, relevance]) => {
          const search_text = searchTexts.get(index);
          if (search_text === undefined) return [];
+         const match_reason = r.targetReasons?.get(index);
          return [
-            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+            {
+               search_text,
+               relevance: Math.round(relevance * 10_000) / 10_000,
+               ...(match_reason ? { match_reason } : {}),
+            },
          ];
       });
    return matched.length > 0 ? { matched_targets: matched } : {};
@@ -545,7 +668,17 @@ function matchedTargetsFor(
  * card and hide a narrow one inside it -- the same failure the source window
  * below prevents between cards.
  */
-const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+
+/**
+ * The most dotted index rows (joined fields assembly cannot rebuild) one source
+ * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
+ * own fields. On a benchmark package whose joins are all inline tables,
+ * sharing one window let 625 such rows push the labelled fields from rank 4 to
+ * 10 down to rank 13 to 33; an own window of 3 (or 1) recovered the loss and
+ * left a joined field findable.
+ */
+export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
 
 /** The target index with the highest score, or undefined when there is none. */
 export function bestTargetOf(scores: Map<number, number>): number | undefined {
@@ -584,6 +717,7 @@ export function projectEntity(
       packageName,
       modelPath: e.modelPath,
       doc: e.doc,
+      ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -596,7 +730,7 @@ export function projectEntity(
  * The largest whole-card prefix of `cards` whose JSON fits in
  * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
  * than the first card still answers. A null budget returns the input as is.
- * Nothing calls this with a number yet: settings.maxChars is null.
+ * Only ranked responses are fitted; a listing pages by `offset` instead.
  */
 export function fitBudget(
    cards: SourceCard[],
@@ -647,7 +781,10 @@ function shapeCards(
 } {
    const { request, pkgIndex, settings } = ctx;
    const paged = state.cards.slice(0, request.limit);
-   const sources = toSourceResults(
+   // Over ALL the matched cards, not the page: whether a source search matched
+   // one source or many does not depend on how many the caller asked to see.
+   const summaries = summaryViewFor(ctx.sourceSummaries, request, state.cards);
+   const built = toSourceResults(
       paged.flatMap((card) => card.rows),
       pkgIndex.sourceContext,
       request.environmentName,
@@ -659,12 +796,34 @@ function shapeCards(
       ),
       request.includeCode,
       pkgIndex.droppedSources,
+      summaries,
    );
+   // toSourceResults folds a card's relevance from its rows. After rerank the
+   // card's relevance is the reranker's score, which no row carries, so it is
+   // put back from the draft.
+   const sources = state.reranked
+      ? built.map((card) => {
+           const id = card.source_info.resource_id;
+           const draft = paged.find(
+              (d) => d.key === sourceContextKey(id.model_path, id.source),
+           );
+           return draft?.relevance === undefined
+              ? card
+              : { ...card, relevance: draft.relevance };
+        })
+      : built;
    const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
+   // Entities cut inside a card the budget then removed are not reported: the
+   // card is not in the answer, and its own cut warning is the budget's.
+   const kept =
+      fitted.dropped > 0
+         ? paged.slice(0, paged.length - fitted.dropped)
+         : paged;
    return {
       sources: fitted.cards,
-      totalSources: state.cards.length,
-      entitiesDropped: paged.reduce(
+      // Cards the reranker kept out of its top N still matched, so they count.
+      totalSources: state.cards.length + (state.discarded ?? 0),
+      entitiesDropped: kept.reduce(
          (sum, card) => sum + card.entitiesDropped,
          0,
       ),
@@ -1012,7 +1171,8 @@ export function sanitize(query: string): string {
  * `orders.amount`; depth 2 reaches `order_items.inventory_items.cost`, the
  * depth the published shape's own `join_path` example uses. Deeper paths
  * exist and stay unindexed: each level multiplies the entity count by the
- * joined source's field count, against a hard cap of MAX_EMBEDDED_ENTITIES.
+ * joined source's field count, against the entity cap
+ * (`retrieval.indexing.maxEntities`).
  */
 const MAX_JOIN_PATH_DEPTH = 2;
 
@@ -1254,6 +1414,147 @@ interface JoinSchemaField {
 }
 
 /**
+ * Step into a nested join: the dotted path so far and the widest relationship
+ * on it. `collectJoinedFields` (index-time copies) and `buildJoinReaches` (the
+ * topology) both walk joins with this, so a path or fan-out is computed one
+ * way. A `one` hop keeps the parent's fan-out; any other relationship
+ * replaces it.
+ */
+export function enterJoin(
+   join: { name: string; relationship?: Relationship },
+   from: { joinPath: string; fanout: Relationship },
+): { joinPath: string; fanout: Relationship } {
+   return {
+      joinPath: `${from.joinPath}.${join.name}`,
+      fanout:
+         join.relationship === "one"
+            ? from.fanout
+            : (join.relationship ?? from.fanout),
+   };
+}
+
+/**
+ * The deepest join chain the topology records. Assembly reads it through
+ * `settings.joinMaxDepth`, which may be lower. It is separate from
+ * MAX_JOIN_PATH_DEPTH because the topology holds paths, not one entity per
+ * path, so a deep chain costs nothing against the embedded entity cap.
+ */
+export const JOIN_TOPOLOGY_MAX_DEPTH = 10;
+
+/** The part of a compiled join entry the topology reads. */
+interface CompiledJoin {
+   name?: string;
+   as?: string;
+   join?: string;
+   sourceID?: string;
+   referenceID?: string;
+   fields?: unknown[];
+}
+
+/**
+ * The name of the source a compiled join points at, and the URL of the file
+ * that defines it. The IR join entry's own `name` is the underlying table or
+ * SQL, not the source; the source is in `sourceID`, written
+ * "sourceName@modelURL". Undefined for a join with no such id (an inline
+ * table), which has no source to reach.
+ */
+function joinTargetSource(
+   join: CompiledJoin,
+): { source: string; url: string } | undefined {
+   const id = join.sourceID ?? join.referenceID;
+   if (typeof id !== "string") return undefined;
+   // Greedy, so a name containing "@" still splits at the URL's own "@".
+   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
+   return match ? { source: match[1], url: match[2] } : undefined;
+}
+
+/**
+ * The package-relative path of the model file a URL names: the longest model
+ * path the URL ends with, at a directory boundary. Undefined when the URL is
+ * not one of the package's models (an import from outside the package).
+ */
+export function modelPathOfUrl(
+   url: string,
+   modelPaths: readonly string[],
+): string | undefined {
+   let pathname: string;
+   try {
+      pathname = decodeURIComponent(new URL(url).pathname);
+   } catch {
+      return undefined;
+   }
+   let best: string | undefined;
+   for (const modelPath of modelPaths) {
+      if (pathname !== modelPath && !pathname.endsWith(`/${modelPath}`)) {
+         continue;
+      }
+      if (best === undefined || modelPath.length > best.length) {
+         best = modelPath;
+      }
+   }
+   return best;
+}
+
+/**
+ * Every source reachable from one source by joins, up to
+ * JOIN_TOPOLOGY_MAX_DEPTH deep. Aliases, relationships and nesting come from
+ * the same SourceInfo join tree `collectJoinedFields` walks; the target
+ * source's name is not in that tree (#1100), so it is read from the compiled
+ * join entry with the same alias (`compiled`). A join with no readable target
+ * records nothing, and its nested joins are still followed. A target is
+ * recorded with the package-relative path of the file that defines it, so two
+ * files that each define a source of the same name stay two targets; a target
+ * whose file is not one of the package's models records nothing.
+ */
+function buildJoinReaches(args: {
+   fields: JoinSchemaField[];
+   compiled: unknown[] | undefined;
+   from?: { joinPath: string; fanout: Relationship };
+   path?: string[];
+   modelPaths: readonly string[];
+   out: JoinReach[];
+}): void {
+   const { fields, compiled, from, path = [], modelPaths, out } = args;
+   for (const field of fields) {
+      if (field.kind !== "join") continue;
+      const entry = (compiled as CompiledJoin[] | undefined)?.find(
+         (candidate) =>
+            candidate.join !== undefined &&
+            activeName(candidate as { name?: string; as?: string }) ===
+               field.name,
+      );
+      const here = from
+         ? enterJoin(field, from)
+         : {
+              joinPath: field.name,
+              fanout: field.relationship as Relationship,
+           };
+      const hopPath = [...path, field.name];
+      const target = entry ? joinTargetSource(entry) : undefined;
+      const targetModelPath = target
+         ? modelPathOfUrl(target.url, modelPaths)
+         : undefined;
+      if (target && targetModelPath !== undefined) {
+         out.push({
+            targetSource: target.source,
+            targetModelPath,
+            path: hopPath,
+            fanout: here.fanout,
+         });
+      }
+      if (hopPath.length >= JOIN_TOPOLOGY_MAX_DEPTH) continue;
+      buildJoinReaches({
+         fields: field.schema?.fields ?? [],
+         compiled: entry?.fields,
+         from: here,
+         path: hopPath,
+         modelPaths,
+         out,
+      });
+   }
+}
+
+/**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
  * Indexing the join alone is not enough, even though the target source is
@@ -1297,11 +1598,7 @@ function collectJoinedFields(args: {
          collectJoinedFields({
             ...args,
             fields: field.schema?.fields ?? [],
-            joinPath: `${joinPath}.${field.name}`,
-            fanout:
-               field.relationship === "one"
-                  ? fanout
-                  : (field.relationship ?? fanout),
+            ...enterJoin(field, { joinPath, fanout }),
             depth: depth + 1,
          });
          continue;
@@ -1370,6 +1667,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       comparePaths(a.path ?? "", b.path ?? ""),
    );
 
+   const modelPaths = models.flatMap((m) => (m.path ? [m.path] : []));
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
    // Names of every source dropped for an unconditional deny-all gate, package-
@@ -1377,6 +1675,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // runs, so both can skip the same names and neither can resurrect a card for
    // one the other dropped (see the query loop and cardFor below).
    const droppedSources = new Set<string>();
+   // Which sources each source reaches by joins; see buildJoinReaches.
+   const topology = new Map<string, JoinReach[]>();
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
@@ -1493,6 +1793,16 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             doc: docText(sourceAnnotations),
             embedDoc: docOnlyText(sourceAnnotations),
          });
+         if (!topology.has(governanceKey)) {
+            const reaches: JoinReach[] = [];
+            buildJoinReaches({
+               fields: (sourceInfo.schema.fields ?? []) as JoinSchemaField[],
+               compiled: findSourceDef(modelDef, sourceName)?.fields,
+               modelPaths,
+               out: reaches,
+            });
+            if (reaches.length > 0) topology.set(governanceKey, reaches);
+         }
          for (const field of sourceInfo.schema.fields ?? []) {
             // Joins are indexed as entities in their own right: an agent that
             // cannot see a declared join concludes the model has none and
@@ -1514,6 +1824,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   doc: docText(field.annotations),
                   embedDoc: docOnlyText(field.annotations),
                   relationship: field.relationship,
+                  ...joinTargetOf(topology.get(governanceKey), field.name),
                });
                // The join's own entity above says a relationship exists; the
                // fields below say what it reaches and under what path. Both
@@ -1601,7 +1912,74 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   return { entities: collapseAliases(deduped), governance, droppedSources };
+   // A join to a source that is not in the index (dropped for a deny-all gate,
+   // or never listed because the package does not export it) keeps its alias,
+   // which is a field of the visible source, but not the target's real name:
+   // that name would reach the LLM in the source summary prompt and the source
+   // match prompt. Done once every model has been walked, because a join can
+   // name a source from a later model file.
+   const indexedSources = new Set(
+      deduped
+         .filter((e) => e.kind === "source")
+         .map((e) => sourceContextKey(e.modelPath, e.name)),
+   );
+   for (const e of deduped) {
+      if (
+         e.kind === "join" &&
+         e.joinTarget &&
+         !indexedSources.has(
+            sourceContextKey(e.joinTargetModelPath ?? "", e.joinTarget),
+         )
+      ) {
+         delete e.joinTarget;
+         delete e.joinTargetModelPath;
+      }
+   }
+   // A join is only a route to a source's fields when that source is itself
+   // indexed: a target that was dropped (a deny-all gate) or never listed has
+   // no direct fields to copy, so the join reaches nothing.
+   for (const [root, reaches] of topology) {
+      const kept = reaches.filter((reach) =>
+         indexedSources.has(
+            sourceContextKey(reach.targetModelPath, reach.targetSource),
+         ),
+      );
+      if (kept.length > 0) topology.set(root, kept);
+      else topology.delete(root);
+   }
+   const collapsed = collapseAliases(deduped);
+   const kept = new Set(collapsed);
+   return {
+      entities: collapsed,
+      governance,
+      droppedSources,
+      topology,
+      aliasedAway: new Set(
+         deduped
+            .filter((e) => !kept.has(e))
+            .map((e) =>
+               [e.modelPath, e.source ?? "", e.kind, e.name].join(
+                  KEY_SEPARATOR,
+               ),
+            ),
+      ),
+   };
+}
+
+/** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
+function joinTargetOf(
+   reaches: readonly JoinReach[] | undefined,
+   alias: string,
+): { joinTarget?: string; joinTargetModelPath?: string } {
+   const reach = reaches?.find(
+      (r) => r.path.length === 1 && r.path[0] === alias,
+   );
+   return reach
+      ? {
+           joinTarget: reach.targetSource,
+           joinTargetModelPath: reach.targetModelPath,
+        }
+      : {};
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -1618,6 +1996,15 @@ interface CollectedModel {
    governance: Map<string, SourceGovernance>;
    /** Sources dropped for an unconditional deny-all gate; see isUnconditionalDenyAuthorize. */
    droppedSources: Set<string>;
+   /** Joins each source reaches, keyed by sourceContextKey. */
+   topology: Map<string, JoinReach[]>;
+   /**
+    * Fields the index folded into another spelling of the same column (see
+    * collapseAliases), as modelPath, source, kind and name joined on
+    * KEY_SEPARATOR. A joined copy of one is a copy of a spelling nobody
+    * searches for.
+    */
+   aliasedAway: Set<string>;
 }
 
 /**
@@ -1770,15 +2157,21 @@ function collapseAliases(entities: Entity[]): Entity[] {
 
 /** One source reachable from a root source by joins. */
 export interface JoinReach {
-   /** sourceContextKey of the source the fields live on. */
-   targetKey: string;
+   /** Name of the source the fields live on. */
+   targetSource: string;
+   /**
+    * The package-relative path of the file that defines that source. Together
+    * with `targetSource` it is the source's identity: two files can each
+    * define a source of the same name, and a join reaches only one of them.
+    */
+   targetModelPath: string;
    /** Join names from the root, root not included. Aliases, not source names. */
    path: string[];
    /** Widest relationship on the path; "many" anywhere means fan-out. */
    fanout: Relationship;
 }
 
-/** For each root source key, every source reachable by joins. */
+/** For each root source (sourceContextKey), every source reachable by joins. */
 export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
 
 export interface PackageIndex {
@@ -1794,13 +2187,13 @@ export interface PackageIndex {
    retrievalEntities: readonly Entity[];
    /**
     * `retrievalEntities` without the joined copies (those with a joinPath),
-    * frozen once so it can be fingerprinted and cached the same way. Nothing
-    * searches it yet.
+    * frozen once so it can be fingerprinted and cached the same way.
     */
    directEntities: readonly Entity[];
    /**
-    * Which sources each source reaches by joins. Empty while joined copies
-    * are index rows; nothing reads it yet.
+    * Which sources each source reaches by joins, up to
+    * JOIN_TOPOLOGY_MAX_DEPTH deep, read from the compiled model. A source
+    * whose model has no compiled IR reaches nothing here.
     */
    topology: JoinTopology;
    index: lunr.Index;
@@ -1915,8 +2308,67 @@ function buildSourceContext(
 // is dropped automatically (WeakMap) and the next call rebuilds.
 const indexCache = new WeakMap<Package, PackageIndex>();
 
+/**
+ * The entities the semantic index embeds and searches. With joins made at
+ * assembly that is the direct fields only: a joined copy would be embedded
+ * again under a longer name, take a window slot from the field it copies and
+ * never be damped. The lexical path is not affected; it ranks
+ * `retrievalEntities`.
+ */
+export function embeddedEntitiesOf(
+   pkgIndex: PackageIndex,
+   settings: PipelineSettings,
+): readonly Entity[] {
+   return settings.joins === "assembly"
+      ? pkgIndex.directEntities
+      : pkgIndex.retrievalEntities;
+}
+
+/**
+ * What the semantic index embeds when joined copies are made at assembly: every
+ * entity except a joined copy that assembly will rebuild from the topology.
+ *
+ * Assembly rebuilds a joined copy from a direct field of the join's target
+ * source, so a copy is left out only when the topology reaches a target source
+ * of that file and the target has a direct field of that name, or folded that
+ * name into another spelling of the same column (`aliasedAway`). A joined
+ * field assembly cannot rebuild stays in, so it stays searchable. Two cases:
+ *  - the join has no source to copy from (an inline table or SQL), or its
+ *    target is not indexed;
+ *  - the join adds the field to its target (`join_one: c is cust extend {...}`),
+ *    so the target has no such field of its own.
+ */
+function directEntitiesOf(
+   retrievalEntities: readonly Entity[],
+   topology: JoinTopology,
+   aliasedAway: ReadonlySet<string>,
+): readonly Entity[] {
+   const directFields = new Set([
+      ...retrievalEntities
+         .filter((e) => !e.joinPath)
+         .map((e) =>
+            [e.modelPath, e.source ?? "", e.kind, e.name].join(KEY_SEPARATOR),
+         ),
+      ...aliasedAway,
+   ]);
+   const rebuilt = (e: Entity): boolean => {
+      if (!e.joinPath) return false;
+      const reach = topology
+         .get(sourceContextKey(e.modelPath, e.source ?? ""))
+         ?.find((r) => r.path.join(".") === e.joinPath);
+      if (!reach) return false;
+      const field = e.name.slice(e.joinPath.length + 1);
+      return directFields.has(
+         [reach.targetModelPath, reach.targetSource, e.kind, field].join(
+            KEY_SEPARATOR,
+         ),
+      );
+   };
+   return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
+}
+
 /** Get, or lazily build and cache, the lunr entity index for a package. */
-async function getPackageIndex(
+export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
@@ -1926,6 +2378,14 @@ async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -1951,10 +2411,12 @@ async function getPackageIndex(
       pkg,
       byId,
       retrievalEntities,
-      directEntities: Object.freeze(
-         retrievalEntities.filter((e) => !e.joinPath),
+      directEntities: directEntitiesOf(
+         retrievalEntities,
+         collected.topology,
+         collected.aliasedAway,
       ),
-      topology: new Map(),
+      topology: collected.topology,
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
@@ -1979,21 +2441,19 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
 - scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
-- Read warnings and any error/stale field before trusting a number.
+- Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
+- Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
-ranking, returned of total_available sources, next_offset on a listing, warnings[].
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
-
-## Example
-{"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
+ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
+below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
 
 /**
  * An error keeps the empty collection the tool would have answered with, so a
@@ -2072,6 +2532,15 @@ const sourceCutWarning = (returned: number, matched: number) =>
       ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
       : undefined;
 /**
+ * Cards the reranker left out because only its top N are ranked. They matched,
+ * and `total_available` counts them, but no page size reaches them: the remedy
+ * is a narrower question.
+ */
+const rerankCutWarning = (dropped: number, top: number | undefined) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
+      : undefined;
+/**
  * A browse that stopped early. Its remedy is NOT the ranked one: a listing
  * has a resumable order, so the rest is one `offset` away and raising the
  * limit is the wrong advice -- it caps at 150 either way, and paging is
@@ -2080,6 +2549,15 @@ const sourceCutWarning = (returned: number, matched: number) =>
 const listingPageWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
+      : undefined;
+/**
+ * Whole cards left out because the response would pass the size budget. Its
+ * remedy is not the page size: raising `limit` makes the answer bigger, and
+ * the budget cuts it back.
+ */
+const budgetCutWarning = (dropped: number, maxChars: number | null) =>
+   dropped > 0 && maxChars !== null
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} left out to keep the response under ${maxChars.toLocaleString("en-US")} characters. Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
       : undefined;
 const entityCutWarning = (dropped: number) =>
    dropped > 0
@@ -2272,28 +2750,38 @@ function runListing(
    });
 }
 
-// The stages and retrievers runContextQuery runs. PR 1 registers no stage of
-// either kind; a new stage is one file and one line here.
+// The stages and retrievers runContextQuery runs; a new stage is one file and
+// one line here. The stage lists are functions, read when a request runs,
+// because the stage files import this one and a list built at load would read
+// their exports before they exist whenever one of them is loaded first.
 const QUERY_STAGES: QueryStage[] = [];
-// A function, not a constant: get_context_retrievers imports this file, so the
-// two retrievers must not be read while this module is still being evaluated.
-// A constant here made importing the retrievers first throw "Cannot access
+// A function like the stage lists: get_context_retrievers imports this file, so
+// a constant here would read both retrievers while this module is still being
+// evaluated, and importing the retrievers first threw "Cannot access
 // 'semanticRetriever' before initialization".
 const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
-const RANK_STAGES: RankStage[] = [];
-const CARD_STAGES: CardStage[] = [];
+// Source match is listed only for a request it applies to, so a trace shows
+// no row for it otherwise (refine and rerank report "skipped" when off; this
+// one has nothing to say unless it has work).
+const rankStages = (ctx: PipelineContext): RankStage[] =>
+   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
+const cardStages = (): CardStage[] => [rerankStage];
 
-/** Today's behaviour, spelled out. Changing a value here changes responses. */
+/**
+ * The values the server runs with; changing one changes responses. Joins are
+ * made at assembly on the semantic path only: the lexical path always ranks
+ * the index's own joined copies.
+ */
 const PIPELINE_SETTINGS: PipelineSettings = {
-   joins: "index",
+   joins: "assembly",
    entityWindow: {
-      where: "post-rank",
       perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+      joinedPerSourcePerTarget: MAX_JOINED_ROWS_PER_SOURCE_TARGET,
    },
-   joinMaxDepth: MAX_JOIN_PATH_DEPTH,
-   joinDamping: null,
+   joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
+   joinDamping: 0.9,
    scoring: "cosine",
-   maxChars: null,
+   maxChars: 35_000,
    reserveChars: 1_000,
 };
 
@@ -2314,6 +2802,7 @@ async function runContextQuery(
    resolved: ResolvedRequest,
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
+   traceSummary = false,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
    logger.info("[MCP Tool getContext] Retrieving context", {
@@ -2368,8 +2857,37 @@ async function runContextQuery(
       ),
       embeddingConfigured: embeddingConfigured(),
       settings: PIPELINE_SETTINGS,
+      trace: [],
+      meter: new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null),
    };
    const warningsFor = makeWarningsFor(ctx);
+   // Spread into a ranked payload. Without the request header it is {}, so
+   // the payload is the one every caller already gets. With
+   // PUBLISHER_MCP_TRACE=retrieval the same summary is also written to the
+   // server log, which no caller sees.
+   const traceFields = () => {
+      const logTrace = traceToLog();
+      if (!traceSummary && !logTrace) return {};
+      const retrieval_trace = {
+         stages: (ctx.trace ?? []).map((t) => ({
+            name: t.name,
+            status: t.status,
+            ms: t.ms,
+            in: t.in,
+            out: t.out,
+            llm_calls: t.llmCalls,
+            tokens: t.tokens,
+         })),
+      };
+      if (logTrace) {
+         logger.info("[MCP Tool getContext] Retrieval trace", {
+            environmentName,
+            packageName,
+            retrieval_trace,
+         });
+      }
+      return traceSummary ? { retrieval_trace } : {};
+   };
 
    // Query stages may rewrite what is searched for; none is registered yet.
    ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
@@ -2380,42 +2898,104 @@ async function runContextQuery(
 
    // Tier 4: retrieval over the package's entities. With an
    // embedding provider configured, ranking is semantic (DuckDB
-   // cosine over cached entity embeddings); otherwise, or whenever
-   // the semantic path is unavailable (index still building,
-   // provider down, oversized package), it is lexical lunr. The
-   // `retrieval` marker and per-entity `score` appear ONLY when a
-   // provider is configured, so the unconfigured payload stays
-   // byte-identical to the lexical-only releases.
-   //
-   // Why a configured server answered lexically. Without it "lexical"
-   // is a dead end: an agent cannot tell a cold index, which clears in
-   // seconds and is worth retrying, from a down provider, which is not.
-   let retrievalReason: RetrievalReason | undefined;
-   let ranked: RankedState | undefined;
-   for (const retriever of retrievers()) {
-      const result = await retriever.retrieve(ctx);
-      if ("unavailable" in result) {
-         // "unconfigured" is not a reason to report: no provider, no marker.
-         if (result.unavailable !== "unconfigured") {
-            retrievalReason = result.unavailable;
-         }
-         continue;
+   // cosine over cached entity embeddings) and ONLY semantic: when the
+   // index is still building the answer says so (`retrieval:
+   // "indexing"`, no results), and when it cannot serve the answer is
+   // an error that names the reason. A configured server never answers
+   // a search lexically, because a ranking that quietly differs from
+   // the one the finished index gives makes results hard to trust.
+   // Lexical lunr is the mode only when no provider is configured, and
+   // then the payload carries no `retrieval` marker and no per-entity
+   // `score`, byte-identical to the lexical-only releases.
+   // The LLM stage settings are read before retrieval because source match
+   // takes the source targets away from the retrievers.
+   try {
+      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
       }
+      throw error;
+   }
+   // Stored source summaries, read once for the response and the source match
+   // prompt. Only when the package has them on; none stored means no change.
+   ctx.sourceSummaries = await loadStoredSummaries(
+      environmentStore,
+      pkgIndex,
+      environmentName,
+      packageName,
+   );
+   // With source match on, source targets are answered by the model, so the
+   // retrievers rank only the other targets. With none left there is nothing
+   // to retrieve; the response keeps the shape of the mode the server is in.
+   const matchingSources = sourceMatchActive(ctx);
+   const retrievalCtx: PipelineContext = matchingSources
+      ? {
+           ...ctx,
+           request: {
+              ...request,
+              searches: request.searches.filter(
+                 (s) => s.targetType !== "source",
+              ),
+           },
+        }
+      : ctx;
+   let ranked: RankedState | undefined;
+   if (matchingSources && retrievalCtx.request.searches.length === 0) {
       ranked = {
-         ...result,
-         retrieval: retriever.name,
-         retrievalReason,
+         rows: [],
+         belowCutoffCount: 0,
+         retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
       };
+   }
+   for (const retriever of ranked ? [] : retrievers()) {
+      const result = await retriever.retrieve(retrievalCtx);
+      if ("unavailable" in result) {
+         // "unconfigured" means no provider: the next retriever is the mode.
+         if (result.unavailable === "unconfigured") continue;
+         return result.unavailable === "indexing"
+            ? indexingResponse(uri, ctx, result)
+            : semanticUnavailableError(uri, result);
+      }
+      ranked = { ...result, retrieval: retriever.name };
       break;
    }
    if (!ranked) throw new Error("No retriever produced a result");
-   ranked = await runRankStages(RANK_STAGES, ranked, ctx);
-
-   // Grouping into cards, paging and serialization are shared by both
-   // retrievers so the two cannot drift.
-   let cards = assembleCards(ranked, ctx);
-   cards = await runCardStages(CARD_STAGES, cards, ctx);
-   const { sources, totalSources, entitiesDropped } = shapeCards(cards, ctx);
+   // The LLM stages run only on a ranked search (a listing returned above).
+   // A failure in one is the answer: an error result naming the stage, never
+   // an unrefined ranking.
+   let cards: CardState;
+   try {
+      ranked = await runRankStages(rankStages(ctx), ranked, ctx);
+      // Grouping into cards, paging and serialization are shared by both
+      // retrievers so the two cannot drift.
+      cards = await runCardStages(
+         cardStages(),
+         assembleCards(ranked, ctx),
+         ctx,
+      );
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
+   const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
+      cards,
+      ctx,
+   );
+   // Sources the size budget removed were returned by the page, so the page
+   // warning counts them as returned and only the budget warning speaks of them.
+   const pageReturned = sources.length + budgetDropped;
+   const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
+   // Cards rerank kept out of its top N are in total_available but not in the
+   // page's reach, so raising `limit` would not show them: they get their own
+   // warning and are left out of the page-cut one.
+   const rerankDropped = cards.discarded ?? 0;
+   const rerankWarning = rerankCutWarning(
+      rerankDropped,
+      ctx.llmStages?.rerank?.topSources,
+   );
    if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
@@ -2437,33 +3017,229 @@ async function runContextQuery(
          ...warningsFor(
             // Counted in CARDS, the same unit `returned` reports, so the
             // two cannot disagree.
-            sourceCutWarning(sources.length, totalSources),
+            sourceCutWarning(pageReturned, totalSources - rerankDropped),
+            rerankWarning,
+            budgetWarning,
             entityCutWarning(entitiesDropped),
          ),
+         ...traceFields(),
       });
    }
-   const envelope = {
+   // Lexical, which is only reached with no embedding provider: no
+   // `retrieval` marker, so the payload is what it has always been.
+   return jsonResource(uri, {
       sources,
       ranking: "relevance" as const,
       total_available: totalSources,
       returned: sources.length,
-   };
-   const lexicalWarnings = warningsFor(
-      sourceCutWarning(sources.length, totalSources),
-      entityCutWarning(entitiesDropped),
-   );
-   return jsonResource(
+      ...warningsFor(
+         sourceCutWarning(pageReturned, totalSources),
+         budgetWarning,
+         entityCutWarning(entitiesDropped),
+      ),
+      ...traceFields(),
+   });
+}
+
+/**
+ * The package's stored source summaries that still describe its sources, or
+ * undefined when summaries are off for it (the package turned them off, or no
+ * LLM is configured) or none is current. A summary is served only if its input
+ * hash is the hash of the source as it is now: a reload that changed a source
+ * leaves the old summary in the table until the next sync rewrites it, and a
+ * request with only source targets does not wait for that sync. A read failure
+ * is logged and answered without them: a summary only adds to a card, and the
+ * sync, not this read, is where a failure is loud.
+ */
+async function loadStoredSummaries(
+   environmentStore: EnvironmentStore,
+   pkgIndex: PackageIndex,
+   environmentName: string,
+   packageName: string,
+): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
+   const settings = indexSettingsOf(pkgIndex.pkg).sourceSummary;
+   if (!settings) return undefined;
+   try {
+      const stored = await loadSourceSummaries(
+         environmentStore.storageManager.getDuckDbConnection(),
+         environmentName,
+         packageName,
+         currentSummaryHashes(pkgIndex.directEntities, settings),
+      );
+      return stored.size > 0 ? stored : undefined;
+   } catch (error) {
+      logger.warn(
+         "[MCP Tool getContext] Stored source summaries could not be read; answering without them",
+         {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return undefined;
+   }
+}
+
+/**
+ * The answer while a package's semantic index is still building: a normal
+ * result with no sources, `retrieval: "indexing"` and how far the build has
+ * got. It is not an error, because the condition clears by itself and the
+ * right response is to ask again shortly. It is not a lexical answer either:
+ * with an embedding provider configured, a keyword ranking would differ from
+ * what the finished index returns, and an agent cannot tell the two apart.
+ */
+function indexingResponse(
+   uri: string,
+   ctx: PipelineContext,
+   result: Unavailable,
+) {
+   const status = result.status;
+   const progress = status
+      ? { embedded: status.embeddedRows, total: status.totalRows }
+      : undefined;
+   const built = progress
+      ? ` (${progress.embedded} of ${progress.total} vectors built)`
+      : "";
+   return jsonResource(uri, {
+      sources: [],
+      ranking: "relevance" as const,
+      total_available: 0,
+      returned: 0,
+      retrieval: "indexing",
+      ...(progress ? { retrieval_progress: progress } : {}),
+      ...makeWarningsFor(ctx)(
+         `This package's semantic index is still being built${built}, so there are no results yet. ` +
+            `Nothing is wrong: ask the same question again in a few seconds. ` +
+            `It was not answered by keyword search because an embedding provider is configured, ` +
+            `and a keyword ranking would differ from what the finished index returns. ` +
+            `A request with no search_text (a listing) works now.`,
+      ),
+   });
+}
+
+/**
+ * The answer when an LLM stage (refine, rerank or source_match, or building
+ * the LLM client for them) failed after the provider layer's retries. An error
+ * result that names the stage and the reason, with `sources: []` like every
+ * get_context error. It is never replaced by an unrefined or lexical answer: a
+ * ranking that quietly differs from the one the working stages give is harder
+ * to trust than an error.
+ *
+ * The advice names the package setting that turns the failing step off, and
+ * the three that turn every request-time LLM step off. The index-time steps
+ * (keyphrases, source summaries) fail a sync, not a request, and are reported
+ * through the index status instead.
+ */
+const STAGE_SETTING: Readonly<Record<string, string>> = {
+   refine: "retrieval.refine",
+   rerank: "retrieval.rerank",
+   source_match: "retrieval.sourceMatch",
+};
+/**
+ * The stage's reason as the MCP caller sees it. A vendor failure is worded
+ * without the endpoint (host, project path) and without the rest of the
+ * vendor's body: the caller gets the status and the vendor's own message, and
+ * the server log keeps the full text.
+ */
+function callerReason(error: StageError): string {
+   let cause: unknown = error.cause;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError && cause.publicMessage) {
+         return cause.publicMessage;
+      }
+      cause = cause.cause;
+   }
+   return error.reason;
+}
+
+function stageFailureError(
+   uri: string,
+   error: StageError,
+   extra: Record<string, unknown> = {},
+) {
+   return jsonToolError(
       uri,
-      ctx.embeddingConfigured
-         ? {
-              ...envelope,
-              retrieval: "lexical",
-              ...(ranked.retrievalReason
-                 ? { retrieval_reason: ranked.retrievalReason }
-                 : {}),
-              ...lexicalWarnings,
-           }
-         : { ...envelope, ...lexicalWarnings },
+      {
+         message: `get_context failed in the ${error.stage} step: ${callerReason(error)}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +
+               (STAGE_SETTING[error.stage]
+                  ? `To skip just this step, set the package's ${STAGE_SETTING[error.stage]} to enabled: false in publisher.json. `
+                  : "") +
+               "To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
+            "A request with no search_text (a listing) runs no LLM step and still works.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: error.stage,
+         ...extra,
+      },
+   );
+}
+
+/**
+ * The answer when a configured server cannot rank a search at all: an error
+ * result that names the reason and says what to do. Still carries
+ * `sources: []` like every get_context error, so a caller can read the
+ * payload without branching on success first.
+ */
+function semanticUnavailableError(uri: string, result: Unavailable) {
+   const reason = result.unavailable;
+   const status = result.status;
+   const lastError = status?.lastError;
+   const retryAt = lastError?.retryAt;
+   const listing =
+      "A request with no search_text (a listing) still works; it needs no embeddings.";
+   let message: string;
+   let suggestions: string[];
+   switch (reason) {
+      case "too-many-entities":
+         // The status text already says the count, the cap and the key to raise.
+         message =
+            lastError?.message ??
+            "This package has more entities than the semantic index cap (retrieval.indexing.maxEntities in publisher.config.json).";
+         suggestions = [
+            "Ask the operator to raise retrieval.indexing.maxEntities in publisher.config.json and restart the server.",
+            listing,
+         ];
+         break;
+      case "cooldown":
+      case "provider-error": {
+         const cause = lastError?.message ?? "the embedding provider failed";
+         message =
+            reason === "provider-error"
+               ? `The embedding provider failed to embed the search text: ${cause}`
+               : `Semantic search for this package is paused after an embedding failure: ${cause}`;
+         suggestions = [
+            retryAt
+               ? // No timer fires at retryAt: the retry starts when a question
+                 // arrives after it (see kickSync in embedding_index.ts).
+                 `The next question after ${retryAt} tries again; nothing retries on its own before then.`
+               : reason === "cooldown"
+                 ? // A cool-down always has a retryAt, so none means the vendor
+                   // refused the request itself and nothing will retry it.
+                   "Asking again will not help: this failure is not retried until the package or its retrieval settings change, or the server restarts. The operator should read the server log."
+                 : "Try again in a minute.",
+            "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
+            listing,
+         ];
+         break;
+      }
+      default:
+         message = `Semantic search is unavailable: ${result.detail ?? lastError?.message ?? "the embedding configuration or index storage could not be used"}`;
+         suggestions = [
+            "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
+            listing,
+         ];
+   }
+   return jsonToolError(
+      uri,
+      { message, suggestions },
+      { sources: [], retrieval: "error", retrieval_reason: reason },
    );
 }
 
@@ -2584,6 +3360,37 @@ export function registerListPackagesTool(
    );
 }
 
+/** The part of the MCP request context this tool reads: the HTTP headers. */
+interface RequestExtra {
+   requestInfo?: { headers?: Record<string, string | string[] | undefined> };
+}
+
+/**
+ * Diagnostic only: `X-Publisher-Retrieval-Trace: summary` adds a
+ * `retrieval_trace` block to a ranked response and changes no result. It is a
+ * header and not a tool argument so an agent never sees it and a tuning run
+ * can set it from the client.
+ */
+export const TRACE_HEADER = "x-publisher-retrieval-trace";
+
+function wantsTrace(extra: RequestExtra | undefined): boolean {
+   const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
+   const value = Array.isArray(raw) ? raw[0] : raw;
+   return value?.trim().toLowerCase() === "summary";
+}
+
+/**
+ * `PUBLISHER_MCP_TRACE=retrieval` in the server's environment writes the same
+ * summary to the server log, one line per ranked call, and adds nothing to any
+ * response. The eval loop's `serve.py --trace-retrieval` sets it. It is read on
+ * each call so a test can change it.
+ */
+export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
+
+function traceToLog(): boolean {
+   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+}
+
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
@@ -2592,7 +3399,7 @@ export function registerGetContextTool(
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
-      async (params: GetContextParams) => {
+      async (params: GetContextParams, extra?: RequestExtra) => {
          const request = resolveRequest(params);
          if (request.offset > 0 && !request.pureSourceListing) {
             // Refused rather than ignored. A ranked response has no
@@ -2624,14 +3431,16 @@ export function registerGetContextTool(
             request,
             environmentStore,
             unsupportedTargetWarnings(request),
+            wantsTrace(extra),
          );
       },
    );
 }
 
 /**
- * The semantic index state for one package, or undefined when this server has
- * no embedding provider and therefore no index to describe.
+ * The semantic index state for one package. With no embedding provider the
+ * status is `lexical`: the server ranks by words only, by design, and there is
+ * no index to describe.
  *
  * Composed here rather than in the controller because `totalEntities` means
  * "entities this package exposes to retrieval", which is exactly what
@@ -2644,10 +3453,27 @@ export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
-): Promise<EmbeddingIndexStatus | undefined> {
-   if (!embeddingConfigured()) return undefined;
-   const provider = getEmbeddingProvider();
-   if (!provider) return undefined;
+): Promise<EmbeddingIndexStatus> {
+   const empty = {
+      embeddedRows: 0,
+      totalRows: 0,
+      totalEntities: 0,
+      embeddedEntities: 0,
+   };
+   if (!embeddingConfigured()) return { status: "lexical", ...empty };
+   let provider: EmbeddingModel | null;
+   try {
+      provider = getEmbeddingProvider();
+   } catch (error) {
+      return {
+         status: "error",
+         lastError: {
+            message: error instanceof Error ? error.message : String(error),
+         },
+         ...empty,
+      };
+   }
+   if (!provider) return { status: "lexical", ...empty };
    const pkgIndex = await getPackageIndex(
       environmentStore,
       environmentName,
@@ -2658,6 +3484,45 @@ export async function getPackageEmbeddingStatus(
       provider,
       environmentName,
       packageName,
-      pkgIndex.retrievalEntities,
+      embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
+      pkgIndex.pkg,
    );
+}
+
+/**
+ * Queue the semantic index for a package that has just loaded, so the vectors
+ * build before the first question. Only enqueues; see {@link enqueuePackageSync}.
+ * Wired to the environment store's package-loaded hook at server start.
+ */
+export function startPackageEmbeddingSync(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   pkg: Package,
+): void {
+   const packageName = pkg.getPackageName();
+   enqueuePackageSync({
+      pkg,
+      environmentName,
+      packageName,
+      prepare: async () => {
+         if (!embeddingConfigured()) return undefined;
+         // Throws on a malformed embedding configuration; the queue logs it,
+         // and the status endpoint reports it.
+         const provider = getEmbeddingProvider();
+         if (!provider) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
+         return {
+            db: environmentStore.storageManager.getDuckDbConnection(),
+            provider,
+            entities: embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
+         };
+      },
+   });
 }

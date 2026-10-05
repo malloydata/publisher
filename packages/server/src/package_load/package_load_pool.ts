@@ -87,6 +87,7 @@ import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
+import type { PackageRetrievalSettings } from "../service/package_retrieval";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -246,6 +247,8 @@ export interface LoadPackageOutcome {
       scope?: PackageScope;
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
+      /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
+      retrieval?: PackageRetrievalSettings;
    };
    replacementMatchedExisting?: boolean;
    models: Array<

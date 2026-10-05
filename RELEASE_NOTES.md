@@ -31,6 +31,37 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
+
+With no embedding provider and no LLM configured, `get_context` ranks by words as before, and a listing request is unchanged. Everything below applies once a provider is configured. Read the first four items if you poll the status API, run a server with an embedding provider, or write `publisher.json` files.
+
+**`embeddingIndex.status` has new values.** On `GET /api/v0/environments/{env}/packages/{pkg}` the status was `indexing | ready | cooldown | too-many-entities`, and the field was absent when no provider was configured. It is now always present and is one of `lexical | indexing | ready | error`:
+
+- `lexical`: no embedding provider is configured. This is a mode of the server, not a failure.
+- `error`: the index cannot serve. A new `reason` field carries the two cases that used to be statuses of their own, `cooldown` and `too-many-entities`. Other errors, such as an invalid embedding configuration, have no `reason`; `lastError.message` explains them. A failure the vendor will not change its answer to (a 4xx such as a 400 for a prompt past the context window; not 401, 403, 408 or 429) has no `retryAt` and is not tried again until the package's content or retrieval settings change, or the server restarts.
+- A new `stage` field (`keyphrase` or `source_summary`) says which index-time LLM step failed, when one did.
+
+`cooldown` and `too-many-entities` stay in the `status` enum in `api-doc.yaml`, marked deprecated, so a client generated from an earlier spec still understands every value. The server never sends them as a `status` any more. A client that tests `status == "cooldown"` or `"too-many-entities"` must now test `status == "error"` and read `reason`. A poller that waits for `ready` or `cooldown` and nothing else would wait forever on `error`; stop on `ready` or `error`.
+
+**With an embedding provider configured, `get_context` no longer falls back to a lexical ranking.** While the index builds it answers `retrieval: "indexing"` with `retrieval_progress {embedded, total}` and no results. After a failure it answers `retrieval: "error"` with a reason that says how to fix it. A caller that treated every ranked response as usable must handle these two values. Listing mode (no search text) works in every state. The index now starts building when a package loads, one package at a time, instead of on the first question, and each batch is stored in its own transaction, so a failed sync keeps the batches before it.
+
+**A bad `retrieval` key in `publisher.json` now stops that package from loading.** Only these keys are accepted: `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch`, `sourceSummary` and `prompts`. Any other key fails the package load (HTTP 424) with a message naming the valid keys, instead of being ignored. `enabled: true` on a stage, on a server with no LLM, fails the package load too. A bad `retrieval` value in `publisher.config.json` is reported through `/status` as `initError`, like any other unreadable config.
+
+**Ranked responses are capped at 35,000 characters.** Whole source cards are dropped, never cut in half, and a warning says how many. Narrow the request with `model_path`, `source_name` or `entity_name` to see them.
+
+Also changed, when the matching provider is configured:
+
+- **Semantic search covers a source's own fields.** Joined copies are made when the answer is assembled and scored `cosine * 0.9 ** (hops + 1)`. A joined field that cannot be rebuilt from a source of its own stays in the index, so it is still found. A dotted `entity_name` that names a joined field, such as `buyer.name`, still matches on this path; a bare `name` does not match the joined copy.
+- **`retrieval.representation` defaults to `single`**: one vector per entity, made from its keyphrase, doc or name. Scores and rankings change and each package re-embeds on its first start. `facets` is the earlier layout.
+- **With an LLM, refine, rerank and source matching run by default** (`enabled: "auto"`; set `false` per package to turn one off). A failure in any of them returns an error naming the stage (`retrieval_reason: "llm-stage-failed"`, `retrieval_stage`) that shows the vendor's status and message and never its endpoint; nothing silently falls back. Refine and rerank can empty the result list on purpose, so an empty answer no longer always means that nothing matched. Each request is limited to `retrieval.llm.maxCallsPerRequest` chat requests (default 20), retries and JSON repairs included. Source matching sends at most the number of sources the call budget allows per source target, ranked by words shared with the target, and a warning says how many it did not send. A source row nobody rated (source matching off) scores as `MEDIUM` plus its cosine, and rerank's tiebreak stays under one so a source it rated 1 cannot outrank one it rated 2.
+- **Source summaries.** The index sync writes a summary and a one-line summary per source and model file (`retrieval.sourceSummary`, `auto` by default). Two files that each define a source of the same name get one summary each, and a join expands the source in the file it names. Cards then carry `source_info.one_line_summary`, and a request shows a stored summary only while it matches the source as it is now. A source with no documentation gets the line "The `name` source." without a model call. The prompt cuts one field's doc to 500 characters and the whole message to 60,000.
+- **Refined entities carry `matched_targets[].match_reason`**, the model's one-sentence reason.
+- **A repeated chat failure pauses LLM steps for every package.** Three failures in a row that are rate limits, timeouts or server errors (429, 408, 5xx) stop chat calls for 60 seconds, process-wide. Other errors, such as a rejected key or a bad request, do not count towards it.
+- **New settings.** `publisher.config.json` gains a `retrieval` block (`llm`, `embedding`, `egress.preset`, `indexing.maxEntities`), and the API keys are `LLM_API_KEY` and `EMBEDDING_API_KEY`. `retrieval.indexing.maxEntities` replaces the fixed 5,000-entity cap; its default is 5,000. See `docs/get-context-pipeline.md` and `docs/configuration.md`.
+- **Trace.** `X-Publisher-Retrieval-Trace: summary` adds `retrieval_trace` to a response; `PUBLISHER_MCP_TRACE=retrieval` on the server writes it to the log instead. It holds per-stage counts and timings.
+
+**A capped keyphrase or summary sync resumes on the next restart.** When `retrieval.llm.maxCallsPerSync` stops a sync early, the status can read `ready` with `done` below `total`. A package reload does not continue it, because a reload of an unchanged package starts no sync work.
+
 ## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
 A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
