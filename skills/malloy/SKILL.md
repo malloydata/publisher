@@ -41,8 +41,8 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | Skill | Use when... |
 |-------|-------------|
 | `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
-| `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
-| `skill:malloy-notebooks` | Building Malloy notebooks (`notebooks/<slug>.malloy`; an existing `.malloynb` still reads) |
+| `skill:malloy-charts` | Chart selection, renderer tag syntax and scale rules, KPI cards and dashboards |
+| `skill:malloy-notebooks` | Building Malloy notebooks (`notebooks/<slug>.malloy`; an existing `.malloynb` still reads), including a report built from queries already run |
 | `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
 | `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
@@ -63,7 +63,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 
 | Skill | Use when... |
 |-------|-------------|
-| `skill:malloy-queries` | Query and view syntax: dates, aggregates, join paths, filters |
+| `skill:malloy-queries` | Query and view syntax and the common compile errors: dates, aggregates, join paths, filters, method syntax |
 | `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
 | `skill:malloy-review` | Reviewing, auditing, or critiquing existing Malloy |
