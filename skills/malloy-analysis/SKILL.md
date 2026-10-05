@@ -42,9 +42,13 @@ Write Malloy using only the model's names. Load `skill:malloy-queries` for synta
 
 **Check these before your first `execute_query`.** They cause most first-attempt compile failures, and a SQL habit gets each one wrong:
 
-- **Counting.** `count(field)` is already the *distinct* count of that field. `count(distinct field)` is a compile error (its message says "deprecated"); write `count(field)`.
+- **Counting.** `count()` counts rows. `count(field)` is already a distinct count. `count(distinct field)` and `count(*)` are errors; write `count(field)` or `count()`.
 - **Separators.** Within a clause, fields are separated by commas or newlines, never `;`. A semicolon fails with `no viable alternative at input '<next-field>'`.
 - **Join paths.** A dotted path like `carriers.name` resolves only if the source declares that join. Confirm the join name and the field under it in a `get_context` result instead of inferring either from a table name.
+- **Names.** `month`, `year`, `day`, `date`, `count`, `min`, `max`, `source` and `table` cannot name a field unless they are backticked. Write `order_month is order_date.month`, not `month is order_date.month`.
+- **Aggregates.** Never put a measure, or `min()`, `max()` or `sum()`, in `group_by:` or `calculate:`. Never wrap a measure in another aggregate (`max(total_sales)` fails when `total_sales` is a measure): aggregate per group first, then take the maximum in a second stage.
+- **Dates.** A date range goes with `?`: `order_date ? @2025`. `order_date ~ @2025` cannot compile (`~` is for strings).
+- **Strings.** `+`, `++` and `||` do not join text; use `concat(a, '-', b)`. A name with an apostrophe goes inside double quotes: `"Joe's Diner"`.
 
 If you define a calculated field that is not already in the model, treat it carefully: ad-hoc definitions are a common source of subtle errors.
 
