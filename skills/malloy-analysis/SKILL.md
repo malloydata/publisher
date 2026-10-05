@@ -66,7 +66,7 @@ So when the model's own named view for this question computes a share, the answe
 
 ## 4. Execute
 
-Run the query with `execute_query`. Scope it to the environment, package, and model path from the discovery results, then run either an ad-hoc query (for example `run: order_items -> { group_by: ...; aggregate: ... }`) or a named source plus a view defined in the model. Probe first with small or counting queries to learn the data's shape, then run the query you will present. If it errors, read the message against the error table in `skill:malloy-queries`, fix the most likely cause, and rerun. Never present results from a query you have not actually run.
+Run the query with `execute_query`. Scope it to the environment, package, and model path from the discovery results, then run either an ad-hoc query (for example `run: order_items -> { group_by: ...; aggregate: ... }`) or a named source plus a view defined in the model. Probe first with small or counting queries to learn the data's shape, then run the query you will present. If it errors, change the part the message names and rerun. If the same error comes back, remove pieces (filters, joins, nested views) until the query compiles, then add them back one at a time; `skill:malloy-queries` has a table of error messages and fixes. Never present results from a query you have not actually run.
 
 ## 5. Verify before trusting
 
