@@ -119,6 +119,10 @@ import {
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
+   type PackageRetrievalSettings,
+   readPackageRetrieval,
+} from "../service/package_retrieval";
+import {
    collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -462,6 +466,7 @@ async function readPackageMetadata(
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -474,6 +479,7 @@ async function readPackageMetadata(
       materialization?: unknown;
       scope?: unknown;
       queryMetadata?: unknown;
+      retrieval?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -550,6 +556,10 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      // How this package is searched and indexed. Validated here so a bad key
+      // stops the load with a message naming it, and read here so an edit
+      // takes effect on reload.
+      retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
    };
 }
 

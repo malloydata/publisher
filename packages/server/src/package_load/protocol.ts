@@ -79,6 +79,7 @@ import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
+import type { PackageRetrievalSettings } from "../service/package_retrieval";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -246,6 +247,8 @@ export interface LoadPackageResult {
        * still-parsing-but-outdated manifest is visible without failing a load.
        */
       manifestWarnings?: string[];
+      /** The manifest's `retrieval` block, validated. */
+      retrieval?: PackageRetrievalSettings;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */

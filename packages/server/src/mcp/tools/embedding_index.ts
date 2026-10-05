@@ -18,7 +18,9 @@ import {
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
+import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { indexSettingsOf, type IndexSettings } from "./index_settings";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -55,9 +57,10 @@ export function setMaxEmbeddedEntities(cap: number): void {
    maxEmbeddedEntities = cap;
 }
 /**
- * After a provider failure the semantic path short-circuits to lexical
+ * After a provider failure the package's semantic path answers `cooldown`
  * for this long, so a down or misconfigured endpoint costs one timeout
- * per window, not one per call.
+ * per window, not one per call. get_context returns an error for it; there is
+ * no lexical ranking in its place while a provider is configured.
  */
 export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
 /**
@@ -69,7 +72,7 @@ export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
  * re-embedding the whole package once per cooldown window forever. With a
  * longer window a durably dims-inconsistent provider (e.g. mid-migration
  * replicas serving different dims under one model name) is throttled to
- * at most one re-embed per this interval, staying lexical between, while
+ * at most one re-embed per this interval, answering `cooldown` between, while
  * still re-adopting a genuinely-new stable dimensionality within the
  * window. Deliberately not "never re-purge": that would strand the cache
  * on the old dims if the provider later settles on a new one.
@@ -138,6 +141,14 @@ export type SemanticSearchResult =
          * `belowCutoffCount` interpretable.
          */
         totalEntities: number;
+        /**
+         * Per source: the entities (sources themselves excluded) that cleared
+         * the floor and were left out of `hits` by the per-source window. A
+         * source with none has no entry. The window drops these rows in SQL,
+         * so a caller that wants to say "N more matched" cannot count them
+         * from `hits`.
+         */
+        cutBySource: Map<string, number>;
      }
    | { unavailable: SemanticUnavailableReason };
 
@@ -332,6 +343,31 @@ export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    return facets;
 }
 
+/** The only row an entity has under the `single` representation. */
+export const SINGLE_FACET = "single";
+
+/**
+ * The rows one entity is embedded as, by representation.
+ *
+ * `facets`: the name, then the doc chunks.
+ *
+ * `single`: ONE row whose text is the doc text, else the humanized name. The
+ * name is left out when there is a doc: the text stands for what the entity
+ * means, and mixing the identifier into it dilutes that. A doc is capped at
+ * the provider's input limit (1,024 characters) when the row is prepared, so a
+ * long doc is cut, not chunked. Rows are keyed by the facet name, so switching
+ * representation deletes one set of rows and adds the other.
+ */
+export function entityRows(
+   entity: EmbeddableEntity,
+   representation: PackageRepresentation,
+): EntityFacet[] {
+   if (representation === "facets") return entityFacets(entity);
+   const doc = entity.embedDoc.replace(/\s+/g, " ").trim();
+   const text = doc || humanizeName(entity.name) || entity.name;
+   return [{ facet: SINGLE_FACET, text }];
+}
+
 /**
  * Break text into pieces of at most `max` characters, on word boundaries
  * where one is available. `max` at or below zero yields one piece, leaving
@@ -442,6 +478,15 @@ export function facetRowKey(
    return entityRowKey(kind, source, name) + KEY_SEPARATOR + facet;
 }
 
+/**
+ * What decides an entity's rows: the package's representation. The readiness
+ * fingerprint covers it through {@link IndexSettings.key} as well, so a changed
+ * setting makes the package `indexing` until the sync has applied it.
+ */
+interface RowPlan {
+   representation: PackageRepresentation;
+}
+
 /** One desired embedding row: an entity's facet, its text, and that text's hash. */
 interface DesiredFacet {
    entity: EmbeddableEntity;
@@ -463,9 +508,12 @@ interface DesiredFacet {
  * Hashing per facet is what keeps the diff cheap under faceting: editing a
  * doc re-embeds that entity's doc rows and leaves its name row alone.
  */
-function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
+function desiredFacets(
+   entities: EmbeddableEntity[],
+   plan: RowPlan,
+): DesiredFacet[] {
    return entities.flatMap((entity) =>
-      entityFacets(entity).map(({ facet, text: raw }) => {
+      entityRows(entity, plan.representation).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
       }),
@@ -513,11 +561,15 @@ const yieldToEventLoop = () =>
  */
 async function desiredFacetsChunked(
    entities: EmbeddableEntity[],
+   plan: RowPlan,
 ): Promise<DesiredFacet[]> {
    const desired: DesiredFacet[] = [];
    for (let i = 0; i < entities.length; i += FINGERPRINT_CHUNK_ENTITIES) {
       desired.push(
-         ...desiredFacets(entities.slice(i, i + FINGERPRINT_CHUNK_ENTITIES)),
+         ...desiredFacets(
+            entities.slice(i, i + FINGERPRINT_CHUNK_ENTITIES),
+            plan,
+         ),
       );
       if (i + FINGERPRINT_CHUNK_ENTITIES < entities.length) {
          await yieldToEventLoop();
@@ -556,10 +608,10 @@ async function desiredFingerprintChunked(
 // cool-down; and `synced`, the last sync that completed. The cool-down is
 // scoped per package, NOT global: a query timeout or dims-mismatch on
 // one package must not force every other healthy, correctly-cached
-// package to lexical for the window. A failure that says the PROVIDER is
+// package into cooldown for the window. A failure that says the PROVIDER is
 // unreachable (network, timeout, 429, 5xx, rejected credentials) is
 // different: it also opens a process-wide breaker (`providerBreaker`), so
-// the packages queued behind the failed one cool down on the recorded
+// the packages queued behind the failed one go into cooldown on the recorded
 // failure without each sending a request of their own. A restart over fifty
 // packages against a dead endpoint costs one failed sync, not fifty.
 //
@@ -569,7 +621,7 @@ async function desiredFingerprintChunked(
 // changed". The proxy is never wrong, but it is coarse: every reload
 // allocates a new instance (reload_package, REST ?reload=true, and each
 // watch-mode recompile all reach Package.create), so a reload that changed
-// nothing threw the fact away, and the next question was ranked lexically
+// nothing threw the fact away, and the next question was answered `indexing`
 // while the diff re-discovered that every hash still matched. Recording
 // the fingerprint of the desired row set makes the test exact instead: a
 // reload whose facet texts hash the same keeps the warm index.
@@ -782,7 +834,7 @@ interface DesiredSummary {
  */
 const fingerprintCache = new WeakMap<
    readonly EmbeddableEntity[],
-   Promise<DesiredSummary>
+   Map<string, Promise<DesiredSummary>>
 >();
 
 /** Entities hashed between two yields to the event loop. */
@@ -813,33 +865,48 @@ const FINGERPRINT_CHUNK_ENTITIES = 250;
  */
 function desiredSummaryFor(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<DesiredSummary> {
    const frozen = Object.isFrozen(entities);
-   const cached = frozen ? fingerprintCache.get(entities) : undefined;
+   let byKey = frozen ? fingerprintCache.get(entities) : undefined;
+   const cached = byKey?.get(settings.key);
    if (cached !== undefined) return cached;
-   const computed = computeDesiredSummary(entities);
+   const computed = computeDesiredSummary(entities, settings);
    if (frozen) {
-      fingerprintCache.set(entities, computed);
+      if (!byKey) {
+         byKey = new Map();
+         fingerprintCache.set(entities, byKey);
+      }
+      byKey.set(settings.key, computed);
       // A failure must not be cached for the life of the array.
-      computed.catch(() => fingerprintCache.delete(entities));
+      const slot = byKey;
+      computed.catch(() => slot.delete(settings.key));
    }
    return computed;
 }
 
 async function computeDesiredSummary(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<DesiredSummary> {
-   const desired = await desiredFacetsChunked(uniqueByEntityKey(entities));
+   const plan: RowPlan = { representation: settings.representation };
+   const desired = await desiredFacetsChunked(
+      uniqueByEntityKey(entities),
+      plan,
+   );
    return {
-      fingerprint: await desiredFingerprintChunked(desired),
+      fingerprint: contentHash(
+         settings.key + "\n" + (await desiredFingerprintChunked(desired)),
+      ),
       rows: desired.length,
    };
 }
 
 async function fingerprintFor(
    entities: readonly EmbeddableEntity[],
+   settings: IndexSettings,
 ): Promise<string> {
-   return (await desiredSummaryFor(entities)).fingerprint;
+   return (await desiredSummaryFor(entities, settings)).fingerprint;
 }
 
 /**
@@ -1101,6 +1168,7 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   settings: IndexSettings,
    meta: PackageSyncMeta,
 ): Promise<void> {
    return meta.mutex.runExclusive(async () => {
@@ -1161,8 +1229,9 @@ async function syncPackageEmbeddings(
          }
       }
 
-      const desired = await desiredFacetsChunked(entities);
-      const fingerprint = await desiredFingerprintChunked(desired);
+      const desired = await desiredFacetsChunked(entities, {
+         representation: settings.representation,
+      });
       const desiredKeys = new Set(
          desired.map((d) =>
             facetRowKey(
@@ -1284,7 +1353,9 @@ async function syncPackageEmbeddings(
       // purpose: a sync that aborted as orphaned wrote no rows, so the next
       // call must re-sync under the fresh meta.
       meta.synced = {
-         fingerprint,
+         // Computed exactly as the readiness check computes it: over the rows
+         // for the package's representation plus the settings key.
+         fingerprint: await fingerprintFor(entities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
@@ -1381,6 +1452,7 @@ async function runTrackedSync(
          environmentName,
          packageName,
          entities,
+         indexSettingsOf(pkg),
          meta,
       );
       meta.lastError = undefined;
@@ -1465,7 +1537,10 @@ export function enqueuePackageSync(args: {
       const entities = uniqueByEntityKey(prepared.entities);
       if (entities.length > maxEmbeddedEntities) return;
       const providerKey = providerKeyFor(provider);
-      const fingerprint = await fingerprintFor(prepared.entities);
+      const fingerprint = await fingerprintFor(
+         prepared.entities,
+         indexSettingsOf(pkg),
+      );
       // Already current (a restart over rows that still match), cooling down
       // from a recent failure, or already queued by a search: nothing to do.
       if (isSynced(meta, fingerprint, providerKey) || inCooldown(meta)) return;
@@ -1489,8 +1564,9 @@ export function enqueuePackageSync(args: {
 
 /**
  * Semantic retrieval for tier 4 of get_context. Returns ranked
- * hits, or a reason the semantic path is unavailable so the caller can
- * fall back to lexical. Never throws.
+ * hits, or a reason the semantic path is unavailable. The caller turns the
+ * reason into an `indexing` result or an error: there is no lexical fallback
+ * while an embedding provider is configured. Never throws.
  *
  * Cold-start contract: a call whose content has no completed sync kicks one
  * off in the background and reports `indexing`, so no call ever waits on a
@@ -1524,7 +1600,22 @@ export async function trySemanticSearch(args: {
     * with no claimable kind is dropped before the scan.
     */
    queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
-   limit: number;
+   /**
+    * The most rows kept per source, per target: each target's candidates are
+    * cut to this many in every source separately, never to one number across
+    * the package. A source that matches everything cannot crowd the others
+    * out of the answer, and nothing bounds how many sources are returned.
+    */
+   perSourceWindow: number;
+   /**
+    * The most DOTTED rows (`path.leaf`: joined fields the index keeps because
+    * assembly cannot rebuild them) kept per source, per target, in a window of
+    * their own. Without it they share `perSourceWindow` with the source's own
+    * fields and, when a package joins inline tables, hundreds of them can
+    * outrank every own field and take the whole window. Omit for one shared
+    * window.
+    */
+   perSourceJoinedWindow?: number;
    sourceName?: string;
    /**
     * The (kind, source, name) triples the caller's scope admits, when it
@@ -1552,7 +1643,7 @@ export async function trySemanticSearch(args: {
       environmentName,
       packageName,
       queries,
-      limit,
+      perSourceWindow,
       sourceName,
       scopeKeys,
    } = args;
@@ -1565,7 +1656,7 @@ export async function trySemanticSearch(args: {
       if (!oversizeWarned.has(key)) {
          oversizeWarned.add(key);
          logger.warn(
-            "[MCP Tool getContext] Package exceeds the semantic index entity cap; using lexical ranking",
+            "[MCP Tool getContext] Package exceeds the semantic index entity cap; semantic search is unavailable for it",
             {
                environmentName,
                packageName,
@@ -1581,14 +1672,19 @@ export async function trySemanticSearch(args: {
    // candidate row there is nothing to rank, and embedding the query text
    // would be a provider call whose result cannot be used.
    if (scopeKeys !== undefined && scopeKeys.length === 0) {
-      return { hits: [], belowCutoffCount: 0, totalEntities: 0 };
+      return {
+         hits: [],
+         belowCutoffCount: 0,
+         totalEntities: 0,
+         cutBySource: new Map(),
+      };
    }
 
    const providerKey = providerKeyFor(provider);
    const meta = metaFor(environmentName, packageName);
    // Per-package cool-down: a recent provider failure for THIS package
-   // (sync, query embed, or a dims-mismatch backoff) keeps it lexical for
-   // the window without touching any other package.
+   // (sync, query embed, or a dims-mismatch backoff) makes it unavailable
+   // for the window without touching any other package.
    if (inCooldown(meta)) {
       return { unavailable: "cooldown" };
    }
@@ -1598,7 +1694,10 @@ export async function trySemanticSearch(args: {
    const entryGeneration = meta.generation;
    // The caller's array, not the deduped copy: the copy is new every call,
    // so only the caller's array can hit the cache.
-   const fingerprint = await fingerprintFor(args.entities);
+   const fingerprint = await fingerprintFor(
+      args.entities,
+      indexSettingsOf(pkg),
+   );
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1627,7 +1726,7 @@ export async function trySemanticSearch(args: {
       const message = error instanceof Error ? error.message : String(error);
       markProviderFailure(meta, publicProviderMessage(error));
       logger.warn(
-         "[MCP Tool getContext] Query embedding failed; falling back to lexical ranking",
+         "[MCP Tool getContext] Query embedding failed; semantic search cooling down",
          { environmentName, packageName, error: message },
       );
       return { unavailable: "error" };
@@ -1692,6 +1791,29 @@ export async function trySemanticSearch(args: {
       // its join from the statement entirely.
       const scopeValues = (scopeKeys ?? []).map(() => "(?, ?, ?)").join(", ");
       const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
+      // Dotted rows (joined fields the index keeps) get a window of their own
+      // when the caller sets one: ranked apart from the source's own fields, so
+      // they cannot take their slots. Without it the statement is unchanged.
+      // The window is a number the server sets, validated here, so it is written
+      // into the statement rather than bound.
+      const joinedWindow = args.perSourceJoinedWindow;
+      if (
+         joinedWindow !== undefined &&
+         (!Number.isInteger(joinedWindow) || joinedWindow < 0)
+      ) {
+         throw new Error(
+            `Invalid perSourceJoinedWindow: expected a whole number of at least 0, got ${joinedWindow}. Fix: pass 3 or omit it.`,
+         );
+      }
+      const dotted =
+         "(CASE WHEN strpos(entity_name, '.') > 0 THEN 1 ELSE 0 END)";
+      const joinedCol =
+         joinedWindow === undefined ? "" : `${dotted} AS dotted,`;
+      const joinedPartition = joinedWindow === undefined ? "" : `, ${dotted}`;
+      const hitWhere =
+         joinedWindow === undefined
+            ? "h.rn <= ?"
+            : `h.rn <= CASE WHEN h.dotted = 1 THEN ${joinedWindow} ELSE ? END`;
       const scan = await db.all<{
          total: number;
          below: number;
@@ -1701,6 +1823,7 @@ export async function trySemanticSearch(args: {
          best: number | null;
          target_idx: number | null;
          score: number | null;
+         cut: number | null;
       }>(
          `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
          qk(target_idx, kind) AS (VALUES ${kindValues}),${
@@ -1749,14 +1872,18 @@ export async function trySemanticSearch(args: {
                    CAST(COUNT(*) FILTER (WHERE best < ?) AS INTEGER) AS below
             FROM per_entity
          ),
-         -- The window is PER TARGET, not global. One shared LIMIT over the
-         -- union lets the highest-scoring target fill it and crowd the others
-         -- out entirely: measured against malloy-samples, a dimension target
-         -- at 0.63 took every slot while the measure target's own best hit at
-         -- 0.42 and the view target's at 0.53 vanished from the response --
-         -- absent, not merely ranked lower. That is the exact failure typed
-         -- targets exist to prevent, so each target gets its own share and the
-         -- caller gets an answer for every concept it described.
+         -- The window is PER TARGET AND PER SOURCE, never global. One shared
+         -- LIMIT over the union lets the highest-scoring target fill it and
+         -- crowd the others out entirely: measured against malloy-samples, a
+         -- dimension target at 0.63 took every slot while the measure target's
+         -- own best hit at 0.42 and the view target's at 0.53 vanished from
+         -- the response -- absent, not merely ranked lower. That is the exact
+         -- failure typed targets exist to prevent, so each target gets its own
+         -- share. The same crowding happens between sources: one wide source
+         -- that matches a target on every field would take the whole target
+         -- window and leave the other sources with no card, so each source
+         -- keeps its own best rows and the caller sees every source that
+         -- cleared the floor.
          ranked_per_target AS (
             SELECT entity_kind, entity_source, entity_name, target_idx, score,
                    -- Score, then source, name and kind: the full identity, so
@@ -1765,8 +1892,9 @@ export async function trySemanticSearch(args: {
                    -- instead of in whatever order the scan produced the rows.
                    -- This decides which tied rows fit the window, not just
                    -- how they are listed.
+                   ${joinedCol}
                    ROW_NUMBER() OVER (
-                      PARTITION BY target_idx
+                      PARTITION BY target_idx, entity_source${joinedPartition}
                       ORDER BY score DESC, entity_source, entity_name,
                                entity_kind
                    ) AS rn
@@ -1781,13 +1909,31 @@ export async function trySemanticSearch(args: {
               ON p.entity_kind = h.entity_kind
              AND p.entity_source = h.entity_source
              AND p.entity_name = h.entity_name
-            WHERE h.rn <= ?
+            WHERE ${hitWhere}
+         ),
+         -- What the window left out, per source: entities that cleared the
+         -- floor on some target, less the ones kept. Source rows do not spend
+         -- a slot in assembly's per-source cap, so they are not counted.
+         above_floor AS (
+            SELECT entity_source, COUNT(*) AS n
+            FROM per_entity
+            WHERE best >= ? AND entity_kind <> 'source'
+            GROUP BY entity_source
+         ),
+         kept AS (
+            SELECT entity_source, COUNT(*) AS n
+            FROM hits
+            WHERE entity_kind <> 'source'
+            GROUP BY entity_source
          )
          SELECT agg.total, agg.below,
                 h.entity_kind, h.entity_source, h.entity_name, h.best,
-                s.target_idx, s.score
+                s.target_idx, s.score,
+                CAST(a.n - COALESCE(k.n, 0) AS INTEGER) AS cut
          FROM agg
          LEFT JOIN hits h ON TRUE
+         LEFT JOIN above_floor a ON a.entity_source = h.entity_source
+         LEFT JOIN kept k ON k.entity_source = h.entity_source
          LEFT JOIN scored s
            ON s.entity_kind = h.entity_kind
           AND s.entity_source = h.entity_source
@@ -1807,7 +1953,8 @@ export async function trySemanticSearch(args: {
             ...(sourceName !== undefined ? [sourceName] : []),
             provider.minSimilarity,
             provider.minSimilarity,
-            limit,
+            perSourceWindow,
+            provider.minSimilarity,
          ],
       );
 
@@ -1824,8 +1971,12 @@ export async function trySemanticSearch(args: {
             targetScores: Map<number, number>;
          }
       >();
+      const cutBySource = new Map<string, number>();
       for (const r of scan) {
          if (r.entity_name === null) continue;
+         if (r.cut !== null && r.cut > 0) {
+            cutBySource.set(r.entity_source as string, r.cut);
+         }
          const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
          let hit = byEntity.get(key);
          if (!hit) {
@@ -1924,7 +2075,7 @@ export async function trySemanticSearch(args: {
                // Backoff: at most one purge per suppression window. Within
                // it, a fresh mismatch means the endpoint is serving
                // inconsistent dimensionalities; re-purging would re-embed
-               // the whole package, so cool down and stay lexical instead.
+               // the whole package, so cool down instead.
                // lastPurgeAtMs is NOT advanced here: the window is measured
                // from the last real PURGE, and because the suppression
                // window is longer than the cooldown (see
@@ -1995,7 +2146,7 @@ export async function trySemanticSearch(args: {
       // rows snapshot above is unreliable (possibly empty because a
       // concurrent heal deleted mid-search), and an unreliable empty
       // result must never be served as semantic "nothing relevant here".
-      // Answer as indexing (marked lexical); the next call is consistent.
+      // Answer as indexing; the next call is consistent.
       if (meta.generation !== entryGeneration) {
          return { unavailable: "indexing" };
       }
@@ -2010,13 +2161,15 @@ export async function trySemanticSearch(args: {
          })),
          belowCutoffCount: cutoffCounts?.below ?? 0,
          totalEntities: cutoffCounts?.total ?? 0,
+         cutBySource,
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(
-         "[MCP Tool getContext] Semantic search failed; falling back to lexical ranking",
-         { environmentName, packageName, error: message },
-      );
+      logger.warn("[MCP Tool getContext] Semantic search failed", {
+         environmentName,
+         packageName,
+         error: message,
+      });
       return { unavailable: "error" };
    }
 }
@@ -2024,14 +2177,18 @@ export async function trySemanticSearch(args: {
 /** What a package's semantic index is currently doing. */
 export interface EmbeddingIndexStatus {
    /**
+    * - `lexical`: no embedding provider is configured. A mode, not a fallback.
     * - `indexing`: vectors are being built (or are queued to be).
     * - `ready`: the next question is ranked semantically.
-    * - `cooldown`: the provider failed recently and the package is waiting out
-    *   the window before the next try. `lastError` says why and when.
-    * - `too-many-entities`: the package is over the entity cap, which no retry
-    *   fixes.
+    * - `error`: the index cannot serve now. `reason` and `lastError` say why.
     */
-   status: "indexing" | "ready" | "cooldown" | "too-many-entities";
+   status: "lexical" | "indexing" | "ready" | "error";
+   /**
+    * Why `status` is `error`: `cooldown` (the provider failed and the package
+    * is waiting out the window before the next try) or `too-many-entities`
+    * (over the cap, which no retry fixes).
+    */
+   reason?: "cooldown" | "too-many-entities";
    lastError?: { message: string; retryAt?: string };
    /** When the sync now running began. Absent when none is running. */
    startedAt?: string;
@@ -2119,6 +2276,7 @@ export async function getEmbeddingIndexStatus(
    environmentName: string,
    packageName: string,
    allEntities: readonly EmbeddableEntity[],
+   pkg?: Package,
 ): Promise<EmbeddingIndexStatus> {
    // Counted per cached entity, not per card: the same reason the search
    // path dedupes. See uniqueByEntityKey.
@@ -2163,17 +2321,19 @@ export async function getEmbeddingIndexStatus(
    ).length;
 
    const meta = syncMeta.get(metaKey(environmentName, packageName));
-   const summary = await desiredSummaryFor(allEntities);
+   const summary = await desiredSummaryFor(allEntities, indexSettingsOf(pkg));
 
-   let state: Pick<EmbeddingIndexStatus, "status" | "lastError">;
+   let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
    if (entityCount > maxEmbeddedEntities) {
       state = {
-         status: "too-many-entities",
+         status: "error",
+         reason: "too-many-entities",
          lastError: { message: tooManyEntitiesMessage(entityCount) },
       };
    } else if (meta && inCooldown(meta)) {
       state = {
-         status: "cooldown",
+         status: "error",
+         reason: "cooldown",
          lastError: {
             message: meta.lastError ?? "The embedding provider failed",
             retryAt: new Date(meta.failureAtMs + cooldownMs).toISOString(),

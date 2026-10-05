@@ -23,6 +23,10 @@ import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
+   DEFAULT_PACKAGE_RETRIEVAL,
+   type PackageRetrievalSettings,
+} from "./package_retrieval";
+import {
    API_PREFIX,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
@@ -304,6 +308,12 @@ export class Package {
     * package's `warnings` (see getPackageMetadata).
     */
    private manifestWarnings: string[] = [];
+   /**
+    * The manifest's `retrieval` block as read at load. Replaced on reload,
+    * which is how an edit to it takes effect.
+    */
+   private retrievalSettings: PackageRetrievalSettings =
+      DEFAULT_PACKAGE_RETRIEVAL;
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -958,6 +968,8 @@ export class Package {
       pkg.renderTagWarnings = renderTagWarnings;
       await pkg.discoverDashboards();
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      pkg.retrievalSettings =
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
@@ -1259,6 +1271,11 @@ export class Package {
                })),
          };
       });
+   }
+
+   /** How this package is searched and indexed (publisher.json `retrieval`). */
+   public getRetrievalSettings(): PackageRetrievalSettings {
+      return this.retrievalSettings;
    }
 
    /**
@@ -2678,6 +2695,8 @@ export class Package {
       await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      this.retrievalSettings =
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.

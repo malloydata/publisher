@@ -258,26 +258,30 @@ What to know before turning it on:
   was saved and the next try embeds only the rest. A 429, a 5xx or a timeout is retried up to five
   times with exponential backoff and jitter, honouring `Retry-After`; a rejected key or another 4xx
   fails at once. When the tries are used up the package waits out a cool-down (60 seconds) before
-  the next try, which a question after the window starts. A question asked before the index is
-  ready is answered lexically; once the sync lands, later questions are ranked semantically. A
-  reload does not repeat the work: `reload_package`, `?reload=true` and a watch-mode save all keep
-  the warm index as long as the saved files hash the same. An edit re-syncs, and re-embeds only the
-  parts whose text changed. Responses carry a `retrieval` field (`"semantic"` or `"lexical"`)
-  whenever the provider is configured, and a lexical one adds `retrieval_reason` saying why:
-  `indexing` (still building — clears on its own, worth one retry), `cooldown` (a recent provider
-  failure is being short-circuited), `too-many-entities`, `provider-error`, or `unavailable`. Only
-  `indexing` is worth retrying.
+  the next try, which a question after the window starts. A reload does not repeat the work:
+  `reload_package`, `?reload=true` and a watch-mode save all keep the warm index as long as the
+  saved files hash the same. An edit re-syncs, and re-embeds only the parts whose text changed.
+- What a search returns while an embedding provider is configured: a semantic answer, an
+  "indexing" answer or an error, never a keyword ranking. A ranking that quietly differs from the
+  one the finished index gives makes results hard to trust. While a package's index is building,
+  the response is a normal result (not an error) with empty `sources`, `retrieval: "indexing"`,
+  `retrieval_progress: { embedded, total }` and a warning that says to ask again in a few
+  seconds. When the index cannot serve, the response is an error whose `retrieval_reason`
+  (`cooldown`, `provider-error`, `too-many-entities` or `unavailable`) names the cause, and which
+  says what to do. A request with no search text (a listing) needs no embeddings and works in
+  every state. With no provider configured nothing changes: ranking is lexical (lunr/BM25) and the
+  response carries no `retrieval` field.
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
-  carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
-  `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows` of `totalRows`
-  (progress while indexing), `totalEntities`, `embeddedEntities`, `lastSyncedAt`, `startedAt`
-  (when the running sync began), and, on `cooldown` or `too-many-entities`, `lastError`
-  (`message`, and `retryAt` when a retry is scheduled). The message is fixed wording for the kind of
-  failure; the provider's URL and response text are in the server log only. When one package's sync
-  finds the provider unreachable, the packages queued behind it show `cooldown` with the same cause
-  and send no requests until the cooldown ends. A single package's sync is also stopped after 15
-  minutes; what it saved is kept and it resumes after the cooldown. The object is absent when no
-  provider is configured.
+  carries an `embeddingIndex` object with `status` (`lexical` / `indexing` / `ready` / `error`),
+  `embeddedRows` of `totalRows` (progress while indexing), `totalEntities`, `embeddedEntities`,
+  `lastSyncedAt`, `startedAt` (when the running sync began), and, on an error, `reason`
+  (`cooldown` or `too-many-entities`) and `lastError` (`message`, and `retryAt`, the earliest
+  time a retry can start: nothing retries on a timer, the next question after it does). The
+  message is fixed wording for the kind of failure; the provider's URL and response text are in the
+  server log only. When one package's sync finds the provider unreachable, the packages queued
+  behind it show the same `cooldown` cause and send no requests until it ends. One package's sync
+  is stopped after 15 minutes; what it saved is kept and it resumes after the cooldown.
+  `lexical` means no embedding provider is configured: that is a mode, not a failure.
   Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
   index; there is no need to send a question first, because indexing starts when the package
   loads. After a restart every package reads `indexing` until its turn in the queue has checked
@@ -285,7 +289,7 @@ What to know before turning it on:
   next question about the package is ranked semantically: it is decided by the same completed sync
   the search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing`
   until it has re-embedded. It describes the index, not the next response — a question whose own
-  query embedding fails still falls back, with `retrieval_reason: provider-error`. Do not read
+  query embedding fails still returns an error, with `retrieval_reason: provider-error`. Do not read
   readiness off `embeddedEntities == totalEntities`: those count coverage by entity name, so they
   can be equal while a doc edit is still unembedded. Nor off `embeddedRows`, which counts every
   cached vector under the current model regardless of its length, so a change to
@@ -294,8 +298,9 @@ What to know before turning it on:
   chunks, so other requests are not blocked), which is work a plain metadata read would not
   otherwise do. After that, a read is two row counts and never waits on a sync, so polling it in a
   loop is cheap.
-- Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
-  to lexical (with a warning in the server log) and retries after a cool-down.
+- Failure behavior: if the endpoint is down, times out, or rejects the key, a search returns an
+  error that names the cause (and the server log has the full text) until the cool-down ends, then
+  the next search tries again.
 - Entity cap (`retrieval.indexing.maxEntities`, default `5000`): a package with more entities than
   this is not embedded, because its first index would take minutes of provider calls. Raise it in
   `publisher.config.json` and restart the server:
@@ -310,6 +315,21 @@ What to know before turning it on:
   chunk of its documentation, so the number of provider calls on a first index is a small multiple
   of the cap. A higher cap makes that first index take longer in proportion. The server reads the
   value once, at startup.
+- What a vector is made from (`retrieval.representation` in a package's `publisher.json`): `single`
+  (the default) embeds one vector per entity, from its `#(doc)` text, or its name when it has none;
+  `facets` embeds a name vector plus one per chunk of the documentation. Changing it re-embeds the
+  package on the next load. Any other value, or any other key in the `retrieval` block, stops the
+  package from loading (HTTP 424) with a message that names the valid keys:
+
+  ```json
+  { "name": "shop", "retrieval": { "representation": "single" } }
+  ```
+
+- Joined fields: the index holds each source's own fields. A joined copy such as `buyer.name` is made
+  when the answer is assembled, from the field it copies. A joined field with nothing to copy from (a
+  join to an inline table or SQL, or a field a join adds to its target) is indexed directly.
+- Response size: a ranked response is capped at 35,000 characters. Whole source cards are dropped, never
+  cut, and a warning says how many.
 - Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
   rather than returned as a weak hit, which is what lets an empty result mean "this package models
   nothing like that". The right value is a property of the embedding model, not of Publisher —

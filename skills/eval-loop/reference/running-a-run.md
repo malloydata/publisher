@@ -49,14 +49,14 @@ eval.py check --set <set>
 #    script writes each server's publisher.config.json from eval.toml, and
 #    refuses a truth server on the model server's ports.
 #    --warm-retrieval also waits for the embedding index to settle and exits 3
-#    if it does not reach `ready`: the sync is lazy, so without it the first
-#    cases are answered LEXICALLY and the run reports that as the model's
-#    number.
+#    if it does not reach `ready`: while the index builds, get_context returns
+#    `retrieval: "indexing"` with no sources, so without the wait the first
+#    cases would record empty answers as retrieval misses.
 #    Semantic retrieval needs EMBEDDING_API_KEY in the server's environment
 #    (the Publisher does not read OPENAI_API_KEY). The script warns when it is
-#    unset; without it every ranking is lexical, the warm-up reports
-#    `cooldown`, and the provider's own error is only in publisher.log
-#    (grep Embedding).
+#    unset; without it the status is `lexical` and every ranking is lexical.
+#    A key the provider rejects shows as status `error`; the warm-up prints
+#    its `reason` and `lastError.message`.
 eval.py serve model --set <set> --warm-retrieval \
   [--allow-proxy]   # required for a `publisher`-type (proxied) connection
 eval.py serve truth --set <set> [--allow-proxy]

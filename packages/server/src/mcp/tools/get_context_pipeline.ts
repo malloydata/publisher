@@ -17,6 +17,7 @@
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
+import type { EmbeddingIndexStatus } from "./embedding_index";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -24,23 +25,39 @@ import type {
    RetrievalReason,
 } from "./get_context_tool";
 
-/**
- * Every switch a later stage or hosted mode will read, in one place. The
- * values runContextQuery passes are today's behaviour; fields marked
- * "unused" are not read by anything yet.
- */
+/** Every switch the pipeline reads, in one place. */
 export interface PipelineSettings {
-   /** "index": joined copies are index rows (today). "assembly": made after refine. Unused. */
+   /**
+    * "index": joined copies are index rows, searched like any field.
+    * "assembly": the semantic path searches direct fields only and assembly
+    * makes the joined copies from the join topology, damped.
+    */
    joins: "index" | "assembly";
-   /** Where the per-source cap applies and how many rows it admits. */
    entityWindow: {
-      /** Unused: the cap always runs in assembly, after the rank stages. */
-      where: "post-rank" | "retrieve";
+      /**
+       * Rows kept per source, per search target: the semantic scan's window
+       * (best rows by distance in each source) and, in assembly, the most
+       * entities a card carries for one target.
+       */
       perSourcePerTarget: number;
+      /**
+       * Rows kept per source, per search target, for the dotted rows the index
+       * keeps because assembly cannot rebuild them (a field of an inline-table
+       * or SQL join, a field a join adds to its target, a field of a target
+       * that is not indexed). They are windowed on their own, so they cannot
+       * take slots from the source's own fields: on a package whose joins are
+       * inline tables, one source can have hundreds of such rows scoring above
+       * its own `order_year_month`. Assembly's card cap grows by this many.
+       * Undefined: no separate window, the dotted rows share `perSourcePerTarget`.
+       */
+      joinedPerSourcePerTarget?: number;
    };
-   /** Deepest join chain the index follows. Unused here; the index reads its own constant. */
+   /**
+    * Deepest join chain assembly follows. The lexical index has its own,
+    * lower limit (it makes one entity per path); this never reaches it.
+    */
    joinMaxDepth: number;
-   /** Per-hop score multiplier for assembled join copies; null means none. Unused. */
+   /** Base of the score multiplier for assembled join copies, applied as `base ** (hops + 1)`; null means none. */
    joinDamping: number | null;
    /** How scores are published. Unused. */
    scoring: "cosine" | "knots";
@@ -85,14 +102,26 @@ export interface RetrievalResult {
    belowCutoffCount: number;
    /** The denominator belowCutoffCount is read against. Semantic only. */
    totalEntities?: number;
+   /**
+    * Semantic only: per source (`""` for none), the entities that cleared the
+    * floor and the scan's per-source window left out. Assembly adds them to
+    * each card of that source, because it never sees the rows.
+    */
+   entitiesCutBySource?: Map<string, number>;
 }
 
 /**
  * A retriever that cannot answer says why. `unconfigured` means "no embedding
- * provider": the caller falls back silently, with no `retrieval_reason`.
+ * provider": the caller ranks lexically, which is the server's mode and not a
+ * fallback. Any other reason is a configured server that cannot answer a
+ * search right now, and the caller reports it instead of answering lexically.
  */
 export interface Unavailable {
    unavailable: RetrievalReason | "unconfigured";
+   /** The package's index state when the reason was found, for the message. */
+   status?: EmbeddingIndexStatus;
+   /** Reason-specific text the status cannot carry (an invalid configuration). */
+   detail?: string;
 }
 
 export interface Retriever {
@@ -103,8 +132,6 @@ export interface Retriever {
 /** The ranked rows plus how they were found, passed through RankStages. */
 export interface RankedState extends RetrievalResult {
    retrieval: Retriever["name"];
-   /** Why a configured server answered lexically, when it did. */
-   retrievalReason?: RetrievalReason;
 }
 
 /**

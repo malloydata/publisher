@@ -31,15 +31,26 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — Semantic retrieval: the index builds when a package loads
+## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and a smaller, direct-field index
 
-When an embedding provider is configured, the semantic index now starts building when a package loads (at boot, on add or install, and on reload) instead of on the first question. Packages are embedded one at a time across the server, each batch of vectors is saved as it returns, and a 429, a 5xx or a timeout is retried with backoff. A failure part-way keeps what was saved, and the next try embeds only the rest. A package with more entities than the cap (still 5,000 by default) can now raise it with `retrieval.indexing.maxEntities` in `publisher.config.json`.
+With no embedding provider configured, `get_context` ranks by words as before. Everything below applies once a provider is configured. Read the first three items if you poll the status API or run a server with an embedding provider.
 
-`embeddingIndex` on the package resource gains `totalRows`, `startedAt` and, on a cooldown or too-many-entities status, `lastError`. Existing values and fields are unchanged. A client that polled `ready` after sending a question first no longer needs the question.
+**`embeddingIndex.status` has new values.** On `GET /api/v0/environments/{env}/packages/{pkg}` the status was `indexing | ready | cooldown | too-many-entities`, and the field was absent when no provider was configured. It is now always present and is one of `lexical | indexing | ready | error`:
 
-Deleting a package now stops its running index sync at the next request or retry, so the cleanup no longer waits behind a long sync.
+- `lexical`: no embedding provider is configured. This is a mode of the server, not a failure.
+- `error`: the index cannot serve. A new `reason` field carries the two cases that used to be statuses of their own, `cooldown` and `too-many-entities`. Other errors, such as an invalid embedding configuration, have no `reason`; `lastError.message` explains them.
 
-Exact score ties in semantic search are now ordered by source, then name, then kind, so two servers list the same results in the same order.
+`cooldown` and `too-many-entities` stay in the `status` enum in `api-doc.yaml`, marked deprecated, so a client generated from an earlier spec still understands every value. The server never sends them as a `status` any more. A client that tests `status == "cooldown"` or `"too-many-entities"` must now test `status == "error"` and read `reason`. A poller that waits for `ready` or `cooldown` and nothing else would wait forever on `error`; stop on `ready` or `error`.
+
+**With an embedding provider configured, `get_context` no longer falls back to a lexical ranking.** While the index builds it answers `retrieval: "indexing"` with `retrieval_progress {embedded, total}` and no results. After a failure it answers `retrieval: "error"` with a reason that says how to fix it. A caller that treated every ranked response as usable must handle these two values. Listing mode (no search text) works in every state.
+
+**Ranked responses are capped at 35,000 characters.** Whole source cards are dropped, never cut in half, and a warning says how many. Narrow the request with `model_path`, `source_name` or `entity_name` to see them.
+
+Also changed, when an embedding provider is configured:
+
+- **Semantic search covers a source's own fields.** Joined copies are made when the answer is assembled and scored `cosine * 0.9 ** (hops + 1)`, so results are fewer and more direct. A joined field that cannot be rebuilt from a source of its own (a join to an inline table or SQL, or a join that adds the field to its target) stays in the index, so it is still found. A dotted `entity_name` that names a joined field, such as `buyer.name`, still matches on this path; a bare `name` does not match the joined copy.
+- **Two model files that each define a source of the same name** no longer share joined copies: a field ranked from one file is copied only into joins that reach that file's source.
+- **`retrieval.representation` defaults to `single`**: one vector per entity, made from its doc or name. Scores and rankings change and each package re-embeds on its first start. `facets` is the earlier layout. It is set in the new `retrieval` block of `publisher.json`; an unknown key or bad value there stops that package from loading (HTTP 424) with a message naming the valid keys.
 
 ## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
