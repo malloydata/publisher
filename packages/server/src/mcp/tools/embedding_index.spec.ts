@@ -24,7 +24,8 @@ import {
    EmbeddableEntity,
    MAX_DOC_CHARS,
    MAX_DOC_CHUNKS,
-   MAX_EMBEDDED_ENTITIES,
+   getMaxEmbeddedEntities,
+   setMaxEmbeddedEntities,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
    chunkDoc,
    entityFacets,
@@ -33,6 +34,7 @@ import {
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
    _resetEmbeddingIndexStateForTests,
+   _setSyncRetryForTests,
    _setTimingForTests,
    _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
@@ -75,6 +77,10 @@ function mapProvider(
       model?: string;
       dimensions?: number;
       fail?: () => boolean;
+      // The status `fail` answers with (default 500).
+      failStatus?: number;
+      // Requests whose input includes this text answer 503.
+      failForText?: string;
       // Requests whose input includes this text block until the promise
       // resolves, so a test can hold one call mid-flight deterministically.
       gate?: { forText: string; until: Promise<void> };
@@ -83,9 +89,14 @@ function mapProvider(
    const counts = new Map<string, number>();
    const fetchStub = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (options.fail?.()) {
-         return new Response("stub failure", { status: 500 });
+         return new Response("stub failure", {
+            status: options.failStatus ?? 500,
+         });
       }
       const body = JSON.parse(String(init?.body)) as { input: string[] };
+      if (options.failForText && body.input.includes(options.failForText)) {
+         return new Response("stub failure", { status: 503 });
+      }
       if (options.gate && body.input.includes(options.gate.forText)) {
          await options.gate.until;
       }
@@ -564,7 +575,7 @@ describe("trySemanticSearch", () => {
       // shared include imported by ten files is 10x.
       expect(counts.get("alpha")).toBe(1);
       expect(ready.hits.map((h) => h.name)).toEqual(["alpha"]);
-      // Counted once too, so MAX_EMBEDDED_ENTITIES and totalEntities track
+      // Counted once too, so the entity cap and totalEntities track
       // the model rather than the number of files importing it.
       expect(ready.totalEntities).toBe(1);
 
@@ -914,19 +925,21 @@ describe("trySemanticSearch", () => {
 
    it("reports a package past the cap as too-many-entities, not as indexing", async () => {
       // A permanent condition an operator must act on, not a transient one to
-      // wait out: reporting it as "indexing" would poll forever. Named the
-      // same as getContext's retrieval_reason for the identical condition.
+      // wait out: reporting it as "indexing" would poll forever.
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const status = await getEmbeddingIndexStatus(
          db,
          provider,
          "env",
          "huge",
-         Array.from({ length: MAX_EMBEDDED_ENTITIES + 1 }, (_, i) =>
+         Array.from({ length: getMaxEmbeddedEntities() + 1 }, (_, i) =>
             entity(`e${i}`, "src"),
          ),
       );
       expect(status.status).toBe("too-many-entities");
+      expect(status.lastError?.message).toContain(
+         `${getMaxEmbeddedEntities() + 1} entities`,
+      );
    });
 
    it("counts the entities that matched only below the floor", async () => {
@@ -1524,7 +1537,10 @@ describe("trySemanticSearch", () => {
 
       // A reload instance syncs two changed entities through a DB whose
       // SECOND insert fails: one row was already rewritten, so even
-      // though the sync rejects, snapshots must be invalidated.
+      // though the sync rejects, snapshots must be invalidated. One row per
+      // insert, because a batch is a single statement and lands whole: the
+      // torn state this pins is "an earlier batch landed, a later one died".
+      _setSyncRetryForTests({ batchSize: 1 });
       let inserts = 0;
       const failingDb = new Proxy(db, {
          get(target, prop, receiver) {
@@ -2173,5 +2189,267 @@ describe("equal scores are ordered and cut the same way every time", () => {
          );
       }
       expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
+   });
+});
+
+describe("sync saves each batch and retries transient failures", () => {
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const baseArgs = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "pkg",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+   const storedNames = async () =>
+      (
+         await db.all<{ entity_name: string }>(
+            "SELECT entity_name FROM entity_embeddings WHERE environment_name = 'env' ORDER BY entity_name",
+         )
+      ).map((r) => r.entity_name);
+
+   async function untilCooldown(args: ReturnType<typeof baseArgs>) {
+      let r = await trySemanticSearch(args);
+      for (let i = 0; i < 400 && !isCooldown(r); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         r = await trySemanticSearch(args);
+      }
+      expect(r).toEqual({ unavailable: "cooldown" });
+   }
+
+   it("keeps batch 1 when batch 2 fails, and a later sync embeds only the rest", async () => {
+      // Two rows per request. "gamma" sits in the second request, which the
+      // provider rejects on every attempt.
+      _setSyncRetryForTests({ batchSize: 2, policy: { maxAttempts: 2 } });
+      const failing = mapProvider(VECTORS, { failForText: "gamma" });
+      await untilCooldown(baseArgs(failing.provider));
+      expect(await storedNames()).toEqual(["alpha", "beta"]);
+
+      // The provider recovers. Nothing already saved is embedded again.
+      const healthy = mapProvider(VECTORS);
+      _clearProviderCooldownForTests();
+      const result = await searchReady(baseArgs(healthy.provider));
+      expect("hits" in result).toBe(true);
+      const embeddedAgain = [...healthy.counts.keys()].filter(
+         (text) => text !== "find alpha",
+      );
+      expect(embeddedAgain.sort()).toEqual(["delta", "gamma"]);
+      expect(await storedNames()).toEqual(["alpha", "beta", "delta", "gamma"]);
+   });
+
+   it("sends one request per batch", async () => {
+      _setSyncRetryForTests({ batchSize: 3 });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+      });
+      await searchReady(baseArgs(provider));
+      // 4 rows at 3 per request is two sync requests, plus the one request
+      // that embeds the query once the index is ready.
+      expect(requests).toBe(3);
+   });
+
+   it("succeeds on the third attempt after two 503s, waiting between tries", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+            random: () => 0,
+         },
+      });
+      let failures = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 503,
+         fail: () => ++failures <= 2,
+      });
+      const result = await searchReady(baseArgs(provider));
+      expect("hits" in result).toBe(true);
+      expect(slept).toEqual([500, 1_000]);
+   });
+
+   it("does not retry an authentication failure; the cooldown takes over", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 401,
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await untilCooldown(baseArgs(provider));
+      expect(requests).toBe(1);
+      expect(slept).toEqual([]);
+   });
+});
+
+describe("the entity cap is the configured value", () => {
+   const args = (provider: EmbeddingProvider, count: number) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "capped",
+      entities: Array.from({ length: count }, (_, i) =>
+         entity(i === 0 ? "alpha" : `e${i}`, "src"),
+      ),
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+
+   it("refuses a package one entity over the cap, and embeds one at the cap", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider, counts } = mapProvider({
+         ...QUERY_VECTORS,
+         alpha: [1, 0, 0],
+         e1: [0, 1, 0],
+         e2: [0, 0, 1],
+      });
+      expect(await trySemanticSearch(args(provider, 4))).toEqual({
+         unavailable: "too-many-entities",
+      });
+      expect(counts.size).toBe(0);
+
+      const atCap = await searchReady(args(provider, 3));
+      expect("hits" in atCap).toBe(true);
+   });
+
+   it("says the count, the cap and how to raise it", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider } = mapProvider(QUERY_VECTORS);
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "capped",
+         args(provider, 4).entities,
+      );
+      expect(status.status).toBe("too-many-entities");
+      const message = status.lastError?.message ?? "";
+      expect(message).toContain("4 entities");
+      expect(message).toContain("cap of 3");
+      expect(message).toContain("retrieval.indexing.maxEntities");
+      expect(message).toContain("publisher.config.json");
+   });
+});
+
+describe("deleting a package stops its running sync", () => {
+   // A REST delete does not wait for the cleanup of a package's vectors (the
+   // caller does not await it), but the cleanup queues on the package's sync
+   // mutex. A boot-time sync holds that mutex for as long as it runs, retries
+   // included, so the cleanup used to wait behind a sync that kept embedding a
+   // package nobody can query any more, and spent the provider's calls on it.
+   // The sync now stops at the next batch or the next retry after the package
+   // is deleted.
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const args = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "doomed",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      limit: 10,
+   });
+   const rowsFor = async () =>
+      (
+         await db.all(
+            "SELECT 1 FROM entity_embeddings WHERE package_name = 'doomed'",
+         )
+      ).length;
+   const until = async (done: () => boolean) => {
+      for (let i = 0; i < 400 && !done(); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(done()).toBe(true);
+   };
+
+   it("does not request the batches after the one in flight", async () => {
+      _setSyncRetryForTests({ batchSize: 2 });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+         gate: { forText: "alpha", until: held },
+      });
+      await trySemanticSearch(args(provider));
+      await until(() => requests >= 1);
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      release();
+      await deleted;
+      // Time for a sync that ignored the delete to ask for its second batch.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
+   });
+
+   it("does not retry a failed request after the package is deleted", async () => {
+      let sleeping!: () => void;
+      const asleep = new Promise<void>((resolve) => (sleeping = resolve));
+      let wake!: () => void;
+      const woken = new Promise<void>((resolve) => (wake = resolve));
+      _setSyncRetryForTests({
+         batchSize: 2,
+         policy: {
+            maxAttempts: 5,
+            sleep: async () => {
+               sleeping();
+               await woken;
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await trySemanticSearch(args(provider));
+      await asleep;
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      wake();
+      await deleted;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
    });
 });

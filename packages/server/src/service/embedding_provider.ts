@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { EmbeddingConfig, getEmbeddingConfig } from "../config";
+import {
+   DEFAULT_RETRY,
+   HttpRequestError,
+   isRetryableStatus,
+   parseRetryAfterMs,
+   RetryPolicy,
+   withRetry,
+} from "./http_retry";
 
 /** Timeout for bulk (index-build) embedding calls. */
 export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
@@ -18,6 +26,24 @@ export const MAX_EMBED_INPUT_CHARS = 1_024;
 export const MAX_EMBED_BATCH_SIZE = 512;
 
 type FetchFn = typeof fetch;
+
+/**
+ * The retry machinery lives in ./http_retry so the chat adapters share it.
+ * The embedding names stay as aliases: callers and tests import them from
+ * here.
+ */
+export const EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRequestError = HttpRequestError;
+export type EmbeddingRetryPolicy = RetryPolicy;
+export const DEFAULT_EMBEDDING_RETRY: RetryPolicy = DEFAULT_RETRY;
+
+/** Retry a bulk embedding call; see {@link withRetry}. */
+export function withEmbeddingRetry<T>(
+   attempt: () => Promise<T>,
+   policy: RetryPolicy,
+): Promise<T> {
+   return withRetry(attempt, policy, "Embedding request");
+}
 
 interface EmbeddingResponseItem {
    index?: number;
@@ -80,15 +106,27 @@ export class EmbeddingProvider {
     * Embed `texts` in order. Inputs are prepared (whitespace-collapsed,
     * capped) and sent in batches of {@link MAX_EMBED_BATCH_SIZE}. Throws
     * on any HTTP, timeout, or malformed-response failure; callers own the
-    * fallback-to-lexical decision.
+    * fallback-to-lexical decision. With `retry`, each request is retried on
+    * the failures that can clear (see {@link EmbeddingRetryPolicy}).
     */
-   async embedBatch(texts: string[], timeoutMs: number): Promise<number[][]> {
+   async embedBatch(
+      texts: string[],
+      timeoutMs: number,
+      retry?: EmbeddingRetryPolicy,
+   ): Promise<number[][]> {
       const vectors: number[][] = [];
       for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
          const chunk = texts
             .slice(i, i + MAX_EMBED_BATCH_SIZE)
             .map(prepareEmbeddingInput);
-         vectors.push(...(await this.embedChunk(chunk, timeoutMs)));
+         vectors.push(
+            ...(retry
+               ? await withEmbeddingRetry(
+                    () => this.embedChunk(chunk, timeoutMs),
+                    retry,
+                 )
+               : await this.embedChunk(chunk, timeoutMs)),
+         );
       }
       return vectors;
    }
@@ -122,7 +160,12 @@ export class EmbeddingProvider {
             (error as Error)?.name === "TimeoutError"
                ? `timed out after ${timeoutMs}ms`
                : (error as Error).message;
-         throw new Error(`Embedding request to ${url} failed: ${reason}`);
+         // A network failure or timeout may clear on its own.
+         throw new EmbeddingRequestError(
+            `Embedding request to ${url} failed: ${reason}`,
+            undefined,
+            true,
+         );
       }
 
       if (!response.ok) {
@@ -141,8 +184,11 @@ export class EmbeddingProvider {
                .join("[REDACTED]")
                .slice(0, 200);
          }
-         throw new Error(
+         throw new EmbeddingRequestError(
             `Embedding request to ${url} failed (${response.status}): ${detail}`,
+            response.status,
+            isRetryableStatus(response.status),
+            parseRetryAfterMs(response.headers.get("retry-after")),
          );
       }
 

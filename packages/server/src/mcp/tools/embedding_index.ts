@@ -7,12 +7,18 @@ import { logger } from "../../logger";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { Package } from "../../service/package";
 import {
+   DEFAULT_EMBEDDING_RETRY,
    EmbeddingProvider,
+   EmbeddingRequestError,
+   EmbeddingRetryPolicy,
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
+   MAX_EMBED_BATCH_SIZE,
    MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
+import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -29,20 +35,25 @@ import {
  * get_context_eval.ts.
  */
 export { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
+
 /**
- * Packages with more entities than this stay lexical: the first embed of
- * such a package would take minutes of provider calls and rate limits.
- * The bundled examples sit around a few hundred entities.
- *
- * Counted in ENTITIES, not rows. Faceting means a documented entity costs
- * more than one embedding (a name row plus its doc rows), so the ceiling on
- * first-sync provider calls is a small multiple of this number rather than
- * this number. The cap is deliberately still expressed in entities: it is
- * checked before facets are computed, and it is the figure an operator can
- * reason about from their model. Undocumented entities, which are the ones
- * that make a package large by accident, still cost exactly one row each.
+ * The most entities a package may have and still be embedded; see
+ * DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES for what the number means and why it is
+ * counted in entities. It is `retrieval.indexing.maxEntities` from
+ * publisher.config.json, set once at startup by {@link setMaxEmbeddedEntities}
+ * and read here, never from the config file on a request.
  */
-export const MAX_EMBEDDED_ENTITIES = 5_000;
+let maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+
+/** The current entity cap. */
+export function getMaxEmbeddedEntities(): number {
+   return maxEmbeddedEntities;
+}
+
+/** Set the entity cap. Called once at server start with the configured value. */
+export function setMaxEmbeddedEntities(cap: number): void {
+   maxEmbeddedEntities = cap;
+}
 /**
  * After a provider failure the semantic path short-circuits to lexical
  * for this long, so a down or misconfigured endpoint costs one timeout
@@ -390,9 +401,10 @@ export function entityRowKey(
  * is correct for the response, where each path is its own card, and wrong for
  * everything downstream of here: the embedding rows have no model_path in
  * their primary key, so the duplicates embed identical text once per path and
- * then upsert onto the same row. They also inflate the MAX_EMBEDDED_ENTITIES
- * cap and `totalEntities`, which would let a package flip to lexical because
- * someone added an importing file rather than because the model grew.
+ * then upsert onto the same row. They also inflate the entity count that is
+ * checked against the cap, and `totalEntities`, which would let a package go
+ * over the cap because someone added an importing file rather than because
+ * the model grew.
  *
  * Collapsed here, at the cache boundary, rather than at either call site, so
  * the guarantee holds for any caller. The response fan-out is unaffected: it
@@ -461,8 +473,8 @@ function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
 }
 
 /**
- * One hash over the whole desired row set: every row's key and its content
- * hash. Two entity sets share a fingerprint exactly when a sync over either
+ * The fingerprint's input: every desired row's key and its content hash,
+ * hashed together by desiredFingerprintChunked. Two entity sets share a fingerprint exactly when a sync over either
  * is a no-op for the other, which is what lets a reloaded package keep the
  * index the replaced instance built.
  *
@@ -470,8 +482,8 @@ function desiredFacets(entities: EmbeddableEntity[]): DesiredFacet[] {
  * order is a detail of how the caller walked the model, and a reload that
  * merely reordered two sources must not read as a content change.
  */
-function desiredFingerprint(desired: DesiredFacet[]): string {
-   const rows = desired.map(
+function desiredRowStrings(desired: readonly DesiredFacet[]): string[] {
+   return desired.map(
       (d) =>
          facetRowKey(
             d.entity.kind,
@@ -482,8 +494,53 @@ function desiredFingerprint(desired: DesiredFacet[]): string {
          KEY_SEPARATOR +
          d.hash,
    );
+}
+
+function fingerprintOfRows(rows: string[]): string {
    rows.sort();
    return contentHash(rows.join("\n"));
+}
+
+/** Hand the event loop back, so a large package does not stall requests. */
+const yieldToEventLoop = () =>
+   new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * {@link desiredFacets} over a large entity list, yielding to the event loop
+ * every FINGERPRINT_CHUNK_ENTITIES entities. Building facet text and hashing
+ * it is synchronous work proportional to the package, and the sync runs it
+ * while the server is also answering questions.
+ */
+async function desiredFacetsChunked(
+   entities: EmbeddableEntity[],
+): Promise<DesiredFacet[]> {
+   const desired: DesiredFacet[] = [];
+   for (let i = 0; i < entities.length; i += FINGERPRINT_CHUNK_ENTITIES) {
+      desired.push(
+         ...desiredFacets(entities.slice(i, i + FINGERPRINT_CHUNK_ENTITIES)),
+      );
+      if (i + FINGERPRINT_CHUNK_ENTITIES < entities.length) {
+         await yieldToEventLoop();
+      }
+   }
+   return desired;
+}
+
+/** {@link desiredFingerprint}, yielding while it builds the row strings. */
+async function desiredFingerprintChunked(
+   desired: readonly DesiredFacet[],
+): Promise<string> {
+   const rows: string[] = [];
+   const chunk = FINGERPRINT_CHUNK_ENTITIES * 4;
+   for (let i = 0; i < desired.length; i += chunk) {
+      rows.push(...desiredRowStrings(desired.slice(i, i + chunk)));
+      // Only between chunks. A small package never yields here, so a search
+      // that computes its fingerprint cannot be overtaken by a sync finishing
+      // meanwhile (which moves the generation it captured at entry and makes
+      // the call answer `indexing` once more).
+      if (i + chunk < desired.length) await yieldToEventLoop();
+   }
+   return fingerprintOfRows(rows);
 }
 
 // Sync state, two layers.
@@ -499,10 +556,12 @@ function desiredFingerprint(desired: DesiredFacet[]): string {
 // cool-down; and `synced`, the last sync that completed. The cool-down is
 // scoped per package, NOT global: a query timeout or dims-mismatch on
 // one package must not force every other healthy, correctly-cached
-// package to lexical for the window. If the endpoint is genuinely down,
-// each package cools itself on its own first failed probe (one wasted
-// probe per package per window, negligible at the entity counts a single
-// Publisher serves).
+// package to lexical for the window. A failure that says the PROVIDER is
+// unreachable (network, timeout, 429, 5xx, rejected credentials) is
+// different: it also opens a process-wide breaker (`providerBreaker`), so
+// the packages queued behind the failed one cool down on the recorded
+// failure without each sending a request of their own. A restart over fifty
+// packages against a dead endpoint costs one failed sync, not fifty.
 //
 // `synced` is keyed on CONTENT, not on Package identity. An earlier form
 // memoized "this instance is synced" in a WeakMap keyed by the Package,
@@ -537,6 +596,15 @@ interface PackageSyncMeta {
    generation: number;
    lastPurgeAtMs: number;
    failureAtMs: number;
+   /** Why the provider last failed for this package. Read by the status. */
+   lastError?: string;
+   /** When the sync now running began, absent while none is running. */
+   syncStartedAtMs?: number;
+   /**
+    * Set when the package's delete starts, before it has the mutex. A running
+    * sync stops at its next request or retry instead of finishing first.
+    */
+   deleting?: boolean;
    synced?: SyncedFact;
 }
 /** A sync in flight for one Package instance, keyed by what it covers. */
@@ -545,6 +613,8 @@ interface SyncState {
    providerKey: string;
 }
 const syncState = new WeakMap<Package, SyncState>();
+/** Package instances whose load-time sync has been queued; see enqueuePackageSync. */
+const loadQueued = new WeakSet<Package>();
 const syncMeta = new Map<string, PackageSyncMeta>();
 // Every generation value ever issued is globally unique (drawn from this
 // counter, never incremented locally). That makes deleting a syncMeta
@@ -559,10 +629,49 @@ const oversizeWarned = new Set<string>();
 // relationship is real-time and not otherwise unit-observable); production
 // always uses the exported constants.
 let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
+
+/**
+ * The longest one package's sync may hold the process-wide queue. Each
+ * request has its own timeout and retries are bounded, but a slow provider
+ * that keeps answering can stretch a large package indefinitely, and every
+ * other package waits behind it. Checked between batches and retries.
+ */
+export const SYNC_JOB_DEADLINE_MS = 15 * 60_000;
+let syncDeadlineMs = SYNC_JOB_DEADLINE_MS;
 let purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+// How the sync's bulk calls retry, and how many rows one call carries. Mutable
+// only so tests can inject a fake sleep and a small batch; production uses
+// the defaults.
+let syncRetryPolicy: EmbeddingRetryPolicy = DEFAULT_EMBEDDING_RETRY;
+let syncBatchSize = MAX_EMBED_BATCH_SIZE;
 
 function metaKey(environmentName: string, packageName: string): string {
    return `${environmentName}\x00${packageName}`;
+}
+
+/**
+ * Thrown inside a sync to stop it because its package is being deleted. It is
+ * not a provider failure, so the caller starts no cool-down and reports no
+ * error.
+ */
+class SyncAbandonedError extends Error {
+   constructor() {
+      super("the package was deleted while its embedding sync was running");
+      this.name = "SyncAbandonedError";
+   }
+}
+
+/**
+ * Thrown inside a sync that has run past its time limit. Batches already
+ * written stay, so the next sync resumes where this one stopped.
+ */
+class SyncDeadlineError extends Error {
+   constructor() {
+      super(
+         "The embedding sync ran past its time limit. Rows already saved are kept, and it resumes after the cooldown.",
+      );
+      this.name = "SyncDeadlineError";
+   }
 }
 
 function metaFor(
@@ -583,8 +692,67 @@ function metaFor(
    return meta;
 }
 
-function markProviderFailure(meta: PackageSyncMeta): void {
+function markProviderFailure(meta: PackageSyncMeta, message: string): void {
    meta.failureAtMs = Date.now();
+   meta.lastError = message;
+}
+
+/**
+ * What `lastError` shows on the package status. Fixed wording by failure
+ * kind: the status is returned to API callers, and the raw error text can
+ * carry the provider's URL and a slice of its response body. The full error
+ * goes to the log.
+ */
+function publicProviderMessage(error: unknown): string {
+   if (error instanceof EmbeddingRequestError) {
+      if (error.status === 401 || error.status === 403) {
+         return "The embedding provider rejected the credentials. Check EMBEDDING_API_KEY.";
+      }
+      if (error.status === 429) {
+         return "The embedding provider is rate limiting requests.";
+      }
+      if (error.status !== undefined) {
+         return `The embedding provider answered with HTTP ${error.status}.`;
+      }
+      return "The embedding provider could not be reached, or did not answer in time.";
+   }
+   if (error instanceof SyncDeadlineError) return error.message;
+   return "The embedding provider returned an unusable response, or the index could not be written. See the server log.";
+}
+
+/** Whether `error` says the provider itself is down, not one package's input. */
+function isProviderWideFailure(error: unknown): boolean {
+   return (
+      error instanceof EmbeddingRequestError &&
+      (error.retryable || error.status === 401 || error.status === 403)
+   );
+}
+
+/**
+ * Each provider's last provider-wide failure. While one is recent, queued
+ * syncs record it as their cause and send nothing. Keyed by the provider
+ * object (one endpoint), not by model name, so a different endpoint serving
+ * the same model is not held back by this one's outage.
+ */
+let providerBreaker = new WeakMap<
+   EmbeddingProvider,
+   { atMs: number; message: string }
+>();
+
+function openBreaker(provider: EmbeddingProvider, message: string): void {
+   providerBreaker.set(provider, { atMs: Date.now(), message });
+}
+
+function openBreakerFor(
+   provider: EmbeddingProvider,
+): { atMs: number; message: string } | undefined {
+   const open = providerBreaker.get(provider);
+   if (!open) return undefined;
+   if (Date.now() - open.atMs >= cooldownMs) {
+      providerBreaker.delete(provider);
+      return undefined;
+   }
+   return open;
 }
 
 function inCooldown(meta: PackageSyncMeta): boolean {
@@ -600,21 +768,38 @@ function providerKeyFor(provider: EmbeddingProvider): string {
    return `${provider.model}${KEY_SEPARATOR}${provider.dimensions ?? ""}`;
 }
 
+/** What one pass over an entity set's desired rows yields. */
+interface DesiredSummary {
+   fingerprint: string;
+   /** Rows the sync wants cached for this set: the progress denominator. */
+   rows: number;
+}
+
 /**
- * Fingerprints already computed, keyed on the frozen entity array they
- * describe. See fingerprintFor.
+ * Summaries already computed (or being computed), keyed on the frozen entity
+ * array they describe. The promise is cached, not the value, so two callers
+ * that arrive during the first computation share it. See desiredSummaryFor.
  */
-const fingerprintCache = new WeakMap<readonly EmbeddableEntity[], string>();
+const fingerprintCache = new WeakMap<
+   readonly EmbeddableEntity[],
+   Promise<DesiredSummary>
+>();
+
+/** Entities hashed between two yields to the event loop. */
+const FINGERPRINT_CHUNK_ENTITIES = 250;
 
 /**
  * The fingerprint of an entity set: the value the sync records as
  * `meta.synced.fingerprint` for the same set. Deduped here, as the sync's
  * input is, so the caller may pass the per-path list.
  *
- * The cost is one pass of entityFacets plus a sha256 per facet, synchronous
- * on the event loop: about 1ms for 1,269 docless entities, and over 500ms for
- * 5,000 entities carrying MAX_DOC_CHARS of doc each. The search path and the
- * status endpoint both need it on every call, so it is cached.
+ * The cost is one pass of entityFacets plus a sha256 per facet: about 1ms
+ * for 1,269 docless entities, and over 500ms for 5,000 entities carrying
+ * MAX_DOC_CHARS of doc each. It is done in chunks of
+ * {@link FINGERPRINT_CHUNK_ENTITIES} entities with a yield to the event loop
+ * between them, so a large package's first computation does not freeze other
+ * requests for its whole duration. The search path and the status endpoint
+ * both need it on every call, so it is cached.
  *
  * Cached on the ARRAY, and only a frozen one. get_context's package index
  * builds one frozen array per Package and passes that same array on every
@@ -626,15 +811,35 @@ const fingerprintCache = new WeakMap<readonly EmbeddableEntity[], string>();
  * misses and is computed fresh. An unfrozen array could be edited after its
  * fingerprint was cached, so it is never cached.
  */
-function fingerprintFor(entities: readonly EmbeddableEntity[]): string {
+function desiredSummaryFor(
+   entities: readonly EmbeddableEntity[],
+): Promise<DesiredSummary> {
    const frozen = Object.isFrozen(entities);
    const cached = frozen ? fingerprintCache.get(entities) : undefined;
    if (cached !== undefined) return cached;
-   const fingerprint = desiredFingerprint(
-      desiredFacets(uniqueByEntityKey(entities)),
-   );
-   if (frozen) fingerprintCache.set(entities, fingerprint);
-   return fingerprint;
+   const computed = computeDesiredSummary(entities);
+   if (frozen) {
+      fingerprintCache.set(entities, computed);
+      // A failure must not be cached for the life of the array.
+      computed.catch(() => fingerprintCache.delete(entities));
+   }
+   return computed;
+}
+
+async function computeDesiredSummary(
+   entities: readonly EmbeddableEntity[],
+): Promise<DesiredSummary> {
+   const desired = await desiredFacetsChunked(uniqueByEntityKey(entities));
+   return {
+      fingerprint: await desiredFingerprintChunked(desired),
+      rows: desired.length,
+   };
+}
+
+async function fingerprintFor(
+   entities: readonly EmbeddableEntity[],
+): Promise<string> {
+   return (await desiredSummaryFor(entities)).fingerprint;
 }
 
 /**
@@ -665,17 +870,36 @@ export function _resetEmbeddingIndexStateForTests(): void {
    oversizeWarned.clear();
    syncMeta.clear();
    cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
+   syncDeadlineMs = SYNC_JOB_DEADLINE_MS;
+   providerBreaker = new WeakMap();
    purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+   // Tests never wait out a backoff: a stub that answers 500 would otherwise
+   // cost the full retry ladder in real time. The retry specs install their
+   // own policy through _setSyncRetryForTests.
+   syncRetryPolicy = { ...DEFAULT_EMBEDDING_RETRY, sleep: async () => {} };
+   syncBatchSize = MAX_EMBED_BATCH_SIZE;
+   maxEmbeddedEntities = DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
 }
 
 /** Test seam: shrink the timing windows to drive real expiry in tests. */
 export function _setTimingForTests(t: {
    cooldownMs?: number;
    purgeSuppressionMs?: number;
+   syncDeadlineMs?: number;
 }): void {
    if (t.cooldownMs !== undefined) cooldownMs = t.cooldownMs;
+   if (t.syncDeadlineMs !== undefined) syncDeadlineMs = t.syncDeadlineMs;
    if (t.purgeSuppressionMs !== undefined)
       purgeSuppressionMs = t.purgeSuppressionMs;
+}
+
+/** Test seam: the sync's retry policy and rows-per-request. */
+export function _setSyncRetryForTests(t: {
+   policy?: Partial<EmbeddingRetryPolicy>;
+   batchSize?: number;
+}): void {
+   if (t.policy) syncRetryPolicy = { ...syncRetryPolicy, ...t.policy };
+   if (t.batchSize !== undefined) syncBatchSize = t.batchSize;
 }
 
 /** Test seam: clear the per-package cool-downs, keeping sync metas. */
@@ -683,6 +907,7 @@ export function _clearProviderCooldownForTests(): void {
    for (const meta of syncMeta.values()) {
       meta.failureAtMs = 0;
    }
+   providerBreaker = new WeakMap();
 }
 
 /** Test seam: observe syncMeta growth (the churn-leak pin). */
@@ -715,6 +940,11 @@ interface ExistingRow {
  * package) and `--init` reclaims it. Runs under the package mutex so it
  * cannot tear an in-flight sync, and bumps the generation so any live
  * instance memo stops trusting its rows.
+ *
+ * Before it waits for the mutex it marks the package as being deleted. A sync
+ * that is running stops at its next request or retry, so the cleanup waits for
+ * the request in flight and not for a whole sync with its retries, which can
+ * take minutes and would go on embedding a package nobody can query.
  */
 export async function deletePackageEmbeddings(
    db: DuckDBConnection,
@@ -722,6 +952,25 @@ export async function deletePackageEmbeddings(
    packageName: string,
 ): Promise<void> {
    const meta = metaFor(environmentName, packageName);
+   meta.deleting = true;
+   try {
+      await deleteUnderMutex(db, environmentName, packageName, meta);
+   } catch (error) {
+      // The rows are still there, so the package is not deleted. Leaving the
+      // flag set would make every later sync for it abandon itself.
+      if (syncMeta.get(metaKey(environmentName, packageName)) === meta) {
+         meta.deleting = false;
+      }
+      throw error;
+   }
+}
+
+async function deleteUnderMutex(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   meta: PackageSyncMeta,
+): Promise<void> {
    await meta.mutex.runExclusive(async () => {
       // Same orphan guard as every other mutexed writer: a second delete
       // queued on the old meta must not run again (its map removal would
@@ -777,6 +1026,59 @@ export async function deleteEnvironmentEmbeddings(
 }
 
 /**
+ * Write one batch of embedded rows with a single multi-row INSERT. One
+ * statement is one transaction, so the batch lands whole or not at all; a
+ * BEGIN/COMMIT around separate statements is not an option on this
+ * connection, because other callers' statements would run inside it. The
+ * rows are unique by key (the diff is over deduped entities), which a
+ * multi-row upsert requires.
+ */
+async function upsertEmbeddingRows(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   model: string,
+   batch: DesiredFacet[],
+   vectors: number[][],
+): Promise<void> {
+   const now = new Date().toISOString();
+   const params: unknown[] = [];
+   batch.forEach((d, i) => {
+      params.push(
+         environmentName,
+         packageName,
+         d.entity.kind,
+         sourceColumn(d.entity.source),
+         d.entity.name,
+         d.facet,
+         d.entity.modelPath,
+         d.hash,
+         model,
+         vectors[i].length,
+         JSON.stringify(vectors[i]),
+         now,
+      );
+   });
+   const row = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)";
+   await db.run(
+      `INSERT INTO entity_embeddings (
+         environment_name, package_name, entity_kind, entity_source,
+         entity_name, facet, model_path, content_hash, embedding_model,
+         dims, embedding, updated_at
+       ) VALUES ${batch.map(() => row).join(", ")}
+       ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
+       DO UPDATE SET
+         model_path = EXCLUDED.model_path,
+         content_hash = EXCLUDED.content_hash,
+         embedding_model = EXCLUDED.embedding_model,
+         dims = EXCLUDED.dims,
+         embedding = EXCLUDED.embedding,
+         updated_at = EXCLUDED.updated_at`,
+      params,
+   );
+}
+
+/**
  * Bring the entity_embeddings rows for one package in line with the
  * current entity set: embed new/changed entities (content-hash diff, so
  * unchanged entities never re-embed, across restarts too), upsert them,
@@ -786,6 +1088,12 @@ export async function deleteEnvironmentEmbeddings(
  * the only channel by which the sync's result is observed. See kickSync.
  * Throws on provider or storage failure; partial writes are safe because
  * the hash diff self-heals on the next sync.
+ *
+ * `meta` is the package's meta as the caller saw it when it scheduled this
+ * sync, not looked up here. A sync waits in the process-wide queue before it
+ * runs, and a package deleted meanwhile has had its meta removed: the check
+ * below must compare against the meta the work was scheduled under, or a
+ * deleted package's rows would be written back under a freshly minted one.
  */
 async function syncPackageEmbeddings(
    db: DuckDBConnection,
@@ -793,8 +1101,8 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   meta: PackageSyncMeta,
 ): Promise<void> {
-   const meta = metaFor(environmentName, packageName);
    return meta.mutex.runExclusive(async () => {
       // The meta may have been orphaned while this sync waited on the
       // mutex (deletePackageEmbeddings removes the map entry, e.g. the
@@ -853,7 +1161,8 @@ async function syncPackageEmbeddings(
          }
       }
 
-      const desired = desiredFacets(entities);
+      const desired = await desiredFacetsChunked(entities);
+      const fingerprint = await desiredFingerprintChunked(desired);
       const desiredKeys = new Set(
          desired.map((d) =>
             facetRowKey(
@@ -900,46 +1209,47 @@ async function syncPackageEmbeddings(
       let rowsChanged = false;
       let deleted = 0;
       try {
-         if (toEmbed.length > 0) {
+         // One request, then one write, per batch, one batch after another.
+         // Each batch is saved as soon as it returns, so a failure on batch k
+         // keeps batches 1..k-1, and a restart resumes through the hash diff
+         // above. Failing transient errors are retried inside embedBatch.
+         //
+         // A package being deleted stops this sync: before each request and
+         // write, and around each retry's wait. Without that, the delete's
+         // cleanup (which queues on this mutex) waited out the whole sync,
+         // retries included, while the sync kept spending the provider's
+         // calls on a package nobody can query any more.
+         const abandoned = () => meta.deleting === true;
+         const deadlineAtMs = Date.now() + syncDeadlineMs;
+         const pastDeadline = () => Date.now() > deadlineAtMs;
+         const retry: EmbeddingRetryPolicy = {
+            ...syncRetryPolicy,
+            sleep: async (ms) => {
+               if (abandoned()) throw new SyncAbandonedError();
+               if (pastDeadline()) throw new SyncDeadlineError();
+               await syncRetryPolicy.sleep(ms);
+               if (abandoned()) throw new SyncAbandonedError();
+            },
+         };
+         for (let start = 0; start < toEmbed.length; start += syncBatchSize) {
+            if (abandoned()) throw new SyncAbandonedError();
+            if (pastDeadline()) throw new SyncDeadlineError();
+            const batch = toEmbed.slice(start, start + syncBatchSize);
             const vectors = await provider.embedBatch(
-               toEmbed.map((d) => d.text),
+               batch.map((d) => d.text),
                EMBEDDING_BATCH_TIMEOUT_MS,
+               retry,
             );
-            const now = new Date().toISOString();
-            for (let i = 0; i < toEmbed.length; i++) {
-               const d = toEmbed[i];
-               const vector = vectors[i];
-               await db.run(
-                  `INSERT INTO entity_embeddings (
-                     environment_name, package_name, entity_kind, entity_source,
-                     entity_name, facet, model_path, content_hash, embedding_model,
-                     dims, embedding, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
-                   ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
-                   DO UPDATE SET
-                     model_path = EXCLUDED.model_path,
-                     content_hash = EXCLUDED.content_hash,
-                     embedding_model = EXCLUDED.embedding_model,
-                     dims = EXCLUDED.dims,
-                     embedding = EXCLUDED.embedding,
-                     updated_at = EXCLUDED.updated_at`,
-                  [
-                     environmentName,
-                     packageName,
-                     d.entity.kind,
-                     sourceColumn(d.entity.source),
-                     d.entity.name,
-                     d.facet,
-                     d.entity.modelPath,
-                     d.hash,
-                     provider.model,
-                     vector.length,
-                     JSON.stringify(vector),
-                     now,
-                  ],
-               );
-               rowsChanged = true;
-            }
+            if (abandoned()) throw new SyncAbandonedError();
+            await upsertEmbeddingRows(
+               db,
+               environmentName,
+               packageName,
+               provider.model,
+               batch,
+               vectors,
+            );
+            rowsChanged = true;
          }
 
          for (const [rowKey, row] of existing) {
@@ -974,7 +1284,7 @@ async function syncPackageEmbeddings(
       // purpose: a sync that aborted as orphaned wrote no rows, so the next
       // call must re-sync under the fresh meta.
       meta.synced = {
-         fingerprint: desiredFingerprint(desired),
+         fingerprint,
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
@@ -990,13 +1300,20 @@ async function syncPackageEmbeddings(
 }
 
 /**
- * Start a sync for this content unless one is already in flight for this
- * Package instance.
+ * Queue a sync for this content unless one is already queued or running for
+ * this Package instance.
  *
- * The promise is deliberately dropped: nothing may ever await it, because a
- * cold start answers lexically rather than holding a question behind a bulk
- * embed. Completion is observed through `meta.synced`, which the sync records
- * itself under the mutex; only failure is handled here.
+ * A package normally has its sync queued when it loads (see
+ * {@link enqueuePackageSync}); this is the safety net behind that. It covers a
+ * package whose sync was never queued or has since been invalidated: the
+ * embedding model or dimensions changed after the load, a purge emptied the
+ * table, or an earlier sync failed and the cooldown has now ended. A search
+ * is what notices, so a search is what queues the retry. Queued work goes
+ * through the same process-wide queue as a load.
+ *
+ * The promise is deliberately dropped: nothing may ever await it. Completion
+ * is observed through `meta.synced`, which the sync records itself under the
+ * mutex; only failure is handled in {@link runTrackedSync}.
  */
 function kickSync(args: {
    db: DuckDBConnection;
@@ -1009,17 +1326,7 @@ function kickSync(args: {
    fingerprint: string;
    providerKey: string;
 }): void {
-   const {
-      db,
-      provider,
-      pkg,
-      environmentName,
-      packageName,
-      entities,
-      meta,
-      fingerprint,
-      providerKey,
-   } = args;
+   const { pkg, fingerprint, providerKey } = args;
 
    const inFlight = syncState.get(pkg);
    if (
@@ -1036,37 +1343,148 @@ function kickSync(args: {
    const tracked: SyncState = { fingerprint, providerKey };
    syncState.set(pkg, tracked);
 
-   syncPackageEmbeddings(
-      db,
-      provider,
-      environmentName,
-      packageName,
-      entities,
-   ).then(
-      () => {
-         // Cleared on success too, not just on failure: the marker means
-         // "in flight", so leaving it would stop a later purge -- which
-         // invalidates meta.synced without changing the content -- from
-         // ever kicking a re-sync for this same fingerprint.
-         if (syncState.get(pkg) === tracked) {
-            syncState.delete(pkg);
-         }
-      },
-      (error: unknown) => {
-         if (syncState.get(pkg) === tracked) {
-            syncState.delete(pkg);
-         }
-         markProviderFailure(meta);
-         logger.warn(
-            "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
-            {
-               environmentName,
-               packageName,
-               error: error instanceof Error ? error.message : String(error),
-            },
+   void embeddingSyncQueue.enqueue(() => runTrackedSync(args, tracked));
+}
+
+/**
+ * Run one sync to completion and settle its bookkeeping. Never throws: a
+ * failure is recorded on the package's meta (which starts its cooldown) and
+ * logged, because nothing awaits a sync and the queue behind it must go on.
+ */
+async function runTrackedSync(
+   args: {
+      db: DuckDBConnection;
+      provider: EmbeddingProvider;
+      pkg: Package;
+      environmentName: string;
+      packageName: string;
+      entities: EmbeddableEntity[];
+      meta: PackageSyncMeta;
+   },
+   tracked: SyncState,
+): Promise<void> {
+   const { db, provider, pkg, environmentName, packageName, entities, meta } =
+      args;
+   meta.syncStartedAtMs = Date.now();
+   try {
+      // The provider is already known to be down: record that as this
+      // package's cause and send nothing.
+      const down = openBreakerFor(provider);
+      if (down) {
+         markProviderFailure(meta, down.message);
+         meta.failureAtMs = down.atMs;
+         return;
+      }
+      await syncPackageEmbeddings(
+         db,
+         provider,
+         environmentName,
+         packageName,
+         entities,
+         meta,
+      );
+      meta.lastError = undefined;
+   } catch (error: unknown) {
+      if (error instanceof SyncAbandonedError) {
+         // Not a provider failure: the package is going away, so there is
+         // nothing to cool down and nothing to report.
+         logger.debug(
+            "[MCP Tool getContext] Stopped an embedding sync for a deleted package",
+            { environmentName, packageName },
          );
-      },
-   );
+         return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const publicMessage = publicProviderMessage(error);
+      markProviderFailure(meta, publicMessage);
+      if (isProviderWideFailure(error)) {
+         openBreaker(provider, publicMessage);
+      }
+      logger.warn(
+         "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
+         { environmentName, packageName, error: message },
+      );
+   } finally {
+      meta.syncStartedAtMs = undefined;
+      // Cleared on success too, not just on failure: the marker means
+      // "queued or in flight", so leaving it would stop a later purge --
+      // which invalidates meta.synced without changing the content -- from
+      // ever kicking a re-sync for this same fingerprint.
+      if (syncState.get(pkg) === tracked) {
+         syncState.delete(pkg);
+      }
+   }
+}
+
+/**
+ * Queue a sync for a package that has just loaded. This is what starts the
+ * index building before anyone asks a question.
+ *
+ * It only enqueues. A restart loads every package at once, and each one
+ * calls this, so the work waits its turn on the process-wide queue instead
+ * of every package hitting the embedding provider together. Calling it again
+ * for the same Package instance does nothing; a reload makes a new instance,
+ * which is queued afresh.
+ *
+ * `prepare` runs when the job reaches the front of the queue, not when it is
+ * queued: it builds the package's entity list, which is the slow part and
+ * must not run on the load path. It returns undefined when there is nothing
+ * to sync (no embedding provider, or the package was reloaded meanwhile).
+ */
+export function enqueuePackageSync(args: {
+   pkg: Package;
+   environmentName: string;
+   packageName: string;
+   prepare: () => Promise<
+      | {
+           db: DuckDBConnection;
+           provider: EmbeddingProvider;
+           entities: readonly EmbeddableEntity[];
+        }
+      | undefined
+   >;
+}): void {
+   const { pkg, environmentName, packageName } = args;
+   if (loadQueued.has(pkg)) return;
+   loadQueued.add(pkg);
+   // Take the package's sync state now, not after `prepare`. A delete that
+   // lands while `prepare` runs marks THIS object deleted and removes it from
+   // the map; looking it up afterwards would mint a fresh one that knows
+   // nothing about the delete, and the job would re-embed the deleted package.
+   const meta = metaFor(environmentName, packageName);
+   void embeddingSyncQueue.enqueue(async () => {
+      const prepared = await args.prepare();
+      if (!prepared) return;
+      if (
+         meta.deleting ||
+         syncMeta.get(metaKey(environmentName, packageName)) !== meta
+      ) {
+         return;
+      }
+      const { db, provider } = prepared;
+      const entities = uniqueByEntityKey(prepared.entities);
+      if (entities.length > maxEmbeddedEntities) return;
+      const providerKey = providerKeyFor(provider);
+      const fingerprint = await fingerprintFor(prepared.entities);
+      // Already current (a restart over rows that still match), cooling down
+      // from a recent failure, or already queued by a search: nothing to do.
+      if (isSynced(meta, fingerprint, providerKey) || inCooldown(meta)) return;
+      const inFlight = syncState.get(pkg);
+      if (
+         inFlight &&
+         inFlight.fingerprint === fingerprint &&
+         inFlight.providerKey === providerKey
+      ) {
+         return;
+      }
+      const tracked: SyncState = { fingerprint, providerKey };
+      syncState.set(pkg, tracked);
+      // Run inline: this job IS the sync, so the queue stays serial.
+      await runTrackedSync(
+         { db, provider, pkg, environmentName, packageName, entities, meta },
+         tracked,
+      );
+   });
 }
 
 /**
@@ -1142,7 +1560,7 @@ export async function trySemanticSearch(args: {
    // embeds them. See uniqueByEntityKey.
    const entities = uniqueByEntityKey(args.entities);
 
-   if (entities.length > MAX_EMBEDDED_ENTITIES) {
+   if (entities.length > maxEmbeddedEntities) {
       const key = `${environmentName}\x00${packageName}`;
       if (!oversizeWarned.has(key)) {
          oversizeWarned.add(key);
@@ -1152,7 +1570,7 @@ export async function trySemanticSearch(args: {
                environmentName,
                packageName,
                entityCount: entities.length,
-               cap: MAX_EMBEDDED_ENTITIES,
+               cap: maxEmbeddedEntities,
             },
          );
       }
@@ -1180,7 +1598,7 @@ export async function trySemanticSearch(args: {
    const entryGeneration = meta.generation;
    // The caller's array, not the deduped copy: the copy is new every call,
    // so only the caller's array can hit the cache.
-   const fingerprint = fingerprintFor(args.entities);
+   const fingerprint = await fingerprintFor(args.entities);
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1206,8 +1624,8 @@ export async function trySemanticSearch(args: {
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
    } catch (error) {
-      markProviderFailure(meta);
       const message = error instanceof Error ? error.message : String(error);
+      markProviderFailure(meta, publicProviderMessage(error));
       logger.warn(
          "[MCP Tool getContext] Query embedding failed; falling back to lexical ranking",
          { environmentName, packageName, error: message },
@@ -1516,7 +1934,10 @@ export async function trySemanticSearch(args: {
                // NOT re-purge once per cooldown window.
                const now = Date.now();
                if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
-                  markProviderFailure(meta);
+                  markProviderFailure(
+                     meta,
+                     `The embedding endpoint returned vectors of inconsistent dimensions for model ${provider.model}`,
+                  );
                   logger.warn(
                      "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
                      {
@@ -1602,7 +2023,23 @@ export async function trySemanticSearch(args: {
 
 /** What a package's semantic index is currently doing. */
 export interface EmbeddingIndexStatus {
+   /**
+    * - `indexing`: vectors are being built (or are queued to be).
+    * - `ready`: the next question is ranked semantically.
+    * - `cooldown`: the provider failed recently and the package is waiting out
+    *   the window before the next try. `lastError` says why and when.
+    * - `too-many-entities`: the package is over the entity cap, which no retry
+    *   fixes.
+    */
    status: "indexing" | "ready" | "cooldown" | "too-many-entities";
+   lastError?: { message: string; retryAt?: string };
+   /** When the sync now running began. Absent when none is running. */
+   startedAt?: string;
+   /**
+    * Rows the package wants cached: the denominator for `embeddedRows`. One
+    * per entity name plus one per chunk of documentation.
+    */
+   totalRows: number;
    /**
     * Rows cached for this package under the provider's CURRENT model, across
     * all entities and facets. Rows left by an earlier model are excluded.
@@ -1726,29 +2163,59 @@ export async function getEmbeddingIndexStatus(
    ).length;
 
    const meta = syncMeta.get(metaKey(environmentName, packageName));
-   const status: EmbeddingIndexStatus["status"] =
-      entityCount > MAX_EMBEDDED_ENTITIES
-         ? "too-many-entities"
-         : meta && inCooldown(meta)
-           ? "cooldown"
-           : // A sync covering exactly this content completed and still
-             // stands, and nothing is mid-write: the next question reads
-             // these rows and is ranked semantically.
-             meta &&
-               isSynced(
-                  meta,
-                  fingerprintFor(allEntities),
-                  providerKeyFor(provider),
-               ) &&
-               !meta.mutex.isLocked()
-             ? "ready"
-             : "indexing";
+   const summary = await desiredSummaryFor(allEntities);
+
+   let state: Pick<EmbeddingIndexStatus, "status" | "lastError">;
+   if (entityCount > maxEmbeddedEntities) {
+      state = {
+         status: "too-many-entities",
+         lastError: { message: tooManyEntitiesMessage(entityCount) },
+      };
+   } else if (meta && inCooldown(meta)) {
+      state = {
+         status: "cooldown",
+         lastError: {
+            message: meta.lastError ?? "The embedding provider failed",
+            retryAt: new Date(meta.failureAtMs + cooldownMs).toISOString(),
+         },
+      };
+   } else if (
+      // A sync covering exactly this content completed and still stands, and
+      // nothing is mid-write: the next question reads these rows and is
+      // ranked semantically.
+      meta &&
+      isSynced(meta, summary.fingerprint, providerKeyFor(provider)) &&
+      !meta.mutex.isLocked()
+   ) {
+      state = { status: "ready" };
+   } else {
+      state = { status: "indexing" };
+   }
 
    return {
-      status,
+      ...state,
+      ...(meta?.syncStartedAtMs !== undefined && state.status === "indexing"
+         ? { startedAt: new Date(meta.syncStartedAtMs).toISOString() }
+         : {}),
       embeddedRows,
+      totalRows: summary.rows,
       totalEntities: entityCount,
       embeddedEntities,
       ...(lastSyncedAt ? { lastSyncedAt } : {}),
    };
+}
+
+/**
+ * Why a package over the entity cap is not embedded, with the count, the cap
+ * and how to raise it. One definition, used by the status endpoint and by
+ * get_context's error, so the two cannot describe the cap differently.
+ */
+export function tooManyEntitiesMessage(entityCount: number): string {
+   const suggested = Math.max(entityCount, maxEmbeddedEntities * 4);
+   return (
+      `The package has ${entityCount} entities, over the semantic index cap of ${maxEmbeddedEntities}. ` +
+      `Fix: set retrieval.indexing.maxEntities to ${suggested} or more in publisher.config.json ` +
+      `(for example "retrieval": { "indexing": { "maxEntities": ${suggested} } }) and restart the server. ` +
+      `A higher cap makes the first index take longer, in proportion to the number of entities.`
+   );
 }

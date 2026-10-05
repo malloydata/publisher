@@ -122,11 +122,86 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
+/**
+ * The `retrieval` block of publisher.config.json. Only the key below exists
+ * today; the block is where the rest of get_context's retrieval settings
+ * will live, so unknown keys inside it are ignored rather than rejected.
+ */
+export type RetrievalConfig = {
+   indexing?: {
+      /**
+       * Most entities a package may have and still be embedded. A package
+       * over this is not embedded, and `get_context` answers it with an error
+       * that names this setting. See {@link DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES}.
+       */
+      maxEntities?: number;
+   };
+};
+
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
+   retrieval?: RetrievalConfig;
    environments: Environment[];
 };
+
+/**
+ * Default for `retrieval.indexing.maxEntities`. A package past this is not
+ * embedded: its first index would take minutes of provider calls and rate
+ * limit. The bundled examples sit around a few hundred entities.
+ *
+ * Counted in ENTITIES, not rows. Faceting means a documented entity costs
+ * more than one embedding (a name row plus its doc rows), so the ceiling on
+ * first-sync provider calls is a small multiple of this number. It is still
+ * expressed in entities because the check runs before facets are computed and
+ * it is the figure an operator can reason about from their model.
+ */
+export const DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES = 5_000;
+
+/**
+ * Validate the `retrieval` block. Throws, naming the key and the fix, on a
+ * value that cannot be used: a bad value must stop the server at startup
+ * rather than silently fall back to a cap the operator did not choose.
+ *
+ * A digit-only string is accepted for `maxEntities` because `${VAR}`
+ * substitution in the config file always produces a string.
+ */
+export function parseRetrievalConfig(
+   raw: unknown,
+): RetrievalConfig | undefined {
+   if (raw === undefined || raw === null) return undefined;
+   if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+         `Invalid retrieval: expected an object, got ${JSON.stringify(raw)}. ` +
+            `Fix: "retrieval": { "indexing": { "maxEntities": 20000 } }`,
+      );
+   }
+   const indexing = (raw as { indexing?: unknown }).indexing;
+   if (indexing === undefined || indexing === null) return {};
+   if (typeof indexing !== "object" || Array.isArray(indexing)) {
+      throw new Error(
+         `Invalid retrieval.indexing: expected an object, got ${JSON.stringify(indexing)}. ` +
+            `Fix: "indexing": { "maxEntities": 20000 }`,
+      );
+   }
+   const value = (indexing as { maxEntities?: unknown }).maxEntities;
+   if (value === undefined || value === null) return { indexing: {} };
+   const parsed =
+      typeof value === "string" && /^\d+$/.test(value.trim())
+         ? Number(value.trim())
+         : value;
+   if (
+      typeof parsed !== "number" ||
+      !Number.isSafeInteger(parsed) ||
+      parsed <= 0
+   ) {
+      throw new Error(
+         `Invalid retrieval.indexing.maxEntities: expected a positive integer, got ${JSON.stringify(value)}. ` +
+            `Fix: set it to e.g. 20000`,
+      );
+   }
+   return { indexing: { maxEntities: parsed } };
+}
 
 export type ProcessedEnvironment = {
    name: string;
@@ -1269,11 +1344,46 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
+   const retrieval = parseRetrievalConfig(
+      processedConfig && typeof processedConfig === "object"
+         ? (processedConfig as { retrieval?: unknown }).retrieval
+         : undefined,
+   );
+
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
+      ...(retrieval ? { retrieval } : {}),
       environments,
    } as PublisherConfig;
+};
+
+/**
+ * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
+ * from publisher.config.json, or {@link DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES}.
+ * Read once at startup. Throws, with the fix, on an invalid value; a config
+ * file that cannot be read or parsed gives the default.
+ */
+export const getSemanticIndexMaxEntities = (serverRoot: string): number => {
+   try {
+      return (
+         getPublisherConfig(serverRoot).retrieval?.indexing?.maxEntities ??
+         DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES
+      );
+   } catch (error) {
+      // A file that cannot be read or parsed is reported where the config is
+      // actually used (the manifest read refuses to start and /status names the
+      // cause). This runs at module load, before /status exists, so throwing
+      // here would kill the process with no way to see why. An invalid
+      // `retrieval` value is a different error and still stops the server.
+      if (
+         error instanceof Error &&
+         error.message.startsWith("Failed to parse ")
+      ) {
+         return DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+      }
+      throw error;
+   }
 };
 
 /**

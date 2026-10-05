@@ -20,6 +20,7 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
+   enqueuePackageSync,
    entityRowKey,
    KEY_SEPARATOR,
    getEmbeddingIndexStatus,
@@ -1926,6 +1927,14 @@ async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -2660,4 +2669,42 @@ export async function getPackageEmbeddingStatus(
       packageName,
       pkgIndex.retrievalEntities,
    );
+}
+
+/**
+ * Queue the semantic index for a package that has just loaded, so the vectors
+ * build before the first question. Only enqueues; see {@link enqueuePackageSync}.
+ * Wired to the environment store's package-loaded hook at server start.
+ */
+export function startPackageEmbeddingSync(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   pkg: Package,
+): void {
+   const packageName = pkg.getPackageName();
+   enqueuePackageSync({
+      pkg,
+      environmentName,
+      packageName,
+      prepare: async () => {
+         if (!embeddingConfigured()) return undefined;
+         // Throws on a malformed embedding configuration; the queue logs it,
+         // and the status endpoint reports it.
+         const provider = getEmbeddingProvider();
+         if (!provider) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
+         return {
+            db: environmentStore.storageManager.getDuckDbConnection(),
+            provider,
+            entities: pkgIndex.retrievalEntities,
+         };
+      },
+   });
 }

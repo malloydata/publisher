@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — Semantic retrieval: the index builds when a package loads
+
+When an embedding provider is configured, the semantic index now starts building when a package loads (at boot, on add or install, and on reload) instead of on the first question. Packages are embedded one at a time across the server, each batch of vectors is saved as it returns, and a 429, a 5xx or a timeout is retried with backoff. A failure part-way keeps what was saved, and the next try embeds only the rest. A package with more entities than the cap (still 5,000 by default) can now raise it with `retrieval.indexing.maxEntities` in `publisher.config.json`.
+
+`embeddingIndex` on the package resource gains `totalRows`, `startedAt` and, on a cooldown or too-many-entities status, `lastError`. Existing values and fields are unchanged. A client that polled `ready` after sending a question first no longer needs the question.
+
+Deleting a package now stops its running index sync at the next request or retry, so the cleanup no longer waits behind a long sync.
+
+Exact score ties in semantic search are now ordered by source, then name, then kind, so two servers list the same results in the same order.
+
 ## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
 
 A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged

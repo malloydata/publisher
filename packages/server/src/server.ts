@@ -58,6 +58,7 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   getSemanticIndexMaxEntities,
 } from "./config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
@@ -66,6 +67,8 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
+import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
    ensureMcpConfig,
@@ -350,12 +353,28 @@ if (embeddingConfig) {
       `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
    );
 }
+// The entity cap for the semantic index, from publisher.config.json. Read here,
+// once, so an invalid value stops the server with its fix rather than surfacing
+// on the first question about a large package.
+const semanticIndexMaxEntities = getSemanticIndexMaxEntities(SERVER_ROOT);
+setMaxEmbeddedEntities(semanticIndexMaxEntities);
+if (embeddingConfig) {
+   logger.info(
+      `Semantic index entity cap: ${semanticIndexMaxEntities} (retrieval.indexing.maxEntities)`,
+   );
+}
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+// Start the semantic index building as each package loads, rather than on the
+// first question. This only queues work (see startPackageEmbeddingSync); with
+// no embedding provider the queued job returns at once.
+environmentStore.setPackageLoadedHook((environmentName, pkg) =>
+   startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+);
 const packageController = new PackageController(environmentStore);
 const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
