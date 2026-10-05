@@ -2262,6 +2262,31 @@ describe("sync saves each batch and retries transient failures", () => {
       expect(requests).toBe(3);
    });
 
+   it("does not yield to the event loop to fingerprint a small package", async () => {
+      // A search captures the package's generation on entry and then computes
+      // the fingerprint. A yield there (it used to yield after its last chunk
+      // too) let a sync finish in between and move the generation, so the
+      // search answered `indexing` once more and embedded its query twice.
+      const { provider } = mapProvider(VECTORS);
+      const args = baseArgs(provider);
+      await searchReady(args);
+      const real = globalThis.setImmediate;
+      let yields = 0;
+      globalThis.setImmediate = ((fn: () => void, ...rest: unknown[]) => {
+         yields++;
+         return real(fn, ...(rest as []));
+      }) as typeof setImmediate;
+      try {
+         // The four-entity list is not frozen, so the fingerprint is computed
+         // afresh on every call.
+         const result = await trySemanticSearch(args);
+         expect("hits" in result).toBe(true);
+      } finally {
+         globalThis.setImmediate = real;
+      }
+      expect(yields).toBe(0);
+   });
+
    it("succeeds on the third attempt after two 503s, waiting between tries", async () => {
       const slept: number[] = [];
       _setSyncRetryForTests({
