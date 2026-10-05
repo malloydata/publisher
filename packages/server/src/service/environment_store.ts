@@ -1617,6 +1617,14 @@ export class EnvironmentStore {
       return status;
    }
 
+   /**
+    * The environment currently held in memory under `name`, or undefined.
+    * Never loads, so it cannot bring back an environment that was removed.
+    */
+   public peekEnvironment(name: string): Environment | undefined {
+      return this.environments.get(name);
+   }
+
    public async getEnvironment(
       environmentName: string,
       reload: boolean = false,

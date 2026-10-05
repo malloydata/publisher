@@ -432,19 +432,28 @@ export function parseRetrievalConfig(
             `Fix: "retrieval": { "indexing": { "maxEntities": 20000 } }`,
       );
    }
-   const input = raw as Record<string, unknown>;
+   // A typo in a top-level key ("embeding") would otherwise leave the whole
+   // block silently unset, as it does for every key below.
+   const input = block(
+      raw,
+      "retrieval",
+      ["indexing", "llm", "embedding", "egress"],
+      `"retrieval": { "indexing": { "maxEntities": 20000 } }`,
+   );
    const out: RetrievalConfig = {};
 
    const indexing = input.indexing;
    if (indexing !== undefined && indexing !== null) {
-      if (typeof indexing !== "object" || Array.isArray(indexing)) {
-         throw new Error(
-            `Invalid retrieval.indexing: expected an object, got ${JSON.stringify(indexing)}. ` +
-               `Fix: "indexing": { "maxEntities": 20000 }`,
-         );
-      }
+      // Through block() like every other nested object, so a typo such as
+      // "maxEntitites" fails loudly instead of leaving the cap at its default.
+      const fields = block(
+         indexing,
+         "retrieval.indexing",
+         ["maxEntities"],
+         `"indexing": { "maxEntities": 20000 }`,
+      );
       const maxEntities = positiveInt(
-         (indexing as { maxEntities?: unknown }).maxEntities,
+         fields.maxEntities,
          "retrieval.indexing.maxEntities",
          "set it to e.g. 20000",
       );

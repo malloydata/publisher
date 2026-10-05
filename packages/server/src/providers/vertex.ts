@@ -10,11 +10,19 @@ import { postJson } from "./http";
 import type { ChatResult, FetchFn } from "./types";
 
 /**
- * Instances per `:predict` embedding request. To verify against current
- * vendor docs: Vertex has documented up to 250 instances per request for
- * its text embedding models, and some newer models accept fewer.
+ * Instances per `:predict` embedding request for the text-embedding models,
+ * which accept up to 250. The gemini-embedding models accept ONE input per
+ * request and answer 400 to more, so {@link vertexEmbedMaxBatch} gives 1 for
+ * them.
  */
 export const VERTEX_EMBED_MAX_BATCH = 250;
+
+/** The most inputs one `:predict` request may carry for `model`. */
+export function vertexEmbedMaxBatch(model: string): number {
+   return /^gemini-embedding/.test(bareModelName(model))
+      ? 1
+      : VERTEX_EMBED_MAX_BATCH;
+}
 export const VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 
 /** Resolves an access token from Application Default Credentials. */
@@ -27,14 +35,58 @@ export function adcAccessToken(): () => Promise<string> {
          return token;
       } catch (error) {
          // Never retried: missing credentials will not appear on their own.
+         // The library's text can name a key file path from
+         // GOOGLE_APPLICATION_CREDENTIALS, so it stays in the log message and
+         // the caller sees only the fixed sentence.
+         const fix =
+            "Fix: run `gcloud auth application-default login`, or run with a service account.";
          throw new HttpRequestError(
-            `Vertex AI needs Application Default Credentials: ${(error as Error).message}. ` +
-               "Fix: run `gcloud auth application-default login`, or run with a service account.",
+            `Vertex AI needs Application Default Credentials: ${(error as Error).message}. ${fix}`,
             undefined,
             false,
+            undefined,
+            `Vertex AI needs Application Default Credentials. ${fix}`,
          );
       }
    };
+}
+
+/**
+ * Wait for `pending`, but stop at once when `signal` aborts. Fetching an
+ * access token can stall (a metadata server that does not answer), and the
+ * request's own timeout only starts once the request is sent, so without this
+ * a cancelled or timed-out call would sit waiting for the token.
+ */
+export function untilAborted<T>(
+   pending: Promise<T>,
+   signal: AbortSignal,
+   what: string,
+): Promise<T> {
+   const abortError = () =>
+      (signal.reason as Error | undefined)?.name === "TimeoutError"
+         ? new HttpRequestError(
+              `${what} timed out while getting an access token`,
+              undefined,
+              true,
+              undefined,
+              `${what} failed: timed out getting an access token`,
+           )
+         : new HttpRequestError(`${what} was cancelled`, undefined, false);
+   if (signal.aborted) return Promise.reject(abortError());
+   return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(abortError());
+      signal.addEventListener("abort", onAbort, { once: true });
+      pending.then(
+         (value) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(value);
+         },
+         (error) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(error);
+         },
+      );
+   });
 }
 
 /** `https://{location}-aiplatform.googleapis.com`, or the global host. */
@@ -73,7 +125,11 @@ export class VertexChat implements RawChat {
          this.model,
          "generateContent",
       );
-      const token = await this.getAccessToken();
+      const token = await untilAborted(
+         this.getAccessToken(),
+         req.signal,
+         "Chat request",
+      );
       const reply = await postJson({
          fetchFn: this.fetchFn,
          url,
@@ -85,6 +141,7 @@ export class VertexChat implements RawChat {
          authHint:
             "Application Default Credentials and the project's Vertex AI access",
          what: "Chat request",
+         showVendorMessage: false,
       });
       return parseGeminiReply(reply, url);
    }
@@ -101,7 +158,11 @@ export function vertexEmbedChunk(args: {
 }): EmbedChunkFn {
    const url = modelUrl(args.projectId, args.location, args.model, "predict");
    return async (inputs, signal, timeoutMs) => {
-      const token = await args.getAccessToken();
+      const token = await untilAborted(
+         args.getAccessToken(),
+         signal,
+         "Embedding request",
+      );
       const reply = (await postJson({
          fetchFn: args.fetchFn,
          url,
@@ -118,6 +179,7 @@ export function vertexEmbedChunk(args: {
          authHint:
             "Application Default Credentials and the project's Vertex AI access",
          what: "Embedding request",
+         showVendorMessage: false,
       })) as { predictions?: { embeddings?: { values?: unknown } }[] };
       const predictions = reply?.predictions;
       return checkVectors(

@@ -17,6 +17,7 @@ import type {
 import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
 import { mapRawScore } from "./get_context_scoring";
 import {
+   enterJoin,
    matchesScope,
    sourceContextKey,
    type Entity,
@@ -59,15 +60,24 @@ function compareText(a: string, b: string): number {
 }
 
 /**
+ * The number rows are ordered by: the rater's raw score when a stage rated the
+ * row, else the unrounded cosine, else the published score. A rated row keeps
+ * the cosine it started with, which no longer describes where it ranks.
+ */
+function rankKey(row: ResultEntity): number {
+   return row.raw ?? row.rawScore ?? row.score ?? 0;
+}
+
+/**
  * The order of ranked rows: score descending, then source, name, kind and
- * model path. The score is the rounded one the response publishes, so two rows
- * that show the same relevance are listed in a fixed order, not in whatever
- * order the scan happened to return them. Shared by the semantic retriever
- * and by assembly, which adds joined copies and so has to sort again.
+ * model path. The score compared is the unrounded one, so only rows with
+ * exactly the same score count as tied and are listed in a fixed order, not in
+ * whatever order the scan happened to return them. Shared by the semantic
+ * retriever and by assembly, which adds joined copies and so has to sort again.
  */
 export function compareRanked(a: ResultEntity, b: ResultEntity): number {
    return (
-      (b.score ?? 0) - (a.score ?? 0) ||
+      rankKey(b) - rankKey(a) ||
       compareText(a.source ?? "", b.source ?? "") ||
       compareText(a.name, b.name) ||
       compareText(a.kind, b.kind) ||
@@ -275,6 +285,14 @@ function expandJoins(
    const damping = settings.joinDamping;
    const out: ResultEntity[] = [];
    const copies = new Map<string, ResultEntity>();
+   // Rows the index already holds under the display name a copy would take: a
+   // field the index kept (an inline-table join's field, reached again through
+   // another join) can also be rebuilt here, and the two must not both appear.
+   const ranked = new Set(
+      rows.map((r) =>
+         [r.modelPath, r.source ?? "", r.kind, r.name].join(KEY_SEPARATOR),
+      ),
+   );
    for (const row of rows) {
       if (matchesScope(row, request)) out.push(row);
       for (const place of joinedCopiesOf(
@@ -283,12 +301,34 @@ function expandJoins(
          settings.joinMaxDepth,
       )) {
          if (!matchesScope({ ...place, kind: row.kind }, request)) continue;
-         const factor = damping === null ? 1 : damping ** (place.hops + 1);
+         // A row that is itself a dotted index row (`lines.total` on `cust`)
+         // is reached through the root's join and then its own: the copy's path
+         // is both, its fan-out the widest of the two (the same rule the index's
+         // own copies use), and its hops count both.
+         const path =
+            row.joinPath === undefined
+               ? place.joinPath
+               : `${place.joinPath}.${row.joinPath}`;
+         const fanout =
+            row.joinPath === undefined
+               ? place.fanout
+               : enterJoin(
+                    { name: row.joinPath, relationship: row.relationship },
+                    { joinPath: place.joinPath, fanout: place.fanout },
+                 ).fanout;
+         const hops =
+            place.hops +
+            (row.joinPath === undefined ? 0 : row.joinPath.split(".").length);
+         if (hops > settings.joinMaxDepth) continue;
+         const factor = damping === null ? 1 : damping ** (hops + 1);
          const scores = dampedScores(row, factor);
          const score = scores.score;
+         const rawScore =
+            row.rawScore === undefined ? undefined : row.rawScore * factor;
          const key = [place.modelPath, place.source, row.kind, place.name].join(
             KEY_SEPARATOR,
          );
+         if (ranked.has(key)) continue;
          const seen = copies.get(key);
          if (seen) {
             // Compared on the raw score when there is one: two copies can
@@ -299,6 +339,7 @@ function expandJoins(
                   : score !== undefined && score > (seen.score ?? 0);
             if (better) {
                Object.assign(seen, scores);
+               seen.rawScore = rawScore;
                seen.bestTarget = row.bestTarget;
             }
             continue;
@@ -312,15 +353,16 @@ function expandJoins(
             modelPath: place.modelPath,
             doc: row.doc,
             ...(row.embedDoc ? { embedDoc: row.embedDoc } : {}),
-            relationship: place.fanout,
-            joinPath: place.joinPath,
+            relationship: fanout,
+            joinPath: path,
             ...(row.dataType ? { dataType: row.dataType } : {}),
             ...scores,
+            ...(rawScore !== undefined ? { rawScore } : {}),
             ...(row.level !== undefined ? { level: row.level } : {}),
             ...(row.bestTarget !== undefined
                ? { bestTarget: row.bestTarget }
                : {}),
-            joinHops: place.hops,
+            joinHops: hops,
          };
          copies.set(key, copy);
          out.push(copy);
@@ -343,7 +385,14 @@ export function assembleCards(
    state: RankedState,
    ctx: PipelineContext,
 ): CardState {
-   const perSourcePerTarget = ctx.settings.entityWindow.perSourcePerTarget;
+   // On the semantic path the card holds the source's own window plus the
+   // dotted rows' window, so a dotted row the scan kept is not then cut here for
+   // a higher-scored one. The lexical path has no separate window and keeps 10.
+   const perSourcePerTarget =
+      ctx.settings.entityWindow.perSourcePerTarget +
+      (state.retrieval === "semantic"
+         ? (ctx.settings.entityWindow.joinedPerSourcePerTarget ?? 0)
+         : 0);
    const cards = new Map<string, CardDraft>();
    const perTarget = new Map<string, Map<number, number>>();
    // Joined copies are made here only for semantic rows, which search direct

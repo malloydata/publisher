@@ -291,7 +291,11 @@ What to know before turning it on:
   again until the package's content or its retrieval settings change, or the server restarts;
   408, 429, 5xx, 401 and 403 keep their cool-down and retry). `cooldown` and `too-many-entities`
   also remain in the `status` enum of `api-doc.yaml`, deprecated and never sent, so a client built
-  from an earlier spec still understands every value.
+  from an earlier spec still understands every value. The message never names the provider's URL;
+  the full error is in the server log only. When one package's sync finds the provider unreachable,
+  the packages queued behind it show the same `cooldown` cause and send no requests until it ends.
+  One package's sync is stopped after 15 minutes; what it saved is kept and it resumes after the
+  cooldown.
   `lexical` means no embedding provider is configured: that is a mode, not a failure.
   Poll until `ready` before measuring retrieval quality, so you are not measuring a half-built
   index; there is no need to send a question first, because indexing starts when the package
@@ -414,13 +418,19 @@ behaves as it did before.
 **Validation.** A bad value stops the server at startup with a message that names the key, what
 was expected and a fix, for example `Invalid retrieval.llm.provider: expected one of openai,
 openai-compatible, ollama, anthropic, google, vertex, got "cohere". Fix: ...`. Inside `llm`,
-`embedding` and `egress` an unknown key is an error that lists the valid ones.
+`embedding`, `egress` and `indexing`, and at the top of the `retrieval` block, an unknown key is an
+error that lists the valid ones, so a typo such as `maxEntitites` stops the server instead of being ignored.
 
 **Providers.** Each provider is called directly over HTTPS, with no vendor SDK. Failed calls retry
 the same way for every provider: a 429, 408, 5xx or timeout is retried up to five times with
 jittered exponential backoff and `Retry-After` honoured; a 401, 403 or other 4xx fails at once.
 After three failed calls in a row a provider is refused for a minute so a dead endpoint costs a few
-timeouts, not one per entity. JSON replies are read out of code fences, checked, and re-asked once
+timeouts, not one per entity. A reply body that drops or times out after good headers counts as a
+network failure and is retried; only a body that arrives whole and is not JSON fails at once. OpenAI's
+`gpt-5` and `o`-series models are sent no `temperature`, because the API rejects it; every other
+model is sent `0`. Vertex AI errors show the caller the status and a fixed sentence, since its
+messages name the project, and a credentials failure shows the fix without the key file path; the
+full text stays in the log. JSON replies are read out of code fences, checked, and re-asked once
 with the validation error if wrong. Calls, failures, retries, tokens and latency are exported as
 `publisher_llm_*` metrics.
 
@@ -430,7 +440,7 @@ with the validation error if wrong. Calls, failures, retries, tokens and latency
 | `ollama`                      | same, against the local compatibility API                                | same                                                         | none                                                         |
 | `anthropic`                   | `POST /v1/messages`, `anthropic-version: 2023-06-01`                     | none                                                         | `x-api-key`                                                  |
 | `google`                      | `models/<model>:generateContent`                                         | `models/<model>:batchEmbedContents`, up to 100 per request\* | `x-goog-api-key`                                             |
-| `vertex`                      | the same model path under `projects/<p>/locations/<l>/publishers/google` | `:predict`, up to 250 instances per request\*                | `Authorization: Bearer` from Application Default Credentials |
+| `vertex`                      | the same model path under `projects/<p>/locations/<l>/publishers/google` | `:predict`, 250 instances per request, 1 for `gemini-embedding-*`\* | `Authorization: Bearer` from Application Default Credentials |
 
 \* Batch limits are constants in the adapters, to be verified against the vendor's current
 documentation; a vendor that lowers its limit fails the request with a 400 that names it.

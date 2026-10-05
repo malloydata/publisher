@@ -197,7 +197,22 @@ class Retrieval(unittest.TestCase):
         att = {"calls": [{"tool": "execute_query", "retrieval_mode": None}]}
         self.assertEqual(rb.retrieval_summary([att]),
                          ("unreported", {"semantic": 0, "lexical": 0,
+                                         "indexing": 0, "error": 0,
                                          "unreported": 0}))
+
+    def test_a_call_answered_indexing_makes_the_run_unavailable(self):
+        mode, tally = rb.retrieval_summary([self.att("semantic", "indexing")])
+        self.assertEqual(mode, "unavailable")
+        self.assertEqual((tally["semantic"], tally["indexing"]), (1, 1))
+
+    def test_a_call_answered_error_makes_the_run_unavailable(self):
+        mode, tally = rb.retrieval_summary([self.att("error")])
+        self.assertEqual((mode, tally["error"]), ("unavailable", 1))
+
+    def test_unavailable_wins_over_mixed(self):
+        self.assertEqual(
+            rb.retrieval_summary([self.att("semantic", "lexical", "error")])[0],
+            "unavailable")
 
 
 class ReExecution(unittest.TestCase):

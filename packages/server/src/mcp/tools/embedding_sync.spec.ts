@@ -30,10 +30,16 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
+import {
+   createEntityEmbeddingsTable,
+   createEntityKeyphrasesTable,
+   createSourceSummariesTable,
+} from "../../storage/duckdb/schema";
 import {
    _resetEmbeddingIndexStateForTests,
    _setSyncRetryForTests,
+   _setTimingForTests,
+   deletePackageEmbeddings,
    enqueuePackageSync,
    type EmbeddableEntity,
 } from "./embedding_index";
@@ -51,6 +57,8 @@ beforeAll(async () => {
    db = new DuckDBConnection(path.join(tempDir, "sync.db"));
    await db.initialize();
    await createEntityEmbeddingsTable(db);
+   await createEntityKeyphrasesTable(db);
+   await createSourceSummariesTable(db);
 });
 
 afterAll(async () => {
@@ -202,6 +210,65 @@ describe("enqueuePackageSync", () => {
       expect(provider).toBeDefined();
    });
 
+   it("writes nothing when the package is deleted while its job is being prepared", async () => {
+      const held = heldProvider();
+      let startPrepare!: () => void;
+      let finishPrepare!: () => void;
+      const started = new Promise<void>((r) => (startPrepare = r));
+      const gate = new Promise<void>((r) => (finishPrepare = r));
+      enqueuePackageSync({
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "deleted_mid_prepare",
+         prepare: async () => {
+            startPrepare();
+            await gate;
+            return {
+               db,
+               provider: held.provider,
+               entities: Object.freeze([ent("late_field")]),
+            };
+         },
+      });
+      await started;
+      // The delete lands while the job is still building its entity list.
+      await deletePackageEmbeddings(db, "env", "deleted_mid_prepare");
+      finishPrepare();
+      await embeddingSyncQueue.idle();
+
+      expect(held.requests.length).toBe(0);
+      const rows = await db.all(
+         "SELECT 1 FROM entity_embeddings WHERE package_name = 'deleted_mid_prepare'",
+      );
+      expect(rows.length).toBe(0);
+   });
+
+   it("keeps syncing a package whose delete failed, since its rows are still there", async () => {
+      const held = heldProvider();
+      const brokenDb = {
+         run: async () => {
+            throw new Error("disk full");
+         },
+      } as unknown as DuckDBConnection;
+      await expect(
+         deletePackageEmbeddings(brokenDb, "env", "delete_failed"),
+      ).rejects.toThrow("disk full");
+
+      enqueuePackageSync({
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "delete_failed",
+         prepare: async () => ({
+            db,
+            provider: held.provider,
+            entities: Object.freeze([ent("kept_field")]),
+         }),
+      });
+      await held.arrived(1);
+      held.release();
+      await embeddingSyncQueue.idle();
+   });
+
    it("syncs two packages one after another, not together", async () => {
       const held = heldProvider();
       const order: string[] = [];
@@ -278,17 +345,44 @@ function smallPackage(name: string) {
    };
 }
 
+/**
+ * A store holding `pkgs`. `diskLoads` lists every package the code asked the
+ * store to LOAD (getPackage loads from disk on a miss, as the real one does);
+ * peekPackage only reports what is held.
+ */
 function storeHolding(pkgs: Record<string, ReturnType<typeof smallPackage>>) {
+   const diskLoads: string[] = [];
+   const environment = {
+      getPackage: async (name: string) => {
+         if (!pkgs[name]) diskLoads.push(name);
+         return pkgs[name] ?? smallPackage(name);
+      },
+      peekPackage: (name: string) => pkgs[name],
+      getStaleCompileErrors: () => new Map(),
+   };
    return {
-      getEnvironment: async () => ({
-         getPackage: async (name: string) => pkgs[name],
-         getStaleCompileErrors: () => new Map(),
-      }),
+      getEnvironment: async () => environment,
+      peekEnvironment: () => environment,
       storageManager: { getDuckDbConnection: () => db },
-   } as unknown as EnvironmentStore;
+      diskLoads,
+   } as unknown as EnvironmentStore & { diskLoads: string[] };
 }
 
 describe("startPackageEmbeddingSync", () => {
+   it("does not load or embed a package that was unloaded while it waited", async () => {
+      const held = heldProvider();
+      _setEmbeddingProviderForTests(held.provider);
+      const pkg = smallPackage("unloaded");
+      // The store no longer holds the package by the time the job runs.
+      const store = storeHolding({});
+
+      startPackageEmbeddingSync(store, "env", pkg as unknown as Package);
+      await embeddingSyncQueue.idle();
+
+      expect(store.diskLoads).toEqual([]);
+      expect(held.requests.length).toBe(0);
+   });
+
    it("builds the index at load, with no question asked, and reports ready", async () => {
       const held = heldProvider();
       _setEmbeddingProviderForTests(held.provider);
@@ -373,6 +467,100 @@ describe("startPackageEmbeddingSync", () => {
       status = await getPackageEmbeddingStatus(store, "env", "progress");
       expect(status.status).toBe("ready");
       expect(status.embeddedRows).toBe(3);
+   });
+});
+
+describe("a provider that is down, and a sync that runs too long", () => {
+   const stubProvider = (fetchStub: typeof fetch) =>
+      new EmbeddingProvider(
+         {
+            apiKey: "test",
+            model: "stub-model",
+            baseUrl: "https://stub.example.com/v1",
+            minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
+         },
+         fetchStub,
+      );
+
+   it("sends nothing for the packages queued behind one that found the provider down", async () => {
+      let requests = 0;
+      const down = stubProvider((async () => {
+         requests++;
+         return new Response("secret provider detail", { status: 503 });
+      }) as unknown as typeof fetch);
+      _setEmbeddingProviderForTests(down);
+      const first = smallPackage("down_a");
+      const second = smallPackage("down_b");
+      const store = storeHolding({ down_a: first, down_b: second });
+
+      startPackageEmbeddingSync(store, "env", first as unknown as Package);
+      startPackageEmbeddingSync(store, "env", second as unknown as Package);
+      await embeddingSyncQueue.idle();
+
+      const afterFirstPackage = requests;
+      expect(afterFirstPackage).toBeGreaterThan(0);
+      // The second package never asked: its status carries the same cause.
+      const a = await getPackageEmbeddingStatus(store, "env", "down_a");
+      const b = await getPackageEmbeddingStatus(store, "env", "down_b");
+      expect(b.status).toBe("error");
+      expect(b.reason).toBe("cooldown");
+      expect(b.lastError?.message).toBe(a.lastError?.message);
+      expect(requests).toBe(afterFirstPackage);
+   });
+
+   it("shows a cause that names the status but not the provider URL", async () => {
+      const down = stubProvider(
+         (async () =>
+            new Response("secret provider detail", {
+               status: 503,
+            })) as unknown as typeof fetch,
+      );
+      _setEmbeddingProviderForTests(down);
+      const pkg = smallPackage("wording");
+      const store = storeHolding({ wording: pkg });
+      startPackageEmbeddingSync(store, "env", pkg as unknown as Package);
+      await embeddingSyncQueue.idle();
+
+      const message = (await getPackageEmbeddingStatus(store, "env", "wording"))
+         .lastError?.message;
+      expect(message).toContain("503");
+      expect(message).not.toContain("stub.example.com");
+   });
+
+   it("stops a sync that outlasts its time limit, keeps what it saved, and frees the queue", async () => {
+      _setSyncRetryForTests({ batchSize: 1 });
+      _setTimingForTests({ syncDeadlineMs: 30 });
+      let requests = 0;
+      const slow = stubProvider((async (
+         _url: RequestInfo | URL,
+         init?: RequestInit,
+      ) => {
+         requests++;
+         const body = JSON.parse(String(init?.body)) as { input: string[] };
+         await new Promise((resolve) => setTimeout(resolve, 60));
+         return new Response(
+            JSON.stringify({
+               data: body.input.map((_, index) => ({
+                  index,
+                  embedding: [1, 0, 0],
+               })),
+            }),
+            { status: 200 },
+         );
+      }) as unknown as typeof fetch);
+      _setEmbeddingProviderForTests(slow);
+      const pkg = smallPackage("slow");
+      const store = storeHolding({ slow: pkg });
+      startPackageEmbeddingSync(store, "env", pkg as unknown as Package);
+      await embeddingSyncQueue.idle();
+
+      // One request fits before the limit; the other two never go out.
+      expect(requests).toBe(1);
+      const status = await getPackageEmbeddingStatus(store, "env", "slow");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("cooldown");
+      expect(status.lastError?.message).toContain("time limit");
+      expect(status.embeddedRows).toBe(1);
    });
 });
 

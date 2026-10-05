@@ -93,7 +93,11 @@ describe("openai-compatible chat adapter", () => {
    it("uses max_completion_tokens for openai and sends json_object only for JSON", async () => {
       const { fetchFn, requests } = stubFetch([() => reply('{"a":1}')]);
       const chat = createChatModel(
-         settings({ provider: "openai", baseUrl: undefined }),
+         settings({
+            provider: "openai",
+            model: "gpt-5-mini",
+            baseUrl: undefined,
+         }),
          { fetchFn, retry: instantRetry() },
       );
       const out = await chat.completeJson({
@@ -110,12 +114,37 @@ describe("openai-compatible chat adapter", () => {
          9 + OPENAI_REASONING_HEADROOM,
       );
       expect(requests[0].body.max_tokens).toBeUndefined();
-      // OpenAI's current models answer 400 to any temperature but the default.
+      // gpt-5 models answer 400 to any temperature but the default.
       expect("temperature" in requests[0].body).toBe(false);
       expect(requests[0].body.response_format).toEqual({
          type: "json_object",
       });
       expect(requests[0].body.messages[0].role).toBe("system");
+   });
+
+   it("leaves temperature out for the OpenAI models that reject it, and keeps 0 for the rest", async () => {
+      const sent = async (provider: "openai" | "ollama", model: string) => {
+         const { fetchFn, requests } = stubFetch([() => reply("ok")]);
+         const chat = createChatModel(
+            settings({
+               provider,
+               model,
+               baseUrl: provider === "openai" ? undefined : "http://h/v1",
+            }),
+            { fetchFn, retry: instantRetry() },
+         );
+         await chat.complete({ prompt: "p" });
+         return requests[0].body.temperature;
+      };
+      // Rejected with a 400 by OpenAI: the gpt-5 and o-series models.
+      expect(await sent("openai", "gpt-5-mini")).toBeUndefined();
+      expect(await sent("openai", "gpt-5")).toBeUndefined();
+      expect(await sent("openai", "o3-mini")).toBeUndefined();
+      expect(await sent("openai", "o4-mini")).toBeUndefined();
+      // Accepted: older GPT models, gpt-5 chat variants, other servers.
+      expect(await sent("openai", "gpt-4o-mini")).toBe(0);
+      expect(await sent("openai", "gpt-5-chat-latest")).toBe(0);
+      expect(await sent("ollama", "gpt-5-mini")).toBe(0);
    });
 
    it("ollama defaults to the local endpoint and sends no Authorization header", async () => {
@@ -165,6 +194,37 @@ describe("openai-compatible chat adapter", () => {
          }),
       ).toBe(1);
       warn.mockRestore();
+   });
+
+   it("retries when the connection drops while the reply body is being read", async () => {
+      const dropped = () =>
+         new Response(
+            new ReadableStream({
+               start(controller) {
+                  controller.error(new Error("socket hang up"));
+               },
+            }),
+            { status: 200 },
+         );
+      const { fetchFn, requests } = stubFetch([dropped, () => reply("back")]);
+      const chat = createChatModel(settings(), {
+         fetchFn,
+         retry: instantRetry(),
+      });
+      expect((await chat.complete({ prompt: "p" })).text).toBe("back");
+      expect(requests).toHaveLength(2);
+   });
+
+   it("does not retry a reply that arrived whole but is not JSON", async () => {
+      const { fetchFn, requests } = stubFetch([
+         () => new Response("<html>gateway</html>", { status: 200 }),
+      ]);
+      const chat = createChatModel(settings(), {
+         fetchFn,
+         retry: instantRetry(),
+      });
+      await expect(chat.complete({ prompt: "p" })).rejects.toThrow("not JSON");
+      expect(requests).toHaveLength(1);
    });
 
    it("retries a 429 and waits at least the Retry-After", async () => {

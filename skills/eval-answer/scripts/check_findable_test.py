@@ -116,6 +116,50 @@ class Findable(unittest.TestCase):
         self.assertIn("q1, q2", f[0])
 
 
+class ServerCannotSearch(unittest.TestCase):
+    """An `indexing` or `error` answer has no entities, and is not a miss."""
+
+    def setUp(self):
+        self._real = check_findable.get_context
+
+    def tearDown(self):
+        check_findable.get_context = self._real
+
+    def answer(self, payload):
+        check_findable.get_context = lambda *_a, **_k: payload
+
+    def test_an_indexing_answer_is_inconclusive_not_a_finding(self):
+        self.answer({"retrieval": "indexing", "sources": []})
+        with self.assertRaises(check_findable.Inconclusive) as ctx:
+            check_findable.check([case("q", ["measure:flights:flight_count"])],
+                                 "http://x/mcp", "e", "p")
+        self.assertIn("`indexing`", str(ctx.exception))
+        self.assertIn("measure:flights:flight_count", str(ctx.exception))
+
+    def test_an_error_answer_is_inconclusive_too(self):
+        self.answer({"retrieval": "error", "error": "provider down"})
+        with self.assertRaises(check_findable.Inconclusive):
+            check_findable.check([case("q", ["dimension:airports:state"])],
+                                 "http://x/mcp", "e", "p")
+
+    def test_a_semantic_answer_that_misses_is_still_a_finding(self):
+        self.answer({"retrieval": "semantic", "sources": []})
+        f, _ = check_findable.check([case("q", ["dimension:airports:state"])],
+                                    "http://x/mcp", "e", "p")
+        self.assertEqual(len(f), 1)
+
+    def test_the_wait_ending_on_indexing_or_error_blocks_the_check(self):
+        self.assertTrue(check_findable.index_cannot_search({"status": "indexing"}))
+        self.assertTrue(check_findable.index_cannot_search({"status": "error"}))
+
+    def test_ready_lexical_and_an_unreadable_status_do_not_block_it(self):
+        for index in ({"status": "ready"}, {"status": "lexical"}, None):
+            self.assertFalse(check_findable.index_cannot_search(index))
+
+    def test_the_exit_code_is_its_own(self):
+        self.assertEqual(check_findable.EXIT_INCONCLUSIVE, 4)
+
+
 class Phrase(unittest.TestCase):
     def test_an_identifier_becomes_the_easiest_possible_query(self):
         self.assertEqual(check_findable.phrase_for("average_plane_size"),

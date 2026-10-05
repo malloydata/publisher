@@ -1746,6 +1746,45 @@ describe("get_context semantic retrieval", () => {
       expect(alphaFirst).toEqual(["alpha_sales", "zebra_sales"]);
    });
 
+   it("treats only exactly equal scores as tied, not scores that round to the same four places", async () => {
+      // `zebra` has the slightly better match (cosine 0.9999875), `alpha` the
+      // slightly worse (0.9999595). Both publish as 1 at four decimals, so a
+      // tie-break on the published score would list alpha first by name. Their
+      // real scores differ, so zebra comes first.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "m one": [1, 0.005],
+         "m two": [1, 0.009],
+         "find it": [1, 0],
+      });
+      const sourceWith = (name: string, field: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "measure", name: field, annotations: [] }],
+         },
+      });
+      _setEmbeddingProviderForTests(provider);
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "t.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  sourceWith("alpha_sales", "m_two"),
+                  sourceWith("zebra_sales", "m_one"),
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("find it"),
+         scopes: [{ environment: "specs", package: "near-tie" }],
+      });
+      expect(sourceNames(payload)).toEqual(["zebra_sales", "alpha_sales"]);
+   });
+
    it("returns every resolving model path, like the lexical path does", async () => {
       // The vector cache holds ONE row per (kind, source, name) -- the text is
       // identical whichever file resolves the source -- and the scan fans that
