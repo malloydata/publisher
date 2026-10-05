@@ -1898,7 +1898,8 @@ paths:
         is reported as a `tile-does-not-compile` problem. At scope `append`, submitted text that writes a render tag turning a value
         into a URL (`# image`, `# link`), or HTML in a `# label`, is refused with 400
         before anything compiles, for a field, view or query alike; a model file
-        keeps the tags it defines itself. A cell that names a source
+        keeps the tags it defines itself. This removes the author-written path
+        only: the renderer's other value-to-HTML sinks are not covered by it. A cell that names a source
         that is both gated and hidden from the caller answers 404 for the whole
         request, as it does without a document. In a document, problem positions
         are lines of the submitted text, problems carry no `model` tag, and

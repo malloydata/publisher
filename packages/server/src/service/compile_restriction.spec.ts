@@ -415,6 +415,16 @@ source: published is duckdb.sql("select 1 as id") extend {
          "# image under another tag": `run: base_source -> { group_by: # column { image } pic is 'x' }`,
          "an image tag with options": `run: base_source -> { group_by: # image { height=40px } pic is 'x' }`,
          "HTML in a # label": `run: base_source -> { group_by: # label="<img src=x onerror=alert(1)>" id }`,
+         "a backtick-quoted image tag": `run: base_source -> { group_by:\n  # \`image\`\n  pic is concat('${LEAK}', 'x')\n}`,
+         "a backtick-quoted link tag": `run: base_source -> { group_by:\n  # \`link\` { url_template="${LEAK}$$" }\n  name is 'x'\n}`,
+         "a quoted image tag": `run: base_source -> { group_by: # "image" pic is 'x' }`,
+         "an image tag in a #| block": `run: base_source -> { group_by:\n#|\nimage\n|#\npic is concat('${LEAK}', 'x')\n}`,
+         "a link tag in a #| block": `run: base_source -> { group_by:\n#|\nlink { url_template="${LEAK}$$" }\n|#\nname is 'x'\n}`,
+         "an image tag after other tags in one line": `run: base_source -> { group_by: # label="P" hidden image pic is 'x' }`,
+         "a label with an escaped quote ahead of the markup": `run: base_source -> { group_by: # label="a\\"<img src=x>" id }`,
+         "a label with a unicode escape for <": `run: base_source -> { group_by: # label="\\u003cimg src=x>" id }`,
+         "a single-quoted label with markup": `run: base_source -> { group_by: # label='<b>x</b>' id }`,
+         "an image tag nested in a viz tag's array": `run: base_source -> { group_by: # bar_chart { series = [ { image } ] } pic is 'x' }`,
       };
 
       for (const [name, source] of Object.entries(forms)) {
@@ -442,6 +452,25 @@ source: published is duckdb.sql("select 1 as id") extend {
             "append",
          );
       });
+
+      const accepted: Record<string, string> = {
+         "a field named link used as a tag value": `run: base_source -> {\n  group_by:\n  # bar_chart { x = link }\n  link is 'x'\n}`,
+         "a field named image in a pivot list": `run: base_source -> {\n  group_by:\n  # pivot { dimensions=[image] }\n  image is 'x'\n}`,
+         "prose that starts with a tag name in a #| block": `run: base_source -> {\n  group_by:\n#|(markdown)\n# link to the data\n|#\n  pic is 'x'\n}`,
+         "a model-level ## image note": `## image\nrun: base_source -> { group_by: pic is 'x' }`,
+         "a doc note naming image": `#(docs) image of the data\nrun: base_source -> { group_by: pic is 'x' }`,
+         "a label that mentions a less-than sign": `run: base_source -> {\n  group_by:\n  # label="a < b"\n  id\n}`,
+      };
+      for (const [name, source] of Object.entries(accepted)) {
+         it(`accepts ${name}`, async () => {
+            const { problems } = await compile(source, "append");
+            expect(
+               problems.filter(
+                  (p) => p.code === "restricted-construct-forbidden",
+               ),
+            ).toEqual([]);
+         });
+      }
 
       it("leaves a caller field with unrelated tags alone", async () => {
          const errors = await errorsFor(

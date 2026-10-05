@@ -9,6 +9,7 @@ import type { GivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 import { TileFilterTag } from "./TileFilterTag";
 import { isForbidden, RESTRICTED_NOTICE, withPreamble } from "./textSource";
@@ -18,6 +19,9 @@ import {
    type TileChrome,
    type TileHeadingSlots,
 } from "./TileCard";
+
+const textSourceTile = (result: string) =>
+   dropValueUrlTags(promoteMeasureRowToKpis(result));
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -214,7 +218,14 @@ export function DashboardTile({
                // result the renderer lays out from the query's own tags, and its
                // aggregates are already tiles.
                transform={
-                  tile !== undefined ? promoteMeasureRowToKpis : undefined
+                  // A document held as text draws no value-to-URL or markup tags.
+                  preamble !== undefined
+                     ? tile !== undefined
+                        ? textSourceTile
+                        : dropValueUrlTags
+                     : tile !== undefined
+                       ? promoteMeasureRowToKpis
+                       : undefined
                }
             />
          )}

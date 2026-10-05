@@ -919,6 +919,8 @@ caller answers 404 for the whole request, as it does without a document.
 A given declared `#(secure)` carries `secure: true` on `Given`: its value is the host's to set. The builder
 withholds its control only when it edits a document held as text; a saved file's givens show as before.
 
+Compile at scope `append` refuses submitted `# image`, `# link` and markup in a `# label`, read from the parsed annotations, and the SDK drops the same tags from results it draws in this mode. Neither is a complete defense: the renderer has other sinks that draw a data value as HTML or a URL, and a model field tagged `# image` can be re-pointed by a caller who excepts and redefines a column under its name, so a host should also run the viewer under a Content-Security-Policy.
+
 The SDK reads this with `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` (the text comes from
 the host's authoritative `DocumentStorage`) and `<DashboardView preamble runModelPath hiddenGivens />`. Every
 tile, cell and control option runs as the document's definitions followed by one `run:`, sent to
