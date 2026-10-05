@@ -660,6 +660,28 @@ source: track_analysis is tracks extend {
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
+         // Several `run:` statements must not change a denial: a hidden source
+         // and a missing one each give, with two statements, the same answer
+         // they give with one. So the count never reveals which it was.
+         const answerFor = async (text: string) => {
+            try {
+               await model.getQueryResults(undefined, undefined, text);
+            } catch (error) {
+               return error as Error;
+            }
+            throw new Error("expected the query to be refused");
+         };
+         for (const target of ["helper", "no_such_source"]) {
+            const once = await answerFor(`run: ${target} -> { aggregate: c }`);
+            const twice = await answerFor(
+               `run: customers -> { aggregate: total }\nrun: ${target} -> { aggregate: c }`,
+            );
+            expect(once).toBeInstanceOf(NotQueryableError);
+            expect(twice).not.toBeInstanceOf(BadRequestError);
+            expect(twice.constructor).toBe(once.constructor);
+            expect(twice.message).toBe(once.message);
+         }
+
          // All-curated multi-statement passes the boundary, then is refused as
          // more than one `run:`. The two denials above stay 404s rather than
          // that 400: the count is checked only after every gate.
