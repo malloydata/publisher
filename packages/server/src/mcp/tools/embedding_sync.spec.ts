@@ -30,7 +30,11 @@ import {
    _setEmbeddingProviderForTests,
 } from "../../service/embedding_provider";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
+import {
+   createEntityEmbeddingsTable,
+   createEntityKeyphrasesTable,
+   createSourceSummariesTable,
+} from "../../storage/duckdb/schema";
 import {
    _resetEmbeddingIndexStateForTests,
    _setSyncRetryForTests,
@@ -53,6 +57,8 @@ beforeAll(async () => {
    db = new DuckDBConnection(path.join(tempDir, "sync.db"));
    await db.initialize();
    await createEntityEmbeddingsTable(db);
+   await createEntityKeyphrasesTable(db);
+   await createSourceSummariesTable(db);
 });
 
 afterAll(async () => {

@@ -15,6 +15,7 @@ import type {
    RankedState,
 } from "./get_context_pipeline";
 import { KEY_SEPARATOR, entityRowKey } from "./embedding_index";
+import { mapRawScore } from "./get_context_scoring";
 import {
    enterJoin,
    matchesScope,
@@ -27,25 +28,58 @@ import {
 } from "./get_context_tool";
 
 /**
- * A card's relevance after reading one more row: a source's own row sets it,
- * and any scored row raises it. One definition, used here and by
- * toSourceResults, so a card and its wire form cannot disagree.
+ * Whether a source row carries a real verdict: a model rated it (source match
+ * sets `level`). A source row refine only put on the scale, as MEDIUM plus its
+ * cosine, has `raw` but no `level`: nobody judged it, so it must not decide
+ * its card.
+ */
+function isUnratedOnScale(row: ResultEntity): boolean {
+   return row.raw !== undefined && row.level === undefined;
+}
+
+/**
+ * A card's relevance after reading one more row. A source's own row sets it
+ * outright when it is a verdict on the source (a source match rating, or a
+ * plain cosine with no stage at all); any other scored row raises it. One
+ * definition, used here and by toSourceResults, so a card and its wire form
+ * cannot disagree.
  */
 export function foldRelevance(
    current: number | undefined,
    row: ResultEntity,
 ): number | undefined {
    if (row.score === undefined) return current;
-   // The source itself matched: its score belongs on the card outright.
-   if (row.kind === "source") return row.score;
+   // The source itself matched: its score belongs on the card outright. Not
+   // when the row is only an unrated one placed on the scale: a card whose
+   // field rated HIGH would otherwise drop to the placeholder MEDIUM band.
+   if (row.kind === "source" && !isUnratedOnScale(row)) return row.score;
    // A source with no hit of its own still ranks by its best entity, so a
    // caller reading source relevance never sees a matched source at null.
    return current === undefined || row.score > current ? row.score : current;
 }
 
+/** foldRelevance for the unpublished `raw` score; absent unless refine rated the rows. */
+export function foldRaw(
+   current: number | undefined,
+   row: ResultEntity,
+): number | undefined {
+   if (row.raw === undefined) return current;
+   if (row.kind === "source" && !isUnratedOnScale(row)) return row.raw;
+   return current === undefined || row.raw > current ? row.raw : current;
+}
+
 /** Plain code-unit order, so the result does not depend on the host's locale. */
 function compareText(a: string, b: string): number {
    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * The number rows are ordered by: the rater's raw score when a stage rated the
+ * row, else the unrounded cosine, else the published score. A rated row keeps
+ * the cosine it started with, which no longer describes where it ranks.
+ */
+function rankKey(row: ResultEntity): number {
+   return row.raw ?? row.rawScore ?? row.score ?? 0;
 }
 
 /**
@@ -57,7 +91,7 @@ function compareText(a: string, b: string): number {
  */
 export function compareRanked(a: ResultEntity, b: ResultEntity): number {
    return (
-      (b.rawScore ?? b.score ?? 0) - (a.rawScore ?? a.score ?? 0) ||
+      rankKey(b) - rankKey(a) ||
       compareText(a.source ?? "", b.source ?? "") ||
       compareText(a.name, b.name) ||
       compareText(a.kind, b.kind) ||
@@ -197,6 +231,57 @@ function dampTargetScores(
 }
 
 /**
+ * A copy's scores, from its direct field's and the damping factor.
+ *
+ * Rows a refine stage rated carry `raw` (`level + cosine`). The factor
+ * multiplies that WHOLE number, so a joined HIGH one hop away (3.4 * 0.81 =
+ * 2.75) can fall into the MEDIUM band, and the published score is the damped
+ * raw one through the knots. Rows nobody rated have only a cosine, which is
+ * damped and published as before.
+ */
+function dampedScores(
+   row: ResultEntity,
+   factor: number,
+): Pick<
+   ResultEntity,
+   "score" | "raw" | "targetScores" | "targetRaw" | "targetReasons"
+> {
+   if (row.raw !== undefined) {
+      const raw = row.raw * factor;
+      const targetRaw = row.targetRaw
+         ? new Map(
+              [...row.targetRaw].map(([target, value]) => [
+                 target,
+                 value * factor,
+              ]),
+           )
+         : undefined;
+      return {
+         raw,
+         score: mapRawScore(raw),
+         ...(row.targetReasons ? { targetReasons: row.targetReasons } : {}),
+         ...(targetRaw
+            ? {
+                 targetRaw,
+                 targetScores: new Map(
+                    [...targetRaw].map(([target, value]) => [
+                       target,
+                       mapRawScore(value),
+                    ]),
+                 ),
+              }
+            : {}),
+      };
+   }
+   return {
+      ...(row.score !== undefined ? { score: round4(row.score * factor) } : {}),
+      ...(row.targetScores
+         ? { targetScores: dampTargetScores(row, factor) }
+         : {}),
+   };
+}
+
+/**
  * Add the joined copies of the ranked direct fields, damped, and drop what
  * the request's scope excludes.
  *
@@ -250,8 +335,8 @@ function expandJoins(
             (row.joinPath === undefined ? 0 : row.joinPath.split(".").length);
          if (hops > settings.joinMaxDepth) continue;
          const factor = damping === null ? 1 : damping ** (hops + 1);
-         const score =
-            row.score === undefined ? undefined : round4(row.score * factor);
+         const scores = dampedScores(row, factor);
+         const score = scores.score;
          const rawScore =
             row.rawScore === undefined ? undefined : row.rawScore * factor;
          const key = [place.modelPath, place.source, row.kind, place.name].join(
@@ -260,10 +345,15 @@ function expandJoins(
          if (ranked.has(key)) continue;
          const seen = copies.get(key);
          if (seen) {
-            if (score !== undefined && score > (seen.score ?? 0)) {
-               seen.score = score;
+            // Compared on the raw score when there is one: two copies can
+            // publish the same rounded score and still differ.
+            const better =
+               scores.raw !== undefined
+                  ? scores.raw > (seen.raw ?? 0)
+                  : score !== undefined && score > (seen.score ?? 0);
+            if (better) {
+               Object.assign(seen, scores);
                seen.rawScore = rawScore;
-               seen.targetScores = dampTargetScores(row, factor);
                seen.bestTarget = row.bestTarget;
             }
             continue;
@@ -276,14 +366,13 @@ function expandJoins(
             packageName: row.packageName,
             modelPath: place.modelPath,
             doc: row.doc,
+            ...(row.embedDoc ? { embedDoc: row.embedDoc } : {}),
             relationship: fanout,
             joinPath: path,
             ...(row.dataType ? { dataType: row.dataType } : {}),
-            ...(score !== undefined ? { score } : {}),
+            ...scores,
             ...(rawScore !== undefined ? { rawScore } : {}),
-            ...(row.targetScores
-               ? { targetScores: dampTargetScores(row, factor) }
-               : {}),
+            ...(row.level !== undefined ? { level: row.level } : {}),
             ...(row.bestTarget !== undefined
                ? { bestTarget: row.bestTarget }
                : {}),
@@ -357,6 +446,8 @@ export function assembleCards(
       }
       card.rows.push(r);
       card.relevance = foldRelevance(card.relevance, r);
+      const raw = foldRaw(card.raw, r);
+      if (raw !== undefined) card.raw = raw;
    }
    // Rows the semantic scan's per-source window dropped never reach the loop
    // above, so the scan counted them. Every card of the source reports them,

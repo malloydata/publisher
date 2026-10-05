@@ -27,6 +27,7 @@ import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import {
    EmbeddableEntity,
+   KEYPHRASE_FACET,
    SINGLE_FACET,
    _resetEmbeddingIndexStateForTests,
    entityRows,
@@ -81,11 +82,26 @@ describe("entityRows", () => {
       expect(entityRows(entity("_"), "single")[0].text).toBe("_");
    });
 
-   it("facets: a name row, then one row per chunk of the doc", () => {
+   it("single: a keyphrase wins over the doc and the name", () => {
+      expect(
+         entityRows(
+            entity("order_status", "A long doc about status."),
+            "single",
+            "where the order is",
+         ),
+      ).toEqual([{ facet: SINGLE_FACET, text: "where the order is" }]);
+   });
+
+   it("facets: today's rows, and a keyphrase adds one row", () => {
       const e = entity("order_status", "Lifecycle state.");
-      expect(entityRows(e, "facets")).toEqual([
+      expect(entityRows(e, "facets").map((r) => r.facet)).toEqual([
+         "name",
+         "doc:0",
+      ]);
+      expect(entityRows(e, "facets", "where the order is")).toEqual([
          { facet: "name", text: "order status" },
          { facet: "doc:0", text: "order status: Lifecycle state." },
+         { facet: KEYPHRASE_FACET, text: "where the order is" },
       ]);
    });
 });
@@ -127,6 +143,8 @@ const pkgWith = (retrieval: Partial<PackageRetrievalSettings>): Package =>
    ({
       getRetrievalSettings: () => ({
          representation: "single",
+         keyphrases: "never",
+         prompts: {},
          ...retrieval,
       }),
    }) as unknown as Package;

@@ -35,14 +35,13 @@ export class HttpRequestError extends Error {
 
 /**
  * The wording of a failure that is safe to show an MCP caller or return from
- * the status API: the public wording of a vendor failure, and the message of
- * anything else. The server log keeps `error.message`, which names the
- * endpoint.
+ * the status API: the `publicMessage` an error carries (an HttpRequestError, or
+ * a step that wraps one) and the message of anything else. The server log keeps
+ * `error.message`, which names the endpoint.
  */
 export function publicMessage(error: unknown): string {
-   if (error instanceof HttpRequestError && error.publicMessage) {
-      return error.publicMessage;
-   }
+   const own = (error as { publicMessage?: unknown } | null)?.publicMessage;
+   if (typeof own === "string" && own !== "") return own;
    return error instanceof Error ? error.message : String(error);
 }
 

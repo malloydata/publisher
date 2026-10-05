@@ -22,8 +22,10 @@ import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
+import { llmConfigured } from "../providers/active";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
+   assertRequiredStagesAvailable,
    type PackageRetrievalSettings,
 } from "./package_retrieval";
 import {
@@ -309,8 +311,9 @@ export class Package {
     */
    private manifestWarnings: string[] = [];
    /**
-    * The manifest's `retrieval` block as read at load. Replaced on reload,
-    * which is how an edit to it takes effect.
+    * The manifest's `retrieval` block as read at load (prompt files included).
+    * Replaced on reload, which is how an edit to it, or to a prompt file,
+    * takes effect.
     */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;
@@ -821,6 +824,12 @@ export class Package {
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
       ]);
+      // A stage the package requires (`enabled: true`) needs the operator's
+      // LLM; without one the package does not load.
+      assertRequiredStagesAvailable(
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
+         llmConfigured(),
+      );
       const workerDoneTime = performance.now();
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -2617,6 +2626,12 @@ export class Package {
             { cause: realError },
          );
       }
+
+      // Same check as create, before anything is swapped.
+      assertRequiredStagesAvailable(
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
+         llmConfigured(),
+      );
 
       const nextModels = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];

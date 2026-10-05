@@ -20,7 +20,27 @@ import { HttpRequestError, publicMessage } from "../../service/http_retry";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { SyncRequestBudget } from "./get_context_llm";
 import { indexSettingsOf, type IndexSettings } from "./index_settings";
+import {
+   KeyphraseStageError,
+   countNeedingLlm,
+   deleteEnvironmentKeyphrases,
+   deletePackageKeyphrases,
+   keyphraseInputsDigest,
+   keyphraseKey,
+   resolveKeyphrases,
+   type KeyphraseProgress,
+} from "./keyphrases";
+import {
+   SourceSummaryStageError,
+   countSummarizableSources,
+   deleteEnvironmentSourceSummaries,
+   deletePackageSourceSummaries,
+   resolveSourceSummaries,
+   sourceSummaryInputsDigest,
+   type SourceSummaryProgress,
+} from "./source_summaries";
 
 /**
  * Minimum cosine similarity for a semantic hit. Below this the entity is
@@ -89,6 +109,21 @@ export interface EmbeddableEntity {
    // the response `doc`, which can fall back to raw annotation lines and
    // would leak #(authorize) predicates to the embedding provider.
    embedDoc: string;
+   /** Malloy type of a dimension or measure; absent on other kinds. */
+   dataType?: string;
+   /** Authored expression text; sent to the LLM only under the `full` egress preset. */
+   code?: string;
+   /** Join cardinality, on `kind: "join"` entities only. */
+   relationship?: string;
+   /**
+    * On a `join`: the source it joins to, when the compiled model names one.
+    * Read by the source summary to nest a joined source's fields.
+    */
+   joinTarget?: string;
+   /** The file that defines `joinTarget`: the name alone is not an identity. */
+   joinTargetModelPath?: string;
+   /** On a joined copy of a field: the join path that reaches it (`buyer.origin`). */
+   joinPath?: string;
 }
 
 export interface SemanticHit {
@@ -345,26 +380,37 @@ export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
 
 /** The only row an entity has under the `single` representation. */
 export const SINGLE_FACET = "single";
+/** An LLM-written (or short-description) search phrase, as an extra `facets` row. */
+export const KEYPHRASE_FACET = "keyphrase";
 
 /**
  * The rows one entity is embedded as, by representation.
  *
- * `facets`: the name, then the doc chunks.
+ * `facets`: today's rows (the name, then the doc chunks), plus one `keyphrase`
+ * row when the entity has a keyphrase.
  *
- * `single`: ONE row whose text is the doc text, else the humanized name. The
- * name is left out when there is a doc: the text stands for what the entity
- * means, and mixing the identifier into it dilutes that. A doc is capped at
- * the provider's input limit (1,024 characters) when the row is prepared, so a
- * long doc is cut, not chunked. Rows are keyed by the facet name, so switching
- * representation deletes one set of rows and adds the other.
+ * `single`: ONE row whose text is the keyphrase if there is one, else the doc
+ * text, else the humanized name. The name is left out when there is a doc or a
+ * keyphrase: the text stands for what the entity means, and mixing the
+ * identifier into it dilutes that. A doc is capped at the provider's input
+ * limit (1,024 characters) when the row is prepared, so a long doc is cut, not
+ * chunked. Rows are keyed by the facet name, so switching representation
+ * deletes one set of rows and adds the other, and changing only a keyphrase
+ * changes only that entity's `single` text, which the content-hash diff
+ * re-embeds alone.
  */
 export function entityRows(
    entity: EmbeddableEntity,
    representation: PackageRepresentation,
+   keyphrase?: string,
 ): EntityFacet[] {
-   if (representation === "facets") return entityFacets(entity);
+   if (representation === "facets") {
+      const rows = entityFacets(entity);
+      if (keyphrase) rows.push({ facet: KEYPHRASE_FACET, text: keyphrase });
+      return rows;
+   }
    const doc = entity.embedDoc.replace(/\s+/g, " ").trim();
-   const text = doc || humanizeName(entity.name) || entity.name;
+   const text = keyphrase || doc || humanizeName(entity.name) || entity.name;
    return [{ facet: SINGLE_FACET, text }];
 }
 
@@ -479,12 +525,14 @@ export function facetRowKey(
 }
 
 /**
- * What decides an entity's rows: the package's representation. The readiness
- * fingerprint covers it through {@link IndexSettings.key} as well, so a changed
- * setting makes the package `indexing` until the sync has applied it.
+ * What decides an entity's rows: the package's representation and, once they
+ * exist, its keyphrases by entity key. The readiness fingerprint is computed
+ * with no keyphrases (they come from a store and a model, and the search path
+ * must not wait on either); {@link IndexSettings.key} stands in for them.
  */
 interface RowPlan {
    representation: PackageRepresentation;
+   keyphrases?: ReadonlyMap<string, string>;
 }
 
 /** One desired embedding row: an entity's facet, its text, and that text's hash. */
@@ -513,7 +561,11 @@ function desiredFacets(
    plan: RowPlan,
 ): DesiredFacet[] {
    return entities.flatMap((entity) =>
-      entityRows(entity, plan.representation).map(({ facet, text: raw }) => {
+      entityRows(
+         entity,
+         plan.representation,
+         plan.keyphrases?.get(keyphraseKey(entity)),
+      ).map(({ facet, text: raw }) => {
          const text = prepareEmbeddingInput(raw);
          return { entity, facet, text, hash: contentHash(text) };
       }),
@@ -658,6 +710,9 @@ interface SyncedFact {
     */
    generation: number;
 }
+/** The sync stages that can fail on their own, named in the status and the log. */
+export type SyncStage = "keyphrase" | "source_summary";
+
 interface PackageSyncMeta {
    mutex: Mutex;
    generation: number;
@@ -665,6 +720,12 @@ interface PackageSyncMeta {
    failureAtMs: number;
    /** Why the provider last failed for this package. Read by the status. */
    lastError?: string;
+   /** The sync stage `lastError` came from, when it was not the embedding call. */
+   lastErrorStage?: SyncStage;
+   /** Where the keyphrase step is, from the latest sync that ran it. */
+   keyphraseProgress?: KeyphraseProgress;
+   /** Where the source summary step is, from the latest sync that ran it. */
+   sourceSummaryProgress?: SourceSummaryProgress;
    /** When the sync now running began, absent while none is running. */
    syncStartedAtMs?: number;
    /**
@@ -672,6 +733,12 @@ interface PackageSyncMeta {
     * sync stops at its next request or retry instead of finishing first.
     */
    deleting?: boolean;
+   /**
+    * The content and settings of a sync that failed with a client error the
+    * vendor will not change its answer to. While the package is still this
+    * content under this model it is not synced again; see isClientError.
+    */
+   permanentFailure?: { fingerprint: string; providerKey: string };
    synced?: SyncedFact;
 }
 /** A sync in flight for one Package instance, keyed by what it covers. */
@@ -759,9 +826,14 @@ function metaFor(
    return meta;
 }
 
-function markProviderFailure(meta: PackageSyncMeta, message: string): void {
+function markProviderFailure(
+   meta: PackageSyncMeta,
+   message: string,
+   stage?: SyncStage,
+): void {
    meta.failureAtMs = Date.now();
    meta.lastError = message;
+   meta.lastErrorStage = stage;
 }
 
 /**
@@ -771,7 +843,15 @@ function markProviderFailure(meta: PackageSyncMeta, message: string): void {
  * a file or a statement. The full error goes to the log.
  */
 function publicStatusMessage(error: unknown): string {
-   if (error instanceof HttpRequestError) return publicMessage(error);
+   if (
+      error instanceof HttpRequestError ||
+      error instanceof KeyphraseStageError ||
+      error instanceof SourceSummaryStageError
+   ) {
+      // The stage errors' messages are written for the status: they name the
+      // step and the count, and the vendor's text comes through publicMessage.
+      return publicMessage(error);
+   }
    if (error instanceof SyncDeadlineError) return error.message;
    return "The embedding sync failed on an unusable response or a write error. See the server log.";
 }
@@ -816,6 +896,46 @@ function inCooldown(meta: PackageSyncMeta): boolean {
 }
 
 /**
+ * Whether a failure is a 4xx that waiting does not fix: the vendor refused the
+ * request itself (a prompt past the context window, a bad model name), not the
+ * moment. 408 and 429 can clear and are not this. 401 and 403 are not this
+ * either: a credential can be refreshed or rotated without the package
+ * changing, so an auth failure keeps its cool-down and its retry. Looks through
+ * the cause chain, because a failed LLM step wraps the HTTP failure.
+ */
+function isClientError(error: unknown): boolean {
+   let cause: unknown = error;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError) {
+         return (
+            !cause.retryable &&
+            cause.status !== undefined &&
+            cause.status >= 400 &&
+            cause.status < 500 &&
+            cause.status !== 401 &&
+            cause.status !== 403
+         );
+      }
+      cause = cause.cause;
+   }
+   return false;
+}
+
+/** The last sync failed with a client error, and the package has not changed since. */
+function isPermanentlyFailed(
+   meta: PackageSyncMeta,
+   fingerprint: string,
+   providerKey: string,
+): boolean {
+   const failed = meta.permanentFailure;
+   return (
+      failed !== undefined &&
+      failed.fingerprint === fingerprint &&
+      failed.providerKey === providerKey
+   );
+}
+
+/**
  * The model/dims request-config a sync ran under. Rows embedded under one
  * config are not interchangeable with another's, so both the search path and
  * the readiness test compare it; defined here so they cannot disagree.
@@ -835,6 +955,8 @@ interface DesiredSummary {
    fingerprint: string;
    /** Rows the sync wants cached for this set: the progress denominator. */
    rows: number;
+   /** Sources that get a summary; 0 when summaries are off. */
+   summarySources: number;
 }
 
 /**
@@ -899,16 +1021,31 @@ async function computeDesiredSummary(
    entities: readonly EmbeddableEntity[],
    settings: IndexSettings,
 ): Promise<DesiredSummary> {
+   const unique = uniqueByEntityKey(entities);
+   // No keyphrases here: see RowPlan.
    const plan: RowPlan = { representation: settings.representation };
-   const desired = await desiredFacetsChunked(
-      uniqueByEntityKey(entities),
-      plan,
-   );
+   const desired = await desiredFacetsChunked(unique, plan);
    return {
       fingerprint: contentHash(
-         settings.key + "\n" + (await desiredFingerprintChunked(desired)),
+         settings.key +
+            "\n" +
+            // The fields only the keyphrase step reads (data type, code).
+            keyphraseInputsDigest(unique, settings.keyphrases) +
+            "\n" +
+            // What the source summary step shows the model (field types,
+            // join targets, the prompt, the model); empty when it is off.
+            // Read from the list with one entry per model file, not the
+            // deduplicated one: summaries are per file, and the sync and a
+            // request must see the same list or a stored summary fails its
+            // check on every request while the status reads ready.
+            sourceSummaryInputsDigest(entities, settings.sourceSummary) +
+            "\n" +
+            (await desiredFingerprintChunked(desired)),
       ),
       rows: desired.length,
+      summarySources: settings.sourceSummary
+         ? countSummarizableSources(entities)
+         : 0,
    };
 }
 
@@ -1060,6 +1197,8 @@ async function deleteUnderMutex(
           WHERE environment_name = ? AND package_name = ?`,
          [environmentName, packageName],
       );
+      await deletePackageKeyphrases(db, environmentName, packageName);
+      await deletePackageSourceSummaries(db, environmentName, packageName);
       meta.generation = ++generationCounter;
       // Removing the entry keeps package churn from growing the map for
       // the process lifetime; it is safe because generations are
@@ -1100,6 +1239,8 @@ export async function deleteEnvironmentEmbeddings(
    await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
       environmentName,
    ]);
+   await deleteEnvironmentKeyphrases(db, environmentName);
+   await deleteEnvironmentSourceSummaries(db, environmentName);
 }
 
 /**
@@ -1178,6 +1319,12 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
+   /**
+    * Every entity, one per model file. `entities` is deduplicated by (kind,
+    * source, name) for the embedding rows, which have no model path; source
+    * summaries are per model file and read this list.
+    */
+   allEntities: readonly EmbeddableEntity[],
    settings: IndexSettings,
    meta: PackageSyncMeta,
 ): Promise<void> {
@@ -1203,6 +1350,73 @@ async function syncPackageEmbeddings(
       // mutex) either finished before this sync started or starts after
       // it ends, so the generation moves mid-sync only via the bump at
       // the bottom of this function.
+
+      // Keyphrases first: they decide what text an entity embeds as. Each LLM
+      // batch is saved as it returns, so a failure keeps what was done and
+      // the sync stops here, before any embedding is written: a package whose
+      // keyphrases cannot be produced is an error, never a quiet fallback to
+      // doc-or-name vectors. Progress is on the meta for the status.
+      let keyphrases: Map<string, string> | undefined;
+      // One request budget for both LLM steps, in HTTP requests: a JSON repair
+      // is a second paid request, and the summaries get what the keyphrases
+      // left. A package being deleted stops both between requests.
+      const budget = new SyncRequestBudget(
+         settings.keyphrases?.maxCallsPerSync ??
+            settings.sourceSummary?.maxCallsPerSync ??
+            0,
+      );
+      const shouldStop = () => meta.deleting === true;
+      if (settings.keyphrases) {
+         meta.keyphraseProgress = {
+            done: 0,
+            total: countNeedingLlm(entities, settings.keyphrases.mode),
+            capped: false,
+         };
+         const outcome = await resolveKeyphrases({
+            db,
+            environmentName,
+            packageName,
+            entities,
+            settings: settings.keyphrases,
+            budget,
+            shouldStop,
+            onProgress: (p) => {
+               meta.keyphraseProgress = p;
+            },
+         });
+         if (shouldStop()) throw new SyncAbandonedError();
+         keyphrases = outcome.keyphrases;
+      } else {
+         meta.keyphraseProgress = undefined;
+      }
+
+      // Source summaries next: one LLM call per source, from the same entity
+      // list. They share the sync's call limit with the keyphrases above, are
+      // saved as they return, and a failure stops the sync here with the
+      // stage named, before any embedding is written.
+      if (settings.sourceSummary) {
+         meta.sourceSummaryProgress = {
+            done: 0,
+            total: countSummarizableSources(allEntities),
+            capped: false,
+         };
+         await resolveSourceSummaries({
+            db,
+            environmentName,
+            packageName,
+            entities: allEntities,
+            settings: settings.sourceSummary,
+            budget,
+            shouldStop,
+            onProgress: (p) => {
+               meta.sourceSummaryProgress = p;
+            },
+         });
+         if (shouldStop()) throw new SyncAbandonedError();
+      } else {
+         meta.sourceSummaryProgress = undefined;
+      }
+
       const existingRows = await db.all<ExistingRow>(
          `SELECT entity_kind, entity_source, entity_name, facet, content_hash,
                  embedding_model, CAST(dims AS INTEGER) AS dims
@@ -1245,6 +1459,7 @@ async function syncPackageEmbeddings(
       const desired = withDocumentPrefix(
          await desiredFacetsChunked(entities, {
             representation: settings.representation,
+            keyphrases,
          }),
          documentPrefix,
       );
@@ -1371,8 +1586,9 @@ async function syncPackageEmbeddings(
       meta.synced = {
          // Computed exactly as the readiness check computes it: over the
          // unprefixed rows plus the settings key. The prefix is part of
-         // providerKey, not of the content fingerprint.
-         fingerprint: await fingerprintFor(entities, settings),
+         // providerKey, not of the content fingerprint. Over the same list the
+         // readiness check reads (one entry per model file), so the two agree.
+         fingerprint: await fingerprintFor(allEntities, settings),
          providerKey: providerKeyFor(provider),
          generation: meta.generation,
       };
@@ -1410,6 +1626,8 @@ function kickSync(args: {
    environmentName: string;
    packageName: string;
    entities: EmbeddableEntity[];
+   /** One per model file; see syncPackageEmbeddings. */
+   allEntities: readonly EmbeddableEntity[];
    meta: PackageSyncMeta;
    fingerprint: string;
    providerKey: string;
@@ -1447,12 +1665,21 @@ async function runTrackedSync(
       environmentName: string;
       packageName: string;
       entities: EmbeddableEntity[];
+      allEntities: readonly EmbeddableEntity[];
       meta: PackageSyncMeta;
    },
    tracked: SyncState,
 ): Promise<void> {
-   const { db, provider, pkg, environmentName, packageName, entities, meta } =
-      args;
+   const {
+      db,
+      provider,
+      pkg,
+      environmentName,
+      packageName,
+      entities,
+      allEntities,
+      meta,
+   } = args;
    meta.syncStartedAtMs = Date.now();
    try {
       // The provider is already known to be down: record that as this
@@ -1469,10 +1696,13 @@ async function runTrackedSync(
          environmentName,
          packageName,
          entities,
+         allEntities,
          indexSettingsOf(pkg),
          meta,
       );
       meta.lastError = undefined;
+      meta.lastErrorStage = undefined;
+      meta.permanentFailure = undefined;
    } catch (error: unknown) {
       if (error instanceof SyncAbandonedError) {
          // Not a provider failure: the package is going away, so there is
@@ -1484,16 +1714,35 @@ async function runTrackedSync(
          return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      const stage: SyncStage | undefined =
+         error instanceof KeyphraseStageError
+            ? "keyphrase"
+            : error instanceof SourceSummaryStageError
+              ? "source_summary"
+              : undefined;
       // The log keeps the full message; what the status and an error result
       // show a caller never names the endpoint.
       const shown = publicStatusMessage(error);
-      markProviderFailure(meta, shown);
+      markProviderFailure(meta, shown, stage);
       if (isProviderWideFailure(error)) {
          openBreaker(provider, shown);
       }
+      // The same request would fail the same way, so no question after the
+      // cool-down starts this sync again. A change to the package's content or
+      // settings is a different request and does, as does a restart.
+      if (isClientError(error)) {
+         meta.permanentFailure = {
+            fingerprint: tracked.fingerprint,
+            providerKey: tracked.providerKey,
+         };
+      }
       logger.warn(
-         "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
-         { environmentName, packageName, error: message },
+         stage === "keyphrase"
+            ? "[MCP Tool getContext] Keyphrase generation failed; semantic ranking cooling down"
+            : stage === "source_summary"
+              ? "[MCP Tool getContext] Source summary generation failed; semantic ranking cooling down"
+              : "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
+         { environmentName, packageName, stage, error: message },
       );
    } finally {
       meta.syncStartedAtMs = undefined;
@@ -1561,8 +1810,15 @@ export function enqueuePackageSync(args: {
          indexSettingsOf(pkg),
       );
       // Already current (a restart over rows that still match), cooling down
-      // from a recent failure, or already queued by a search: nothing to do.
-      if (isSynced(meta, fingerprint, providerKey) || inCooldown(meta)) return;
+      // from a recent failure, failed with an error a retry cannot fix, or
+      // already queued by a search: nothing to do.
+      if (
+         isSynced(meta, fingerprint, providerKey) ||
+         inCooldown(meta) ||
+         isPermanentlyFailed(meta, fingerprint, providerKey)
+      ) {
+         return;
+      }
       const inFlight = syncState.get(pkg);
       if (
          inFlight &&
@@ -1575,7 +1831,16 @@ export function enqueuePackageSync(args: {
       syncState.set(pkg, tracked);
       // Run inline: this job IS the sync, so the queue stays serial.
       await runTrackedSync(
-         { db, provider, pkg, environmentName, packageName, entities, meta },
+         {
+            db,
+            provider,
+            pkg,
+            environmentName,
+            packageName,
+            entities,
+            allEntities: prepared.entities,
+            meta,
+         },
          tracked,
       );
    });
@@ -1717,6 +1982,9 @@ export async function trySemanticSearch(args: {
       args.entities,
       indexSettingsOf(pkg),
    );
+   if (isPermanentlyFailed(meta, fingerprint, providerKey)) {
+      return { unavailable: "cooldown" };
+   }
    if (!isSynced(meta, fingerprint, providerKey)) {
       kickSync({
          db,
@@ -1725,6 +1993,7 @@ export async function trySemanticSearch(args: {
          environmentName,
          packageName,
          entities,
+         allEntities: args.entities,
          meta,
          fingerprint,
          providerKey,
@@ -2210,7 +2479,28 @@ export interface EmbeddingIndexStatus {
     * (over the cap, which no retry fixes).
     */
    reason?: "cooldown" | "too-many-entities";
+   /**
+    * The sync stage that failed, when `status` is `error` because of one:
+    * `keyphrase` means the LLM could not write keyphrases and `source_summary`
+    * that it could not write source summaries (each after retries), so
+    * nothing was embedded. Absent when the embedding call itself failed.
+    */
+   stage?: SyncStage;
    lastError?: { message: string; retryAt?: string };
+   /**
+    * Entities whose keyphrase comes from the LLM, and how many have one.
+    * Present only when keyphrases are on (the package asks for them and an LLM
+    * is configured). `done` below `total` while `ready` means the per-sync
+    * call limit stopped the step; the next sync continues.
+    */
+   keyphraseProgress?: { done: number; total: number; capped?: boolean };
+   /**
+    * Sources that get an LLM summary, and how many have a current one.
+    * Present only when source summaries are on (the package does not turn them
+    * off and an LLM is configured). `done` below `total` while `ready` means
+    * the per-sync call limit stopped the step; the next sync continues.
+    */
+   sourceSummaryProgress?: { done: number; total: number; capped?: boolean };
    /** When the sync now running began. Absent when none is running. */
    startedAt?: string;
    /**
@@ -2309,12 +2599,18 @@ export async function getEmbeddingIndexStatus(
    // `embeddedRows: 0`.
    const scope = [environmentName, packageName, provider.model];
 
+   // `totalRows` is the rows the representation makes from each entity's name
+   // and docs. A `keyphrase` row is an extra the LLM step adds on top, and is
+   // not in that count: counting it here made the numerator pass the
+   // denominator (4 of 2 for two entities with a name row and a keyphrase row
+   // each). Searches still read it.
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
               CAST(MAX(updated_at) AS VARCHAR) AS last
        FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?`,
-      scope,
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?
+         AND facet <> ?`,
+      [...scope, KEYPHRASE_FACET],
    );
    const embeddedRows = row?.n ?? 0;
    const lastSyncedAt = row?.last ?? undefined;
@@ -2342,19 +2638,37 @@ export async function getEmbeddingIndexStatus(
    ).length;
 
    const meta = syncMeta.get(metaKey(environmentName, packageName));
-   const summary = await desiredSummaryFor(allEntities, indexSettingsOf(pkg));
+   const settings = indexSettingsOf(pkg);
+   const summary = await desiredSummaryFor(allEntities, settings);
 
-   let state: Pick<EmbeddingIndexStatus, "status" | "reason" | "lastError">;
+   let state: Pick<
+      EmbeddingIndexStatus,
+      "status" | "reason" | "lastError" | "stage"
+   >;
    if (entityCount > maxEmbeddedEntities) {
       state = {
          status: "error",
          reason: "too-many-entities",
          lastError: { message: tooManyEntitiesMessage(entityCount) },
       };
+   } else if (
+      meta &&
+      isPermanentlyFailed(meta, summary.fingerprint, providerKeyFor(provider))
+   ) {
+      // No retryAt: nothing is scheduled, and a question will not start one.
+      state = {
+         status: "error",
+         reason: "cooldown",
+         ...(meta.lastErrorStage ? { stage: meta.lastErrorStage } : {}),
+         lastError: {
+            message: `${meta.lastError ?? "The embedding provider failed"}. The vendor refused the request itself, so it will not be retried until the package or its retrieval settings change, or the server restarts.`,
+         },
+      };
    } else if (meta && inCooldown(meta)) {
       state = {
          status: "error",
          reason: "cooldown",
+         ...(meta.lastErrorStage ? { stage: meta.lastErrorStage } : {}),
          lastError: {
             message: meta.lastError ?? "The embedding provider failed",
             retryAt: new Date(meta.failureAtMs + cooldownMs).toISOString(),
@@ -2373,11 +2687,29 @@ export async function getEmbeddingIndexStatus(
       state = { status: "indexing" };
    }
 
+   const keyphraseProgress = settings.keyphrases
+      ? (meta?.keyphraseProgress ?? {
+           done: 0,
+           total: countNeedingLlm(
+              uniqueByEntityKey(allEntities),
+              settings.keyphrases.mode,
+           ),
+        })
+      : undefined;
+   const sourceSummaryProgress = settings.sourceSummary
+      ? (meta?.sourceSummaryProgress ?? {
+           done: 0,
+           total: summary.summarySources,
+        })
+      : undefined;
+
    return {
       ...state,
       ...(meta?.syncStartedAtMs !== undefined && state.status === "indexing"
          ? { startedAt: new Date(meta.syncStartedAtMs).toISOString() }
          : {}),
+      ...(keyphraseProgress ? { keyphraseProgress } : {}),
+      ...(sourceSummaryProgress ? { sourceSummaryProgress } : {}),
       embeddedRows,
       totalRows: summary.rows,
       totalEntities: entityCount,

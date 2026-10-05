@@ -265,6 +265,8 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
   `);
 
    await createEntityEmbeddingsTable(db);
+   await createEntityKeyphrasesTable(db);
+   await createSourceSummariesTable(db);
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
@@ -760,6 +762,65 @@ export async function createEntityEmbeddingsTable(
   `);
 }
 
+/**
+ * LLM-written search phrases for entities (see mcp/tools/keyphrases.ts). One
+ * row per entity. A row is reused only while all three of `input_hash` (the
+ * fields sent to the model), `prompt_hash` (the instructions in force) and
+ * `model` still match, so a keyphrase is regenerated exactly when its inputs,
+ * the prompt or the model changed, and an unchanged entity costs no LLM call
+ * on a restart, a reload or a republish.
+ *
+ * Additive: a new table, nothing existing is altered. `entity_key` is the
+ * JSON array [kind, source, name], which cannot collide on an identifier
+ * containing any character. Losing the table only costs regenerating.
+ */
+export async function createEntityKeyphrasesTable(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS entity_keyphrases (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      entity_key VARCHAR NOT NULL,
+      input_hash VARCHAR NOT NULL,
+      prompt_hash VARCHAR NOT NULL,
+      model VARCHAR NOT NULL,
+      keyphrase VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, entity_key)
+    )
+  `);
+}
+
+/**
+ * LLM-written source summaries (see mcp/tools/source_summaries.ts). One row per
+ * (model path, source). `input_hash` covers everything the model was shown
+ * (the rendered source and fields), the prompt text and the model, so a row is
+ * reused only while none of those changed, and an unchanged source costs no LLM
+ * call on a restart, a reload or a republish.
+ *
+ * Additive: a new table, nothing existing is altered. Losing the table only
+ * costs regenerating.
+ */
+export async function createSourceSummariesTable(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS source_summaries (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      model_path VARCHAR NOT NULL,
+      source_name VARCHAR NOT NULL,
+      input_hash VARCHAR NOT NULL,
+      model VARCHAR NOT NULL,
+      summary VARCHAR NOT NULL,
+      one_line_summary VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, model_path, source_name)
+    )
+  `);
+}
+
 // TODO: Remove this during projects cleanup
 // Tables in the pre-rename schema, listed children-first so DROP order
 // satisfies foreign-key dependencies on the legacy `projects` table.
@@ -803,6 +864,8 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "environments",
       "themes",
       "entity_embeddings",
+      "entity_keyphrases",
+      "source_summaries",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

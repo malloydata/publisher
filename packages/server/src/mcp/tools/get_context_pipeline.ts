@@ -8,9 +8,9 @@
  * themselves live in their own files, and runContextQuery in
  * get_context_tool.ts decides the order.
  *
- * Expected to plug in later: query rephrase as a QueryStage; refine/prune
- * and value attach as RankStages; rerank and prune as CardStages, which run on
- * assembled source cards before paging.
+ * Registered today: refine as a RankStage and rerank as a CardStage. Expected
+ * to plug in later: query rephrase as a QueryStage and value attach as a
+ * RankStage. Card stages run on assembled source cards before paging.
  *
  * The loops here are also the one place that times a stage and records what it
  * did (see StageTrace), so a stage never has to.
@@ -19,6 +19,8 @@
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { EmbeddingIndexStatus } from "./embedding_index";
 import type { LlmMeter } from "./get_context_llm";
+import type { LlmStageSettings } from "./get_context_stage_settings";
+import type { StoredSourceSummary } from "./source_summaries";
 import type {
    PackageIndex,
    ResolvedRequest,
@@ -60,7 +62,11 @@ export interface PipelineSettings {
    joinMaxDepth: number;
    /** Base of the score multiplier for assembled join copies, applied as `base ** (hops + 1)`; null means none. */
    joinDamping: number | null;
-   /** How scores are published. Unused. */
+   /**
+    * How scores are published. Today `cosine`: a row's score is its cosine.
+    * Rows a refine stage rated carry `raw` and are published through the
+    * knots whatever this says, so nothing reads it yet.
+    */
    scoring: "cosine" | "knots";
    /** Response size budget in characters; null means no budget. */
    maxChars: number | null;
@@ -91,6 +97,14 @@ export interface PipelineContext {
    trace?: StageTrace[];
    /** Counts the chat calls and tokens of this request; see LlmMeter. */
    meter?: LlmMeter;
+   /** Refine and rerank settings, resolved once per request. Absent: no LLM is configured. */
+   llmStages?: LlmStageSettings;
+   /**
+    * Stored LLM source summaries by source name, read once per ranked request.
+    * Absent when summaries are off for the package or none is stored; then no
+    * card or prompt carries one.
+    */
+   sourceSummaries?: ReadonlyMap<string, StoredSourceSummary>;
 }
 
 /** One row of the stage trace. `in` and `out` count what the stage's phase works on. */
@@ -167,6 +181,11 @@ export interface CardDraft {
    source: string;
    /** Best score among the rows, as the wire card's `relevance`. */
    relevance?: number;
+   /**
+    * The unpublished score behind `relevance`, set when a refine stage rated
+    * the rows: the best `raw` among them. Rerank sorts by it.
+    */
+   raw?: number;
    /** In rank order. Includes the `kind: "source"` row when the source matched. */
    rows: ResultEntity[];
    /** Rows the per-source, per-target cap left out of this card. */
@@ -177,6 +196,17 @@ export interface CardDraft {
 export interface CardState extends Omit<RankedState, "rows"> {
    /** Best-first: the order sources first appear in the ranked rows. */
    cards: CardDraft[];
+   /**
+    * Cards a stage cut out of its top N. They are not in `cards`, but they
+    * matched, so `total_available` still counts them.
+    */
+   discarded?: number;
+   /**
+    * Set by rerank: each card's `relevance` is now the reranker's score, which
+    * no row carries, so shapeCards publishes the card's own instead of the
+    * best of its rows.
+    */
+   reranked?: boolean;
 }
 
 /** Runs after assembly and before paging. Rerank and prune live here. */

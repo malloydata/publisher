@@ -557,8 +557,8 @@ async function readPackageMetadata(
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
       // How this package is searched and indexed. Validated here so a bad key
-      // stops the load with a message naming it, and read here so an edit
-      // takes effect on reload.
+      // or an unreadable prompt file stops the load with a message naming it,
+      // and read here so a prompt edit takes effect on reload.
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
    };
 }

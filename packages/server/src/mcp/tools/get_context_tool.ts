@@ -44,8 +44,22 @@ import {
    type Unavailable,
 } from "./get_context_pipeline";
 import { activeLlmSettings } from "../../providers/active";
-import { LlmMeter } from "./get_context_llm";
+import { HttpRequestError } from "../../service/http_retry";
+import { LlmMeter, StageError } from "./get_context_llm";
+import { refineStage } from "./get_context_refine";
+import { rerankStage } from "./get_context_rerank";
+import {
+   sourceMatchActive,
+   sourceMatchStage,
+} from "./get_context_source_match";
+import { resolveLlmStages } from "./get_context_stage_settings";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
+import { indexSettingsOf } from "./index_settings";
+import {
+   currentSummaryHashes,
+   loadSourceSummaries,
+   type StoredSourceSummary,
+} from "./source_summaries";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -67,6 +81,15 @@ export interface Entity {
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
    relationship?: Relationship;
+   // On `kind: "join"` entities: the source the join leads to, when the
+   // compiled model names one (the topology below has it; a model with no
+   // compiled IR does not). Read by the source summary to nest a joined
+   // source's fields; never serialized.
+   joinTarget?: string;
+   // On `kind: "join"` entities: the package-relative path of the file that
+   // defines `joinTarget`. Together they identify the source; the name alone
+   // cannot when two files define a source of the same name.
+   joinTargetModelPath?: string;
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
@@ -151,6 +174,12 @@ export interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   /**
+    * The `#(doc)` text alone, with no annotation fallback (see Entity.embedDoc).
+    * The LLM stages read this, never `doc`, which can carry raw annotation
+    * lines. Never serialized.
+    */
+   embedDoc?: string;
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
@@ -185,10 +214,23 @@ export interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
-   /** Unused until a stage sets it. LOW=1, MEDIUM=2, HIGH=3 after refine. */
+   /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
    level?: number;
-   /** Unused until a stage sets it. Refine's sentence for matched_targets. */
-   reason?: string;
+   /**
+    * Set by refine only: the unpublished score, `level + cosine`, 1 to 4. When
+    * it is set, `score` is this value through the knots (see
+    * get_context_scoring). Assembly damps joined copies on this number, and
+    * rerank sorts cards by the best of it.
+    */
+   raw?: number;
+   /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
+   targetRaw?: Map<number, number>;
+   /**
+    * Set by refine: the model's one-sentence reason for each target that
+    * rated this row, behind `matched_targets[].match_reason`. Absent when
+    * refine did not run or the model gave no reason.
+    */
+   targetReasons?: Map<number, string>;
    /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
    joinHops?: number;
    /** Unused until value attach runs. Nested dimension values. */
@@ -363,7 +405,8 @@ export const REASON_BY_UNAVAILABLE: Record<
  *    `include_code`), and the response-level `retrieval`
  *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
  * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
- *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
+ *    `summary`, `prominence`, `values`, `values_indexed`. (`match_reason`
+ *    rides on `matched_targets` only when refine ran and gave one.)
  *    That spec omits null fields, so absence is in-contract on both sides.
  */
 interface ResourceId {
@@ -375,7 +418,16 @@ interface ResourceId {
 
 interface SourceCardInfo {
    resource_id: ResourceId;
+   /**
+    * The LLM's one-line summary of the source when one is stored; otherwise the
+    * first line of its doc (absent when undocumented).
+    */
    one_line_summary?: string;
+   /**
+    * The LLM's full summary of the source. Only when one is stored AND the
+    * request pins the source or a source search matched at most one source.
+    */
+   summary?: string;
    docs?: string;
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
@@ -384,6 +436,13 @@ interface SourceCardInfo {
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
+}
+
+interface MatchedTarget {
+   search_text: string;
+   relevance: number;
+   /** Refine's one-sentence reason. Present only when refine ran and gave one. */
+   match_reason?: string;
 }
 
 interface SourceCardEntity {
@@ -407,7 +466,7 @@ interface SourceCardEntity {
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
-   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   matched_targets?: MatchedTarget[];
    aliases?: string[];
 }
 
@@ -440,6 +499,8 @@ function toSourceResults(
    includeCode = false,
    /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
    droppedSources: Set<string> = new Set(),
+   /** Stored LLM source summaries, when the package has any. */
+   summaries?: SummaryView,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -461,6 +522,8 @@ function toSourceResults(
       let entry = bySource.get(key);
       if (!entry) {
          const ctx = sourceContext.get(key);
+         const stored = summaries?.stored.get(key);
+         const oneLine = stored?.oneLineSummary ?? ctx?.oneLineSummary;
          entry = {
             source_info: {
                resource_id: {
@@ -469,8 +532,9 @@ function toSourceResults(
                   model_path: modelPathFallback,
                   source: name,
                },
-               ...(ctx?.oneLineSummary
-                  ? { one_line_summary: ctx.oneLineSummary }
+               ...(oneLine ? { one_line_summary: oneLine } : {}),
+               ...(stored && summaries?.full.has(key)
+                  ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
@@ -517,6 +581,55 @@ function toSourceResults(
 }
 
 /**
+ * The stored LLM summaries a response may use, and for which sources it may
+ * carry the full text. Built by {@link summaryViewFor}; absent when the package
+ * has no stored summary, which leaves every card as it always was.
+ */
+interface SummaryView {
+   /** Every current stored summary of the package, by sourceContextKey. */
+   stored: ReadonlyMap<string, StoredSourceSummary>;
+   /** Keys of the cards that carry `summary`, not just `one_line_summary`. */
+   full: ReadonlySet<string>;
+}
+
+/**
+ * The full summary rides only on a card the caller has narrowed to: the scope
+ * pins the source, or a source search matched at most one source. A broader
+ * answer carries the one-liner alone, so the response stays a list of sources
+ * to choose from instead of a page of prose.
+ */
+export function summaryViewFor(
+   stored: ReadonlyMap<string, StoredSourceSummary> | undefined,
+   request: Pick<ResolvedRequest, "sourceName">,
+   cards: ReadonlyArray<{
+      key: string;
+      source: string;
+      rows: readonly ResultEntity[];
+   }>,
+): SummaryView | undefined {
+   if (!stored || stored.size === 0) return undefined;
+   const full = new Set<string>();
+   if (request.sourceName) {
+      for (const card of cards) {
+         if (card.source === request.sourceName) full.add(card.key);
+      }
+   }
+   // A source row is there only because a source target matched it. Counted by
+   // source name: the same source resolved from two files is one answer.
+   const matched = new Set(
+      cards
+         .filter((card) => card.rows.some((r) => r.kind === "source"))
+         .map((card) => card.source),
+   );
+   if (matched.size <= 1) {
+      for (const card of cards) {
+         if (matched.has(card.source)) full.add(card.key);
+      }
+   }
+   return { stored, full };
+}
+
+/**
  * Which of the caller's search targets matched this row, and how well.
  *
  * Only targets that carry text can match, so a listing produces none and the
@@ -528,15 +641,20 @@ function toSourceResults(
 function matchedTargetsFor(
    r: ResultEntity,
    searchTexts: Map<number, string>,
-): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+): { matched_targets?: MatchedTarget[] } {
    if (!r.targetScores || r.targetScores.size === 0) return {};
    const matched = [...r.targetScores.entries()]
       .sort((a, b) => a[0] - b[0])
       .flatMap(([index, relevance]) => {
          const search_text = searchTexts.get(index);
          if (search_text === undefined) return [];
+         const match_reason = r.targetReasons?.get(index);
          return [
-            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+            {
+               search_text,
+               relevance: Math.round(relevance * 10_000) / 10_000,
+               ...(match_reason ? { match_reason } : {}),
+            },
          ];
       });
    return matched.length > 0 ? { matched_targets: matched } : {};
@@ -550,7 +668,7 @@ function matchedTargetsFor(
  * card and hide a narrow one inside it -- the same failure the source window
  * below prevents between cards.
  */
-const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
 /**
  * The most dotted index rows (joined fields assembly cannot rebuild) one source
@@ -599,6 +717,7 @@ export function projectEntity(
       packageName,
       modelPath: e.modelPath,
       doc: e.doc,
+      ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -662,7 +781,10 @@ function shapeCards(
 } {
    const { request, pkgIndex, settings } = ctx;
    const paged = state.cards.slice(0, request.limit);
-   const sources = toSourceResults(
+   // Over ALL the matched cards, not the page: whether a source search matched
+   // one source or many does not depend on how many the caller asked to see.
+   const summaries = summaryViewFor(ctx.sourceSummaries, request, state.cards);
+   const built = toSourceResults(
       paged.flatMap((card) => card.rows),
       pkgIndex.sourceContext,
       request.environmentName,
@@ -674,7 +796,22 @@ function shapeCards(
       ),
       request.includeCode,
       pkgIndex.droppedSources,
+      summaries,
    );
+   // toSourceResults folds a card's relevance from its rows. After rerank the
+   // card's relevance is the reranker's score, which no row carries, so it is
+   // put back from the draft.
+   const sources = state.reranked
+      ? built.map((card) => {
+           const id = card.source_info.resource_id;
+           const draft = paged.find(
+              (d) => d.key === sourceContextKey(id.model_path, id.source),
+           );
+           return draft?.relevance === undefined
+              ? card
+              : { ...card, relevance: draft.relevance };
+        })
+      : built;
    const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
    // Entities cut inside a card the budget then removed are not reported: the
    // card is not in the answer, and its own cut warning is the budget's.
@@ -684,7 +821,8 @@ function shapeCards(
          : paged;
    return {
       sources: fitted.cards,
-      totalSources: state.cards.length,
+      // Cards the reranker kept out of its top N still matched, so they count.
+      totalSources: state.cards.length + (state.discarded ?? 0),
       entitiesDropped: kept.reduce(
          (sum, card) => sum + card.entitiesDropped,
          0,
@@ -1686,6 +1824,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   doc: docText(field.annotations),
                   embedDoc: docOnlyText(field.annotations),
                   relationship: field.relationship,
+                  ...joinTargetOf(topology.get(governanceKey), field.name),
                });
                // The join's own entity above says a relationship exists; the
                // fields below say what it reaches and under what path. Both
@@ -1773,14 +1912,32 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   // A join is only a route to a source's fields when that source is itself
-   // indexed: a target that was dropped (a deny-all gate) or never listed has
-   // no direct fields to copy, so the join reaches nothing.
+   // A join to a source that is not in the index (dropped for a deny-all gate,
+   // or never listed because the package does not export it) keeps its alias,
+   // which is a field of the visible source, but not the target's real name:
+   // that name would reach the LLM in the source summary prompt and the source
+   // match prompt. Done once every model has been walked, because a join can
+   // name a source from a later model file.
    const indexedSources = new Set(
       deduped
          .filter((e) => e.kind === "source")
          .map((e) => sourceContextKey(e.modelPath, e.name)),
    );
+   for (const e of deduped) {
+      if (
+         e.kind === "join" &&
+         e.joinTarget &&
+         !indexedSources.has(
+            sourceContextKey(e.joinTargetModelPath ?? "", e.joinTarget),
+         )
+      ) {
+         delete e.joinTarget;
+         delete e.joinTargetModelPath;
+      }
+   }
+   // A join is only a route to a source's fields when that source is itself
+   // indexed: a target that was dropped (a deny-all gate) or never listed has
+   // no direct fields to copy, so the join reaches nothing.
    for (const [root, reaches] of topology) {
       const kept = reaches.filter((reach) =>
          indexedSources.has(
@@ -1807,6 +1964,22 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ),
       ),
    };
+}
+
+/** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
+function joinTargetOf(
+   reaches: readonly JoinReach[] | undefined,
+   alias: string,
+): { joinTarget?: string; joinTargetModelPath?: string } {
+   const reach = reaches?.find(
+      (r) => r.path.length === 1 && r.path[0] === alias,
+   );
+   return reach
+      ? {
+           joinTarget: reach.targetSource,
+           joinTargetModelPath: reach.targetModelPath,
+        }
+      : {};
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -2268,21 +2441,19 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
 - scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
-- Read warnings and any error/stale field before trusting a number.
+- Read warnings and any error/stale field before trusting a number or calling data absent.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
+- Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
-ranking, returned of total_available sources, next_offset on a listing, warnings[].
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon; errors carry retrieval_reason.
-
-## Example
-{"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
+ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
+below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
 
 /**
  * An error keeps the empty collection the tool would have answered with, so a
@@ -2359,6 +2530,15 @@ const truncationWarning = (returned: number, matched: number) =>
 const sourceCutWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
+      : undefined;
+/**
+ * Cards the reranker left out because only its top N are ranked. They matched,
+ * and `total_available` counts them, but no page size reaches them: the remedy
+ * is a narrower question.
+ */
+const rerankCutWarning = (dropped: number, top: number | undefined) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
       : undefined;
 /**
  * A browse that stopped early. Its remedy is NOT the ranked one: a listing
@@ -2570,16 +2750,22 @@ function runListing(
    });
 }
 
-// The stages and retrievers runContextQuery runs. PR 1 registers no stage of
-// either kind; a new stage is one file and one line here.
+// The stages and retrievers runContextQuery runs; a new stage is one file and
+// one line here. The stage lists are functions, read when a request runs,
+// because the stage files import this one and a list built at load would read
+// their exports before they exist whenever one of them is loaded first.
 const QUERY_STAGES: QueryStage[] = [];
-// A function, not a constant: get_context_retrievers imports this file, so the
-// two retrievers must not be read while this module is still being evaluated.
-// A constant here made importing the retrievers first throw "Cannot access
+// A function like the stage lists: get_context_retrievers imports this file, so
+// a constant here would read both retrievers while this module is still being
+// evaluated, and importing the retrievers first threw "Cannot access
 // 'semanticRetriever' before initialization".
 const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
-const RANK_STAGES: RankStage[] = [];
-const CARD_STAGES: CardStage[] = [];
+// Source match is listed only for a request it applies to, so a trace shows
+// no row for it otherwise (refine and rerank report "skipped" when off; this
+// one has nothing to say unless it has work).
+const rankStages = (ctx: PipelineContext): RankStage[] =>
+   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
+const cardStages = (): CardStage[] => [rerankStage];
 
 /**
  * The values the server runs with; changing one changes responses. Joins are
@@ -2721,9 +2907,49 @@ async function runContextQuery(
    // Lexical lunr is the mode only when no provider is configured, and
    // then the payload carries no `retrieval` marker and no per-entity
    // `score`, byte-identical to the lexical-only releases.
+   // The LLM stage settings are read before retrieval because source match
+   // takes the source targets away from the retrievers.
+   try {
+      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
+   // Stored source summaries, read once for the response and the source match
+   // prompt. Only when the package has them on; none stored means no change.
+   ctx.sourceSummaries = await loadStoredSummaries(
+      environmentStore,
+      pkgIndex,
+      environmentName,
+      packageName,
+   );
+   // With source match on, source targets are answered by the model, so the
+   // retrievers rank only the other targets. With none left there is nothing
+   // to retrieve; the response keeps the shape of the mode the server is in.
+   const matchingSources = sourceMatchActive(ctx);
+   const retrievalCtx: PipelineContext = matchingSources
+      ? {
+           ...ctx,
+           request: {
+              ...request,
+              searches: request.searches.filter(
+                 (s) => s.targetType !== "source",
+              ),
+           },
+        }
+      : ctx;
    let ranked: RankedState | undefined;
-   for (const retriever of retrievers()) {
-      const result = await retriever.retrieve(ctx);
+   if (matchingSources && retrievalCtx.request.searches.length === 0) {
+      ranked = {
+         rows: [],
+         belowCutoffCount: 0,
+         retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
+      };
+   }
+   for (const retriever of ranked ? [] : retrievers()) {
+      const result = await retriever.retrieve(retrievalCtx);
       if ("unavailable" in result) {
          // "unconfigured" means no provider: the next retriever is the mode.
          if (result.unavailable === "unconfigured") continue;
@@ -2735,12 +2961,25 @@ async function runContextQuery(
       break;
    }
    if (!ranked) throw new Error("No retriever produced a result");
-   ranked = await runRankStages(RANK_STAGES, ranked, ctx);
-
-   // Grouping into cards, paging and serialization are shared by both
-   // retrievers so the two cannot drift.
-   let cards = assembleCards(ranked, ctx);
-   cards = await runCardStages(CARD_STAGES, cards, ctx);
+   // The LLM stages run only on a ranked search (a listing returned above).
+   // A failure in one is the answer: an error result naming the stage, never
+   // an unrefined ranking.
+   let cards: CardState;
+   try {
+      ranked = await runRankStages(rankStages(ctx), ranked, ctx);
+      // Grouping into cards, paging and serialization are shared by both
+      // retrievers so the two cannot drift.
+      cards = await runCardStages(
+         cardStages(),
+         assembleCards(ranked, ctx),
+         ctx,
+      );
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
    const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
       cards,
       ctx,
@@ -2749,6 +2988,14 @@ async function runContextQuery(
    // warning counts them as returned and only the budget warning speaks of them.
    const pageReturned = sources.length + budgetDropped;
    const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
+   // Cards rerank kept out of its top N are in total_available but not in the
+   // page's reach, so raising `limit` would not show them: they get their own
+   // warning and are left out of the page-cut one.
+   const rerankDropped = cards.discarded ?? 0;
+   const rerankWarning = rerankCutWarning(
+      rerankDropped,
+      ctx.llmStages?.rerank?.topSources,
+   );
    if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
@@ -2770,7 +3017,8 @@ async function runContextQuery(
          ...warningsFor(
             // Counted in CARDS, the same unit `returned` reports, so the
             // two cannot disagree.
-            sourceCutWarning(pageReturned, totalSources),
+            sourceCutWarning(pageReturned, totalSources - rerankDropped),
+            rerankWarning,
             budgetWarning,
             entityCutWarning(entitiesDropped),
          ),
@@ -2791,6 +3039,45 @@ async function runContextQuery(
       ),
       ...traceFields(),
    });
+}
+
+/**
+ * The package's stored source summaries that still describe its sources, or
+ * undefined when summaries are off for it (the package turned them off, or no
+ * LLM is configured) or none is current. A summary is served only if its input
+ * hash is the hash of the source as it is now: a reload that changed a source
+ * leaves the old summary in the table until the next sync rewrites it, and a
+ * request with only source targets does not wait for that sync. A read failure
+ * is logged and answered without them: a summary only adds to a card, and the
+ * sync, not this read, is where a failure is loud.
+ */
+async function loadStoredSummaries(
+   environmentStore: EnvironmentStore,
+   pkgIndex: PackageIndex,
+   environmentName: string,
+   packageName: string,
+): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
+   const settings = indexSettingsOf(pkgIndex.pkg).sourceSummary;
+   if (!settings) return undefined;
+   try {
+      const stored = await loadSourceSummaries(
+         environmentStore.storageManager.getDuckDbConnection(),
+         environmentName,
+         packageName,
+         currentSummaryHashes(pkgIndex.directEntities, settings),
+      );
+      return stored.size > 0 ? stored : undefined;
+   } catch (error) {
+      logger.warn(
+         "[MCP Tool getContext] Stored source summaries could not be read; answering without them",
+         {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return undefined;
+   }
 }
 
 /**
@@ -2831,6 +3118,70 @@ function indexingResponse(
 }
 
 /**
+ * The answer when an LLM stage (refine, rerank or source_match, or building
+ * the LLM client for them) failed after the provider layer's retries. An error
+ * result that names the stage and the reason, with `sources: []` like every
+ * get_context error. It is never replaced by an unrefined or lexical answer: a
+ * ranking that quietly differs from the one the working stages give is harder
+ * to trust than an error.
+ *
+ * The advice names the package setting that turns the failing step off, and
+ * the three that turn every request-time LLM step off. The index-time steps
+ * (keyphrases, source summaries) fail a sync, not a request, and are reported
+ * through the index status instead.
+ */
+const STAGE_SETTING: Readonly<Record<string, string>> = {
+   refine: "retrieval.refine",
+   rerank: "retrieval.rerank",
+   source_match: "retrieval.sourceMatch",
+};
+/**
+ * The stage's reason as the MCP caller sees it. A vendor failure is worded
+ * without the endpoint (host, project path) and without the rest of the
+ * vendor's body: the caller gets the status and the vendor's own message, and
+ * the server log keeps the full text.
+ */
+function callerReason(error: StageError): string {
+   let cause: unknown = error.cause;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError && cause.publicMessage) {
+         return cause.publicMessage;
+      }
+      cause = cause.cause;
+   }
+   return error.reason;
+}
+
+function stageFailureError(
+   uri: string,
+   error: StageError,
+   extra: Record<string, unknown> = {},
+) {
+   return jsonToolError(
+      uri,
+      {
+         message: `get_context failed in the ${error.stage} step: ${callerReason(error)}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +
+               (STAGE_SETTING[error.stage]
+                  ? `To skip just this step, set the package's ${STAGE_SETTING[error.stage]} to enabled: false in publisher.json. `
+                  : "") +
+               "To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
+            "A request with no search_text (a listing) runs no LLM step and still works.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: error.stage,
+         ...extra,
+      },
+   );
+}
+
+/**
  * The answer when a configured server cannot rank a search at all: an error
  * result that names the reason and says what to do. Still carries
  * `sources: []` like every get_context error, so a caller can read the
@@ -2868,7 +3219,11 @@ function semanticUnavailableError(uri: string, result: Unavailable) {
                ? // No timer fires at retryAt: the retry starts when a question
                  // arrives after it (see kickSync in embedding_index.ts).
                  `The next question after ${retryAt} tries again; nothing retries on its own before then.`
-               : "Try again in a minute.",
+               : reason === "cooldown"
+                 ? // A cool-down always has a retryAt, so none means the vendor
+                   // refused the request itself and nothing will retry it.
+                   "Asking again will not help: this failure is not retried until the package or its retrieval settings change, or the server restarts. The operator should read the server log."
+                 : "Try again in a minute.",
             "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
             listing,
          ];

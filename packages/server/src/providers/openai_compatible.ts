@@ -9,6 +9,15 @@ import type { ChatResult, FetchFn, ProviderName } from "./types";
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const OLLAMA_BASE_URL = "http://localhost:11434/v1";
 
+/**
+ * Tokens added to OpenAI's `max_completion_tokens`. OpenAI's reasoning models
+ * count their hidden reasoning against that limit, so a budget sized for the
+ * visible reply alone comes back empty (`finish_reason: "length"`). The limit
+ * is a ceiling, not a target, so the headroom costs nothing on models that do
+ * not reason.
+ */
+export const OPENAI_REASONING_HEADROOM = 4000;
+
 /** The default base URL for a provider that speaks this protocol, if it has one. */
 export function defaultOpenAiBaseUrl(
    provider: ProviderName,
@@ -49,8 +58,8 @@ function count(value: unknown): number | undefined {
 /**
  * Chat through an OpenAI-style `/chat/completions` endpoint: OpenAI itself,
  * Ollama's compatibility endpoint, and any server that copies the shape
- * (vLLM, Azure, a gateway). Temperature is 0 unless the model rejects it. `response_format` is sent only
- * when JSON was asked for. Ollama and some gateways need no key, so the
+ * (vLLM, Azure, a gateway). Temperature is 0 unless the model rejects it (see
+ * rejectsTemperature). `response_format` is sent only when JSON was asked for. Ollama and some gateways need no key, so the
  * Authorization header is omitted when there is none.
  */
 export class OpenAiCompatibleChat implements RawChat {
@@ -71,13 +80,17 @@ export class OpenAiCompatibleChat implements RawChat {
          model: this.model,
          messages,
       };
-      // Temperature 0 keeps ranking stable where the model allows it.
+      // Temperature 0 keeps ranking stable where the model allows it. OpenAI's
+      // gpt-5 and o-series models answer 400 "Unsupported value: 'temperature'".
       if (!rejectsTemperature(this.provider, this.model)) body.temperature = 0;
       if (req.maxTokens !== undefined) {
          // OpenAI renamed the field; other servers still read max_tokens.
-         body[
-            this.provider === "openai" ? "max_completion_tokens" : "max_tokens"
-         ] = req.maxTokens;
+         if (this.provider === "openai") {
+            body.max_completion_tokens =
+               req.maxTokens + OPENAI_REASONING_HEADROOM;
+         } else {
+            body.max_tokens = req.maxTokens;
+         }
       }
       if (req.json) body.response_format = { type: "json_object" };
 
