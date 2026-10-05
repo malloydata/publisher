@@ -177,6 +177,37 @@ const status = (
    ents: readonly EmbeddableEntity[],
 ) => getEmbeddingIndexStatus(db, provider, "env", "pkg", ents, p);
 
+/** Longer than any test runs, so a cool-down never lapses on its own. */
+const HELD_COOLDOWN_MS = 60_000;
+
+/**
+ * Ask one question with the cool-down already over, let the sync it starts
+ * finish, then hold the cool-down again.
+ *
+ * A retryable failure restarts its sync on the first question after the
+ * cool-down. With a short real cool-down, `untilFailed`'s poll can itself land
+ * after it lapses and restart the sync, so the request count depends on timer
+ * resolution (about 15ms on Windows) rather than on the code under test.
+ * Holding the cool-down while polling, and ending it only here, makes "the
+ * question after the cool-down" exactly one question. The cool-down stays over
+ * until the queue is idle because the queued sync checks the provider breaker
+ * (which shares the cool-down) when it runs, not when it is asked for.
+ */
+async function askAfterCooldown(
+   provider: EmbeddingProvider,
+   p: Package,
+   ents: readonly EmbeddableEntity[],
+) {
+   _setTimingForTests({ cooldownMs: 0 });
+   try {
+      const answer = await ask(provider, p, ents);
+      await embeddingSyncQueue.idle();
+      return answer;
+   } finally {
+      _setTimingForTests({ cooldownMs: HELD_COOLDOWN_MS });
+   }
+}
+
 describe("a sync that fails with a client error", () => {
    const llm = (statusCode: number) => {
       const stub = stubFetch([
@@ -264,30 +295,32 @@ describe("a sync that fails with a client error", () => {
    it("still retries after the cool-down when the credential may have been fixed (a 401)", async () => {
       // An auth failure can clear without the package changing: a token is
       // refreshed, a key rotated. It keeps its cool-down and its retry.
+      _setTimingForTests({ cooldownMs: HELD_COOLDOWN_MS });
       const stub = llm(401);
       const provider = embedder();
       const p = pkg({ sourceSummary: { enabled: true } });
       const ents = entities();
       await untilFailed(provider, p, ents);
       expect(stub.requests).toHaveLength(1);
-      await sleep(60);
+      await askAfterCooldown(provider, p, ents);
       await untilFailed(provider, p, ents);
-      expect(stub.requests.length).toBeGreaterThan(1);
+      expect(stub.requests).toHaveLength(2);
       expect(
          (await status(provider, p, ents)).lastError?.retryAt,
       ).toBeDefined();
    });
 
    it("still retries after the cool-down when the failure can clear (a 503)", async () => {
+      _setTimingForTests({ cooldownMs: HELD_COOLDOWN_MS });
       const stub = llm(503);
       const provider = embedder();
       const p = pkg({ sourceSummary: { enabled: true } });
       const ents = entities();
       await untilFailed(provider, p, ents);
       expect(stub.requests).toHaveLength(1);
-      await sleep(60);
+      await askAfterCooldown(provider, p, ents);
       await untilFailed(provider, p, ents);
-      expect(stub.requests.length).toBeGreaterThan(1);
+      expect(stub.requests).toHaveLength(2);
       const s = await status(provider, p, ents);
       expect(s.lastError?.retryAt).toBeDefined();
    });
