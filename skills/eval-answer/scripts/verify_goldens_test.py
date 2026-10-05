@@ -1297,5 +1297,47 @@ class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
         self.assertEqual(below, [], f"defined below the main guard: {below}")
 
 
+class RowsGoldenInAFile(unittest.TestCase):
+    """The value check read rows goldens from `golden.value` only, so a golden
+    whose rows live in a CSV was reported as an error on every audit."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q.csv").write_text("region,total\nWest,12\n")
+        self.a = argparse.Namespace(
+            publisher="http://x", environment="truth", truth_package="t",
+            truth_model="truth.malloy", rewrite=False, set_dir=self.tmp)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def check(self, rows):
+        c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/q.csv",
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=(rows, None)):
+            return check_value(c, self.a)
+
+    def test_matching_rows_pass(self):
+        status, detail, _ = self.check([{"region": "West", "total": 12}])
+        self.assertEqual((status, detail), ("ok", "1 rows"))
+
+    def test_a_differing_row_is_drift_not_an_error(self):
+        status, detail, _ = self.check([{"region": "West", "total": 13}])
+        self.assertEqual(status, "diff")
+        self.assertIn("total", detail)
+
+    def test_an_unreadable_file_is_an_error_naming_the_path(self):
+        c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/none.csv",
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=([{"a": 1}], None)):
+            status, detail, _ = check_value(c, self.a)
+        self.assertEqual(status, "error")
+        self.assertIn("gold/none.csv", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -180,6 +180,7 @@ exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 | `submitted` | bool | False when there was no final query. Not a wrong answer. |
 | `final_query` | string or null | Required to replay. A named view is recorded as the Malloy it stands for, `run: <source> -> <view>`, so every consumer sees one shape and the query re-executes. |
 | `final_query_source` | string or null | How `final_query` was chosen: `declared` (the answer printed it), `last_ok` (the last call the server answered) or `last`. `last` is a warning: a trailing sanity probe may be standing in for the answer's own query. |
+| `final_givens` | object or null | The `givens` (Publisher runtime parameters, `{name: value}`) the call behind `final_query` was sent with. A query written against a given returns unfiltered rows when re-run without it. Null when the call passed none. |
 | `servedRevision` | string or null | From the package actually queried. |
 | `n_get_context` / `n_execute` / `n_execute_errors` | int | |
 | `host_tool_uses` | int | EVERY tool use the host logged, MCP calls included. It counted only the non-MCP ones until 2026-09-03, which made the under-report check below true of almost every clean attempt. |
@@ -213,9 +214,11 @@ One event per MCP `get_context` or `execute_query` the attempt made.
 | `retrieval_mode` | string or null | `get_context` only: the `retrieval` field of the response that answered, `semantic` or `lexical`. Null when the server named none, which means no embedding provider. Recorded per call because the semantic path can fall over partway through a run. |
 | `query` | string or null | `execute_query` only: the Malloy the call sent, so the final query can be chosen by which call the server actually answered. |
 | `modelPath` | string or null | `execute_query` only: the model file the call named. A source does not resolve outside the file that declares it, so re-execution needs this. |
+| `givens` | object or null | `execute_query` only: the `{name: value}` runtime parameters the call was sent with. Part of the same fact as `query` and `modelPath`: the text alone, re-run without them, returns a different population. |
+| `filterParams` | object or null | `execute_query` only: values for the model's legacy `#(filter)` source filters, a separate mechanism from `givens`. The harness captures `givens`; this stays allowed for records that carry it. |
 | `error` | string or null | |
 
-Never persist `execute_query` result rows, givens, or credentials.
+Never persist `execute_query` result rows or credentials. `givens` are recorded because they decide what the query means; they are filter values, not secrets, so do not put a credential in one.
 
 `targets` records the request; `rankedSummary` records the response. Without
 both, a low per-attempt recall has two readings that cannot be told apart: the
