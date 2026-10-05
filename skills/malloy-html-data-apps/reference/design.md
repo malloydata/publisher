@@ -1,7 +1,3 @@
----
-name: malloy-data-app-design
-description: Decide what a data app should be before building it - who opens it, the decision it serves, which archetype it is, the forms that answer its questions, and the depth (drill-down, shared scope, linkable state) that makes it a tool rather than a page of charts. Read at the START of any data-app request, before scaffolding a package or writing a tile, and when an existing app feels flat, generic, or like a list of every view in the model.
----
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT

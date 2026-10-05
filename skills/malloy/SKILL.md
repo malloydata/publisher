@@ -74,10 +74,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 |-------|-------------|
 | `skill:malloy-publish` | Moving a finished model into a served package (local-to-served handoff) |
 | `skill:malloy-dashboards` | Building a dashboard: a tagged `.malloy` file in a package's `dashboards/` directory, with filter controls and drill-through |
-| `skill:malloy-data-app-design` | Deciding what a data app should be, before building it: audience, archetype, chart forms and depth |
-| `skill:malloy-html-data-apps` | Building an in-package HTML data app (a `public/` directory the package serves) |
-| `skill:malloy-html-data-app-runtime` | Writing the JavaScript that drives that app |
-| `skill:malloy-html-data-app-embedding` | Embedding a served page into a host application |
+| `skill:malloy-html-data-apps` | Building an in-package HTML data app (a `public/` directory the package serves): design brief, the JavaScript that drives it, embedding a served page into a host application |
 | `skill:malloy-materialization` | Persisting an expensive source so queries read a pre-built table |
 | `skill:malloy-materialization-tuning` | Tuning what to persist, and on what schedule, for cost and speed |
 

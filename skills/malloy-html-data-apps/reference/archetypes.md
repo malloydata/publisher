@@ -4,7 +4,7 @@ SPDX-License-Identifier: MIT
 -->
 # The five archetypes
 
-> Expanded from `SKILL.md` §2. Read when you have picked an archetype and need to know what it actually looks like, or when you are deciding between two that seem close.
+> Expanded from `reference/design.md` §2. Read when you have picked an archetype and need to know what it actually looks like, or when you are deciding between two that seem close.
 
 Each entry below gives the job, what leads the page, the depth that belongs, and the failure mode that turns it back into a generic dashboard. Where the arrangement itself is the point, there is a layout sketch: those are shapes, not templates, so copy the hierarchy rather than the box count.
 

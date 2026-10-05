@@ -159,8 +159,8 @@ KPIs) filtered live by whoever's looking. If the reader scans rather than reads,
 
 An HTML data app is a custom page in the package's `public/` directory, served by Publisher with
 no build step, calling `Publisher.query` for data. You write the HTML, CSS and JavaScript, and an
-AI agent is a well-supported way to write it: the bundled skills (`malloy-html-data-apps`, plus its
-runtime and embedding companions) teach an agent the page structure, the `Publisher.*` runtime,
+AI agent is a well-supported way to write it: the bundled `malloy-html-data-apps` skill (with its
+design, runtime and embedding references) teaches an agent the page structure, the `Publisher.*` runtime,
 filter wiring, and error handling. Guide:
 [html-data-apps.md](html-data-apps.md). Try
 `http://localhost:4000/environments/examples/packages/storefront/`.
