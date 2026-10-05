@@ -165,6 +165,12 @@ describe.serial("compile errors on a curated package", () => {
          "syntax-error",
          "no viable alternative at input 'SELECT'",
       ],
+      [
+         "`~` against a date literal, which Malloy throws on",
+         "run: orders -> { where: d ~ @2025 aggregate: n is total }",
+         "compiler-bug",
+         "mysterious error in range computation",
+      ],
    ];
 
    for (const [label, query, code, words] of ownMistakes) {
@@ -187,6 +193,8 @@ describe.serial("compile errors on a curated package", () => {
          "run: nosuchsrc -> { aggregate: n is count() }",
          "run: stores -> { group_by: nosuchfield }",
          "source: x is stores extend {}\nrun: x -> { group_by: nosuchfield }",
+         "run: stores -> { where: store_id ~ @2025 aggregate: n is count() }",
+         "run: nosuchsrc -> { where: store_id ~ @2025 aggregate: n is count() }",
       ]) {
          const r = await viaRest(OPEN, query);
          expect(r.status).toBe(404);
@@ -205,6 +213,8 @@ describe.serial("compile errors on a curated package", () => {
       const shapes = [
          (n: string) => `run: ${n} -> { aggregate: k is count() }`,
          (n: string) => `run: ${n} -> { group_by: nosuchfield }`,
+         (n: string) =>
+            `run: ${n} -> { where: store_id ~ @2025 aggregate: k is count() }`,
          // Grammar errors that name the source but cannot be read as a run
          // statement: the answer must not depend on the name.
          (n: string) => `run ${n} -> { aggregate: k is count() }`,

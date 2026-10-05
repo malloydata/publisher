@@ -393,6 +393,56 @@ export { customers }`,
       }
    });
 
+   it("declared: `~` against a date literal on an exported source returns the compiler's message, and a hidden or missing source still gets the same 404", async () => {
+      // Malloy throws a plain Error for this (not a MalloyError with
+      // problems), so it used to fall through to the boundary's 404.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         fs.readFileSync(index, "utf8").replace(
+            "export { customers }",
+            `source: dated is duckdb.sql("select 1 as id, DATE '2025-03-01' as d") extend {
+  measure: c is count()
+}
+export { customers, dated }`,
+         ),
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const filter = (name: string, col: string) =>
+            `run: ${name} -> { where: ${col} ~ @2025 aggregate: n is count() }`;
+
+         const exported = await problemsOrRefusal(model, filter("dated", "d"));
+         expect(exported).toBeInstanceOf(QueryCompileError);
+         expect(exported.message).toContain(
+            "mysterious error in range computation",
+         );
+         expect((exported as QueryCompileError).problems.length).toBe(1);
+
+         // Decoys: the same filter over a hidden source, a missing one, and an
+         // alias of each, all answer the generic 404 in the same words.
+         const messages = new Set<string>();
+         for (const query of [
+            filter("helper", "id"),
+            filter("no_such_source", "id"),
+            `source: x is helper extend {}\n${filter("x", "id")}`,
+            `source: x is no_such_source extend {}\n${filter("x", "id")}`,
+         ]) {
+            const answer = await problemsOrRefusal(model, query);
+            expect(answer).toBeInstanceOf(NotQueryableError);
+            expect(answer).not.toBeInstanceOf(QueryCompileError);
+            messages.add(answer.message);
+         }
+         expect(messages.size).toBe(1);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: a syntax error stays the generic 404 where a name could change the answer", async () => {
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
