@@ -41,6 +41,8 @@ cosign verify ms2data/malloy-publisher:<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+Use cosign v3 or later: the signature is a Sigstore bundle stored as an OCI referrer, which an older cosign or a policy engine that only looks for a `.sig` tag does not find.
+
 The signature is on the multi-platform manifest list, so it also covers the per-platform images and their SBOM and provenance attestations. Earlier releases are unsigned. See [packages/server/README.docker.md](packages/server/README.docker.md#verifying-the-image).
 
 ## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching

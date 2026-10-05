@@ -57,6 +57,8 @@ cosign verify ms2data/malloy-publisher:X.Y.Z \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+Use cosign v3 or later. The image is signed in the Sigstore bundle format and the signature is stored as an OCI referrer of the image, not as a `sha256-<digest>.sig` tag, so an older cosign or a policy engine that only looks for the `.sig` tag reports no signatures on a signed image.
+
 The signature covers the multi-platform manifest list, which references each platform image and its SBOM and SLSA provenance attestations by digest. Those attestations can be read with `docker buildx imagetools inspect ms2data/malloy-publisher:X.Y.Z --format '{{ json .SBOM }}'` (or `.Provenance`). Images released before signing was introduced carry no signature.
 
 ## Runtime layout
