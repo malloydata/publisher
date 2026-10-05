@@ -137,7 +137,8 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 ### Where to put these
 
 Publisher reads them from its environment, and Bun loads a `.env` file from the directory you
-start the server in, so a local setup is one file and no flags:
+start the server in, so a local setup from a clone is one file and no flags (the `npx` bin runs
+under Node, which does not load `.env`; export the variables in the shell instead):
 
 ```
 # .env
@@ -156,12 +157,14 @@ is usually committed:
 "postgresConnection": { "password": "${PGPASSWORD}" }
 ```
 
-One thing to know before relying on it: the substitution happens when the config file is
-_read_, which is the first boot on a fresh server root or any boot with `--init` — a normal
-boot loads the persisted copy and never sees the file.
+Two things to know before relying on it. The file is read, and every `${VAR}` in it resolved,
+on every boot, but only a first boot on a fresh server root or a boot with `--init` acts on it:
+a normal boot serves the persisted copy in `publisher.db`, so a connection block added to the
+file later is not picked up without `--init`. And that persisted copy holds the *resolved* value,
+in plaintext, in the server root; `--init` wipes it.
 
-A variable that is not set, like any config Publisher cannot parse, is a startup error. The
-server prints `PUBLISHER_INIT_FAILED` naming the file, the variable and the remedy, and does
+A variable that is not set, like any config Publisher cannot parse, is a startup error on every
+boot, not just the first. The server prints `PUBLISHER_INIT_FAILED` naming the file, the variable and the remedy, and does
 not begin serving:
 
 ```

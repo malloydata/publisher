@@ -47,7 +47,7 @@ function rules(): string[] {
       .map((line) => line.replace(/^\/+/, "").replace(/\/+$/, ""));
 }
 
-const PUBLISHER_RULES = ["publisher_data", "publisher.db*"];
+const PUBLISHER_RULES = ["publisher_data", "publisher.db*", ".env", "*.env"];
 
 describe(".gitignore: no file yet", () => {
    test("is written with everything the server generates", () => {

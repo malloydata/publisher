@@ -1441,6 +1441,15 @@ describe("scaffold: .gitignore", () => {
       const ignored = fs.readFileSync(path.join(tmp, ".gitignore"), "utf8");
       expect(ignored).toContain("publisher.db*");
    });
+
+   test("ignores .env files, where the docs tell users to keep secrets", () => {
+      run();
+      const rules = fs
+         .readFileSync(path.join(tmp, ".gitignore"), "utf8")
+         .split("\n");
+      expect(rules).toContain(".env");
+      expect(rules).toContain("*.env");
+   });
 });
 
 /**
