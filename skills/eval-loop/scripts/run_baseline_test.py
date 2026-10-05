@@ -2080,6 +2080,24 @@ class FinalQueryGivens(unittest.TestCase):
                            "no fence")
         self.assertIsNone(got["final_givens"])
 
+    def test_every_call_the_harness_captures_passes_the_ledger(self):
+        """The class of bug: a field the harness puts on a call that the
+        ledger's field list does not know. `run_baseline` writes each captured
+        call with `ledger.event("tool_call", ...)`, which rejects any field not
+        in the schema, so a run whose answerer passed `givens` died at write
+        time. This pushes the real captured calls through the real writer."""
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                               / "eval-answer" / "scripts"))
+        import ledger
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS}],
+            "```malloy\nrun: sales -> { aggregate: n }\n```")
+        base = {"qid": "q1", "sample": None, "phase": "baseline"}
+        events = [ledger.event("tool_call", **base, **call, traceId=None)
+                  for call in got["calls"]]
+        self.assertEqual(events[0]["givens"], self.GIVENS)
+
     def test_the_rerun_sends_the_givens(self):
         with mock.patch.object(rb, "try_query",
                                return_value=([{"n": 5}], None)) as tq:
