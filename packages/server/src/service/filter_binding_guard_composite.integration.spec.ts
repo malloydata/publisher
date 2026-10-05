@@ -7,11 +7,12 @@ import {
    MalloyConfig,
    type Connection,
 } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError } from "../errors";
+import { logger } from "../logger";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -179,14 +180,26 @@ async function count(model: Model, queryText: string): Promise<unknown> {
 }
 
 async function expectDenied(model: Model, queryText: string): Promise<void> {
-   let served: unknown = "<not served>";
+   const debug = spyOn(logger, "debug");
    try {
-      served = await count(model, queryText);
-   } catch (error) {
-      expect(error).toBeInstanceOf(AccessDeniedError);
-      return;
+      let served: unknown = "<not served>";
+      try {
+         served = await count(model, queryText);
+      } catch (error) {
+         expect(error).toBeInstanceOf(AccessDeniedError);
+         expect(
+            debug.mock.calls.some(
+               (call) =>
+                  String(call[0]) ===
+                  "Inherited source filter binding check failed; denying",
+            ),
+         ).toBe(true);
+         return;
+      }
+      throw new Error(`expected a denial, got n = ${String(served)}`);
+   } finally {
+      debug.mockRestore();
    }
-   throw new Error(`expected a denial, got n = ${String(served)}`);
 }
 
 describe("filter binding: an inherited where: on a composite source", () => {
@@ -251,6 +264,35 @@ describe("filter binding: an inherited where: on a composite source", () => {
          await expectDenied(
             model,
             "run: orders_shifted_customer -> { aggregate: n }",
+         );
+      });
+   });
+
+   it("still refuses a caller compose(...) around a rebinding", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: compose(orders_fake_monthly, orders_monthly_only) -> { aggregate: n }",
+         );
+      });
+   });
+
+   it("serves a join_one to a composite with a where:", async () => {
+      await withModel(async (model) => {
+         expect(
+            await count(
+               model,
+               "run: customers extend { join_one: o is orders_monthly_only on customer_id = o.customer_id } -> { aggregate: n is o.amount.sum() }",
+            ),
+         ).toBe(1000);
+      });
+   });
+
+   it("still refuses a join_one to a caller compose(...) around a rebinding", async () => {
+      await withModel(async (model) => {
+         await expectDenied(
+            model,
+            "run: customers extend { join_one: o is compose(orders_monthly_only extend { rename: raw_monthly is is_monthly; dimension: is_monthly is true }, orders_monthly_only) on customer_id = o.customer_id } -> { aggregate: n is o.amount.sum() }",
          );
       });
    });
@@ -383,6 +425,14 @@ describe("filter binding: a where: declared on a composite member", () => {
       });
    });
 
+   it("names the queried source in the denial, not the member's table", async () => {
+      await withModel(async (model) => {
+         await expect(
+            count(model, "run: large_fake -> { aggregate: n }"),
+         ).rejects.toThrow('Access denied for source "large_fake".');
+      });
+   });
+
    it("still refuses a rebinding that copies the member's own where:", async () => {
       await withModel(async (model) => {
          await expectDenied(
@@ -439,10 +489,19 @@ source: large_only is by_size extend { where: is_large }
    "m.malloy": `
 import "grains.malloy"
 `,
+   "public.malloy": `##! experimental { composite_sources }
+import "grains.malloy"
+
+source: monthly_public is orders_monthly_only extend { measure: total is amount.sum() }
+`,
+   "top.malloy": `
+import "public.malloy"
+`,
 };
 
 async function withPackage(
    run: (model: Model) => Promise<void>,
+   modelPath = "m.malloy",
 ): Promise<void> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-composite-pkg-"));
@@ -461,7 +520,7 @@ async function withPackage(
    malloyConfig.wrapConnections(() => connections);
    const pkg = await Package.create("env", "test-pkg", dir, malloyConfig);
    try {
-      const model = pkg.getModel("m.malloy");
+      const model = pkg.getModel(modelPath);
       expect(model).toBeDefined();
       await run(model!);
    } finally {
@@ -472,6 +531,23 @@ async function withPackage(
 }
 
 describe("filter binding: a composite imported from another file", () => {
+   it("serves a where: declared in a file the queried model only imports indirectly", async () => {
+      await withPackage(async (model) => {
+         expect(
+            await count(model, "run: monthly_public -> { aggregate: n }"),
+         ).toBe(4);
+      }, "top.malloy");
+   });
+
+   it("still refuses a rebinding through that indirect import", async () => {
+      await withPackage(async (model) => {
+         await expectDenied(
+            model,
+            "run: monthly_public extend { rename: raw_monthly is is_monthly; dimension: is_monthly is true } -> { aggregate: n }",
+         );
+      }, "top.malloy");
+   });
+
    it("serves a where: on a field only the resolved member declares", async () => {
       await withPackage(async (model) => {
          expect(
