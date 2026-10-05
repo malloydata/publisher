@@ -66,7 +66,7 @@ If you do not have `search_database_schema`, a connection may still exist; you j
 source: explore is my_conn.table('schema.table') extend {}
 ```
 
-**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-analyze` for that workflow.
+**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-model-as-you-go` for that workflow.
 
 ## What to Capture
 

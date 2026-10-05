@@ -41,7 +41,6 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | Skill | Use when... |
 |-------|-------------|
 | `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
-| `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (`notebooks/<slug>.malloy`; an existing `.malloynb` still reads) |
 | `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
@@ -89,7 +88,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 Two top-level workflows orchestrate the phase and support skills above:
 
 - **Model data from scratch:** load `skill:malloy-modeling`. It drives the full pipeline (discover, scope, define, build, review, curate) and routes to the phase skills.
-- **Answer a data question or explore:** load `skill:malloy-analysis`. It drives exploratory analysis and views, using `skill:malloy-analyze` and `skill:malloy-charts`; save the result as a dashboard with `skill:malloy-dashboards`.
+- **Answer a data question or explore:** load `skill:malloy-analysis`. It also handles open-ended exploration, using `skill:malloy-charts`; save the result as a dashboard with `skill:malloy-dashboards`.
 
 Publishing is out of scope for open-source Publisher v1. Self-hosters move a finished model into a served package via git and the host's publish path; see `skill:malloy-publish`.
 
