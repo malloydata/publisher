@@ -271,8 +271,11 @@ jobs:
 
   publish-docker:
     needs: prepare
+    # What docker-image.yml's merge job declares to sign the image; a caller
+    # cannot grant less.
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/docker-image.yml
     secrets: inherit
     with:
