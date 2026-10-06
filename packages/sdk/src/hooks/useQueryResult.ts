@@ -53,6 +53,22 @@ export function queryResultKey(spec: QueryRequestSpec): QueryKey {
    ];
 }
 
+/** Every cached result of one model, for invalidating after the model is saved. */
+export function modelResultsKey(
+   spec: Pick<
+      QueryRequestSpec,
+      "environmentName" | "packageName" | "versionId" | "modelPath"
+   >,
+): QueryKey {
+   return [
+      "queryResult",
+      spec.environmentName,
+      spec.packageName,
+      spec.versionId,
+      spec.modelPath,
+   ];
+}
+
 export function useQueryResult(
    spec: QueryRequestSpec,
    { enabled = true }: { enabled?: boolean } = {},

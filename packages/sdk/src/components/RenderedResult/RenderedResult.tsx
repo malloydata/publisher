@@ -37,6 +37,7 @@ import {
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
 import type { DrillClickPayload } from "../drill/resolveDrill";
+import { loadMalloyTag } from "../DashboardBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -106,7 +107,11 @@ interface RenderedResultProps {
     * nothing can act on one, and then the result renders inert.
     */
    drill?: DrillBinding;
+   /** The box is a cell to fill: a table's root stretches to it. See `ResultContainer`. */
+   fill?: boolean;
 }
+
+const FILL_ATTR = "data-publisher-fill";
 
 const createRenderer = async (
    theme: ResolvedTheme,
@@ -173,7 +178,7 @@ async function extractChartThemeOverride(parsed: unknown) {
 
    let parseAnnotation: typeof import("@malloydata/malloy-tag").parseAnnotation;
    try {
-      ({ parseAnnotation } = await import("@malloydata/malloy-tag"));
+      ({ parseAnnotation } = await loadMalloyTag());
    } catch {
       // Missing peer dep is an acceptable fallback. Charts render with the
       // shell theme only.
@@ -301,6 +306,12 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
 }
+/* !important because the malloy-explorer stylesheet pins these same properties with it. */
+[${FILL_ATTR}] .malloy-table.root {
+   height: 100% !important;
+   align-content: start !important;
+   grid-template-columns: repeat(var(--total-header-size), minmax(max-content, 1fr)) !important;
+}
 .malloy-render .malloy-table .th.column-cell {
    /* Non-pinned tables have no header background in the renderer's
       own CSS (only pinned scrolled tables paint the pinned-header
@@ -379,6 +390,7 @@ function RenderedResultInner({
    drill,
    onSizeChange,
    onSizing,
+   fill,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
    // The renderer binds its click handler at construction, so a changing
@@ -507,10 +519,14 @@ function RenderedResultInner({
          const remeasures = remeasuresAfterReady(renderAs, strategy);
          if (hasMeasuredRef.current && !remeasures) return;
 
+         // A filled table root is as tall as its box, which would read back as its content.
+         const stretched = element.hasAttribute(FILL_ATTR);
+         if (stretched) element.removeAttribute(FILL_ATTR);
          const renderedHeight = measureContentHeight(
             root,
             contentNodeDepth(renderAs),
          );
+         if (stretched) element.setAttribute(FILL_ATTR, "");
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
@@ -930,6 +946,7 @@ function RenderedResultInner({
    return (
       <div
          ref={ref}
+         {...(fill ? { [FILL_ATTR]: "" } : {})}
          style={{
             width: "100%",
             height: inputHeight ? `${inputHeight}px` : "400px",

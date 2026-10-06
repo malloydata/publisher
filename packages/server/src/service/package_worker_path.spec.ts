@@ -886,6 +886,40 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          `["pkg"]`,
          /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
       ],
+      [
+         "an unknown retrieval key",
+         JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
+         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts\./,
+      ],
+      [
+         "an invalid retrieval.refine.minLevel",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { refine: { minLevel: "NONE" } },
+         }),
+         /retrieval\.refine\.minLevel: expected one of LOW, MEDIUM, HIGH/,
+      ],
+      [
+         "an invalid retrieval.rerank.topSources",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { rerank: { topSources: 0 } },
+         }),
+         /retrieval\.rerank\.topSources: expected a positive integer/,
+      ],
+      [
+         "an invalid retrieval.representation",
+         JSON.stringify({ name: "pkg", retrieval: { representation: "x" } }),
+         /retrieval\.representation: expected one of single, facets/,
+      ],
+      [
+         "a retrieval prompt path that climbs out of the package",
+         JSON.stringify({
+            name: "pkg",
+            retrieval: { prompts: { keyphrase: "../p.md" } },
+         }),
+         /resolves outside the package directory/,
+      ],
    ])(
       "answers %s in publisher.json with a 424, not a 503",
       async (_label, manifest, message) => {
@@ -918,6 +952,53 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          }
       },
    );
+
+   it("reads the retrieval block, prompt file included, at load and again on reload", async () => {
+      fs.mkdirSync(path.join(tempDir, "prompts"));
+      fs.writeFileSync(path.join(tempDir, "prompts", "k.md"), "first prompt");
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            retrieval: {
+               representation: "facets",
+               keyphrases: "never",
+               prompts: { keyphrase: "prompts/k.md" },
+            },
+         }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "trivial.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const settings = pkg.getRetrievalSettings();
+         expect(settings.representation).toBe("facets");
+         expect(settings.keyphrases).toBe("never");
+         expect(settings.prompts.keyphrase?.text).toBe("first prompt");
+
+         // A package with no block takes the defaults.
+         fs.writeFileSync(
+            path.join(tempDir, "publisher.json"),
+            JSON.stringify({ name: "pkg" }),
+         );
+         const plain = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(plain.getRetrievalSettings()).toEqual({
+            representation: "single",
+            keyphrases: "auto",
+            prompts: {},
+         });
+      } finally {
+         await duckdb.close();
+      }
+   });
 
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap

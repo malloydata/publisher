@@ -35,9 +35,9 @@ Malloy Explorer is organized into three main panels:
 
 <img src="explorer-screenshots/explorer-full-UI.png" alt="Explorer Full UI" width="900" style="max-width: 100%; height: auto;">
 
-### Parameters
+### Filters
 
-When the model declares [givens](givens.md), a **Parameters** row appears above the Explorer, one
+When the model declares [givens](givens.md), a **Filters** row appears above the Explorer, one
 control per given, the same controls a notebook shows. Every Run sends the current values, so a
 source gated with [`#(authorize)`](authorize.md) or scoped by [row-level access](row-level-access.md)
 can be explored from the Console instead of refusing with a 403.

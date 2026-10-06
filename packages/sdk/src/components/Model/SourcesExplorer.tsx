@@ -12,6 +12,7 @@ import {
 
 import React, { useEffect, useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { loadQueryBuilder } from "../DashboardBuilder/loadMalloy";
 import { parseResourceUri } from "../../utils/formatting";
 // import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
@@ -379,10 +380,7 @@ export function SourceExplorerComponent(props: SourceExplorerComponentProps) {
    useEffect(() => {
       let isMounted = true;
 
-      Promise.all([
-         import("@malloydata/malloy-explorer"),
-         import("@malloydata/malloy-query-builder"),
-      ])
+      Promise.all([import("@malloydata/malloy-explorer"), loadQueryBuilder()])
          .then(([explorerComponents, queryBuilder]) => {
             if (isMounted) {
                setExplorerComponents(explorerComponents);

@@ -2419,18 +2419,25 @@ function buildProxiedPostgresConnection(
    });
 }
 
-// Per-pod cap on a plain (non-proxied) Postgres connection's pool. Server-owned,
-// not exposed via API, same posture as buildProxiedPostgresConnection's poolMax
-// above and buildSnowflakePrivateKeyConnection's poolOptions. Sized small: a
-// target database's role often holds a much lower CONNECTION LIMIT than a
-// worker fleet's own width, so the cap here bounds one pod's share, not a
-// promise about the fleet total -- pods x POSTGRES_POOL_MAX_PER_CONNECTION can
-// still exceed a tight role limit when an environment's package replication
-// count is high, or during the old/new generation overlap on a connection
-// update.
+// Per-pod cap on a plain (non-proxied) Postgres connection's open sessions.
+// Server-owned, not exposed via API, like buildSnowflakePrivateKeyConnection's
+// poolOptions. Sized small: a target database's role often holds a much lower
+// CONNECTION LIMIT than a worker fleet's own width, so the cap here bounds one
+// pod's share, not a promise about the fleet total -- pods x
+// POSTGRES_POOL_MAX_PER_CONNECTION can still exceed a tight role limit when an
+// environment's package replication count is high, or during the old/new
+// generation overlap on a connection update.
 const POSTGRES_POOL_MAX_PER_CONNECTION = 5;
-const POSTGRES_POOL_IDLE_TIMEOUT_MS = 10_000;
+// pg-pool applies this to time spent waiting for a free slot as well as to the
+// TCP connect, so a sixth concurrent query on a busy connection fails after
+// this long with "timeout exceeded when trying to connect".
 const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = 30_000;
+// One query per session. The connection SQL endpoint runs arbitrary SQL, so a
+// session's state (SET, SET ROLE, an open BEGIN) must not reach the next
+// caller. Closing each session after one use keeps today's fresh-session
+// semantics while the pool still caps how many are open at once, and leaves
+// no idle sessions for a server restart or failover to break.
+const POSTGRES_POOL_MAX_USES = 1;
 
 /**
  * `PooledPostgresConnection` with pool options that actually reach `pg.Pool`.
@@ -2440,8 +2447,8 @@ const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = 30_000;
  * `poolMax` passed into the constructor lands on `ConnectionConfig`'s index
  * signature (so it type-checks) and is then silently dropped, and `pg.Pool`
  * falls back to its own default (`max: 10`) regardless of what the caller
- * asked for. This override is the only way today to make a pool size, an idle
- * timeout, or `application_name` actually apply.
+ * asked for. This override is the only way today to make a pool size,
+ * `maxUses`, or `application_name` actually apply.
  */
 class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
    // The base method's declared return type is pg's `ClientConfig`, because
@@ -2449,9 +2456,8 @@ class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
    // `getPool()` (which is what actually calls this on a pool connection)
    // passes the result straight to `new Pool(...)`, whose constructor accepts
    // pg's `PoolConfig` -- a strict superset of `ClientConfig` that adds
-   // `max`/`min`/`idleTimeoutMillis`/`connectionTimeoutMillis`. Returning
-   // `PoolConfig` here is the accurate type for that call site, not a widened
-   // escape hatch.
+   // `max`/`maxUses`/`connectionTimeoutMillis`. Returning `PoolConfig` here
+   // is the accurate type for that call site, not a widened escape hatch.
    protected buildClientConfig(
       cfg: Parameters<PooledPostgresConnection["buildClientConfig"]>[0],
    ): PoolConfig {
@@ -2459,11 +2465,11 @@ class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
       return {
          ...base,
          max: POSTGRES_POOL_MAX_PER_CONNECTION,
-         idleTimeoutMillis: POSTGRES_POOL_IDLE_TIMEOUT_MS,
+         maxUses: POSTGRES_POOL_MAX_USES,
          connectionTimeoutMillis: POSTGRES_POOL_CONNECTION_TIMEOUT_MS,
          // Lets the target database's own pg_stat_activity identify these
          // sessions instead of showing a blank application_name.
-         application_name: "credible-publisher",
+         application_name: "malloy-publisher",
       };
    }
 }

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import type { DashboardDocument } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type QueryTile,
+} from "./document";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import {
    spliceDashboardDocument,
@@ -117,7 +121,7 @@ run: a -> kpis
 `;
 
 const tile = (d: DashboardDocument, name: string) =>
-   d.tiles.find((t) => t.name === name)!;
+   d.tiles.find((t): t is QueryTile => isQueryTile(t) && t.name === name)!;
 
 interface Row {
    what: string;

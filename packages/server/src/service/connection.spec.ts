@@ -33,8 +33,9 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { UnsupportedCatalogFormatError } from "../errors";
+import { PayloadTooLargeError, UnsupportedCatalogFormatError } from "../errors";
 import { logger } from "../logger";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -1992,6 +1993,26 @@ describe("connection integration tests", () => {
             }
          });
 
+         const testPostgresFields = () => ({
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+         });
+
+         const buildPlainPostgresConfig = () =>
+            buildEnvironmentMalloyConfig(
+               [
+                  {
+                     name: "pg_pooled",
+                     type: "postgres",
+                     postgresConnection: testPostgresFields(),
+                  },
+               ],
+               testEnvironmentPath,
+            );
+
          it(
             "should resolve a plain environment-level Postgres connection as pooled and capped",
             async () => {
@@ -2011,24 +2032,7 @@ describe("connection integration tests", () => {
                // EnvironmentPooledPostgresConnection instead; this asserts
                // both that it is pooled at all, and that the pool's real,
                // resolved size is the server-owned cap, not pg's default.
-               const config = buildEnvironmentMalloyConfig(
-                  [
-                     {
-                        name: "pg_pooled",
-                        type: "postgres",
-                        postgresConnection: {
-                           host: process.env.POSTGRES_TEST_HOST,
-                           port: parseInt(
-                              process.env.POSTGRES_TEST_PORT || "5432",
-                           ),
-                           userName: process.env.POSTGRES_TEST_USER!,
-                           password: process.env.POSTGRES_TEST_PASSWORD!,
-                           databaseName: process.env.POSTGRES_TEST_DATABASE,
-                        },
-                     },
-                  ],
-                  testEnvironmentPath,
-               );
+               const config = buildPlainPostgresConfig();
 
                try {
                   const connection =
@@ -2047,8 +2051,9 @@ describe("connection integration tests", () => {
                   // override, this reads 10 (pg's own default) no matter
                   // what the caller passed.
                   expect(pool.options.max).toBe(5);
+                  expect(pool.options.maxUses).toBe(1);
                   expect(pool.options.application_name).toBe(
-                     "credible-publisher",
+                     "malloy-publisher",
                   );
 
                   // Prove the pool is real, not just correctly configured: a
@@ -2066,13 +2071,96 @@ describe("connection integration tests", () => {
             { timeout: 30000 },
          );
 
-         const testPostgresFields = () => ({
-            host: process.env.POSTGRES_TEST_HOST,
-            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
-            userName: process.env.POSTGRES_TEST_USER!,
-            password: process.env.POSTGRES_TEST_PASSWORD!,
-            databaseName: process.env.POSTGRES_TEST_DATABASE,
-         });
+         it(
+            "should keep a plain Postgres connection usable after more row-cap overflows than its pool size",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // streamSqlWithBudget stops reading a stream as soon as a cap is
+               // exceeded, so each overflow is an early exit from the stream.
+               // A slot that an early exit fails to return is never returned,
+               // and the pool holds 5, so the sixth overflow is the first to
+               // wait on a free slot.
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  if (!isStreamingConnection(connection)) {
+                     throw new Error(
+                        "Expected a streaming Postgres connection",
+                     );
+                  }
+                  const manyRows =
+                     "SELECT row_to_json(t) AS row FROM (SELECT generate_series(1, 1000) AS n) t";
+                  for (let i = 0; i < 6; i++) {
+                     await expect(
+                        streamSqlWithBudget(
+                           connection,
+                           manyRows,
+                           { rowLimit: 11 },
+                           { maxRows: 10, maxBytes: 0 },
+                        ),
+                     ).rejects.toBeInstanceOf(PayloadTooLargeError);
+                  }
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.totalCount - pool.idleCount).toBe(0);
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 42 AS answer) t",
+                  );
+                  expect(result.rows).toEqual([{ answer: 42 }]);
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should not carry one query's session state into the next query on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // The connection SQL endpoint runs arbitrary SQL. A SET or an
+               // open BEGIN from one caller must not change how the next
+               // caller's query resolves tables or runs. In a fresh session's
+               // implicit transaction now() equals statement_timestamp(); in
+               // a transaction left open by an earlier caller it does not.
+               const config = buildPlainPostgresConfig();
+               const probe =
+                  "SELECT row_to_json(t) AS row FROM (SELECT current_setting('search_path') AS search_path, now() = statement_timestamp() AS own_txn) t";
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const before = (await connection.runSQL(probe)).rows[0];
+                  await connection.runSQL("SET search_path TO no_such_schema");
+                  await connection.runSQL("BEGIN");
+                  const after = (await connection.runSQL(probe)).rows[0];
+                  expect(after).toEqual(before);
+                  expect(after).toEqual(
+                     expect.objectContaining({ own_txn: true }),
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
 
          it(
             "should apply a direct connection's statementTimeoutMilliseconds on the database",

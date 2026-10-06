@@ -13,7 +13,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
+import {
+   createEntityEmbeddingsTable,
+   createEntityKeyphrasesTable,
+   createSourceSummariesTable,
+} from "../../storage/duckdb/schema";
 import {
    EmbeddingProvider,
    prepareEmbeddingInput,
@@ -24,7 +28,8 @@ import {
    EmbeddableEntity,
    MAX_DOC_CHARS,
    MAX_DOC_CHUNKS,
-   MAX_EMBEDDED_ENTITIES,
+   getMaxEmbeddedEntities,
+   setMaxEmbeddedEntities,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
    chunkDoc,
    entityFacets,
@@ -33,6 +38,7 @@ import {
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
    _resetEmbeddingIndexStateForTests,
+   _setSyncRetryForTests,
    _setTimingForTests,
    _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
@@ -41,6 +47,7 @@ import {
    humanizeName,
    trySemanticSearch,
 } from "./embedding_index";
+import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 let tempDir: string;
 let db: DuckDBConnection;
@@ -50,6 +57,8 @@ beforeAll(async () => {
    db = new DuckDBConnection(path.join(tempDir, "test.db"));
    await db.initialize();
    await createEntityEmbeddingsTable(db);
+   await createEntityKeyphrasesTable(db);
+   await createSourceSummariesTable(db);
 });
 
 afterAll(async () => {
@@ -75,6 +84,10 @@ function mapProvider(
       model?: string;
       dimensions?: number;
       fail?: () => boolean;
+      // The status `fail` answers with (default 500).
+      failStatus?: number;
+      // Requests whose input includes this text answer 503.
+      failForText?: string;
       // Requests whose input includes this text block until the promise
       // resolves, so a test can hold one call mid-flight deterministically.
       gate?: { forText: string; until: Promise<void> };
@@ -83,9 +96,14 @@ function mapProvider(
    const counts = new Map<string, number>();
    const fetchStub = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (options.fail?.()) {
-         return new Response("stub failure", { status: 500 });
+         return new Response("stub failure", {
+            status: options.failStatus ?? 500,
+         });
       }
       const body = JSON.parse(String(init?.body)) as { input: string[] };
+      if (options.failForText && body.input.includes(options.failForText)) {
+         return new Response("stub failure", { status: 503 });
+      }
       if (options.gate && body.input.includes(options.gate.forText)) {
          await options.gate.until;
       }
@@ -123,12 +141,24 @@ function entityOfKind(kind: string, name: string): EmbeddableEntity {
 }
 
 /**
+ * The `facets` representation, pinned. The default moved to `single`; the
+ * tests in this file are about faceted rows (a name row plus doc chunks), so
+ * they ask for them by name instead of relying on the default. The `single`
+ * representation has its own tests in embedding_representation.spec.ts.
+ */
+const FACETS = {
+   representation: "facets",
+   keyphrases: "never",
+   prompts: {},
+} as const;
+
+/**
  * A stand-in Package instance. Identity is all the index uses it for, so a
  * fresh one models exactly what a reload does: replace the instance while the
  * cached rows, and the package's name, stay put.
  */
 function instance(): Package {
-   return {} as unknown as Package;
+   return { getRetrievalSettings: () => FACETS } as unknown as Package;
 }
 
 /** Poll through the cold-start "indexing" response until the sync lands. */
@@ -306,7 +336,7 @@ describe("chunkDoc / entityFacets", () => {
 describe("trySemanticSearch", () => {
    it("cold start reports indexing, then ranks by cosine with a floor", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const args = {
          db,
          provider,
@@ -319,7 +349,7 @@ describe("trySemanticSearch", () => {
             entity("gamma", "src"),
          ],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const first = await trySemanticSearch(args);
@@ -352,7 +382,7 @@ describe("trySemanticSearch", () => {
       const ready = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "kind-window",
          entities: [
@@ -364,7 +394,7 @@ describe("trySemanticSearch", () => {
          queries: [
             { targetIndex: 0, text: "total revenue", kinds: ["measure"] },
          ],
-         limit: 2,
+         perSourceWindow: 2,
       });
       if (!("hits" in ready)) throw new Error("expected hits");
       expect(ready.hits.map((h) => h.name)).toEqual(["revenue"]);
@@ -387,10 +417,10 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
-      await searchReady({ ...base, pkg: {} as unknown as Package });
+      await searchReady({ ...base, pkg: instance() });
       expect(counts.get("alpha")).toBe(1);
 
       // A "reload": same package name, new instance. The recorded sync
@@ -421,7 +451,7 @@ describe("trySemanticSearch", () => {
          packageName: "reload-warm",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({ ...base, pkg: instance() });
@@ -451,7 +481,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "reload-edited",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
@@ -503,7 +533,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
@@ -547,12 +577,12 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "twopath",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const ready = await searchReady(args);
@@ -564,7 +594,7 @@ describe("trySemanticSearch", () => {
       // shared include imported by ten files is 10x.
       expect(counts.get("alpha")).toBe(1);
       expect(ready.hits.map((h) => h.name)).toEqual(["alpha"]);
-      // Counted once too, so MAX_EMBEDDED_ENTITIES and totalEntities track
+      // Counted once too, so the entity cap and totalEntities track
       // the model rather than the number of files importing it.
       expect(ready.totalEntities).toBe(1);
 
@@ -574,6 +604,7 @@ describe("trySemanticSearch", () => {
          "env",
          "twopath",
          entities,
+         instance(),
       );
       expect(status.status).toBe("ready");
       expect(status.totalEntities).toBe(1);
@@ -594,18 +625,18 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src"), entity("beta", "src")],
       });
 
       const changed = await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [
             entity("alpha", "src", "now documented"),
             entity("beta", "src"),
@@ -649,11 +680,11 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "status",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       };
 
@@ -663,6 +694,7 @@ describe("trySemanticSearch", () => {
          "env",
          "status",
          entities,
+         instance(),
       );
       expect(cold.status).toBe("indexing");
       expect(cold.embeddedRows).toBe(0);
@@ -677,6 +709,7 @@ describe("trySemanticSearch", () => {
          "env",
          "status",
          entities,
+         instance(),
       );
       expect(warm.status).toBe("ready");
       // alpha contributes a name row and a doc row, beta only a name row, so
@@ -716,7 +749,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "dims-ignored",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       });
       // The rows are usable: retrieval reads them by the observed length.
@@ -728,6 +761,7 @@ describe("trySemanticSearch", () => {
          "env",
          "dims-ignored",
          entities,
+         instance(),
       );
       expect(status.status).toBe("ready");
       expect(status.embeddedRows).toBe(3);
@@ -753,7 +787,7 @@ describe("trySemanticSearch", () => {
          packageName: "restart",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
 
       // Drops every process-memory record of the sync while leaving the rows
@@ -766,6 +800,7 @@ describe("trySemanticSearch", () => {
          "env",
          "restart",
          entities,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       // The rows really are all there. Coverage cannot tell this case from a
@@ -790,7 +825,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "doc-edit",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const before = [
          entity("alpha", "src", "first draft"),
@@ -805,6 +840,7 @@ describe("trySemanticSearch", () => {
                "env",
                "doc-edit",
                before,
+               instance(),
             )
          ).status,
       ).toBe("ready");
@@ -819,6 +855,7 @@ describe("trySemanticSearch", () => {
          "env",
          "doc-edit",
          after,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       // Both entities are still "covered", which is exactly the confusion.
@@ -839,11 +876,11 @@ describe("trySemanticSearch", () => {
       await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "model-switch",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities,
       });
       expect(
@@ -854,6 +891,7 @@ describe("trySemanticSearch", () => {
                "env",
                "model-switch",
                entities,
+               instance(),
             )
          ).status,
       ).toBe("ready");
@@ -887,16 +925,24 @@ describe("trySemanticSearch", () => {
       await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "swapped",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: before,
       });
       expect(
-         (await getEmbeddingIndexStatus(db, provider, "env", "swapped", before))
-            .status,
+         (
+            await getEmbeddingIndexStatus(
+               db,
+               provider,
+               "env",
+               "swapped",
+               before,
+               instance(),
+            )
+         ).status,
       ).toBe("ready");
 
       const after = [entity("alpha", "src"), entity("gamma", "src")];
@@ -906,27 +952,31 @@ describe("trySemanticSearch", () => {
          "env",
          "swapped",
          after,
+         instance(),
       );
       expect(status.status).toBe("indexing");
       expect(status.totalEntities).toBe(2);
       expect(status.embeddedEntities).toBe(1);
    });
 
-   it("reports a package past the cap as too-many-entities, not as indexing", async () => {
+   it("reports a package past the cap as an error, not as indexing", async () => {
       // A permanent condition an operator must act on, not a transient one to
-      // wait out: reporting it as "indexing" would poll forever. Named the
-      // same as getContext's retrieval_reason for the identical condition.
+      // wait out: reporting it as "indexing" would poll forever.
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const status = await getEmbeddingIndexStatus(
          db,
          provider,
          "env",
          "huge",
-         Array.from({ length: MAX_EMBEDDED_ENTITIES + 1 }, (_, i) =>
+         Array.from({ length: getMaxEmbeddedEntities() + 1 }, (_, i) =>
             entity(`e${i}`, "src"),
          ),
       );
-      expect(status.status).toBe("too-many-entities");
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("too-many-entities");
+      expect(status.lastError?.message).toContain(
+         `${getMaxEmbeddedEntities() + 1} entities`,
+      );
    });
 
    it("counts the entities that matched only below the floor", async () => {
@@ -937,11 +987,11 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "cutoff",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "src"),
             entity("beta", "src"),
@@ -964,7 +1014,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "true-negative",
          queries: [
@@ -974,7 +1024,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [entity("alpha", "src")],
       });
       if (!("hits" in result)) throw new Error("expected hits");
@@ -992,17 +1042,17 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "scoped-cutoff",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "a"),
             entity("gamma", "a"),
             entity("gamma", "b"),
          ],
       };
-      await searchReady({ ...base, pkg: {} as unknown as Package });
+      await searchReady({ ...base, pkg: instance() });
       const scoped = await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          sourceName: "a",
       });
       if (!("hits" in scoped)) throw new Error("expected hits");
@@ -1044,7 +1094,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider: mapProvider(vectors).provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "symptom-b",
          queries: [
@@ -1054,7 +1104,7 @@ describe("trySemanticSearch", () => {
                kinds: ["measure"],
             },
          ],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [entity("fclt_building_hist", "src", doc)],
       });
       if (!("hits" in result)) throw new Error("expected hits");
@@ -1075,11 +1125,11 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "dilution",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          entities: [
             entity("alpha", "src", "a long aside about unrelated matters"),
             entity("beta", "src", "alpha-ish"),
@@ -1102,18 +1152,18 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "undoc",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // A fresh Package per call: the sync memo is per instance, exactly as
       // a reload swaps the instance in production.
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "documented")],
       });
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
 
@@ -1132,12 +1182,12 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src"), entity("beta", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          provider: first.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       const second = mapProvider(
@@ -1147,7 +1197,7 @@ describe("trySemanticSearch", () => {
       const result = await searchReady({
          ...base,
          provider: second.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in result)) throw new Error("expected hits");
       expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
@@ -1164,7 +1214,7 @@ describe("trySemanticSearch", () => {
    });
 
    it("re-syncs an already-synced instance when the model changes", async () => {
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const first = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const base = {
          db,
@@ -1173,7 +1223,7 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({ ...base, provider: first.provider });
 
@@ -1196,16 +1246,16 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src"), entity("gamma", "src")],
       });
       await searchReady({
          ...base,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       const rows = await db.all<{ entity_name: string }>(
@@ -1219,12 +1269,12 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "orders"), entity("beta", "customers")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
          sourceName: "customers",
       };
       const result = await searchReady(args);
@@ -1239,18 +1289,18 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          packageName: "pkg-a",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       const other = await searchReady({
          ...base,
          packageName: "pkg-b",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("beta", "src")],
       });
       if (!("hits" in other)) throw new Error("expected hits");
@@ -1266,12 +1316,12 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          provider: first.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       // The same model name now returns 4-dim vectors (a different
@@ -1284,7 +1334,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const result = await searchReady({
          ...base,
          provider: wide.provider,
@@ -1307,9 +1357,9 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
 
       // Instance B (a reload) triggers the dims heal with a 4-dim
@@ -1321,7 +1371,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkgB = {} as unknown as Package;
+      const pkgB = instance();
       for (let i = 0; i < 200; i++) {
          await trySemanticSearch({
             ...base,
@@ -1363,12 +1413,12 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
 
@@ -1382,7 +1432,7 @@ describe("trySemanticSearch", () => {
          beta: [0.8, 0.6, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkg = {} as unknown as Package;
+      const pkg = instance();
       const args = {
          ...base,
          provider: wide.provider,
@@ -1412,9 +1462,9 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({
          ...base,
          pkg: pkgA,
@@ -1432,7 +1482,7 @@ describe("trySemanticSearch", () => {
       await searchReady({
          ...base,
          provider: changed.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "reworded")],
       });
 
@@ -1455,9 +1505,9 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider, pkg: pkgA });
 
       // Call C on pkgA holds at its query embed (gated), memo done and
@@ -1483,7 +1533,7 @@ describe("trySemanticSearch", () => {
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
-      const pkgB = {} as unknown as Package;
+      const pkgB = instance();
       for (let i = 0; i < 200; i++) {
          await trySemanticSearch({
             ...base,
@@ -1513,9 +1563,9 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({
          ...base,
          pkg: pkgA,
@@ -1524,7 +1574,10 @@ describe("trySemanticSearch", () => {
 
       // A reload instance syncs two changed entities through a DB whose
       // SECOND insert fails: one row was already rewritten, so even
-      // though the sync rejects, snapshots must be invalidated.
+      // though the sync rejects, snapshots must be invalidated. One row per
+      // insert, because a batch is a single statement and lands whole: the
+      // torn state this pins is "an earlier batch landed, a later one died".
+      _setSyncRetryForTests({ batchSize: 1 });
       let inserts = 0;
       const failingDb = new Proxy(db, {
          get(target, prop, receiver) {
@@ -1552,7 +1605,7 @@ describe("trySemanticSearch", () => {
          ...base,
          db: failingDb,
          provider: changed.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [
             entity("alpha", "src", "reworded"),
             entity("beta", "src", "new"),
@@ -1575,6 +1628,7 @@ describe("trySemanticSearch", () => {
          hits: [],
          belowCutoffCount: 0,
          totalEntities: 0,
+         cutBySource: new Map(),
       };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
@@ -1611,9 +1665,9 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, pkg: pkgA });
 
       // Delete removes the rows AND the syncMeta entry (the churn-leak
@@ -1653,13 +1707,13 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // Sync 1 (holds the mutex at its embed once it starts).
       const s1 = trySemanticSearch({
          ...base,
          provider: gated.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       // Delete queues behind sync 1.
       const del = deletePackageEmbeddings(db, "env", "pkg");
@@ -1668,7 +1722,7 @@ describe("trySemanticSearch", () => {
       const s2kick = trySemanticSearch({
          ...base,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       release();
@@ -1700,9 +1754,9 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
-      const pkgA = {} as unknown as Package;
+      const pkgA = instance();
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
       const initialRows = await db.all<{ content_hash: string }>(
          "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
@@ -1766,7 +1820,7 @@ describe("trySemanticSearch", () => {
       const holdKick = trySemanticSearch({
          ...base,
          provider: holder.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src", "changed")],
       });
       await holdKick;
@@ -1805,20 +1859,20 @@ describe("trySemanticSearch", () => {
          db,
          provider,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          environmentName: "env",
          packageName: "pkg-a",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("alpha", "src")],
       });
       await searchReady({
          ...base,
          environmentName: "env",
          packageName: "pkg-b",
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          entities: [entity("beta", "src")],
       });
 
@@ -1849,12 +1903,12 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
 
       // First dims flip: heals via one purge + re-sync at 4 dims.
@@ -1865,7 +1919,7 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
 
@@ -1873,7 +1927,7 @@ describe("trySemanticSearch", () => {
       // inconsistent; the heal must NOT purge again but cool down, and
       // the 4-dim rows must survive. One instance throughout, so the
       // poll passes its cold start and reaches the heal check.
-      const pkgC = {} as unknown as Package;
+      const pkgC = instance();
       let result = await trySemanticSearch({
          ...base,
          provider: narrow.provider,
@@ -1901,26 +1955,33 @@ describe("trySemanticSearch", () => {
    });
 
    it("does not re-purge once per cooldown window: suppression outlasts the cooldown", async () => {
-      // The core of blocker 4. cooldown 15ms, suppression 400ms: after
-      // the cooldown clears (but well inside the suppression window) a
-      // fresh mismatch must BACK OFF, not re-purge. With the co-anchored
-      // bug (equal windows) the first post-cooldown call re-purges and
-      // full-re-embeds; this test fails against that.
-      _setTimingForTests({ cooldownMs: 15, purgeSuppressionMs: 400 });
+      // The core of blocker 4. After the cooldown clears (but inside the
+      // suppression window) a fresh mismatch must BACK OFF, not re-purge.
+      // With the co-anchored bug (equal windows) the first post-cooldown
+      // call re-purges and full-re-embeds; this test fails against that.
+      //
+      // Neither window is left to the clock. Suppression is held longer than
+      // the test runs, and each cycle ends the cooldown for exactly its first
+      // question. Real-time windows (15ms cooldown, 400ms suppression) let a
+      // slow runner outlast the suppression window and see the re-purge it
+      // then correctly allows, and let a poll landing after the cooldown
+      // restart the heal instead of reading the back-off.
+      const HELD_MS = 60_000;
+      _setTimingForTests({ cooldownMs: 15, purgeSuppressionMs: HELD_MS });
       const base = {
          db,
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       // Sync at 3 dims, then flip to 4: one purge + resync leaves 4-dim rows.
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
@@ -1929,21 +1990,26 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
       const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
       expect(purgeAt).toBeGreaterThan(0);
 
       // Query back at 3 dims (rows are 4-dim, so stale) across several
-      // cooldown-expiry cycles, all inside the 400ms suppression window.
-      const pkgQ = {} as unknown as Package;
+      // cooldown-expiry cycles, all inside the suppression window.
+      const pkgQ = instance();
       for (let cycle = 0; cycle < 4; cycle++) {
+         // The previous cycle's cooldown is over for this question and for
+         // the sync it queues, which checks the cooldown when it runs.
+         _setTimingForTests({ cooldownMs: 0 });
          let r = await trySemanticSearch({
             ...base,
             provider: narrow.provider,
             pkg: pkgQ,
          });
+         await embeddingSyncQueue.idle();
+         _setTimingForTests({ cooldownMs: HELD_MS });
          for (
             let j = 0;
             j < 200 && "unavailable" in r && r.unavailable === "indexing";
@@ -1957,7 +2023,6 @@ describe("trySemanticSearch", () => {
             });
          }
          expect(r).toEqual({ unavailable: "cooldown" });
-         await new Promise((resolve) => setTimeout(resolve, 20)); // clear the 15ms cooldown
       }
 
       // Never re-purged: lastPurgeAtMs unchanged and the 4-dim rows survive
@@ -1980,13 +2045,13 @@ describe("trySemanticSearch", () => {
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
@@ -1995,7 +2060,7 @@ describe("trySemanticSearch", () => {
       const healed = await searchReady({
          ...base,
          provider: wide.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in healed)) throw new Error("expected hits");
       const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
@@ -2006,7 +2071,7 @@ describe("trySemanticSearch", () => {
       const recovered = await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
       });
       if (!("hits" in recovered))
          throw new Error("expected hits after re-heal");
@@ -2029,12 +2094,12 @@ describe("trySemanticSearch", () => {
       const argsA = {
          db,
          provider: failing.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg-a",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
       let a = await trySemanticSearch(argsA);
       expect(a).toEqual({ unavailable: "indexing" });
@@ -2051,12 +2116,12 @@ describe("trySemanticSearch", () => {
       const b = await searchReady({
          db,
          provider: healthy.provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg-b",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
       expect("hits" in b).toBe(true);
    });
@@ -2070,12 +2135,12 @@ describe("trySemanticSearch", () => {
       const args = {
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       };
 
       const first = await trySemanticSearch(args);
@@ -2104,14 +2169,471 @@ describe("trySemanticSearch", () => {
       const result = await trySemanticSearch({
          db,
          provider,
-         pkg: {} as unknown as Package,
+         pkg: instance(),
          environmentName: "env",
          packageName: "huge",
          entities,
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
-         limit: 10,
+         perSourceWindow: 10,
       });
       expect(result).toEqual({ unavailable: "too-many-entities" });
       expect(counts.size).toBe(0);
+   });
+});
+
+describe("sync saves each batch and retries transient failures", () => {
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const baseArgs = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: instance(),
+      environmentName: "env",
+      packageName: "pkg",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      perSourceWindow: 10,
+   });
+   const storedNames = async () =>
+      (
+         await db.all<{ entity_name: string }>(
+            "SELECT entity_name FROM entity_embeddings WHERE environment_name = 'env' ORDER BY entity_name",
+         )
+      ).map((r) => r.entity_name);
+
+   async function untilCooldown(args: ReturnType<typeof baseArgs>) {
+      let r = await trySemanticSearch(args);
+      for (let i = 0; i < 400 && !isCooldown(r); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         r = await trySemanticSearch(args);
+      }
+      expect(r).toEqual({ unavailable: "cooldown" });
+   }
+
+   it("keeps batch 1 when batch 2 fails, and a later sync embeds only the rest", async () => {
+      // Two rows per request. "gamma" sits in the second request, which the
+      // provider rejects on every attempt.
+      _setSyncRetryForTests({ batchSize: 2, policy: { maxAttempts: 2 } });
+      const failing = mapProvider(VECTORS, { failForText: "gamma" });
+      await untilCooldown(baseArgs(failing.provider));
+      expect(await storedNames()).toEqual(["alpha", "beta"]);
+
+      // The provider recovers. Nothing already saved is embedded again.
+      const healthy = mapProvider(VECTORS);
+      _clearProviderCooldownForTests();
+      const result = await searchReady(baseArgs(healthy.provider));
+      expect("hits" in result).toBe(true);
+      const embeddedAgain = [...healthy.counts.keys()].filter(
+         (text) => text !== "find alpha",
+      );
+      expect(embeddedAgain.sort()).toEqual(["delta", "gamma"]);
+      expect(await storedNames()).toEqual(["alpha", "beta", "delta", "gamma"]);
+   });
+
+   it("sends one request per batch", async () => {
+      _setSyncRetryForTests({ batchSize: 3 });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+      });
+      await searchReady(baseArgs(provider));
+      // 4 rows at 3 per request is two sync requests, plus the one request
+      // that embeds the query once the index is ready.
+      expect(requests).toBe(3);
+   });
+
+   it("does not yield to the event loop to fingerprint a small package", async () => {
+      // A search captures the package's generation on entry and then computes
+      // the fingerprint. A yield there (it used to yield after its last chunk
+      // too) let a sync finish in between and move the generation, so the
+      // search answered `indexing` once more and embedded its query twice.
+      const { provider } = mapProvider(VECTORS);
+      const args = baseArgs(provider);
+      await searchReady(args);
+      const real = globalThis.setImmediate;
+      let yields = 0;
+      globalThis.setImmediate = ((fn: () => void, ...rest: unknown[]) => {
+         yields++;
+         return real(fn, ...(rest as []));
+      }) as typeof setImmediate;
+      try {
+         // The four-entity list is not frozen, so the fingerprint is computed
+         // afresh on every call.
+         const result = await trySemanticSearch(args);
+         expect("hits" in result).toBe(true);
+      } finally {
+         globalThis.setImmediate = real;
+      }
+      expect(yields).toBe(0);
+   });
+
+   it("succeeds on the third attempt after two 503s, waiting between tries", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+            random: () => 0,
+         },
+      });
+      let failures = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 503,
+         fail: () => ++failures <= 2,
+      });
+      const result = await searchReady(baseArgs(provider));
+      expect("hits" in result).toBe(true);
+      expect(slept).toEqual([500, 1_000]);
+   });
+
+   it("does not retry an authentication failure; the cooldown takes over", async () => {
+      const slept: number[] = [];
+      _setSyncRetryForTests({
+         policy: {
+            sleep: async (ms) => {
+               slept.push(ms);
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         failStatus: 401,
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await untilCooldown(baseArgs(provider));
+      expect(requests).toBe(1);
+      expect(slept).toEqual([]);
+   });
+});
+
+describe("the entity cap is the configured value", () => {
+   const args = (provider: EmbeddingProvider, count: number) => ({
+      db,
+      provider,
+      pkg: instance(),
+      environmentName: "env",
+      packageName: "capped",
+      entities: Array.from({ length: count }, (_, i) =>
+         entity(i === 0 ? "alpha" : `e${i}`, "src"),
+      ),
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      perSourceWindow: 10,
+   });
+
+   it("refuses a package one entity over the cap, and embeds one at the cap", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider, counts } = mapProvider({
+         ...QUERY_VECTORS,
+         alpha: [1, 0, 0],
+         e1: [0, 1, 0],
+         e2: [0, 0, 1],
+      });
+      expect(await trySemanticSearch(args(provider, 4))).toEqual({
+         unavailable: "too-many-entities",
+      });
+      expect(counts.size).toBe(0);
+
+      const atCap = await searchReady(args(provider, 3));
+      expect("hits" in atCap).toBe(true);
+   });
+
+   it("says the count, the cap and how to raise it", async () => {
+      setMaxEmbeddedEntities(3);
+      const { provider } = mapProvider(QUERY_VECTORS);
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "capped",
+         args(provider, 4).entities,
+      );
+      expect(status.status).toBe("error");
+      expect(status.reason).toBe("too-many-entities");
+      const message = status.lastError?.message ?? "";
+      expect(message).toContain("4 entities");
+      expect(message).toContain("cap of 3");
+      expect(message).toContain("retrieval.indexing.maxEntities");
+      expect(message).toContain("publisher.config.json");
+   });
+});
+
+describe("deleting a package stops its running sync", () => {
+   // A REST delete does not wait for the cleanup of a package's vectors (the
+   // caller does not await it), but the cleanup queues on the package's sync
+   // mutex. A boot-time sync holds that mutex for as long as it runs, retries
+   // included, so the cleanup used to wait behind a sync that kept embedding a
+   // package nobody can query any more, and spent the provider's calls on it.
+   // The sync now stops at the next batch or the next retry after the package
+   // is deleted.
+   const VECTORS = {
+      ...QUERY_VECTORS,
+      ...ENTITY_VECTORS,
+      delta: [0, 1, 0],
+   };
+   const four = ["alpha", "beta", "gamma", "delta"].map((n) =>
+      entity(n, "src"),
+   );
+   const args = (provider: EmbeddingProvider) => ({
+      db,
+      provider,
+      pkg: {} as unknown as Package,
+      environmentName: "env",
+      packageName: "doomed",
+      entities: four,
+      queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+      perSourceWindow: 10,
+   });
+   const rowsFor = async () =>
+      (
+         await db.all(
+            "SELECT 1 FROM entity_embeddings WHERE package_name = 'doomed'",
+         )
+      ).length;
+   const until = async (done: () => boolean) => {
+      for (let i = 0; i < 400 && !done(); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(done()).toBe(true);
+   };
+
+   it("does not request the batches after the one in flight", async () => {
+      _setSyncRetryForTests({ batchSize: 2 });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return false;
+         },
+         gate: { forText: "alpha", until: held },
+      });
+      await trySemanticSearch(args(provider));
+      await until(() => requests >= 1);
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      release();
+      await deleted;
+      // Time for a sync that ignored the delete to ask for its second batch.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
+   });
+
+   it("does not retry a failed request after the package is deleted", async () => {
+      let sleeping!: () => void;
+      const asleep = new Promise<void>((resolve) => (sleeping = resolve));
+      let wake!: () => void;
+      const woken = new Promise<void>((resolve) => (wake = resolve));
+      _setSyncRetryForTests({
+         batchSize: 2,
+         policy: {
+            maxAttempts: 5,
+            sleep: async () => {
+               sleeping();
+               await woken;
+            },
+         },
+      });
+      let requests = 0;
+      const { provider } = mapProvider(VECTORS, {
+         fail: () => {
+            requests++;
+            return true;
+         },
+      });
+      await trySemanticSearch(args(provider));
+      await asleep;
+
+      const deleted = deletePackageEmbeddings(db, "env", "doomed");
+      wake();
+      await deleted;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requests).toBe(1);
+      expect(await rowsFor()).toBe(0);
+   });
+});
+
+describe("the candidate window is per source", () => {
+   // One source that matches the query on every field would take a global
+   // window whole and leave the narrow source with no card at all.
+   const wide = Array.from({ length: 15 }, (_, i) =>
+      entity(`w${String(i).padStart(2, "0")}`, "wide"),
+   );
+   const tiny = entity("t00", "tiny");
+   const vectorFor = (e: EmbeddableEntity, v: number[]) => [
+      embeddingText(e),
+      v,
+   ];
+   const vectors = () =>
+      Object.fromEntries([
+         // Closer to the query as the index falls: w00 is the best.
+         ...wide.map((e, i) => vectorFor(e, [1, 0.05 * i, 0])),
+         // Above the 0.2 floor, but well below every wide row.
+         vectorFor(tiny, [0.5, 0.866, 0]),
+         ["find it", [1, 0, 0]],
+      ]);
+
+   const search = async (perSourceWindow: number, packageName: string) => {
+      const { provider } = mapProvider(vectors());
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: instance(),
+         environmentName: "env",
+         packageName,
+         entities: [...wide, tiny],
+         queries: [{ targetIndex: 0, text: "find it", kinds: ["measure"] }],
+         perSourceWindow,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      return result;
+   };
+
+   it("counts the rows the window cut, per source", async () => {
+      const result = await search(10, "window-cut");
+      // 15 wide rows cleared the floor and 10 were kept; tiny lost none.
+      expect([...result.cutBySource]).toEqual([["wide", 5]]);
+      expect([...(await search(15, "window-nocut")).cutBySource]).toEqual([]);
+   });
+
+   it("keeps the best rows of each source, and every source", async () => {
+      const { hits } = await search(10, "window-1");
+      expect(
+         hits.filter((h) => h.source === "wide").map((h) => h.name),
+      ).toEqual(wide.slice(0, 10).map((e) => e.name));
+      // A global window of 10 would have been all wide.
+      expect(hits.filter((h) => h.source === "tiny")).toHaveLength(1);
+      expect(hits).toHaveLength(11);
+   });
+
+   it("cuts each source to the window, not the package", async () => {
+      const { hits } = await search(3, "window-2");
+      expect(
+         hits.filter((h) => h.source === "wide").map((h) => h.name),
+      ).toEqual(wide.slice(0, 3).map((e) => e.name));
+      expect(hits.filter((h) => h.source === "tiny")).toHaveLength(1);
+   });
+
+   it("still counts the rows the window cut as weighed, not rejected", async () => {
+      const { provider } = mapProvider(vectors());
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: instance(),
+         environmentName: "env",
+         packageName: "window-3",
+         entities: [...wide, tiny],
+         queries: [{ targetIndex: 0, text: "find it", kinds: ["measure"] }],
+         perSourceWindow: 1,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.totalEntities).toBe(16);
+      expect(result.belowCutoffCount).toBe(0);
+   });
+});
+
+describe("equal scores are ordered and cut the same way every time", () => {
+   // The same field name in two sources embeds identically, so the two rows
+   // tie exactly. Which one comes first, and which one fits a window of one,
+   // used to depend on the order the rows were written.
+   const run = async (
+      sources: string[],
+      packageName: string,
+      limit: number,
+   ) => {
+      const { provider } = mapProvider({
+         "total amount": [1, 0, 0],
+         "find total": [1, 0, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: instance(),
+         environmentName: "env",
+         packageName,
+         entities: sources.map((s) => entity("total_amount", s)),
+         queries: [{ targetIndex: 0, text: "find total", kinds: ["measure"] }],
+         perSourceWindow: limit,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      return result.hits.map((h) => h.source);
+   };
+
+   it("lists tied rows by source, whichever was written first", async () => {
+      expect(await run(["zeta", "alpha", "mid"], "tie-1", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+      expect(await run(["mid", "alpha", "zeta"], "tie-2", 10)).toEqual([
+         "alpha",
+         "mid",
+         "zeta",
+      ]);
+   });
+
+   it("keeps the same tied row when the window cannot hold them all", async () => {
+      // One source, so the per-source window of one has to cut the tie: a
+      // dimension and a measure of the same name embed identically. The
+      // winner is the first by name then kind, whichever was written first.
+      const cutTie = async (kinds: string[], packageName: string) => {
+         const { provider } = mapProvider({
+            "total amount": [1, 0, 0],
+            "find total": [1, 0, 0],
+         });
+         const result = await searchReady({
+            db,
+            provider,
+            pkg: instance(),
+            environmentName: "env",
+            packageName,
+            entities: kinds.map((k) => ({
+               ...entityOfKind(k, "total_amount"),
+               source: "only",
+            })),
+            queries: [
+               {
+                  targetIndex: 0,
+                  text: "find total",
+                  kinds: ["measure", "dimension"],
+               },
+            ],
+            perSourceWindow: 1,
+         });
+         if (!("hits" in result)) throw new Error("expected hits");
+         return result.hits.map((h) => h.kind);
+      };
+      expect(await cutTie(["measure", "dimension"], "tie-3")).toEqual([
+         "dimension",
+      ]);
+      expect(await cutTie(["dimension", "measure"], "tie-4")).toEqual([
+         "dimension",
+      ]);
+   });
+
+   it("gives the same order on repeated queries", async () => {
+      const orders = new Set<string>();
+      for (let i = 0; i < 5; i++) {
+         orders.add(
+            JSON.stringify(await run(["c", "a", "b"], `tie-repeat-${i}`, 10)),
+         );
+      }
+      expect([...orders]).toEqual([JSON.stringify(["a", "b", "c"])]);
    });
 });

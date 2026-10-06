@@ -485,16 +485,5 @@ vulnerabilities:
       v4() and v7() already throw on out-of-range writes. A search of each parent's
       installed sources finds no v3(), v5() or v6() call, only v4(). Fixed in uuid
       11.1.1, 12.0.1 and 13.0.1, majors the parents do not admit.
-misconfigurations:
-  # docker/Dockerfile.ci is the CI integration-test runner referenced from
-  # docker-compose.yml (profile `ci`). It is never published and not the production
-  # image (see packages/server/README.docker.md). It runs as root because the test
-  # container writes into the mounted checkout.
-  - id: DS-0002
-    paths: ["docker/Dockerfile.ci"]
-    expired_at: 2026-12-31
-    statement: >
-      CI test-runner image with no USER instruction: the test container writes into
-      the mounted checkout and runs as root by design. Not published and not the
-      production image.
+misconfigurations: []
 secrets: []

@@ -7,7 +7,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
     A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
-    notebooks (`.malloynb` files and `.malloy` files under `notebooks/`), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    notebooks (`.malloynb` files and tagged `.malloy` files that are notebooks), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
     under `public/`.
 
     ## Key Features
@@ -1574,8 +1574,9 @@ paths:
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
         files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
         model file is listed, and `isHidden` marks the ones the package hides. Dashboard files
-        are listed by the dashboards route either way. Served notebooks (`.malloy` files under
-        `notebooks/` that carry an `## artifact` note) are not models here, with or without a
+        are listed by the dashboards route either way. Served notebooks (a `.malloy` at the top of
+        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
+        names no `kind` and sits under `notebooks/`) are not models here, with or without a
         surface; they are listed by list-notebooks.
       parameters:
         - name: environmentName
@@ -1631,14 +1632,15 @@ paths:
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets, unless
         `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
-        sources the text names. Dashboard files and served notebooks (`notebooks/*.malloy` with
-        an `## artifact` note) are always returned. A package with no surface, or with
+        sources the text names. Dashboard files and served notebooks (a `.malloy` at the top of
+        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
+        names no `kind` and sits under `notebooks/`) are always returned. A package with no surface, or with
         `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
-        when the text names a source the file does not publish; the text of a dashboard is
-        always returned.
+        when the text names a source the file does not publish, unless
+        `includeHiddenFilesAndSources` is true; the text of a dashboard is always returned.
       parameters:
         - name: environmentName
           in: path
@@ -1686,12 +1688,15 @@ paths:
       tags:
         - models
       operationId: update-model-source
-      summary: Write a dashboard file into the package
+      summary: Write a dashboard or notebook file into the package
       description: |
-        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy`,
-        the only paths this endpoint accepts — into the package, and reloads the
-        package in place so the dashboard is served from the new text. This is
-        the dashboard builder's save.
+        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy` —
+        or a notebook file — `notebooks/<slug>.malloy`, which must carry an
+        `## artifact` tag (an untagged file there is a shared include and is
+        refused with 400, and so is a write over an existing file that is
+        not a notebook) — the only paths this endpoint accepts,
+        into the package, and reloads the package in place so it is served from
+        the new text. This is the dashboard and notebook builder's save.
 
         The text is compiled first, as the file, and refused with its problems
         when it does not compile; nothing is written. The write is atomic (a
@@ -1700,16 +1705,30 @@ paths:
         a new file removed) and the package reloaded again, so a save never
         leaves the package serving less than it did.
 
-        `expectedHash` is the SHA-256 (hex) of the text the caller opened, as
-        `GET …/models/{path}` returned it in `sourceText`. When the file on disk
-        no longer hashes to it, the write is refused with 409 and nothing is
+        `expectedHash` is the SHA-256 (hex) of the file's text as the caller
+        opened it, as `GET …/models/{path}` returned it in `sourceText`. On a
+        package with a surface, that GET withholds `sourceText` only when the
+        text names a source the file does not publish, and returns it anyway
+        with `includeHiddenFilesAndSources=true`. When the file on disk no
+        longer hashes to it, the write is refused with 409 and nothing is
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
-        the file: a file that already exists is then refused with 409 too, so an
-        unconditional overwrite is not something a caller can ask for by leaving
-        a field out. The check, the write, the reload and the restore all happen
-        under one hold of the package lock, so two saves racing on one file
-        cannot both pass the check, and a rollback cannot revert the other
-        writer's text instead of its own.
+        the file: a file that already exists is then refused with 409 too, so
+        an unconditional overwrite is not something a caller can ask for by
+        leaving a field out. A notebook path over an existing file the package
+        does not serve as a notebook answers 400 instead, with or without a
+        hash, because that check comes before the hash. The check, the write,
+        the reload and the restore all happen under one hold of the package
+        lock, so two saves racing on one file cannot both pass the check, and a
+        rollback cannot revert the other writer's text instead of its own.
+
+        A dashboard whose name (the file's basename) another file already holds
+        is refused with 409 before anything is written, since the name is its
+        URL and its `# drill` target. A `dashboards/` file whose text has no
+        `# artifact` or `## artifact` tag (an `artifact` property anywhere on a
+        tag line, outside a string) is refused with 400 before anything is
+        written; a tag only inside a block comment passes that check but the
+        compiled model carries none, so it is rolled back and answers 500. A
+        tagged dashboard with no tiles saves but is not served until it has one.
 
         A create answers 201 and an update 200; `created` in the body says the
         same thing.
@@ -1732,7 +1751,7 @@ paths:
             type: string
         - name: path
           in: path
-          description: The dashboard file, `dashboards/<slug>.malloy`
+          description: The file, `dashboards/<slug>.malloy` or `notebooks/<slug>.malloy`
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
@@ -1771,8 +1790,9 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, or already exists and
-            no `expectedHash` was sent
+            The file changed since the caller opened it, already exists and
+            no `expectedHash` was sent, or is a dashboard whose name another
+            file already holds
           content:
             application/json:
               schema:
@@ -1918,10 +1938,12 @@ paths:
       operationId: list-dashboards
       summary: List package dashboards
       description: |
-        Lists the dashboards in the specified package — every `.malloy` file in
-        the package's `dashboards/` directory that carries an `# artifact` (or
-        model-level `## artifact`) annotation. A file in that directory with no
-        artifact tag is a shared include and is not listed, whether or not it
+        Lists the dashboards in the specified package — every tagged `.malloy`
+        file at the top of `dashboards/` or `notebooks/` carrying an
+        `# artifact` (or model-level `## artifact`) annotation whose `kind` is
+        `dashboard`, or names none under `dashboards/`. A `kind=notebook` file is
+        listed as a notebook instead, whichever folder it sits in. A file with
+        no artifact tag is a shared include and is not listed, whether or not it
         compiles.
 
         A tagged dashboard that failed to compile is listed carrying its
@@ -2055,8 +2077,9 @@ paths:
       summary: List package notebooks
       description: |
         Retrieves a list of all Malloy notebooks within the specified package: every
-        `.malloynb` file, and every `.malloy` file directly under `notebooks/` that has a
-        model-level `## artifact` note. Each notebook entry includes the relative path,
+        `.malloynb` file, and every `.malloy` file at the top of `notebooks/` or `dashboards/`
+        whose model-level `## artifact` tag says `kind=notebook` (or names no `kind` and sits
+        under `notebooks/`). Each notebook entry includes the relative path,
         package name, title, description, and any compilation or reading error. This endpoint
         is useful for discovering available notebooks and checking their status.
       parameters:
@@ -2107,8 +2130,9 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
-        A served `notebooks/*.malloy` (one with an `## artifact` note) answers here as well as a
-        `.malloynb`.
+        A served notebook (a `.malloy` at the top of `notebooks/` or `dashboards/` whose
+        model-level `## artifact` tag says `kind=notebook`, or names no `kind` and sits under
+        `notebooks/`) answers here as well as a `.malloynb`.
         On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
@@ -2160,8 +2184,9 @@ paths:
       description: |
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
-        For markdown cells, this simply returns the cell content. A served `notebooks/*.malloy`
-        answers here as well as a `.malloynb`.
+        For markdown cells, this simply returns the cell content. A served notebook
+        (tagged `kind=notebook`, or untagged-kind under `notebooks/`) answers here as well as a
+        `.malloynb`.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
         `queryableSources` left at `"declared"`, a code cell may read only sources the surface
@@ -3655,75 +3680,173 @@ components:
           description: >-
             Server-computed, read-only: the state of this package's semantic
             discovery index, which is what `get_context` ranks against
-            when an embedding provider is configured. Absent when the server
-            has no provider, because there is no index to describe.
+            when an embedding provider is configured. `status: lexical` when
+            the server has no provider, because there is no index to describe.
 
     PackageEmbeddingIndex:
       type: object
       readOnly: true
       description: >-
-        State of a package's semantic discovery index. Poll `status` until
-        `ready` to know retrieval is warm - before this, that state existed
-        only as a server log line, so anything waiting on a warm index had to
-        scrape logs. Send the package one `get_context` question first, then
-        poll: only a question starts the sync, and a restart forgets which
-        syncs completed, so after every restart each package reads `indexing`
-        until it is asked something. Polling before asking waits forever.
+        State of a package's semantic discovery index. The server builds the
+        index in the background when the package loads (and reloads), one
+        package at a time across the whole server, saving each batch of vectors
+        as it goes. Poll `status` until `ready` to know retrieval is warm.
+        While `indexing`, `embeddedRows` rises toward `totalRows`. A restart
+        starts every package's index again, but vectors already stored for
+        unchanged content are reused, so a restart over an unchanged package
+        embeds nothing new.
         Every count is scoped to the embedding model currently configured, so
-        rows left behind by an earlier model are never counted. Read `status` for readiness and the counts for
-        coverage: they answer different questions, and only `status` tracks
-        what the search path will do. The first read after a package loads or
-        reloads builds the package's entity index and its content
-        fingerprint, which is work a metadata read would not otherwise do.
-        After that a read is two row counts and never waits on a sync, so
-        polling is cheap.
+        rows left behind by an earlier model are never counted. Read `status`
+        for readiness and the counts for progress: they answer different
+        questions, and only `status` tracks what the search path will do. The
+        first read after a package loads builds the package's entity index and
+        its content fingerprint, which is work a metadata read would not
+        otherwise do. After that a read is two row counts and never waits on a
+        sync, so polling is cheap.
       properties:
         status:
           type: string
           enum:
+            - lexical
             - indexing
             - ready
+            - error
             - cooldown
             - too-many-entities
           description: >-
-            `ready` = the index is warm, so the next `get_context` question
-            about this package is ranked semantically rather than lexically.
-            (It is a statement about the index, not a promise about the next
-            response: a question whose own query embedding fails still falls
-            back, reporting `retrieval_reason: provider-error`.) It is decided
-            by the same completed sync the search path gates on, not by
-            whether cached rows happen to cover the current entity names.
-            Those two differ exactly where it matters - the rows outlive a
-            restart and a reload, so a coverage test called an index warm
-            while the next question was still answered lexically.
-            `indexing` = no completed sync covers the package's current
-            content under the current model, so retrieval answers lexically
-            meanwhile. A reload whose files did not change stays `ready`,
-            because the vectors still describe that content. Four things move
-            a package to `indexing`: an edit, a new package, a changed
-            `EMBEDDING_MODEL`, and a server restart - the sync is recorded in
-            memory, so a restart reports `indexing` until the first question
-            re-establishes it, even though the vectors are still on disk. It
-            clears when a `get_context` question triggers a sync, which is
-            what builds the index; a package nothing has ever queried does not
-            warm on its own.
-            `cooldown` = the provider failed recently, so the semantic path is
-            short-circuited for a window. `too-many-entities` = the package has
-            more entities than the embedding cap, so it stays lexical
-            permanently rather than transiently. The same vocabulary as
-            `get_context`'s `retrieval_reason`, deliberately.
+            `lexical` = no embedding provider is configured, so `get_context`
+            ranks by words only. That is a mode of the server, not a failure.
+            `indexing` = vectors for this package are being built or are
+            queued behind another package's; while this lasts and a provider is
+            configured, `get_context` answers a search with an "indexing"
+            message and no results, not a lexical ranking. `ready` = the index
+            is warm, so the next `get_context` question about this package is
+            ranked semantically. (It is a statement about the index, not a
+            promise about the next response: a question whose own query
+            embedding fails returns an error naming the provider failure.) It
+            is decided by the same completed sync the search path gates on, not
+            by whether cached rows happen to cover the current entity names.
+            `error` = the index cannot serve now; `reason` and `lastError`
+            say why. A changed `EMBEDDING_MODEL` or a changed package moves a
+            `ready` package back to `indexing`.
+            `cooldown` and `too-many-entities` are deprecated. Earlier versions
+            reported them as the `status` itself; they are now the `reason` of
+            an `error`. They stay in this list so a client generated from an
+            earlier spec still understands every value, and they are never sent.
+        reason:
+          type: string
+          enum:
+            - cooldown
+            - too-many-entities
+          description: >-
+            Present when `status` is `error` for one of two reasons that earlier
+            versions reported as the `status` itself. `cooldown` = the provider
+            failed (after retries) and the package is waiting out a window
+            before the next try; `lastError.retryAt` says when. `too-many-entities`
+            = the package has more entities than the embedding cap, which no
+            retry fixes. Absent for other errors, such as an invalid embedding
+            configuration, which `lastError.message` describes.
+        stage:
+          type: string
+          enum:
+            - keyphrase
+            - source_summary
+          description: >-
+            The sync stage that failed, when `status` is `error` because of one.
+            `keyphrase` = the LLM could not write the package's keyphrases
+            (after retries), so nothing was embedded; `source_summary` = the
+            LLM could not write the package's source summaries (after retries),
+            so nothing was embedded. `lastError.message` has the reason.
+            Absent when the embedding call itself failed.
+        keyphraseProgress:
+          type: object
+          description: >-
+            Present only when keyphrases are on: the package asks for them
+            (`retrieval.keyphrases` is `auto` or `always`, the default being
+            `auto`) and `retrieval.llm` is configured. Counts the entities whose
+            keyphrase comes from the LLM; an entity with a short description
+            uses it as its keyphrase and is not counted.
+          properties:
+            done:
+              type: integer
+              description: Entities that need an LLM keyphrase and have one stored.
+            total:
+              type: integer
+              description: Entities that need an LLM keyphrase.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every entity had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
+        sourceSummaryProgress:
+          type: object
+          description: >-
+            Present only when source summaries are on: the package does not turn
+            them off (`retrieval.sourceSummary.enabled` is `auto` or `true`, the
+            default being `auto`) and `retrieval.llm` is configured. Counts the
+            sources that get an LLM-written summary. A source with no fields is
+            not counted.
+          properties:
+            done:
+              type: integer
+              description: Sources that get a summary and have a current one stored.
+            total:
+              type: integer
+              description: Sources that get a summary.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every source had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
+        lastError:
+          type: object
+          description: Present when `status` is `error`.
+          properties:
+            message:
+              type: string
+              description: >-
+                What went wrong, with the fix where there is one. Never
+                contains the provider's URL or the API key; the full error
+                is in the server log.
+            retryAt:
+              type: string
+              format: date-time
+              description: >-
+                The earliest time a retry can start. Nothing retries on a
+                timer: the first `get_context` question about this package
+                after this time starts the retry, so a package nobody asks
+                about stays in `error` and a status poll alone never sees it
+                recover. Absent when no retry can start (for example
+                `too-many-entities`).
+        startedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the sync now running began. Absent when none is running,
+            including while this package waits its turn in the queue.
         embeddedRows:
           type: integer
           description: >-
             Cached vectors for this package under the current embedding model.
-            An entity contributes one row for its name plus one per chunk of
-            its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities. Scoped by model only, not by
+            With the default `retrieval.representation` of `single` an entity
+            contributes one row, so this equals `totalEntities` once indexed.
+            With `facets` an entity contributes one row for its name plus one
+            per chunk of its documentation, so this exceeds `totalEntities` on
+            a documented model and is not a count of entities. A keyphrase row
+            is an extra on top of those and is not counted here or in
+            `totalRows`. Scoped by model only, not by
             vector length, so it counts what is cached rather than what a
             search could read today: after a change to `EMBEDDING_DIMENSIONS`
             that no question has probed yet, rows of the old length are still
             counted here until the next search discards them. `status` is
             already `indexing` in that window.
+        totalRows:
+          type: integer
+          description: >-
+            Rows the package wants cached: the denominator for `embeddedRows`.
+            `embeddedRows` of `totalRows` is the progress of a first index.
         totalEntities:
           type: integer
           description: Entities the package currently exposes to retrieval.
@@ -3881,8 +4004,8 @@ components:
     Dashboard:
       type: object
       description: |
-        A dashboard within a Malloy package: a self-contained `.malloy` file in
-        the package's `dashboards/` directory carrying an `# artifact` (or
+        A dashboard within a Malloy package: a self-contained `.malloy` file at
+        the top of the package's `dashboards/` or `notebooks/` directory carrying an `# artifact` (or
         model-level `## artifact`) annotation. The list entry; see
         DashboardManifest for the detail a viewer needs to render one.
       properties:
@@ -3960,6 +4083,16 @@ components:
         error:
           type: string
           description: Error message if the dashboard file failed to compile
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: >-
+            What the document is, from the `kind` property of its artifact tag
+            (the folder only decides the default when the tag says nothing). A
+            `notebook` is laid out as one column: `dashboardColumns` is 1
+            whatever the file says. Always `dashboard` on
+            `GET …/dashboards/{dashboardName}`; a notebook's manifest is the
+            `dashboard` field of `GET …/notebooks/{path}`.
         query:
           type: string
           description: >-
@@ -4001,7 +4134,8 @@ components:
           type: array
           description: |
             The control row. Normally one entry per given the dashboard runs
-            with: the union over `tiles`, or what `query` references when the tag
+            with: the union over `tiles` (less a given only a source's gate
+            reads, which a host injects rather than a viewer sets), or what `query` references when the tag
             sits on a query, and which the entry file
             can bind. The row widens to
             every given the entry file surfaces when any tile is one discovery
@@ -4031,12 +4165,32 @@ components:
 
     DashboardTile:
       type: object
-      description: One tile of a dashboard
+      description: >-
+        One tile of a dashboard. A `query` tile (the default) runs a query; a
+        `text` tile shows markdown and runs nothing, so a caller that runs a
+        dashboard's tiles skips the ones with `kind` `text`.
       properties:
+        kind:
+          type: string
+          enum: [query, text]
+          description: >-
+            `query` runs `query` through the model query endpoint; `text` shows
+            `markdown`. Absent means `query`.
+        name:
+          type: string
+          description: >-
+            A text tile's name: the bare word in `tiles=[…]` and on its
+            `##|(markdown) name` block. Absent on a query tile.
+        markdown:
+          type: string
+          description: >-
+            A text tile's body, the text of its `##|(markdown) name` block
+            without the opener. Empty when the file has no such block. Absent on
+            a query tile.
         query:
           type: string
           description: >-
-            The run expression exactly as written in `tiles=[…]`, for example
+            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
             "orders -> by_month". An EXPRESSION rather than a name, so it goes in
             the `query` field of a `POST …/models/{path}/query` body, prefixed
             with `run:`. Sending it in `queryName`, the field
@@ -4046,13 +4200,17 @@ components:
           items:
             type: string
           description: |
-            Names of the givens this tile references. This is a scoping hint,
-            not a binding constraint: it tells a caller which tiles a changed
-            control actually needs to re-run. Running a tile with the
-            dashboard's whole control row also works, because an unreferenced
-            given is ignored. Absent when the tile expression is not one
-            discovery can resolve, a refinement or a multi-stage pipeline for
-            instance, in which case send the whole control row. One such tile
+            Names of the givens this tile's compiled query reads: through its
+            view, its source's `where:`, a joined source's `where:`, a
+            dimension or measure it uses, and its source's `#(authorize)` and
+            `#(access_filter)` gates. A control not listed does not change the
+            tile, which is what a viewer's "Doesn't respond to" chip says. It
+            also tells a caller which tiles a changed control needs to re-run;
+            running a tile with the dashboard's whole control row also works,
+            because an unreferenced given is ignored. Absent when discovery
+            could not resolve the tile (its expression neither compiles nor is
+            a plain `source -> view` or named query the static walk reads), in
+            which case send the whole control row. One such tile
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.
@@ -4071,13 +4229,15 @@ components:
           type: integer
           description: >-
             Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names. Clamped to `dashboardColumns` at render time. Absent
+            query it names, or from `colspan=N` on a text tile's entry in
+            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
             means one column.
         break:
           type: boolean
           description: >-
             Start a new grid row at this tile, from a `# break` on the view or
-            query it names. Named for the tag, so every per-tile field on this
+            query it names, or from `break` on a text tile's entry in
+            `tiles=[…]`. Named for the tag, so every per-tile field on this
             schema is spelled the way an author writes it. A generated client
             escapes the attribute where the word is reserved (the Python client
             exposes `break_`) while the wire key stays `break`.
@@ -4143,8 +4303,9 @@ components:
           enum: ["malloynb", "malloy"]
           description:
             The file format the notebook is written in. `malloynb` is the
-            cell-separated format; `malloy` is a `.malloy` file under
-            `notebooks/` with a model-level `## artifact` note, whose cells are
+            cell-separated format; `malloy` is a `.malloy` at the top of `notebooks/` or
+            `dashboards/` whose model-level `## artifact` tag says `kind=notebook` (or names no
+            `kind` and sits under `notebooks/`), whose cells are
             its statements and its floating `(markdown)` notes in file order.
         malloyVersion:
           type: string
@@ -4157,6 +4318,16 @@ components:
           description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
+        dashboard:
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            The tile layout of a notebook written as one (`## artifact {
+            kind=notebook tiles=[…] }`), in the shape a dashboard has, with
+            `kind` `notebook` and one column. Absent on a notebook written as
+            cells. Its tiles run through the model query endpoint at
+            `modelPath`; `notebookCells` carries the same content as cells for
+            readers that do not draw a layout.
         annotations:
           type: array
           description:
@@ -4249,7 +4420,8 @@ components:
             server-side warning) when the file cannot be read, so a compiled
             model is never withheld for want of its text; and omitted when the
             file text names a source it does not publish, on a package with a
-            surface. A dashboard's text is always returned.
+            surface, unless `includeHiddenFilesAndSources` is true. A
+            dashboard's text is always returned.
 
     View:
       type: object
@@ -6009,7 +6181,7 @@ components:
 
     ModelSourceWriteRequest:
       type: object
-      description: The text to write into a dashboard file
+      description: The text to write into a dashboard or notebook file
       required:
         - source
       properties:
@@ -6025,7 +6197,7 @@ components:
 
     ModelSourceWriteResult:
       type: object
-      description: What a dashboard write left in the package
+      description: What a dashboard or notebook write left in the package
       required:
         - path
         - contentHash

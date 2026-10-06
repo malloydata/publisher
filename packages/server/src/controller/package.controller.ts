@@ -111,8 +111,8 @@ export class PackageController {
    }
 
    /**
-    * The package's semantic-index state, or undefined when the server has no
-    * embedding provider (nothing to describe) or the state could not be read.
+    * The package's semantic-index state (`lexical` when the server has no
+    * embedding provider), or undefined when the state could not be read.
     *
     * Never fails the request: this is a reporting field on a resource whose
     * primary job is package metadata, so a storage handle that is not ready

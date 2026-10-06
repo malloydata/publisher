@@ -4,14 +4,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
-import { tileKey, type DashboardTile } from "./document";
+import { tileKey, type DashboardTile, type QueryTile } from "./document";
 import { GAP_TYPE } from "./sortable";
 import { useTileReorder } from "./useTileReorder";
 
-const tile = (
-   name: string,
-   extra: Partial<DashboardTile> = {},
-): DashboardTile => ({
+const tile = (name: string, extra: Partial<QueryTile> = {}): QueryTile => ({
    name,
    source: "s",
    declaration: { kind: "reference", from: name },
@@ -93,5 +90,31 @@ describe("useTileReorder", () => {
       );
       act(() => view.result.current.onDragEnd(ended(tileKey(tiles[3]), true)));
       expect(commit).not.toHaveBeenCalled();
+   });
+
+   it("moves a text tile like any other, under its own key", () => {
+      const prose: DashboardTile = {
+         kind: "text",
+         name: "intro",
+         markdown: "",
+      };
+      const mixed = [tile("a"), tile("b", { break: true }), prose];
+      const commit = mock((_next: DashboardTile[]) => {});
+      const view = renderHook(() =>
+         useTileReorder({ tiles: mixed, commit, onLanded: () => {} }),
+      );
+      act(() => view.result.current.onDragStart());
+      act(() =>
+         view.result.current.onDragOver(
+            overGap(tileKey(prose), tileKey(mixed[0])),
+         ),
+      );
+      act(() => view.result.current.onDragEnd(ended(tileKey(prose))));
+      expect(tileKey(prose)).toBe("text.intro");
+      expect(commit.mock.calls[0][0].map(tileKey)).toEqual([
+         "s.a",
+         "text.intro",
+         "s.b",
+      ]);
    });
 });

@@ -238,7 +238,7 @@ function getStaticConnectionAttributes(
       case "postgres":
          return {
             dialectName: "postgres",
-            isPool: false,
+            isPool: true,
             canPersist: true,
             canStream: true,
          };

@@ -57,7 +57,6 @@ import {
    MalloyConfig,
    type ModelDef,
    type ModelMaterializer,
-   modelDefToModelInfo,
    type NamedQueryDef,
    type Query,
    Runtime,
@@ -107,6 +106,7 @@ import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
 } from "../service/gate_dimension";
+import { modelInfoOf } from "../service/model_info";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -118,6 +118,10 @@ import {
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
+import {
+   type PackageRetrievalSettings,
+   readPackageRetrieval,
+} from "../service/package_retrieval";
 import {
    collectSourceInfos,
    extractQueriesFromModelDef,
@@ -462,6 +466,7 @@ async function readPackageMetadata(
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -474,6 +479,7 @@ async function readPackageMetadata(
       materialization?: unknown;
       scope?: unknown;
       queryMetadata?: unknown;
+      retrieval?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -550,6 +556,10 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      // How this package is searched and indexed. Validated here so a bad key
+      // or an unreadable prompt file stops the load with a message naming it,
+      // and read here so a prompt edit takes effect on reload.
+      retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
    };
 }
 
@@ -866,7 +876,7 @@ async function compileMalloyModel(
       modelPath,
       modelType: "model",
       modelDef,
-      modelInfo: modelDefToModelInfo(modelDef),
+      modelInfo: modelInfoOf(modelDef),
       sourceInfos,
       // `sources`/`queries` ship complete (authorize + filter enforcement and
       // join resolution read the full set); the Model's discovery accessors
@@ -946,7 +956,7 @@ async function compileNotebookModel(
       // what earlier cells already surfaced. `collectSourceInfos` reads the
       // accumulated `contents`, so an `import { … }` contributes exactly the
       // names it selected and re-loading the imported file is unnecessary.
-      const currentInfo = modelDefToModelInfo(currentModelDef);
+      const currentInfo = modelInfoOf(currentModelDef);
       const newSources = collectSourceInfos(currentModelDef).filter(
          (s) => !(s.name in oldSources),
       );
@@ -1089,7 +1099,7 @@ async function compileNotebookModel(
       modelPath,
       modelType: "notebook",
       modelDef: finalModelDef,
-      modelInfo: finalModelDef ? modelDefToModelInfo(finalModelDef) : undefined,
+      modelInfo: finalModelDef ? modelInfoOf(finalModelDef) : undefined,
       sourceInfos: finalSourceInfos,
       sources: finalSources,
       queries: finalQueries,

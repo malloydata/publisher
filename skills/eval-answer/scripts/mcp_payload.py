@@ -73,6 +73,19 @@ def search_terms(tool_input: dict[str, Any]) -> list[str]:
     return terms
 
 
+def unavailable_state(payload: dict[str, Any] | None) -> str | None:
+    """`indexing` or `error` when the server could not rank at all, else None.
+
+    With an embedding provider configured, get_context answers `indexing` (the
+    index is still building) or `error` (it cannot serve now) instead of a
+    ranking. Both carry no entities, which a caller reading only the entities
+    takes for "the search found nothing". The `retrieval` field is where the
+    server says otherwise.
+    """
+    state = (payload or {}).get("retrieval")
+    return state if state in ("indexing", "error") else None
+
+
 def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Every returned entity with the provenance the response carries.
 

@@ -1,0 +1,13 @@
+##" A notebook written as one column of tiles.
+## artifact { kind=notebook title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }
+import "../models/orders.malloy"
+
+##|(markdown) intro
+## How to read this page
+
+Totals first, then the monthly trend.
+|##
+
+source: orders_tiles is orders extend {
+   view: headline is { aggregate: order_count }
+}
