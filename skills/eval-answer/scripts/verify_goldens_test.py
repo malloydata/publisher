@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import unittest.mock
 
@@ -1296,6 +1297,76 @@ class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):
         below = [l for l in src[guard[0]:] if l.startswith(("class ", "def "))]
         self.assertEqual(below, [], f"defined below the main guard: {below}")
 
+
+
+class HostedTruth(unittest.TestCase):
+    """A truth package published on a host, reached through hosted_query."""
+
+    HOSTED = {"mcp_url": "u", "server": "s", "organization": "o",
+              "environment": "e", "workdir": pathlib.Path("/tmp")}
+
+    def args(self):
+        return argparse.Namespace(publisher=None, environment="e",
+                                  truth_package="shop-truth",
+                                  truth_model="truth.malloy", rewrite=False,
+                                  hosted=self.HOSTED)
+
+    def case(self, value):
+        return {"qid": "q", "golden": {"kind": "scalar", "status": "verified",
+                                       "canonicalQuery": "run: t -> {}",
+                                       "value": value}}
+
+    def test_the_value_check_goes_to_the_host_not_a_publisher(self):
+        with unittest.mock.patch.object(
+                verify_goldens, "hosted_truth_query",
+                return_value=([{"n": 42}], None)) as hq, \
+                unittest.mock.patch.object(verify_goldens, "try_query") as tq:
+            status, _detail, _rows = verify_goldens.check_value(
+                self.case({"n": 42}), self.args())
+        self.assertEqual(status, "ok")
+        hq.assert_called_once()
+        tq.assert_not_called()
+
+    def test_a_host_value_that_differs_is_drift(self):
+        with unittest.mock.patch.object(verify_goldens, "hosted_truth_query",
+                                        return_value=([{"n": 41}], None)):
+            status, _d, _r = verify_goldens.check_value(
+                self.case({"n": 42}), self.args())
+        self.assertEqual(status, "diff")
+
+    def test_a_cut_page_is_an_error_not_rows(self):
+        # Compared against the first N rows of a longer result, a golden would
+        # pass or fail on the cut.
+        fake = types.SimpleNamespace(
+            Target=lambda **kw: kw,
+            query=lambda *a, **k: ([{"n": 1}], True, None))
+        with unittest.mock.patch.dict(sys.modules, {"hosted_query": fake}):
+            rows, err = verify_goldens.hosted_truth_query(
+                self.HOSTED, "p", "m", "run: t -> {}")
+        self.assertEqual(rows, [])
+        self.assertIn("row limit", err)
+
+    def test_a_host_error_is_returned_as_the_error(self):
+        fake = types.SimpleNamespace(
+            Target=lambda **kw: kw,
+            query=lambda *a, **k: ([], False, "403 forbidden"))
+        with unittest.mock.patch.dict(sys.modules, {"hosted_query": fake}):
+            _rows, err = verify_goldens.hosted_truth_query(
+                self.HOSTED, "p", "m", "run: t -> {}")
+        self.assertEqual(err, "403 forbidden")
+
+    def test_a_truth_package_that_is_the_package_under_test_is_refused(self):
+        self.assertTrue(verify_goldens.hosted_isolation_findings(
+            "ecommerce", "ecommerce"))
+        self.assertEqual(verify_goldens.hosted_isolation_findings(
+            "ecommerce-truth", "ecommerce"), [])
+
+    def test_the_cli_refuses_two_truth_servers(self):
+        with self.assertRaises(SystemExit):
+            verify_goldens.main(["--set", "s", "--publisher", "http://x",
+                                 "--truth-mcp-url", "u",
+                                 "--truth-organization", "o",
+                                 "--environment", "e"])
 
 if __name__ == "__main__":
     unittest.main()

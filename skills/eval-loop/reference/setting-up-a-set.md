@@ -80,6 +80,11 @@ filters by hand, as its header says, and nothing else. Then set
 A set of criteria goldens or bare questions needs no truth package; `check`
 notes its absence and moves on.
 
+On a hosted target, publish the truth package on the host instead, outside the
+answerer's workspace, and verify with `--truth-mcp-url`
+(`reference/replaying-a-logged-session.md`, "Number keys against a hosted truth
+package").
+
 ## 4. Write eval.toml
 
 ```toml

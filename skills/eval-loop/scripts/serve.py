@@ -435,7 +435,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mcp-port", type=int, default=None, help="default 4812. "
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
-    ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--trace-retrieval", action="store_true",
+                    help="set PUBLISHER_MCP_TRACE=retrieval. A no-op on "
+                         "open-source Publisher, which has no trace store; "
+                         "see the module docstring")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "
