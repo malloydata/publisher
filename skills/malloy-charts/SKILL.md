@@ -433,7 +433,7 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 |---------|-----|
 | Two aggregates in chart | ONE aggregate, or use `y=['a','b']` |
 | `# currency=usd0m` on measure | `# currency` (no scale) on defs; scale only in views |
-| Chart annotation on `nest:` line | Put on the **view definition** |
+| Several tags on a `nest:` line | One lone tag on the `nest:` line works; with several, put each tag on its own line above the nested view |
 | Tags on same line | One tag per line |
 | Sparkline not showing | Add `# hidden` to nested view AND reference in `.sparkline=` |
 | Pivot > 30 columns | Filter/limit the nested group_by |

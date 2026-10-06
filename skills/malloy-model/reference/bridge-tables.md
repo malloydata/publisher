@@ -54,7 +54,7 @@ For composite keys, test multi-column: `group_by: col_a, col_b`, same pattern.
 
 ## Post-Join Verification
 
-A plain `count()` on the joined source cannot show a bad join: Malloy does not multiply rows, so the count equals the raw table even when a `join_one` target key repeats. Run the cardinality query above on the target before you write the join. After the join, group by one field of the joined table and check that the groups add up to the ungrouped total:
+A plain `count()` on the base source cannot show a bad join: Malloy leaves the join out of the SQL until the query uses a joined field, so the count equals the raw table even when a `join_one` target key repeats. Once the query uses the join (a `group_by` or `count(joined.field)`), rows do multiply: with 3 orders and one repeated target key, `count()` is 4 against 3 and a revenue sum is 340 against a true 240. Run the cardinality query above on the target before you write the join. After the join, group by one field of the joined table and check that the groups add up to the ungrouped total:
 
 ```malloy
 // revenue stands for any additive measure on the source
