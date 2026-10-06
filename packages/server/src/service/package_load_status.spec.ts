@@ -286,7 +286,8 @@ describe("Package.status: serving and loading", () => {
          location: "gs://bucket/pkg.zip",
       });
 
-      // The orchestrator's rebind PATCH: a name and a manifest, nothing else.
+      // A metadata PATCH that names only the manifest: everything it omits
+      // must survive.
       const after = await env.updatePackage("pkg", {
          name: "pkg",
          manifestLocation: null,
@@ -302,5 +303,75 @@ describe("Package.status: serving and loading", () => {
          ),
       );
       expect(onDisk.description).toBe("first");
+   });
+
+   it("remembers where a package was installed from, across a reload", async () => {
+      // The reinstall decision compares a PATCH's `location` with the one the
+      // package was installed from. That value has to survive the install
+      // itself, an in-place reload, and (through publisher.json) a restart,
+      // or the first rebind after any of them is a full reinstall again.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      const location = "gs://bucket/pkg___1.0.0.zip";
+
+      const download = deferred();
+      const install = env.installPackage(
+         "pkg",
+         async (stagingPath) => {
+            await download.promise;
+            await copyDir(fixture, stagingPath);
+         },
+         undefined,
+         { location, update: { location } },
+      );
+      // Known from the moment the install is accepted, before anything is
+      // compiled, so a PATCH arriving mid-install can be matched against it.
+      expect(env.installingFrom("pkg")).toBe(location);
+      download.resolve();
+      const installed = await install;
+      expect(env.installingFrom("pkg")).toBeUndefined();
+
+      expect(installed.getPackageMetadata().location).toBe(location);
+      const onDisk = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, "pkg", "publisher.json"),
+            "utf-8",
+         ),
+      );
+      expect(onDisk.location).toBe(location);
+
+      // An in-place reload rebuilds the metadata from publisher.json.
+      const reloaded = await env.getPackage("pkg", true);
+      expect(reloaded.getPackageMetadata().location).toBe(location);
+   });
+
+   it("applies a metadata PATCH that arrives during a first install once the install lands", async () => {
+      // The orchestrator's drift check can PATCH a package it sees loading
+      // but not yet serving. With the same location that PATCH is a metadata
+      // update, so it queues on the package lock behind the install and lands
+      // on the installed copy, rather than starting a second install.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+
+      const compile = holdCompile();
+      const install = env.installPackage("pkg", (stagingPath) =>
+         copyDir(fixture, stagingPath),
+      );
+      await compile.entered;
+      const update = env.updatePackage("pkg", {
+         name: "pkg",
+         description: "from the drift check",
+      });
+      compile.release();
+
+      await install;
+      const after = await update;
+      expect(after.description).toBe("from the drift check");
+      expect(env.describePackageStatus("pkg")).toEqual({
+         serving: true,
+         loading: false,
+      });
    });
 });

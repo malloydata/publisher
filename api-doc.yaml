@@ -3698,8 +3698,10 @@ components:
             from is a separate question, answered by `manifestBindingStatus`.
 
             A package that is loading for the first time, so is not yet
-            serving, is listed only in `/status`; the environment's package
-            listing shows packages that can be queried.
+            serving, appears as its name and `status` wherever the server
+            describes an environment whole (`/status`, the environment
+            resources); the environment's package listing shows packages that
+            can be queried.
           required: [serving, loading]
           properties:
             serving:

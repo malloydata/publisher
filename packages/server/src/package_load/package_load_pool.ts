@@ -240,6 +240,7 @@ export interface LoadPackageOutcome {
    packageMetadata: {
       name?: string;
       description?: string;
+      location?: string;
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;

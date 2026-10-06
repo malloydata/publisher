@@ -323,8 +323,10 @@ export class Environment {
     * a nested operation (a reinstall that then rebinds a manifest) stays
     * marked until the outermost one finishes.
     */
-   private loadsInFlight: Map<string, { count: number; since: number }> =
-      new Map();
+   private loadsInFlight: Map<
+      string,
+      { count: number; since: number; location?: string }
+   > = new Map();
    /**
     * Configured packages that failed to load, keyed by name, with the reason.
     *
@@ -1937,6 +1939,16 @@ export class Environment {
     * reinstall or recompile is in progress. Read without the package lock, so
     * it answers during the operations it describes.
     */
+   /**
+    * The location an install in progress is fetching the package from, or
+    * undefined when no install is in flight. Lets a caller tell a request
+    * that names the same location apart from one that asks for new content
+    * while the package is not yet resident to ask.
+    */
+   public installingFrom(packageName: string): string | undefined {
+      return this.loadsInFlight.get(packageName)?.location;
+   }
+
    public describePackageStatus(packageName: string): ApiPackageStatus {
       const inFlight = this.loadsInFlight.get(packageName);
       return {
@@ -1958,11 +1970,13 @@ export class Environment {
    private async trackPackageLoad<T>(
       packageName: string,
       fn: () => Promise<T>,
+      location?: string,
    ): Promise<T> {
       const current = this.loadsInFlight.get(packageName);
       this.loadsInFlight.set(packageName, {
          count: (current?.count ?? 0) + 1,
          since: current?.since ?? Date.now(),
+         location: location ?? current?.location,
       });
       try {
          return await fn();
@@ -2580,7 +2594,12 @@ export class Environment {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
       validate?: (pkg: Package) => string | undefined,
-      options: { allowAdmission?: boolean; update?: ApiPackage } = {},
+      options: {
+         allowAdmission?: boolean;
+         update?: ApiPackage;
+         /** Where `downloader` fetches from; reported by {@link installingFrom}. */
+         location?: string;
+      } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
       // An install allocates a whole new compiled copy, and for a reinstall
@@ -2596,13 +2615,16 @@ export class Environment {
             : "install a package",
          options.allowAdmission === true,
       );
-      return this.trackPackageLoad(packageName, () =>
-         this._installPackageTracked(
-            packageName,
-            downloader,
-            validate,
-            options,
-         ),
+      return this.trackPackageLoad(
+         packageName,
+         () =>
+            this._installPackageTracked(
+               packageName,
+               downloader,
+               validate,
+               options,
+            ),
+         options.location,
       );
    }
 
@@ -3124,6 +3146,7 @@ export class Environment {
       metadata: {
          name: string;
          description?: string;
+         location?: string;
          explores?: string[];
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
@@ -3258,6 +3281,12 @@ export class Environment {
             // a PATCH that did not mention it never meant.
             ...(metadata.description !== undefined
                ? { description: metadata.description }
+               : {}),
+            // The install location, so an in-place reload and a restart know
+            // where this package came from. A caller that supplies it names
+            // what it just fetched; it is never cleared from here.
+            ...(metadata.location !== undefined && metadata.location !== ""
+               ? { location: metadata.location }
                : {}),
             ...(metadata.explores !== undefined && !echoesDerivedSurface
                ? { explores: metadata.explores }
@@ -3452,6 +3481,7 @@ export class Environment {
       await this.writePackageManifest(packageName, {
          name: packageName,
          description: body.description,
+         location: body.location,
          explores: normalizedExplores,
          queryableSources: body.queryableSources,
          manifestLocation: body.manifestLocation,

@@ -338,6 +338,7 @@ describe("PackageController.updatePackage explores validation", () => {
       const updatePackage = sinon.stub().resolves(mockPackage);
       const environment = {
          peekPackage: () => undefined,
+         installingFrom: () => undefined,
          installPackage,
          updatePackage,
       };
@@ -480,6 +481,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
       const updatePackage = sinon.stub().resolves({ name: "pkg" });
       const { controller, addPackageToDatabase } = controllerWith({
          peekPackage: () => servedPackage,
+         installingFrom: () => undefined,
          installPackage,
          updatePackage,
       });
@@ -500,6 +502,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
       const updatePackage = sinon.stub().resolves({ name: "pkg" });
       const { controller } = controllerWith({
          peekPackage: () => servedPackage,
+         installingFrom: () => undefined,
          installPackage,
          updatePackage,
       });
@@ -515,8 +518,31 @@ describe("PackageController.updatePackage reinstall decision", () => {
       // The metadata rides with the install so both land under one lock hold;
       // a separate update call is exactly the second lock acquisition that a
       // queued delete could run between.
-      expect(installPackage.firstCall.args[3]).toEqual({ update: body });
+      expect(installPackage.firstCall.args[3]).toEqual({
+         location: "gs://bucket/pkg___1.0.1.zip",
+         update: body,
+      });
       expect(updatePackage.called).toBe(false);
+   });
+
+   it("a PATCH matching the location of an install in flight is a metadata update, not a second install", async () => {
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => undefined,
+         installingFrom: () => "gs://bucket/pkg___1.0.0.zip",
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.called).toBe(false);
+      expect(updatePackage.calledOnce).toBe(true);
    });
 
    it("a PATCH on a package not loaded here installs it", async () => {
@@ -524,6 +550,7 @@ describe("PackageController.updatePackage reinstall decision", () => {
       const updatePackage = sinon.stub().resolves({ name: "pkg" });
       const { controller } = controllerWith({
          peekPackage: () => undefined,
+         installingFrom: () => undefined,
          installPackage,
          updatePackage,
       });
@@ -571,7 +598,9 @@ describe("PackageController.addPackage manifestLocation", () => {
 
       expect(installPackage.calledOnce).toBe(true);
       expect(installPackage.firstCall.args[3]).toEqual({
+         location: "gs://bucket/pkg___1.0.0.zip",
          update: {
+            location: "gs://bucket/pkg___1.0.0.zip",
             manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
          },
       });

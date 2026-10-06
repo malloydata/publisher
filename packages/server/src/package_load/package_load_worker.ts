@@ -461,6 +461,7 @@ async function readPackageMetadata(
 ): Promise<{
    name?: string;
    description?: string;
+   location?: string;
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
@@ -474,6 +475,7 @@ async function readPackageMetadata(
    let parsed: {
       name?: string;
       description?: string;
+      location?: unknown;
       explores?: string[];
       queryableSources?: unknown;
       manifestLocation?: unknown;
@@ -536,6 +538,12 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
+      // Where the package was installed from, written back by the server on
+      // install so a reload or a restart still knows it (see
+      // Environment.writePackageManifest). Absent from a manifest an author
+      // wrote by hand.
+      location:
+         typeof parsed.location === "string" ? parsed.location : undefined,
       explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.

@@ -227,15 +227,23 @@ export class PackageController {
                      stagingPath,
                   ),
                (pkg) => formatPublishRejections(pkg),
-               // A publish that names a manifest binds it as part of the
-               // install, under the same lock. The downloaded tree's own
-               // publisher.json does not carry it (the orchestrator computes
-               // the manifest, not the author), so without this the package
-               // came up serving live and was fully reloaded moments later
-               // when the orchestrator's drift check rebound it.
-               body.manifestLocation !== undefined
-                  ? { update: { manifestLocation: body.manifestLocation } }
-                  : {},
+               // The install records where it fetched from, and a publish that
+               // names a manifest binds it, both under the install's own lock.
+               // The downloaded tree's publisher.json carries neither: the
+               // location is the caller's, and the orchestrator computes the
+               // manifest, not the author. Without the location a later PATCH
+               // naming the same location could not be told from new content;
+               // without the manifest the package came up serving live and was
+               // fully reloaded moments later by the drift check.
+               {
+                  location: bodyLocation,
+                  update: {
+                     location: bodyLocation,
+                     ...(body.manifestLocation !== undefined
+                        ? { manifestLocation: body.manifestLocation }
+                        : {}),
+                  },
+               },
             );
          } else {
             result = await environment.addPackage(packageName);
@@ -314,16 +322,19 @@ export class PackageController {
          environmentName,
          false,
       );
-      // A `location` that matches the one the package was installed from is a
-      // metadata update, not a reinstall. A package version's content does not
-      // change under one URI, so re-downloading and recompiling it would only
-      // repeat work and hold two compiled copies for the duration; the rebind
-      // an orchestrator sends after a materialization build is exactly this
-      // shape. A caller that wants the same location fetched again reloads the
-      // package instead.
-      const installedFrom = environment
-         .peekPackage(packageName)
-         ?.getPackageMetadata().location;
+      // A `location` that matches the one the package was installed from, or
+      // is being installed from right now, is a metadata update, not a
+      // reinstall. A package version's content does not change under one URI,
+      // so re-downloading and recompiling it would only repeat work and hold
+      // two compiled copies for the duration; the rebind an orchestrator sends
+      // after a materialization build is exactly this shape, and so is the
+      // drift check it runs while a first install is still compiling. The
+      // update then queues on the package lock behind that install and lands
+      // on the installed copy. A caller that wants the same location fetched
+      // again reloads the package instead.
+      const installedFrom =
+         environment.peekPackage(packageName)?.getPackageMetadata().location ??
+         environment.installingFrom(packageName);
       const reinstall =
          body.location !== undefined &&
          body.location !== "" &&
@@ -335,8 +346,9 @@ export class PackageController {
          // explores (the body override, else the new tree's own manifest)
          // INSIDE the swap window, so a rejected update rolls back to the
          // previous tree instead of swapping the bad one in and 400-ing after.
-         // The metadata in the body is applied inside that same lock hold, so
-         // nothing can run between the swap and the update.
+         // The rest of the body is applied after the swap commits but inside
+         // the same lock hold, so nothing can run between the two; a policy
+         // the body gets wrong is answered 400 with the new tree in place.
          const bodyLocation = body.location as string;
          const installed = await environment.installPackage(
             packageName,
@@ -352,7 +364,7 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
-            { update: body },
+            { location: bodyLocation, update: body },
          );
          result = installed.getPackageMetadata();
       } else {
