@@ -1455,13 +1455,25 @@ def queries_for_judge(att: dict[str, Any]) -> str:
 
     Givens are an argument beside the text, so a query shown without them
     reads as unfiltered next to rows that were filtered, and the judge can
-    fail a correct answer for it.
+    fail a correct answer for it. Each query's givens are the ones recorded
+    with that call (`query_givens`), never looked up by text: the same text
+    run under West and then East is two queries, and a lookup showed East on
+    both. A record without them (a judge fixture, or an attempt parsed before
+    they were kept) has only `final_givens`, shown on the last entry that is
+    the final query.
     """
-    runs = [c for c in att.get("calls") or []
-            if c.get("tool") == "execute_query" and c.get("query")]
+    queries = att.get("queries") or []
+    per_query = att.get("query_givens")
+    if not (isinstance(per_query, list) and len(per_query) == len(queries)):
+        per_query = [None] * len(queries)
+        final_givens = as_givens(att.get("final_givens"))
+        final = att.get("final_query")
+        hits = [i for i, q in enumerate(queries) if q == final]
+        if final_givens and hits:
+            per_query[hits[-1]] = final_givens
     out = []
-    for i, q in enumerate(att.get("queries") or [], 1):
-        g = _givens_of(q, runs)
+    for i, (q, g) in enumerate(zip(queries, per_query), 1):
+        g = as_givens(g)
         out.append(f"[{i}] {q}" + (f"\n    givens: {json.dumps(g, sort_keys=True)}"
                                    if g else ""))
     return "\n\n".join(out) or "(none)"
@@ -2182,6 +2194,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         shutil.rmtree(work, ignore_errors=True)
 
     calls, answer, queries = [], [], []
+    query_givens: list[dict[str, Any] | None] = []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
     # Skills the answerer actually OPENED. The harness tracked only the breach
@@ -2246,6 +2259,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         q = c["input"].get("query") or named_query(c["input"])
                         if q:
                             queries.append(q)
+                            # Appended in the same step as the text, so entry
+                            # i is always query i's givens. Looked up by text
+                            # instead, one text run under two different givens
+                            # showed the last givens on both.
+                            query_givens.append(
+                                as_givens(c["input"].get("givens")))
                         # The query AND the file it was written against go onto
                         # the call, not into lists beside it: picking the final
                         # query needs to know which of them the server actually
@@ -2369,6 +2388,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # follow-up probe to sanity-check the date range, and the judge -- told
         # the answer must be supported by the final query -- graded the probe.
         "queries": queries,
+        # The givens each entry of `queries` was sent with, index for index.
+        "query_givens": query_givens,
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,

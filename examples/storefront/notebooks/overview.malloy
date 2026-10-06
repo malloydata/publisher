@@ -7,7 +7,7 @@
 // one column, so this is the same `## artifact { tiles=[…] }` tag with
 // `kind=notebook`, text tiles between the query tiles, and no widths.
 ##! experimental.givens
-##" Revenue, margin and volume for the order lines the controls above select, as a story: the summary first, then which way it is moving and where it came from.
+##" Revenue, margin and volume for the order lines the controls select, as a story: the summary first, then which way it is moving and where it came from.
 ##| artifact { kind=notebook title="Storefront overview"
   tiles=[
     intro { kind=text },

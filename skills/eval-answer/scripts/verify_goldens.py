@@ -406,7 +406,8 @@ def accepting_clause(rubric: str) -> str:
     return prior[:end]
 
 
-def rubric_number_findings(case: dict[str, Any]) -> list[str]:
+def rubric_number_findings(case: dict[str, Any],
+                           set_dir: pathlib.Path | None = None) -> list[str]:
     """Figures the rubric asserts as RIGHT that appear nowhere in the golden.
 
     Only the rubric's accepting clause is read -- the text before its first
@@ -456,8 +457,14 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     if not rubric or g.get("kind") == "unanswerable":
         return []
     accepting = accepting_clause(rubric)
-    have = golden_numbers(g.get("value"))
-    val = g.get("value")
+    # Rows kept in `golden.path` are the key too. Read as `value` alone, a
+    # file-held golden had no figures, and every figure its rubric quoted was
+    # reported as missing from it.
+    try:
+        val = golden_rows.key_value(g, set_dir, case.get("qid", "?"))
+    except golden_rows.GoldenRowsError as exc:
+        return [f"review {case['qid']}: rubric figures not checked: {exc}"]
+    have = golden_numbers(val)
     if isinstance(val, list):
         cols: dict[str, float] = {}
         for row in val:
@@ -1250,7 +1257,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # Everything down to the value loop reads the cases, the gold artifacts and
     # the model text. No server is involved, so none of it is gated.
     for c in chosen:
-        findings += rubric_number_findings(c)
+        findings += rubric_number_findings(c, set_dir)
         findings += axis_findings(c, set_dir)
         # Without --verify-figures this only REPORTS that a figure cannot be
         # checked. With it, each one is queried and the query printed, so a

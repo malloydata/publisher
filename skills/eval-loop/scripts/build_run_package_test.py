@@ -53,7 +53,7 @@ RUN_JSON = {
 EVENTS = [
     {"kind": "attempt", "qid": "q1", "sample": 1, "phase": "baseline",
      "submitted": True, "final_query": "run: x -> y", "answer_text": "42",
-     "contaminated": False},
+     "final_givens": {"region": "West"}, "contaminated": False},
     {"kind": "score", "qid": "q1", "sample": 1, "phase": "baseline",
      "verdict": "match", "outcome": "pass"},
 ]
@@ -141,6 +141,12 @@ class SourcesMatchTheCsvs(unittest.TestCase):
         self.assertEqual(row["model_git_sha"], "abc123")
         self.assertEqual(row["reexec_attempted"], "4")
         self.assertEqual(row["reexec_failed"], "1")
+
+    def test_the_final_givens_are_shown_with_the_final_query(self):
+        head, first = self.rows("attempts")[:2]
+        row = dict(zip(head, first))
+        self.assertEqual(row["final_query"], "run: x -> y")
+        self.assertEqual(row["final_givens"], '{"region":"West"}')
 
     def test_a_run_without_the_new_fields_writes_them_empty_not_missing(self):
         # Older runs predate every one of them. The column must still exist, so

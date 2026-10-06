@@ -1841,15 +1841,34 @@ class JudgeSeesEachQuerysGivens(unittest.TestCase):
 
     def test_a_query_is_shown_with_its_givens(self):
         att = {"queries": ["run: s -> { aggregate: n }", "run: s -> { x }"],
-               "calls": [{"tool": "execute_query",
-                          "query": "run: s -> { aggregate: n }",
-                          "givens": {"region": "West"}},
-                         {"tool": "execute_query", "query": "run: s -> { x }",
-                          "givens": None}]}
+               "query_givens": [{"region": "West"}, None]}
         self.assertEqual(
             rb.queries_for_judge(att),
             '[1] run: s -> { aggregate: n }\n    givens: {"region": "West"}'
             "\n\n[2] run: s -> { x }")
+
+    def test_one_text_under_two_givens_shows_each_its_own(self):
+        q = "run: s -> { aggregate: n }"
+        att = {"queries": [q, q],
+               "query_givens": [{"region": "West"}, {"region": "East"}],
+               "calls": [{"tool": "execute_query", "query": q,
+                          "givens": {"region": "West"}},
+                         {"tool": "execute_query", "query": q,
+                          "givens": {"region": "East"}}]}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            f'[1] {q}\n    givens: {{"region": "West"}}'
+            f'\n\n[2] {q}\n    givens: {{"region": "East"}}')
+
+    def test_without_per_query_givens_the_final_query_shows_final_givens(self):
+        # A judge fixture carries the final query's givens and nothing else.
+        att = {"queries": ["run: s -> { x }", "run: s -> { aggregate: n }"],
+               "final_query": "run: s -> { aggregate: n }",
+               "final_givens": {"region": "West"}}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            "[1] run: s -> { x }\n\n[2] run: s -> { aggregate: n }"
+            '\n    givens: {"region": "West"}')
 
     def test_no_queries_reads_none(self):
         self.assertEqual(rb.queries_for_judge({}), "(none)")
@@ -2129,6 +2148,22 @@ class FinalQueryGivens(unittest.TestCase):
               "modelPath": "sales.malloy", "givens": {"region": "East"}}],
             "```malloy\nrun: sales -> { aggregate: n }\n```")
         self.assertEqual(got["final_givens"], self.GIVENS)
+
+    def test_each_query_keeps_the_givens_it_was_sent_with(self):
+        q = "run: sales -> { aggregate: n }"
+        got = self.attempt(
+            [{"query": q, "modelPath": "sales.malloy",
+              "givens": {"region": "West"}},
+             {"query": q, "modelPath": "sales.malloy",
+              "givens": {"region": "East"}}],
+            "West is 5.")
+        self.assertEqual(got["queries"], [q, q])
+        self.assertEqual(got["query_givens"],
+                         [{"region": "West"}, {"region": "East"}])
+        self.assertEqual(
+            rb.queries_for_judge(got),
+            f'[1] {q}\n    givens: {{"region": "West"}}'
+            f'\n\n[2] {q}\n    givens: {{"region": "East"}}')
 
     def test_a_call_with_no_givens_records_none(self):
         got = self.attempt([{"query": "run: sales -> { aggregate: n }"}],

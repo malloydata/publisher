@@ -959,6 +959,33 @@ class RubricFigures(unittest.TestCase):
             "Right: 747 page views.", views=747))
         self.assertEqual(f, [])
 
+    def test_a_figure_in_a_path_held_golden_is_not_reported(self):
+        # Read from `value` alone, a file-held golden had no figures, so every
+        # figure its rubric quoted was reported missing.
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        (set_dir / "gold").mkdir()
+        (set_dir / "gold" / "q.csv").write_text("region,sales\nWest,1234.5\n")
+        case = {"qid": "q", "golden": {"kind": "rows", "path": "gold/q.csv",
+                                        "rubric": "Right: West at 1234.5."}}
+        self.assertEqual(verify_goldens.rubric_number_findings(case, set_dir),
+                         [])
+        (set_dir / "gold" / "q.csv").write_text("region,sales\nWest,99.5\n")
+        self.assertEqual(verify_goldens.rubric_number_findings(case, set_dir),
+                         ["review q: rubric asserts 1234.5 as right; not in "
+                          "the golden rows or their column sums"])
+
+    def test_an_unreadable_golden_path_is_one_finding(self):
+        case = {"qid": "q", "golden": {"kind": "rows", "path": "gold/no.csv",
+                                        "rubric": "Right: 1234.5."}}
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        f = verify_goldens.rubric_number_findings(case, set_dir)
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith(
+            "review q: rubric figures not checked: q: golden.path "
+            "'gold/no.csv' does not exist"), f[0])
+
 
 
 class ScalarValueShape(unittest.TestCase):
