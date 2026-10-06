@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type LogMessage } from "@malloydata/malloy";
-import { isDashboardModelPath } from "./dashboard";
+import { isUnparsedDashboardTagFinding } from "./dashboard";
 import {
    attachedNowhereFix,
    callAccessor,
@@ -866,17 +866,26 @@ export function lintNotebookText(
 }
 
 /**
- * True for a finding the dashboard lint reports in its own words: a dashboard
- * whose `## artifact` tag does not parse. A caller that runs both lints drops
- * this one, so the file is reported once.
+ * True for a notebook-lint finding that the dashboard lint also reported for
+ * the same file, in its own words: an `## artifact` tag that does not parse. A
+ * caller that runs both lints drops this copy, so the file is reported once.
+ *
+ * Decided by what the dashboard lint actually reported, not by the folder. A
+ * `dashboards/` file that did not compile, or whose tag makes it a notebook,
+ * gets no dashboard finding, and the notebook lint's is then the only one.
  */
 export function reportedByDashboardLint(
    finding: { code?: string },
    modelPath: string,
+   dashboardFindings: readonly { model?: string; message?: string }[],
 ): boolean {
    return (
       finding.code === "notebook-artifact-unparsed" &&
-      isDashboardModelPath(modelPath)
+      dashboardFindings.some(
+         (f) =>
+            f.model === modelPath &&
+            isUnparsedDashboardTagFinding(f.message ?? ""),
+      )
    );
 }
 

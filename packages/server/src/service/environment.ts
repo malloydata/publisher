@@ -1011,6 +1011,19 @@ export class Environment {
                   problems.push(tagged);
                }
             };
+            // The findings a reload would add on the main thread after this
+            // same worker compile: render tags and the dashboard, given and
+            // drill lints. Read before the notebook lint below, which drops its
+            // copy of a finding only when the dashboard lint reported it too.
+            const { renderTagWarnings, dashboardWarnings } =
+               await Package.lintWorkerOutcome(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  pkg.getMalloyConfig(),
+                  outcome,
+                  boundManifestEntries,
+               );
             for (const compiled of outcome.models) {
                if (compiled.problems) {
                   collect(
@@ -1078,33 +1091,26 @@ export class Environment {
                            !reportedByDashboardLint(
                               problem,
                               compiled.modelPath,
+                              dashboardWarnings,
                            ),
                      ),
                      compiled.modelPath,
                   );
                }
             }
-            // The findings a reload would add on the main thread after this
-            // same worker compile: render tags and the dashboard, given and
-            // drill lints. Each keeps its own severity, so a broken dashboard
-            // makes the compile an error, as it should. They carry no
-            // position; the model and the message name what is wrong.
-            const { renderTagWarnings, dashboardWarnings } =
-               await Package.lintWorkerOutcome(
-                  this.environmentName,
-                  packageName,
-                  packagePath,
-                  pkg.getMalloyConfig(),
-                  outcome,
-                  boundManifestEntries,
-               );
+            // Each keeps its own severity, so a broken dashboard makes the
+            // compile an error, as it should. They carry no position, so the
+            // subject (the view, field or given) leads the message: without
+            // it, two views with the same finding would collapse into one.
             const asProblem = (
                warning: (typeof renderTagWarnings)[number],
                code: string,
             ): LogMessage =>
                ({
                   severity: warning.severity ?? "warn",
-                  message: warning.message,
+                  message: warning.subject
+                     ? `${warning.subject}: ${warning.message}`
+                     : warning.message,
                   code,
                }) as LogMessage;
             for (const warning of renderTagWarnings) {

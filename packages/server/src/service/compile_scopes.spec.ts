@@ -1,10 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { logger } from "../logger";
 import { Environment } from "./environment";
 
 // The compile scopes exist to close the gap between /compile and an LSP: the
@@ -303,8 +304,10 @@ query: x is sales -> by_n
       problems: { severity?: string; message: string }[],
    ) => {
       const reloaded = await env.getPackage("pkg", true);
+      // A compile finding has no subject field, so it leads the message.
       const served = (reloaded.getPackageMetadata().warnings ?? []).map(
-         (w) => `${w.severity} ${w.message}`,
+         (w) =>
+            `${w.severity} ${w.subject ? `${w.subject}: ` : ""}${w.message}`,
       );
       expect(problems.map((p) => `${p.severity} ${p.message}`).sort()).toEqual(
          served.sort(),
@@ -318,14 +321,14 @@ query: x is sales -> by_n
       expect(reloadFindings(result.problems)).toEqual([
          {
             severity: "warn",
-            message: "Unknown render tag 'hidden' on field 'min_value'",
+            message: "x: Unknown render tag 'hidden' on field 'min_value'",
             code: "render-tag",
             model: "dashboards/x.malloy",
          },
          {
             severity: "error",
             message:
-               'given "DEPARTMENT" suggests options from "sales -> ' +
+               'x: given "DEPARTMENT" suggests options from "sales -> ' +
                'products.department", but that source has no field "products.department".',
             code: "dashboard-lint",
             model: "dashboards/x.malloy",
@@ -333,7 +336,7 @@ query: x is sales -> by_n
          {
             severity: "error",
             message:
-               'given "DEPARTMENT" has an annotation that does not parse ' +
+               'DEPARTMENT: given "DEPARTMENT" has an annotation that does not parse ' +
                "(Expected an identifier), so the whole line is discarded and " +
                "the given loses any label, control, range or suggest it " +
                "declared. It still accepts values; only its presentation is " +
@@ -357,6 +360,76 @@ query: x is sales -> by_n
             .map((p) => p.code),
       ).toEqual(["dashboard-lint"]);
       await expectSameAsReload(result.problems);
+   });
+
+   it("package: keeps the notebook lint's unparsed-tag finding when the dashboard lint did not report it", async () => {
+      const unparsedOf = (problems: { code?: string; model?: string }[]) =>
+         problems.filter(
+            (p) =>
+               p.model === "dashboards/x.malloy" &&
+               p.code === "notebook-artifact-unparsed",
+         );
+      // The file also fails to compile, so the dashboard lint has no facts.
+      await writeDashboard(
+         `## artifact { title="X" tiles: ["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: nope } }\n`,
+      );
+      expect(unparsedOf((await compilePackage()).problems).length).toBe(1);
+
+      // A valid notebook tag after the broken one makes the file a notebook,
+      // so the dashboard lint reports nothing. A reload keeps it too.
+      await writeDashboard(
+         `## artifact { kind=notebook title=Monthly sales! }\n` +
+            `## artifact { kind=notebook }\n` +
+            `source: a is duckdb.sql("select 1 as x")\n`,
+      );
+      const result = await compilePackage();
+      expect(unparsedOf(result.problems).length).toBe(1);
+      const reloaded = await env.getPackage("pkg", true);
+      expect(
+         (reloaded.getPackageMetadata().warnings ?? []).filter(
+            (w) =>
+               w.model === "dashboards/x.malloy" &&
+               (w.message ?? "").includes("`## artifact` tag does not parse"),
+         ).length,
+      ).toBe(1);
+   });
+
+   it("package: two views with the same render-tag finding stay two findings", async () => {
+      await writeDashboard(
+         `source: s is duckdb.sql("select 1 as x") extend {\n` +
+            `  measure: c is count()\n` +
+            `  # big_value { value=missing }\n` +
+            `  view: one is { aggregate: c }\n` +
+            `  # big_value { value=missing }\n` +
+            `  view: two is { aggregate: c }\n` +
+            `}\n`,
+      );
+      const result = await compilePackage();
+      const renderTags = result.problems.filter((p) => p.code === "render-tag");
+      expect(renderTags.length).toBe(2);
+      expect(renderTags.map((p) => p.message.split(":")[0]).sort()).toEqual([
+         "s -> one",
+         "s -> two",
+      ]);
+      await expectSameAsReload(result.problems);
+   });
+
+   it("package: a file that does not compile is reported, not logged as a reload", async () => {
+      await writeDashboard(
+         `## artifact { title="X" tiles=["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: nope } }\n`,
+      );
+      const warnSpy = spyOn(logger, "warn");
+      try {
+         const result = await compilePackage();
+         expect(result.status).toBe("error");
+         expect(
+            warnSpy.mock.calls.map(([message]) => message as string),
+         ).not.toContain("Model compilation failed during reload");
+      } finally {
+         warnSpy.mockRestore();
+      }
    });
 
    it("package: a clean dashboard adds no findings", async () => {

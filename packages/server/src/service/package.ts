@@ -814,6 +814,12 @@ export class Package {
     * not cost the package its other models. `afterHydrate` runs once per
     * compiled model, in order, before it is added (the load path's
     * persist-name check).
+    *
+    * `ctx.compile` marks the package-scope compile. Its caller reports every
+    * failed model in the response, so the per-model "failed during reload"
+    * line is not logged: a compile is not a reload, and an agent iterating on
+    * a broken file would otherwise fill the operator log. A render-tag check
+    * that throws is a server fault, so it is still logged, as "during compile".
     */
    private static async hydrateWorkerModels(
       outcome: LoadPackageOutcome,
@@ -822,6 +828,7 @@ export class Package {
          packagePath: string;
          malloyConfig: MalloyConfig;
          buildManifest?: BuildManifest["entries"];
+         compile?: boolean;
       },
       onCompileError: "throw" | "placeholder",
       afterHydrate?: (
@@ -857,11 +864,13 @@ export class Package {
                // cleans the package directory.
                throw err;
             }
-            logger.warn("Model compilation failed during reload", {
-               packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
+            if (!ctx.compile) {
+               logger.warn("Model compilation failed during reload", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+            }
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
          }
@@ -884,11 +893,14 @@ export class Package {
                renderErr instanceof Error
                   ? renderErr
                   : new Error(String(renderErr));
-            logger.warn("Render-tag validation failed during reload", {
-               packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
+            logger.warn(
+               `Render-tag validation failed during ${ctx.compile ? "compile" : "reload"}`,
+               {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               },
+            );
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
          }
@@ -944,7 +956,13 @@ export class Package {
    }> {
       const { models, renderTagWarnings } = await Package.hydrateWorkerModels(
          outcome,
-         { packageName, packagePath, malloyConfig, buildManifest },
+         {
+            packageName,
+            packagePath,
+            malloyConfig,
+            buildManifest,
+            compile: true,
+         },
          "placeholder",
       );
       const pkg = new Package(
@@ -3016,11 +3034,14 @@ export class Package {
     * `dryRun` is for the throwaway package {@link lintWorkerOutcome} builds:
     * it skips the notebook pass (the package-scope compile reports notebook
     * findings itself, with positions), its discovery metric, and the per-
-    * finding log lines, so a compile neither counts nor logs as a load.
+    * finding log lines, so a compile neither counts nor logs as a load. A
+    * check that throws is a server fault, not a finding, so it is still
+    * logged, marked `during: "compile"` so it does not read as a load.
     */
    private async discoverDashboards(
       options: { dryRun?: boolean } = {},
    ): Promise<void> {
+      const during = options.dryRun ? { during: "compile" } : {};
       const discovered = new Map<
          string,
          DashboardManifest & { error?: string }
@@ -3063,6 +3084,7 @@ export class Package {
          } catch (err) {
             logger.warn("Reading a model's dashboard facts failed", {
                packageName: this.packageName,
+               ...during,
                modelPath,
                error: errMessage(err),
             });
@@ -3083,6 +3105,7 @@ export class Package {
             } catch (err) {
                logger.warn("Notebook layout discovery failed", {
                   packageName: this.packageName,
+                  ...during,
                   modelPath,
                   error: errMessage(err),
                });
@@ -3103,6 +3126,7 @@ export class Package {
             } catch (err) {
                logger.warn("Dashboard discovery failed", {
                   packageName: this.packageName,
+                  ...during,
                   modelPath,
                   error: errMessage(err),
                });
@@ -3169,6 +3193,7 @@ export class Package {
                if (!error && (await this.claimsToBeADashboard(modelPath))) {
                   logger.warn("Dashboard file produced no facts and no error", {
                      packageName: this.packageName,
+                     ...during,
                      modelPath,
                   });
                   droppedByError.push({ modelPath, name });
@@ -3262,12 +3287,6 @@ export class Package {
       }
       this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
-      if (!options.dryRun) {
-         this.notebookWarnings = [
-            ...this.attachNotebookCells(),
-            ...(await this.lintNotebookFiles()),
-         ];
-      }
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -3277,6 +3296,14 @@ export class Package {
          shadowed,
       };
       await this.relintDashboards({ log: !options.dryRun });
+      // After the dashboard lint, because the notebook lint drops its copy of
+      // a finding only when the dashboard lint reported the same one.
+      if (!options.dryRun) {
+         this.notebookWarnings = [
+            ...this.attachNotebookCells(),
+            ...(await this.lintNotebookFiles()),
+         ];
+      }
    }
 
    /**
@@ -3337,7 +3364,14 @@ export class Package {
             }
          }
          for (const finding of lintNotebookText(modelPath, text)) {
-            if (reportedByDashboardLint(finding, modelPath)) continue;
+            if (
+               reportedByDashboardLint(
+                  finding,
+                  modelPath,
+                  this.dashboardWarnings,
+               )
+            )
+               continue;
             logger.warn("Notebook lint", {
                packageName: this.packageName,
                model: modelPath,
