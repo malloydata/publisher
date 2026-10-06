@@ -72,8 +72,8 @@ export function BuilderHeader({
          >
             <TileCard
                chrome={chrome}
+               kind="text"
                sx={{
-                  ...(chrome === "card" && { minHeight: 72 }),
                   ...selectionSx(theme, {
                      selected: descriptionSelected,
                   }),

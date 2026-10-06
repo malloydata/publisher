@@ -20,7 +20,7 @@ export function TextTileBody({
    chrome?: TileChrome;
 }) {
    return (
-      <TileCard chrome={chrome} sx={chrome === "card" ? { minHeight: 72 } : {}}>
+      <TileCard chrome={chrome} kind="text">
          <InlineMarkdown
             markdown={tile.markdown}
             placeholder={TEXT_TILE_PLACEHOLDER}

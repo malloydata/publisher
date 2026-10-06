@@ -378,7 +378,7 @@ export function TilePlaceholder({
 }) {
    const { theme } = usePublisherTheme();
    return (
-      <TileCard chrome={chrome} sx={{ minHeight: 120 }}>
+      <TileCard chrome={chrome}>
          <TileHeading
             title={heading?.title ?? tileDisplayTitle(tile)}
             subtitle={heading ? heading.subtitle : tile.subtitle}

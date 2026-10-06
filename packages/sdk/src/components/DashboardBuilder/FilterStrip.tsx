@@ -7,6 +7,7 @@ import FilterListIcon from "@mui/icons-material/FilterList";
 import { Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { STICKY_CONTROLS_Z } from "../Dashboard/DashboardView";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
 
@@ -53,7 +54,7 @@ export function FilterStrip({
                top: 0,
                // The page's ground, as the reader's sticky control row uses:
                // this bar is page chrome, not the chart canvas.
-               zIndex: 4,
+               zIndex: STICKY_CONTROLS_Z,
                bgcolor: "background.default",
                pb: 1,
             }}
