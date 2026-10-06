@@ -123,29 +123,28 @@ jobs:
       # these two are representatives rather than special: do not add more for
       # symmetry, and do not swap one for a zone picked for being unusual.
       #
-      # Extra runs rather than a matrix entry: the suite is ~0.3s, a matrix would
-      # double the whole job, and setting TZ on the existing run would trade away
-      # UTC coverage instead of adding to it.
+      # Extra runs rather than a matrix entry: a matrix would double the whole
+      # job, and setting TZ on the existing run would trade away UTC coverage
+      # instead of adding to it.
       # Each run checks the zone the runtime actually resolved before testing in
-      # it. Without that, a TZ that failed to take effect would leave a run that
-      # is green, fast and detecting nothing, the same silhouette as a suite
+      # it, and fails if TZ did not take effect. Without that, a run would be
+      # green, slow and detecting nothing, the same silhouette as a suite
       # collecting no tests at all.
       #
-      # Fatal off Windows, printed everywhere. TZ propagation through `bun run`
-      # to the test child is confirmed on Linux and macOS, so a mismatch there
-      # is a real fault and should stop the job. Whether Bun honours an IANA TZ
-      # on Windows is still unconfirmed, so that leg logs the resolved zone
-      # without failing on it; when a run settles the question, drop the
-      # platform exemption.
+      # Linux and macOS only. Bun on Windows does not honour an IANA TZ: both
+      # runs there resolve UTC, so they repeat the plain SDK run above at about
+      # 85s each and can fail none of the tests they exist for.
       - name: Run SDK tests east of UTC
+        if: runner.os != 'Windows'
         run: |
-          TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
           TZ=Australia/Sydney bun run --cwd packages/sdk test
         shell: bash
 
       - name: Run SDK tests west of UTC
+        if: runner.os != 'Windows'
         run: |
-          TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
           TZ=America/Los_Angeles bun run --cwd packages/sdk test
         shell: bash
 

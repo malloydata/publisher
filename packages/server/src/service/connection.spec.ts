@@ -5,6 +5,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    afterAll,
    afterEach,
+   beforeAll,
    beforeEach,
    describe,
    expect,
@@ -32,6 +33,10 @@ import {
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
 import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   startClosingListener,
+   type ClosingListener,
+} from "../test_helpers/closing_listener";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -2143,6 +2148,15 @@ describe("connection integration tests", () => {
    });
 
    describe("testConnectionConfig", () => {
+      // Where the specs below send a Postgres connection that has to fail.
+      let unreachable: ClosingListener;
+      beforeAll(async () => {
+         unreachable = await startClosingListener();
+      });
+      afterAll(async () => {
+         await unreachable.close();
+      });
+
       it(
          "should successfully test valid PostgreSQL connection",
          async () => {
@@ -2201,11 +2215,12 @@ describe("connection integration tests", () => {
          expect(result.errorMessage).toContain("name is required");
       });
 
-      // These specs drive real attach failures offline: nothing can listen on
-      // localhost port 1 without root, so DuckDB's postgres extension fails
-      // with "Connection refused" and echoes the full connection string into
-      // the error message. The assertions prove that string reaches the
-      // caller redacted (`***`) and never in cleartext.
+      // These specs drive real attach failures offline: the closing listener
+      // accepts the connection and drops it, so DuckDB's postgres extension
+      // fails with "server closed the connection unexpectedly" and echoes the
+      // full connection string into the error message. The assertions prove
+      // that string reaches the caller redacted (`***`) and never in
+      // cleartext.
       describe("errorMessage redaction", () => {
          const leakedPassword = "supersecretpw";
 
@@ -2242,7 +2257,7 @@ describe("connection integration tests", () => {
                            name: "redact_pg_url_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],
@@ -2268,7 +2283,7 @@ describe("connection integration tests", () => {
                            type: "postgres",
                            postgresConnection: {
                               host: "127.0.0.1",
-                              port: 1,
+                              port: unreachable.port,
                               userName: "alice",
                               password: leakedPassword,
                               databaseName: "mydb",
@@ -2293,7 +2308,7 @@ describe("connection integration tests", () => {
                   ducklakeConnection: {
                      catalog: {
                         postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                         },
                      },
                      storage: {
@@ -2313,7 +2328,7 @@ describe("connection integration tests", () => {
          );
 
          // The three specs above depend on the DuckDB postgres extension
-         // loading so the attach reaches a DSN-bearing "connection refused".
+         // loading so the attach reaches a DSN-bearing connection failure.
          // This one pins the redaction wiring independently: stub runSQL to
          // throw a DSN-bearing error, so the failure carries a secret whether
          // or not any extension is available, and assert it comes back
@@ -2383,7 +2398,7 @@ describe("connection integration tests", () => {
                      ducklakeConnection: {
                         catalog: {
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/${database}`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/${database}`,
                            },
                         },
                         storage: {
@@ -2534,8 +2549,7 @@ describe("connection integration tests", () => {
                            name: "probe_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString:
-                                 "postgres://u:p@127.0.0.1:1/mydb",
+                              connectionString: `postgres://u:p@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],
