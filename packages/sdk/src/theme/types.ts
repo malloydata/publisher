@@ -68,6 +68,12 @@ export interface ResolvedTheme {
    foreground: string;
    axisFaint: string;
    /**
+    * The lift under something that responds to the pointer (a builder tile on
+    * hover), and under something being carried (a tile mid-drag). Mode-keyed:
+    * a black shadow alone disappears on the dark page, so dark adds an edge.
+    */
+   shadow: { lift: string; drag: string };
+   /**
     * Background for the renderer's HTML chrome (the area between
     * dashboard tiles). Mode-keyed and intentionally NOT
     * operator-customizable — when an operator picks a bold accent

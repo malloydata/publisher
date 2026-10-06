@@ -116,6 +116,15 @@ export function resolveTheme(
       valueColor: isDark ? "#f1f5f9" : "#0f172a",
       foreground: isDark ? "#e2e8f0" : "#0f172a",
       axisFaint: isDark ? "#475569" : "#cbd5e1",
+      shadow: isDark
+         ? {
+              lift: "0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08)",
+              drag: "0 12px 32px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.12)",
+           }
+         : {
+              lift: "0 2px 10px rgba(0, 0, 0, 0.10)",
+              drag: "0 12px 32px rgba(0, 0, 0, 0.22)",
+           },
       // Dashboard panel background (the area BETWEEN tiles). The page's own
       // ground in both modes, so the panel, the cards on it and the canvases
       // inside them are one surface that borders divide up — see
