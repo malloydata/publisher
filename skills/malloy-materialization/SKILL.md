@@ -1,6 +1,6 @@
 ---
 name: malloy-materialization
-description: Add and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, or asks why a persist source isn't building.
+description: Add and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, tune what to persist, or asks why a persist source isn't building.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -12,6 +12,8 @@ SPDX-License-Identifier: MIT
 Materialize an expensive source once so queries read a **pre-built warehouse table** instead of recomputing it every time. You tag a source `#@ persist`, a materialization run builds it into a physical table, and queries against it are rewritten to read that table.
 
 > **The #1 gotcha, up front:** if a persist source isn't materializing, it is almost always one of two things - a `.malloy` file in the package missing the `##! experimental.persistence` flag (which aborts the *whole* package's build plan), or no build ever ran (a standalone Publisher does not build on publish - see **Building and refreshing**). Jump to **Debugging a no-op build**.
+
+**Deciding what to persist, what to stop persisting, and how to schedule it** (making a package cheaper or faster): read `reference/tuning.md`. It reads the materialization history with the `malloy-pub` CLI and proposes changes; it recommends and does not edit.
 
 ## The recipe (get this right and it just works)
 

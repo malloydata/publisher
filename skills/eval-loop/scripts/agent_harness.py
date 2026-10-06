@@ -317,7 +317,7 @@ def resolve_closure(names: Iterable[str],
     freely, so following one of them reaches the whole library. Claude Code
     puts every installed skill's name and description in the prompt, so that
     is both noise and a real hazard -- an agent told to diagnose should not be
-    choosing between eval-diagnose and malloy-analyze.
+    choosing between eval-diagnose and malloy-notebooks.
     One hop covers what the named skill actually instructs the agent to follow,
     which is the reason to install anything beyond the skill itself.
     """
