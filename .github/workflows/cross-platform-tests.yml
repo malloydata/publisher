@@ -141,7 +141,7 @@ jobs:
       #
       # Linux and macOS take the zone from TZ. Bun on Windows ignores an IANA
       # TZ and resolves UTC, so there the step switches the machine's own zone
-      # with Set-TimeZone, which a newly started bun reads, and sets the
+      # with tzutil, which a newly started bun reads, and sets the
       # original zone back on exit, pass or fail, so the server suites that
       # follow still run in the zone they always have.
       - name: Run SDK tests east of UTC
@@ -150,10 +150,14 @@ jobs:
           WINDOWS_ZONE: AUS Eastern Standard Time
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            original=$(powershell -NoProfile -Command '(Get-TimeZone).Id' | tr -d '\r')
-            restore_zone() { powershell -NoProfile -Command "Set-TimeZone -Id '$original'"; }
+            original=$(MSYS_NO_PATHCONV=1 tzutil /g | tr -d '\r')
+            restore_zone() {
+              echo "restoring the Windows time zone to $original"
+              MSYS_NO_PATHCONV=1 tzutil /s "$original"
+            }
             trap restore_zone EXIT
-            powershell -NoProfile -Command "Set-TimeZone -Id '$WINDOWS_ZONE'"
+            echo "switching the Windows time zone from $original to $WINDOWS_ZONE"
+            MSYS_NO_PATHCONV=1 tzutil /s "$WINDOWS_ZONE"
           else
             export TZ="$WANT_ZONE"
           fi
@@ -167,10 +171,14 @@ jobs:
           WINDOWS_ZONE: Pacific Standard Time
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            original=$(powershell -NoProfile -Command '(Get-TimeZone).Id' | tr -d '\r')
-            restore_zone() { powershell -NoProfile -Command "Set-TimeZone -Id '$original'"; }
+            original=$(MSYS_NO_PATHCONV=1 tzutil /g | tr -d '\r')
+            restore_zone() {
+              echo "restoring the Windows time zone to $original"
+              MSYS_NO_PATHCONV=1 tzutil /s "$original"
+            }
             trap restore_zone EXIT
-            powershell -NoProfile -Command "Set-TimeZone -Id '$WINDOWS_ZONE'"
+            echo "switching the Windows time zone from $original to $WINDOWS_ZONE"
+            MSYS_NO_PATHCONV=1 tzutil /s "$WINDOWS_ZONE"
           else
             export TZ="$WANT_ZONE"
           fi
