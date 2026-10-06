@@ -198,15 +198,14 @@ export function TileFrame({
                   }}
                   sx={{
                      position: "absolute",
-                     // Inside a card's corner, clear of its edge. A bare tile
-                     // has no corner to sit in, so the menu straddles the top
-                     // of its ring, clear of the text under it.
-                     top: bare ? `${-(BARE_RING_OFFSET_PX + 13)}px` : "8px",
-                     right: bare ? 0 : "8px",
-                     ...(bare && {
-                        border: theme.cardBorder,
-                        borderRadius: 1,
-                     }),
+                     // A tab on the tile's top edge, the same on a card and
+                     // on bare content: centred on the card's border, or on
+                     // a bare tile's ring, so it never covers the tile's title
+                     // or text.
+                     top: `${-((bare ? BARE_RING_OFFSET_PX + 1 : 0) + 12)}px`,
+                     right: bare ? 0 : "12px",
+                     border: theme.cardBorder,
+                     borderRadius: 1,
                      // A 24px hit target at least, whatever the glyph.
                      width: 28,
                      height: 24,
