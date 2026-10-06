@@ -5,10 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
-import {
-   getQueryTimeoutMs,
-   isMcpIncludeHiddenFilesAndSources,
-} from "../../config";
+import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
 import {
    tryAcquireQuerySlot,
@@ -127,9 +124,7 @@ export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   const offerHidden = isMcpIncludeHiddenFilesAndSources(
-      environmentStore.serverRootPath,
-   );
+   const offerHidden = environmentStore.mcpIncludeHiddenFilesAndSources === true;
    mcpServer.tool(
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,

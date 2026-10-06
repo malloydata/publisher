@@ -6,6 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
+import { isMcpIncludeHiddenFilesAndSources } from "../../config";
 import { registerExecuteQueryTool } from "./execute_query_tool";
 import {
    PackageLoadPool,
@@ -81,6 +82,9 @@ function captureTool(
    registerExecuteQueryTool(
       fakeServer as never,
       {
+         // What EnvironmentStore's constructor reads from the config, once.
+         mcpIncludeHiddenFilesAndSources:
+            isMcpIncludeHiddenFilesAndSources(serverRootPath),
          ...store,
          serverRootPath,
       } as EnvironmentStore,
@@ -515,6 +519,22 @@ describe("execute_query includeHiddenFilesAndSources", () => {
             await handler({ ...call, includeHiddenFilesAndSources: true });
             expect(capturedArgs()[10]).toBe(false);
          }
+      }
+   });
+
+   it("follows the store's setting and does not read the config itself", async () => {
+      // The tool is registered on every MCP request, so it must not re-read
+      // publisher.config.json. Each pair below disagrees with its config file.
+      for (const [setting, mcp, offered] of [
+         [false, AUTHORING, false],
+         [true, undefined, true],
+      ] as const) {
+         const { store } = storeCapturingMetadata();
+         const { shape } = captureTool(
+            { ...store, mcpIncludeHiddenFilesAndSources: setting },
+            serverRootWith(mcp),
+         );
+         expect("includeHiddenFilesAndSources" in shape).toBe(offered);
       }
    });
 });
