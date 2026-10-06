@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PALETTE, type ThemeMode } from "@malloy-publisher/sdk";
+import { accentFor, type ThemeMode } from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";
 
@@ -51,12 +51,11 @@ export const createPublisherTheme = (
    // resting one. A bright fill with a near-black label reads at 7:1 on both
    // counts, and is what a dark theme wants anyway: the button is the lit
    // thing on the page, not a darker patch of it.
-   const primaryMain =
-      accentPair?.accent ?? (isDark ? "#60a5fa" : PALETTE.blue);
-   const primaryHover =
-      accentPair?.accentHover ?? (isDark ? "#93c5fd" : "#1d4ed8");
-   const primaryContrast =
-      accentPair?.accentContrast ?? (isDark ? "#0f172a" : "#ffffff");
+   const {
+      accent: primaryMain,
+      accentHover: primaryHover,
+      accentContrast: primaryContrast,
+   } = accentPair ?? accentFor(undefined, mode);
 
    return createTheme({
       cssVariables: { nativeColor: true },

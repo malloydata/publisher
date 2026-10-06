@@ -5,6 +5,7 @@ import { SecondaryButton, useNarrowScreen } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useLocation, useNavigate } from "react-router-dom";
+import { editPathOf } from "./documentRoutes";
 
 /**
  * `/:env/:pkg/(dashboards|notebooks)/:slug`, with `/edit` when the builder is
@@ -48,7 +49,7 @@ export function DocumentModeButton() {
       <SecondaryButton
          label="Edit"
          icon={<EditOutlinedIcon />}
-         onClick={() => navigate(`${page}/edit`)}
+         onClick={() => navigate(editPathOf(page))}
       />
    );
 }

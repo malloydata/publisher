@@ -3,8 +3,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { PALETTE } from "../components/styles";
-import { accentFor } from "./accent";
+import { accentFor, contrastRatio, legibleOn } from "./accent";
 import { resolveTheme } from "./resolveTheme";
+
+const WHITE = "#ffffff";
+const SLATE = "#0f172a";
+const ratio = (a: string, b: string) => contrastRatio(a, b) as number;
 
 describe("accentFor", () => {
    it("keeps the Console's own blue pair when nothing is configured", () => {
@@ -16,21 +20,40 @@ describe("accentFor", () => {
       expect(accentFor(undefined, "dark").accent).toBe("#60a5fa");
    });
 
-   it("takes the first series colour as is in light mode, with a darker hover and a label that reads", () => {
-      const { accent, accentHover, accentContrast } = accentFor(
-         "#2d323d",
-         "light",
-      );
-      expect(accent).toBe("#2d323d");
-      expect(accentHover).not.toBe(accent);
-      expect(accentContrast).toBe("#ffffff");
+   it("keeps a colour that already reads, in either mode, exactly as picked", () => {
+      // A dark brand colour on white, and a bright one on slate.
+      expect(accentFor("#2d323d", "light").accent).toBe("#2d323d");
+      expect(accentFor("#f59e0b", "dark").accent).toBe("#f59e0b");
    });
 
-   it("lifts a dark brand colour in dark mode, and puts a dark label on it", () => {
-      const { accent, accentContrast } = accentFor("#2d323d", "dark");
-      expect(accent).not.toBe("#2d323d");
-      expect(parseInt(accent.slice(1, 3), 16)).toBeGreaterThan(0x2d);
-      expect(accentContrast).toBe("#0f172a");
+   it("deepens a pale first colour on the light page until it reads at 3:1", () => {
+      expect(ratio("#fde047", WHITE)).toBeLessThan(3);
+      const { accent } = accentFor("#fde047", "light");
+      expect(ratio(accent, WHITE)).toBeGreaterThanOrEqual(3);
+      // Only as far as it takes: not all the way to black.
+      expect(ratio(accent, WHITE)).toBeLessThan(4);
+   });
+
+   it("lifts a dark first colour on the dark page only as far as it takes", () => {
+      expect(ratio("#2d323d", SLATE)).toBeLessThan(3);
+      const { accent } = accentFor("#2d323d", "dark");
+      expect(ratio(accent, SLATE)).toBeGreaterThanOrEqual(3);
+      expect(ratio(accent, SLATE)).toBeLessThan(4);
+   });
+
+   it("puts whichever label reads better on the accent", () => {
+      for (const [first, mode] of [
+         ["#2d323d", "light"],
+         ["#2d323d", "dark"],
+         ["#fde047", "light"],
+         ["#f59e0b", "dark"],
+      ] as const) {
+         const { accent, accentContrast } = accentFor(first, mode);
+         const other = accentContrast === WHITE ? SLATE : WHITE;
+         expect(ratio(accent, accentContrast)).toBeGreaterThanOrEqual(
+            ratio(accent, other),
+         );
+      }
    });
 
    it("uses a non-hex colour as given in light mode and keeps the dark default", () => {
@@ -38,12 +61,38 @@ describe("accentFor", () => {
       expect(accentFor("rebeccapurple", "dark").accent).toBe("#60a5fa");
    });
 
-   it("follows the instance palette through resolveTheme", () => {
+   it("follows the instance palette through resolveTheme, measured against its own page", () => {
       const theme = resolveTheme(
          [{ palette: { series: ["#2d323d", "#573f35"] } }],
+         "dark",
+      );
+      expect(ratio(theme.accent, theme.background)).toBeGreaterThanOrEqual(3);
+      expect(
+         resolveTheme([{ palette: { series: ["#2d323d"] } }], "light").accent,
+      ).toBe("#2d323d");
+   });
+
+   it("keeps drill links on the Console's default accent, whatever the palette", () => {
+      const theme = resolveTheme(
+         [{ palette: { series: ["#7e1d47"] } }],
          "light",
       );
-      expect(theme.accent).toBe("#2d323d");
+      expect(theme.drillLink).toBe(accentFor(undefined, "light").accent);
+   });
+});
+
+describe("legibleOn", () => {
+   it("returns a colour that already reads unchanged", () => {
+      expect(legibleOn("#b45309", SLATE)).toBe("#b45309");
+   });
+
+   it("moves toward white on a dark ground and toward black on a light one", () => {
+      expect(ratio(legibleOn("#2d323d", SLATE), SLATE)).toBeGreaterThanOrEqual(
+         3,
+      );
+      expect(ratio(legibleOn("#fde047", WHITE), WHITE)).toBeGreaterThanOrEqual(
+         3,
+      );
    });
 });
 
@@ -51,10 +100,10 @@ describe("dark mode legibility", () => {
    it("lifts a series colour that disappears on the dark canvas, and leaves light mode alone", () => {
       const layers = [{ palette: { series: ["#2d323d", "#b45309"] } }];
       expect(resolveTheme(layers, "light").series[0]).toBe("#2d323d");
-      const dark = resolveTheme(layers, "dark").series;
-      expect(dark[0]).not.toBe("#2d323d");
+      const dark = resolveTheme(layers, "dark");
+      expect(ratio(dark.series[0], dark.background)).toBeGreaterThanOrEqual(3);
       // Already readable on slate: kept as picked.
-      expect(dark[1]).toBe("#b45309");
+      expect(dark.series[1]).toBe("#b45309");
    });
 
    it("carries a light-only map colour into dark instead of the default", () => {

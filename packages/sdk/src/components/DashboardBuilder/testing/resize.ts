@@ -13,7 +13,7 @@ import { GRID_GAP_PX } from "../../Dashboard/DashboardGrid";
 export function dragEdge(label: string, columns: number) {
    // N tracks and the N - 1 gutters between them.
    const clientX = columns * 100 + (columns - 1) * GRID_GAP_PX;
-   const handle = screen.getByRole("separator", { name: `Resize ${label}` });
+   const handle = screen.getByRole("separator", { name: `Width of ${label}` });
    const width = 1200 + GRID_GAP_PX * 11;
    const measure = HTMLElement.prototype.getBoundingClientRect;
    HTMLElement.prototype.getBoundingClientRect = () =>

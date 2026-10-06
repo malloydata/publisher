@@ -17,9 +17,8 @@ export const SAVE_TARGET: Record<SavesTo, string> = {
 };
 
 /**
- * The builder's actions, as one row with no bar of its own: it rides at the
- * right end of the filter row, which is sticky, so undo and save stay in reach
- * on a long dashboard without a second header above the page.
+ * The builder's actions, as one row with no bar of its own, at the right of
+ * the page title's line.
  *
  * Grouped by what they do, separated rather than run together: change the page
  * (a tile), take a change back (undo, redo), and keep it (Save,

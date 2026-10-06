@@ -41,25 +41,28 @@ process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINA
 server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
 `GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
 
-## [Unreleased] — A calmer dashboard and notebook builder, and one theme accent
+## [Unreleased] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
 
 The builder is the read-only page in a second state, with fewer controls around it.
 
-- **Edit and View are in the Console's header**, beside the breadcrumbs, on every dashboard and notebook page. View returns to the read-only page and asks first if there are unsaved edits. The page's own Edit bar, and the "Back to …" links on every page, are gone. Reading and editing now have the same header and the same margins, and dashboards, notebooks and data apps share one page width.
-- **Save saves in place.** The builder no longer closes on save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits.
-- **Builder actions sit on the filter row**: + Tile, undo and redo, and Save, beside the filter chips, with + Filter as a chip after them. Settings is gone: a document stays the kind it was created as, a tile's width is set by dragging its right edge (the width presets, Grid width and "Run as controls change" are removed; a file's own `columns` and `autorun` are kept), and adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list to manage.
-- **Tile menu**: Drill and Delete, a viz type that applies as it is picked, and a ⋯ button. Editable titles, subtitles and descriptions carry a small pencil after their text.
-- **The description is the page's prose**: unboxed when reading, as a notebook's text is, and edited in a text block's box in the builder, outlined in the accent while hovered or edited.
-- **Dashboard tiles no longer offer Explore.** `DashboardTile`'s `onExplore` prop is unchanged for hosts that pass it.
+- **Edit and View are in the Console's header**, beside the breadcrumbs, on every dashboard and notebook page. View returns to the read-only page and asks first if there are unsaved edits. The page's own Edit bar, and the "Back to …" links on every page, are gone. Reading and editing have the same header and margins, and dashboards, notebooks and data apps share one page width.
+- **Save saves in place.** The builder stays open after a save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits. The first save of a cell-format notebook, which rewrites it in the tile layout, asks first.
+- **The builder's actions sit on the title's line**: + Tile, undo, redo and Save. + Filter is a chip after the filter chips.
+- **Settings is gone.** A document stays the kind it was created as. A tile's width is set by dragging its right edge, or by focusing that edge and pressing the arrow keys (Home and End for one column and the full grid); the tile menu's width presets, Grid width and "Run as controls change" are removed, and a file's own `columns` and `autorun` are kept. Adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list.
+- **Tile menu**: Drill, Delete, and a viz type that applies as it is picked. Editable titles, subtitles and descriptions carry a small pencil after their text. The description is edited in a text block's box and selected like a tile; it reads unboxed.
+- **Dashboard tiles no longer offer Explore.**
 
-**Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is now the palette's first series colour (`ResolvedTheme.accent`, with `accentHover` and `accentContrast`), lifted in dark mode so it reads. In dark mode a series colour too dark for the canvas is lifted until it reads, and a map colour set only for light is carried into dark. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
+**Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is the palette's first series colour (`ResolvedTheme.accent`, `accentHover`, `accentContrast`, and `accentFor`), kept as picked when it reads against the page at 3:1 and otherwise moved only as far as it takes. In dark mode a series colour too dark for the canvas is lifted the same way, and a map colour set only for light is carried into dark. Drill links keep the Console's default blue. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
 
-**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. The viewer and the builder are now separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
+**For SDK embedders (BREAKING).** The viewer and the builder are separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
 
-- **Breaking: `onExit` is removed** from `DashboardEditor`, `NotebookEditor` and `DashboardBuilder`, along with the builder's Close button and its unsaved-changes prompt. Draw your own way out beside the builder, and guard it with `onDirtyChange` (the Console does this with a header View button and a route leave guard; `UnsavedChangesDialog` is still exported for it).
-- **Breaking: `DashboardBar` is removed.** Nothing in the SDK drew it any more.
-- **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`, so the host owns where each lives. Without it, `Package` navigates to the Console's routes as before.
-- The builder draws no save notice, so a host that held incoming versions on `onSaveNoticeChange` should stop.
+- **`onExit` is removed** from `DashboardEditor`, `NotebookEditor` and `DashboardBuilder`, with the builder's Close button and its unsaved-changes prompt. _What to do:_ draw your own way out beside the builder and guard it with `onDirtyChange`; `UnsavedChangesDialog` is still exported for the prompt.
+- **`onSaveNoticeChange` is removed** from `DashboardBuilder`, with the save notice. _What to do:_ drop the prop; there is no notice to hold a newer version behind.
+- **`DashboardBar` is removed.** _What to do:_ draw your own bar; nothing in the SDK used it.
+- **The builder's Show as switch is removed.** _What to do:_ nothing; a document's kind is chosen when it is created (`NewDocumentDialog`'s `allowKindChange` is unchanged).
+- **`Dashboard` no longer offers Explore from here on its tiles.** _What to do:_ if you want it, render `DashboardTile` with its `onExplore` prop, which is unchanged.
+- **`Notebook` no longer caps its width** at 1200px or pads its sides; it fills its container, as `Dashboard` does. _What to do:_ give it a container with the width you want. `DataAppViewer` lays out at 1600px.
+- **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`. Without it, `Package` navigates to the Console's routes as before.
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 

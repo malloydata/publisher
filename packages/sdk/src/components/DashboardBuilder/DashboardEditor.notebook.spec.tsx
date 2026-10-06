@@ -223,6 +223,9 @@ describe("DashboardEditor as a notebook", () => {
       expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
 
       fireEvent.click(button("Save"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Convert and save" }),
+      );
       await waitFor(() => expect(writes).toHaveLength(1));
       expect(writes[0]).toContain("tiles=[\n    text_1 { kind=text }");
       expect(writes[0]).toContain("view: revenue_by_month is sales_by_month");

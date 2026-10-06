@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PALETTE } from "../components/styles";
 import { accentFor, legibleOn } from "./accent";
 import { DEFAULT_THEME } from "./defaults";
 import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
@@ -90,7 +89,7 @@ export function resolveTheme(
       // One series list for both modes, picked against a light page: in dark,
       // a colour too dark to see on the canvas is lifted until it reads.
       series: isDark ? series.map((c) => legibleOn(c, background)) : series,
-      ...accentFor(series[0], mode),
+      ...accentFor(series[0], mode, background),
       font: { family: fontFamily, size: fontSize },
       background,
       tableHeader: pick("tableHeader"),
@@ -129,7 +128,9 @@ export function resolveTheme(
       // Drill link hover: the palette's anchor blue, so a drill reads as the
       // same affordance as every other primary action; dark lightens it for
       // contrast on the slate panel.
-      drillLink: isDark ? "#60a5fa" : PALETTE.blue,
+      // The Console's default accent, not the palette's: a drill reads as a
+      // link whatever the operator picked for the data.
+      drillLink: accentFor(undefined, mode).accent,
    };
 }
 

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { useParams } from "react-router-dom";
+import { documentPath } from "../../common/documentRoutes";
 import {
-   documentRoute,
    encodeResourceUri,
    Package,
    useRouterClickHandler,
@@ -36,7 +36,7 @@ function PackagePage() {
             // document's route, and the builder one segment under it.
             onOpenDocument={({ kind, slug, mode }, event) =>
                navigate(
-                  `${documentRoute(environmentName, packageName, kind, slug)}${mode === "edit" ? "/edit" : ""}`,
+                  documentPath(environmentName, packageName, kind, slug, mode),
                   event,
                )
             }

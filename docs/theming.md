@@ -46,7 +46,7 @@ mutation is.
 ```
 
 `defaultMode` accepts `"light"`, `"dark"`, or `"auto"`. With `"auto"` the viewer's OS preference
-(`prefers-color-scheme`) wins until they override it from the header toggle. Setting
+(`prefers-color-scheme`) wins until they override it from the mode toggle in the sidebar. Setting
 `allowUserToggle: false` hides the toggle and locks viewers into `defaultMode`.
 
 `palette.series` and `font` are shared across modes; the rest of the palette keys take an explicit

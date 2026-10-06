@@ -61,8 +61,6 @@ export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
    onDirtyChange?: (dirty: boolean) => void;
-   /** Whether the save notice is showing, on every change and on mount. */
-   onSaveNoticeChange?: (showing: boolean) => void;
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
@@ -87,7 +85,6 @@ export function useBuilderSession<
    editor,
    onSave,
    onDirtyChange,
-   onSaveNoticeChange,
    onChange,
    extraDirty = false,
    report,
@@ -96,7 +93,6 @@ export function useBuilderSession<
    shortcuts,
 }: BuilderSessionOptions<D, L>) {
    const [saving, setSaving] = useState(false);
-   const [viewing, setViewing] = useState(false);
    const [undone, setUndone] = useState(false);
    const saveButton = useRef<HTMLButtonElement>(null);
    const reportRef = useRef(report);
@@ -117,19 +113,6 @@ export function useBuilderSession<
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    useEffect(() => () => onDirtyChangeRef.current?.(false), []);
-   // The offer, not `canUndoSave`, which also drops while a write is in flight; a host holding a newer version back must keep holding then. Without a writer nothing can be undone, so the offer is withdrawn.
-   const undoOffered = editor.lastSave !== undefined && !!onSave;
-   useEffect(() => {
-      onSaveNoticeChange?.(undoOffered);
-   }, [undoOffered, onSaveNoticeChange]);
-   const onSaveNoticeChangeRef = useRef(onSaveNoticeChange);
-   onSaveNoticeChangeRef.current = onSaveNoticeChange;
-   useEffect(() => () => onSaveNoticeChangeRef.current?.(false), []);
-
-   // The viewer shows the offer's change, so it closes when the offer is withdrawn.
-   useEffect(() => {
-      if (!undoOffered) setViewing(false);
-   }, [undoOffered]);
    const unitRef = useRef(unit);
    unitRef.current = unit;
    // The line saying the undo happened goes with the next edit or save; leaving it up over new work would say something stale.
@@ -215,9 +198,8 @@ export function useBuilderSession<
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: viewing,
          }),
-         [shortcuts, editor, onSave, save, viewing],
+         [shortcuts, editor, onSave, save],
       ),
    );
 

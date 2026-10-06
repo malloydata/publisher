@@ -614,6 +614,24 @@ describe("DashboardBuilder: a tile's own settings", () => {
 });
 
 describe("DashboardBuilder: widths and the page's own settings", () => {
+   it("steps a tile's width from the keyboard on its edge, one undo step each", async () => {
+      await mount();
+      const edge = screen.getByRole("separator", {
+         name: "Width of By category",
+      });
+      expect(edge.tabIndex).toBe(0);
+      expect(edge.getAttribute("aria-valuetext")).toBe("6 of 12 columns");
+      fireEvent.keyDown(edge, { key: "ArrowLeft" });
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+      fireEvent.keyDown(
+         screen.getByRole("separator", { name: "Width of By category" }),
+         { key: "End" },
+      );
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 12");
+      fireEvent.click(button("Undo"));
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+   });
+
    it("sets a tile's width by dragging its right edge, not from its menu", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));

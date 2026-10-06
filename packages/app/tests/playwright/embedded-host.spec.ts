@@ -123,7 +123,8 @@ test.describe("embedded host", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByText("Kept in the host's record")).toBeVisible();
+      // Where Save writes is the Save button's tooltip, labelling it.
+      await expect(page.getByLabel("Kept in the host's record")).toBeVisible();
       await expect(page.getByText("read-only here")).toHaveCount(0);
 
       await editText(firstTextTile(page), "Edited in the host.");
@@ -299,7 +300,7 @@ test.describe("embedded host", () => {
          timeout: 60_000,
       });
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: /^(Save|Saved|Saving…)$/ }),
       ).toHaveCount(0);
       await expect(page.getByText("does not take writes")).toBeVisible();
 

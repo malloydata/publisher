@@ -247,24 +247,4 @@ describe("useBuilderSession undo save", () => {
       });
       expect(readOnly.editor.undoSave).not.toHaveBeenCalled();
    });
-
-   it("tells the host whether a save can still be undone, and that it cannot once unmounted", () => {
-      const onSaveNoticeChange = mock((_showing: boolean) => {});
-      const view = mount({ onSaveNoticeChange }, makeEditor());
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
-      view.rerender({ editor: offering() });
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(true);
-      view.unmount();
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
-   });
-
-   it("withdraws the notice when the writer goes away while it stands", () => {
-      const onSaveNoticeChange = mock((_showing: boolean) => {});
-      const over: Partial<BuilderSessionOptions<Doc>> = { onSaveNoticeChange };
-      const view = mount(over, offering());
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(true);
-      over.onSave = undefined;
-      view.rerender({ editor: offering() });
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
-   });
 });

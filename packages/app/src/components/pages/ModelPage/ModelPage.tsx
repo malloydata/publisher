@@ -15,6 +15,7 @@ import Typography from "@mui/material/Typography";
 import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import NotebookPage from "../NotebookPage/NotebookPage";
+import { splitEdit } from "../../common/documentRoutes";
 import RoutedDocument from "./RoutedDocument";
 
 function ModelPage() {
@@ -70,13 +71,13 @@ function ModelPage() {
       // `dashboards/<slug>/edit` opens the same dashboard in the builder. A
       // slug never contains a slash (nested dashboard directories are not
       // discovered), so the one segment can only be this.
-      const edit = slug.endsWith("/edit");
+      const { path: documentSlug, edit } = splitEdit(slug);
       return (
          <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
             routeKind="dashboard"
-            slug={edit ? slug.slice(0, -"/edit".length) : slug}
+            slug={documentSlug}
             edit={edit}
          />
       );
@@ -89,13 +90,13 @@ function ModelPage() {
       !modelPath.endsWith(".malloynb")
    ) {
       const slug = modelPath.slice("notebooks/".length);
-      const edit = slug.endsWith("/edit");
+      const { path: documentSlug, edit } = splitEdit(slug);
       return (
          <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
             routeKind="notebook"
-            slug={edit ? slug.slice(0, -"/edit".length) : slug}
+            slug={documentSlug}
             edit={edit}
          />
       );

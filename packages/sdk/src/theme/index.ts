@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+export { accentFor, contrastRatio, type Accent } from "./accent";
 export { buildMalloyExplicitTheme } from "./buildMalloyExplicitTheme";
 export { buildTableCssVars } from "./buildTableCssVars";
 export { buildVegaThemeOverride } from "./buildVegaThemeOverride";

@@ -112,7 +112,8 @@ test.describe("dashboard-create", () => {
       await saveChanges(page);
 
       // The reader's view is served from the package, so it shows the save.
-      await page.getByRole("button", { name: "Close", exact: true }).click();
+      // The header's View button leaves the builder for it.
+      await page.getByRole("button", { name: "View", exact: true }).click();
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here$`),
       );

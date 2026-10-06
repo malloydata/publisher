@@ -36,9 +36,9 @@ const AUTO_SAVE_DELAY_MS = 600;
 /**
  * Settings → Visualization theme. Operator picks colors / fonts for
  * the Malloy renderer's output (charts, tables, dashboards) that apply
- * to every viewer of this Publisher instance. Distinct from the app
- * shell light/dark toggle in the header, which controls the MUI
- * palette. Auto-saves on debounced edit.
+ * to every viewer of this Publisher instance. Distinct from the
+ * light/dark toggle in the sidebar, which is each viewer's own choice of
+ * mode. Auto-saves on debounced edit.
  */
 export default function ThemeEditorPage() {
    const { apiClients } = useServer();

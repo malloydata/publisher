@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   act,
    cleanup,
    fireEvent,
    render,
@@ -89,7 +90,9 @@ const mountText = async (
 describe("DashboardBuilder: a notebook is one column", () => {
    it("offers no width: no resize edge, no width presets", async () => {
       await mountText(NOTEBOOK);
-      expect(screen.queryByRole("separator", { name: /^Resize / })).toBeNull();
+      expect(
+         screen.queryByRole("separator", { name: /^Width of / }),
+      ).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for intro"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
@@ -253,11 +256,28 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       expect(onDirtyChange).toHaveBeenLastCalledWith(false);
    });
 
-   it("Save writes the untouched conversion and stays open", async () => {
+   it("asks before Save converts the file, and writes it once confirmed", async () => {
       const writes: string[] = [];
       await open({ onSave: (source) => void writes.push(source) });
       fireEvent.click(button("Save"));
+      expect(
+         await screen.findByText(
+            /Saving rewrites this notebook in the tile layout/,
+         ),
+      ).toBeDefined();
+      expect(writes).toHaveLength(0);
+      fireEvent.click(button("Convert and save"));
       await waitFor(() => expect(writes).toHaveLength(1));
+   });
+
+   it("writes nothing when the conversion is cancelled", async () => {
+      const writes: string[] = [];
+      await open({ onSave: (source) => void writes.push(source) });
+      fireEvent.click(button("Save"));
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      await act(async () => {});
+      expect(writes).toHaveLength(0);
+      expect(button("Save")).toBeDefined();
    });
 
    it("saves the conversion exactly as converted", async () => {
@@ -268,6 +288,9 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
          onEvent,
       });
       fireEvent.click(button("Save"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Convert and save" }),
+      );
       await waitFor(() => expect(writes).toHaveLength(1));
       // Nothing was edited, so the file written is the conversion itself.
       expect(writes[0]).toBe(conversion.to);

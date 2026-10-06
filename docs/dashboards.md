@@ -141,9 +141,9 @@ a package's dashboards is what makes them read as one product rather than as sev
 
 - **`columns=12`.** Twelve divides by 2, 3, 4 and 6, so a row comes out even whether it holds three
   cards or four. Pick one number and use it on every dashboard in the package. The Console builder
-  offers widths up to 24 (Settings → Grid width, with no "default" entry: an unset file shows 2 until
-  one is picked). A wider `columns` still renders, with ever-thinner tracks, and the package warnings
-  say it is beyond what the builder offers.
+  has no grid-width setting: it keeps the file's own `columns=` and lays tiles out on it, so set it
+  in the file. A `columns` above 24 still renders, with ever-thinner tracks, and the package
+  warnings flag it.
 - **A colspan on every card and every tile, summing to `columns` per row.** Four cards at 3, three at
   4, two tiles at 6, a full-width table at 12. Leave them off and each item takes one column. A
   colspan wider than `columns` is clamped, and said so in the package warnings.
@@ -553,14 +553,14 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   opens it unfiltered. The load-time lint reports the case it can see: a `to=self` drill seeding a
   given no model in the package declares is an error at load.
 
-**The rows behind a value, and exploring from a tile.** On a composite dashboard every grouped
+**The rows behind a value.** On a composite dashboard every grouped
 value is clickable. A value whose dimension carries a `# drill` does what the tag says — one
 destination navigates at once, several open a menu — exactly as described below. A value with no
 drill opens the rows behind it: Malloy's `drill:` through the tile's view (`run: <source> -> {
 drill: <view>.<field> = <value>; select: *; limit: 200 }`), so the tile's own `where:` and the
-applied controls both hold. Each tile's heading shows "Explore from here" on hover, which opens the
-model explorer on the tile's source with its view as the query. Neither is available on the
-single-query form, whose one result names no tile.
+applied controls both hold. This is not available on the single-query form, whose one result names
+no tile. (The Console's tiles no longer offer "Explore from here"; the SDK's `DashboardTile` still
+takes `onExplore` for a host that wants it.)
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They carry a button
@@ -690,12 +690,27 @@ and a reload that fails to compile leaves the previously compiled model serving.
 ### Editing in the Console
 
 If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
-dashboard page has an **Edit** button, and the package page has a **New** menu (an empty Artifacts section also offers a **New artifact** button that opens the same menu): pick a
+dashboard page has an **Edit** button in the header, beside the breadcrumbs, and the package page has a **New** menu (an empty Artifacts section also offers a **New artifact** button that opens the same menu): pick a
 type (Dashboard or Notebook), a model, a source and its view (one select), and a title, and the file is written into the package and opened in the builder. From there it is
-the classic loop — **drag a tile by its grip to move it, set its width, view, label and chart from its own
-menu (or nudge the width with the arrow keys), and add filters from the strip above the grid.** Titles,
-descriptions and text tiles are click-to-edit where they stand. A **text tile** is markdown, added
-from the same dialog as a query tile.
+the classic loop — **drag a tile's card to move it, drag its right edge to set its width, pick its
+chart and drill from its ⋯ menu, and add filters with + Filter on the row under the description.**
+The width snaps to whole columns, with column guides during the drag. The edge is also a keyboard
+control: Tab to it, Left and Right step one column, Home and End go to one column and full width; on
+a selected tile the arrow keys nudge the width too. The card has no grip to find: a visually hidden
+handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels). The ⋯
+menu holds **Viz type** (applied as you pick it), **Drill** and **Delete**. Titles, subtitles,
+descriptions and text tiles are click-to-edit where they stand, each with a small pencil after the
+text. A **text tile** is markdown, added from the same dialog as a query tile (or **+ Tile** in the
+header).
+
+The builder's header is the page title with its actions on the same line: **+ Tile**, undo, redo
+and **Save**. Below the title sit the description (edited in a text block's box, as markdown), then
+the filter row: "Filters", a chip per filter (click to edit, × to remove) and a dashed **+ Filter**
+chip, then the live controls. There is no settings panel. A document stays the kind it was created
+as; a file's own `# dashboard { columns=N }` and `autorun=false` are kept and still apply, but the
+builder does not set them. Adding a tile offers every source the package publishes, and when the
+file cannot already see the chosen source the builder adds a named import for it (into that model's
+existing `import { … }` line when there is one).
 
 The **Viz type** choices are From the view (the view's own chart), Table (no chart), Line, Bar, Big value, Scatter,
 Shape map and Segment map. A choice the view cannot render stays in the list, greyed, with its reason
@@ -707,7 +722,7 @@ from a declaration on the source, which has no wrapper to carry the line.
 
 A dashboard with `tiles=[]` (only possible by hand-editing, since New always seeds a first tile)
 opens in the builder, but it is not served (the manifest 404s and the load lint reports it) until it has a tile, and the builder will not
-remove the last tile of a dashboard that was saved with tiles: **Remove tile** stays visible but
+remove the last tile of a dashboard that was saved with tiles: **Delete** stays visible but
 disabled, with "A saved dashboard needs at least one tile." beside it. A filter window shows what is
 wrong with a field only once you have edited something in it, so opening a fresh one is not a wall
 of red; **Apply** stays disabled until it is valid either way. On a screen narrower than 600px the
@@ -722,12 +737,14 @@ There is no proprietary layout document: the builder reads and writes the same
 it, so comments and anything it does not model survive the round trip. The result is a source file
 you can review in a pull request, and one an agent can write by hand just as well.
 
-The builder's **Save** writes at once, with no review step, and then shows a notice with
-**View change** (the file's diff, read-only) and **Undo save**, which writes the file back as it was
-before that save. The notice stays until the next edit or save. The caption under the button says
-where Save writes. A notebook is the same builder over a one-column document (**Settings → Show as**
-switches the tag); a cell-format notebook opens converted and unsaved, and Undo save restores the
-original text. A file whose tag names no `kind` is edited as the kind its folder implies
+The builder's **Save** (or Cmd/Ctrl+S) writes at once, with no review step, and the builder stays
+open; the button reads a greyed **Saved** until the next edit, and its tooltip says where Save
+writes. To leave, the header button that read **Edit** now reads **View**: it returns to the
+read-only page and asks first when edits are unsaved. A notebook is the same builder over a
+one-column document. A cell-format notebook opens converted to the tile layout and unsaved, and the
+first Save asks before rewriting it ("Convert this notebook?"): the builder cannot take the
+conversion back, though the file's history in your repository can, and **Cancel** writes nothing.
+A file whose tag names no `kind` is edited as the kind its folder implies
 (`notebooks/` is a notebook). Save writes back through `PUT …/models/dashboards/<name>.malloy` (or
 `notebooks/<name>.malloy`), which compiles the text first, writes it atomically, reloads the package
 in place, and restores the previous text if the reload does not take it, or if the compiled file
@@ -830,7 +847,7 @@ complete embedding story.
 
 `<DashboardEditor>` is the other public export for this component, from `@malloy-publisher/sdk/builder`
 (the main entry stays free of the Malloy parser): the same builder the Console's own `/edit` route mounts, over the same `resourceUri` + `dashboard` shape
-as `<Dashboard>`, plus `onExit`, `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
+as `<Dashboard>`, plus `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`,
 and a `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the
 package cannot be written (see the SDK README's
 [Document Storage](../packages/sdk/README.md#document-storage) section).
@@ -846,18 +863,18 @@ import { DashboardEditor } from "@malloy-publisher/sdk/builder";
       packageName: "storefront",
     })}
     dashboard="overview"
-    onExit={() => navigate(-1)}
+    onDirtyChange={setDirty}
   />
 </ServerProvider>;
 ```
 
-The editor's **Close** button asks about unsaved edits itself (Keep editing, Discard changes, or
-Save and exit), and calls `onExit` only once the person has chosen to leave. An `onExit` that also
-prompts would ask twice, so have it navigate and nothing more. Close is the only exit the editor owns:
-to guard the host's other ways out (a nav link, the browser's Back, closing the tab), track
-`onDirtyChange`, which reports whether anything is unsaved (an open text edit counts, and it reports
-`false` when the editor unmounts), and block navigation while it is `true`. The Console's
-`DashboardEditPage` does this with a router blocker and a `beforeunload` listener.
+The editor saves in place and draws no way out of itself: leaving is the host's. Draw your own exit
+(the Console's is the **View** button in its header) and guard it, along with the host's other ways
+out (a nav link, the browser's Back, closing the tab), by tracking `onDirtyChange`, which reports
+whether anything is unsaved (an open text edit counts, and it reports `false` when the editor
+unmounts), and blocking navigation while it is `true`. The Console's `DashboardEditPage` does this
+with a router blocker and a `beforeunload` listener. The lower-level `DashboardBuilder` takes no
+`onExit` either; a host mounting it passes `onSave` and guards its own exit the same way.
 
 Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is a thin
 wrapper over `DashboardEditor` with `kind="notebook"` (`DashboardEditor` also takes a `path` and a
@@ -865,7 +882,7 @@ wrapper over `DashboardEditor` with `kind="notebook"` (`DashboardEditor` also ta
 (`"package"`, `"storage"`, or `undefined`), `useDocumentChoices` lists the models and views the New
 dialog offers, `createDocument` writes the new file by that route, and `newNotebookSource` /
 `newDashboardSource` build the starting text. `locatorFor` names a created document's address in a
-host's own store. The events are `DashboardEvent`, `NotebookEvent` and their union `BuilderEvent`; Undo save reports `*.save_undone`, or `*.save_undo_refused` when the write is refused.
+host's own store. The events are `DashboardEvent`, `NotebookEvent` and their union `BuilderEvent`.
 
 An older host may still pass `environmentName`, `packageName` and `dashboardName` in place of
 `resourceUri` and `dashboard`; that form is deprecated but not removed, so a 0.4.1 integration keeps

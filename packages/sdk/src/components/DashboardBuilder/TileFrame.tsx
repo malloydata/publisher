@@ -18,7 +18,7 @@ import {
    type QueryTile,
 } from "./document";
 import { gapId } from "./layout";
-import { GapDroppable, TileSortable } from "./sortable";
+import { GapDroppable, NO_DRAG, TileSortable } from "./sortable";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the menu
@@ -36,6 +36,7 @@ export function TileFrame({
    onSelect,
    onOpenMenu,
    resizing = false,
+   width,
    onResizeStart,
    onResizeMove,
    onResizeEnd,
@@ -58,6 +59,12 @@ export function TileFrame({
    onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
    onResizeMove?: (event: PointerEvent<HTMLDivElement>) => void;
    onResizeEnd?: (event: PointerEvent<HTMLDivElement>) => void;
+   /** The tile's width and the grid's, and a step of one column: the edge's keyboard route. */
+   width?: {
+      span: number;
+      columns: number;
+      onStep: (to: number) => void;
+   };
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
@@ -188,8 +195,10 @@ export function TileFrame({
                   }}
                   sx={{
                      position: "absolute",
-                     top: "2px",
-                     right: "2px",
+                     // Inside the card's corner, clear of its edge, at the
+                     // card's own inner padding.
+                     top: "8px",
+                     right: "8px",
                      width: 28,
                      height: 22,
                      zIndex: 2,
@@ -206,15 +215,44 @@ export function TileFrame({
                   <SpreadDotsIcon />
                </IconButton>
 
-               {/* The right edge, draggable to set the width. Its own
-                pointer handling stops the press reaching the sortable, and
-                the sensor refuses a separator regardless. */}
+               {/* The right edge, which sets the width: dragged, or focused and
+                stepped with the arrow keys a column at a time (Home and End go
+                to one column and the full grid). Marked so the move sensor
+                never takes a press on it. */}
                {onResizeStart && (
                   <Box
                      className="builder-affordance"
+                     {...{ [NO_DRAG]: "" }}
                      role="separator"
+                     tabIndex={width ? 0 : -1}
                      aria-orientation="vertical"
-                     aria-label={`Resize ${tileLabel(tile)}`}
+                     aria-label={`Width of ${tileLabel(tile)}`}
+                     {...(width
+                        ? {
+                             "aria-valuenow": width.span,
+                             "aria-valuemin": 1,
+                             "aria-valuemax": width.columns,
+                             "aria-valuetext": `${width.span} of ${width.columns} columns`,
+                          }
+                        : {})}
+                     onKeyDown={(event) => {
+                        if (!width) return;
+                        const to =
+                           event.key === "ArrowRight"
+                              ? width.span + 1
+                              : event.key === "ArrowLeft"
+                                ? width.span - 1
+                                : event.key === "Home"
+                                  ? 1
+                                  : event.key === "End"
+                                    ? width.columns
+                                    : undefined;
+                        if (to === undefined) return;
+                        // The builder's own arrow-key nudge must not step it again.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        width.onStep(Math.min(Math.max(to, 1), width.columns));
+                     }}
                      onPointerDown={onResizeStart}
                      onPointerMove={onResizeMove}
                      onPointerUp={onResizeEnd}
@@ -236,6 +274,12 @@ export function TileFrame({
                         opacity: resizing || selected ? 1 : 0,
                         transition: "opacity 120ms",
                         "&:hover": { opacity: 1 },
+                        "&:focus-visible": {
+                           opacity: 1,
+                           outline: `2px solid ${theme.accent}`,
+                           outlineOffset: 1,
+                           borderRadius: "3px",
+                        },
                         "&::after": {
                            content: '""',
                            position: "absolute",

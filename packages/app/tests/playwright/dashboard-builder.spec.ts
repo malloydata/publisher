@@ -11,8 +11,8 @@ import { saveChanges } from "./helpers/save";
 
 /**
  * The dashboard builder, end to end in a browser: open a package dashboard in
- * the Console's editor, change the page's settings, save it back into the
- * package, and reorder the grid without a tile losing its chart.
+ * the Console's editor, edit its title, save it back into the package, reorder
+ * the grid without a tile losing its chart, and set a tile's width from its edge.
  *
  * Runs against its own environment built from the server's dashboards
  * fixture, registered and removed the way `package-dashboards.spec` does it.
@@ -74,7 +74,7 @@ test.describe("dashboard-builder", () => {
       await expect(page.getByText(/^Tiled/).first()).toBeVisible();
    };
 
-   test("opens a package dashboard and saves a settings edit into the package", async ({
+   test("opens a package dashboard and saves a title edit into the package", async ({
       page,
    }) => {
       await openEditor(page);
@@ -93,7 +93,7 @@ test.describe("dashboard-builder", () => {
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: "Save", exact: true }),
       ).toBeEnabled();
 
       await saveChanges(page);
@@ -122,14 +122,15 @@ test.describe("dashboard-builder", () => {
       await expect(rendered).toHaveCount(4, { timeout: 60_000 });
 
       // A real pointer drag, because that is what re-runs the tiles' render
-      // effects: the grip of the last tile onto the first.
-      const grip = page.getByLabel("Move By region");
-      await grip.scrollIntoViewIfNeeded();
-      const from = await grip.boundingBox();
+      // effects: the last tile, picked up by its card, onto the first.
+      const last = page.getByLabel("Tile region_tile");
+      await last.scrollIntoViewIfNeeded();
+      const from = await last.boundingBox();
       const onto = await page.getByLabel("Tile order_tile").boundingBox();
       expect(from && onto).toBeTruthy();
       if (!from || !onto) return;
-      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      // By its top padding: the title is a button and the body a chart.
+      await page.mouse.move(from.x + from.width / 2, from.y + 8);
       await page.mouse.down();
       for (let step = 1; step <= 10; step++) {
          await page.mouse.move(
@@ -140,7 +141,7 @@ test.describe("dashboard-builder", () => {
       }
       await page.mouse.up();
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: "Save", exact: true }),
       ).toBeEnabled();
 
       // Each tile's chart still sits INSIDE its tile. The regression this
@@ -165,17 +166,19 @@ test.describe("dashboard-builder", () => {
       expect(outside).toEqual([]);
    });
 
-   test("a tile's width is set from its menu and previewed on the grid", async ({
+   test("a tile's width is set from its right edge and previewed on the grid", async ({
       page,
    }) => {
       await openEditor(page);
-      // Width is never a drag: no edge handle is offered on any tile.
-      await expect(
-         page.getByRole("separator", { name: /^Resize / }),
-      ).toHaveCount(0);
-      await page.getByLabel("Settings for Orders").click();
-      await page.getByRole("button", { name: "Width Full" }).click();
-      await page.keyboard.press("Escape");
+      // The right edge is a focusable separator: the arrows step a column,
+      // Home and End go to one column and the full grid.
+      const edge = page.getByRole("separator", { name: "Width of Orders" });
+      await expect(edge).toHaveAttribute("aria-valuenow", "6");
+      await edge.focus();
+      await page.keyboard.press("ArrowLeft");
+      await expect(edge).toHaveAttribute("aria-valuenow", "5");
+      await page.keyboard.press("End");
+      await expect(edge).toHaveAttribute("aria-valuenow", "12");
       const tile = page.getByLabel("Tile order_tile");
       const revenue = page.getByLabel("Tile revenue_tile");
       // Full width: the next tile starts under it rather than beside it.
@@ -185,7 +188,7 @@ test.describe("dashboard-builder", () => {
       ]);
       expect(a && b && b.y > a.y + a.height - 1).toBe(true);
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: "Save", exact: true }),
       ).toBeEnabled();
    });
 });

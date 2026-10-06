@@ -62,6 +62,7 @@ import {
 } from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
 import { TileCard } from "../Dashboard/TileCard";
+import { AppDialog } from "../AppDialog";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
@@ -113,8 +114,6 @@ export interface DashboardBuilderProps {
     * the save, so it must write through the same channel and checks.
     */
    onSave?: SaveHandler<DashboardDocument>;
-   /** Whether the save notice (View change, Undo save) is showing, for a host that must not replace the document under it. */
-   onSaveNoticeChange?: (showing: boolean) => void;
    /**
     * The document as it stands, on every edit — including the first render.
     *
@@ -222,7 +221,6 @@ export function DashboardBuilder({
    onSave,
    onChange,
    onDirtyChange,
-   onSaveNoticeChange,
    renderTile,
    controls,
    givens,
@@ -485,14 +483,38 @@ export function DashboardBuilder({
       afterCommit.current = undefined;
       run();
    }, [draftDirty, editor.dirty]);
+   // The first save of a cell-format notebook rewrites the file in the tile
+   // layout, which the builder cannot take back: it asks before it writes.
+   const pendingOpenRef = useRef(editor.pendingOpen);
+   pendingOpenRef.current = editor.pendingOpen;
+   const [confirmConversion, setConfirmConversion] = useState<
+      { go: () => void; stop: () => void } | undefined
+   >(undefined);
+   const prepareSave = useCallback(
+      (run: () => Promise<void> | void): Promise<void> | void => {
+         if (!pendingOpenRef.current) return prepare(run);
+         return new Promise<void>((resolve) =>
+            setConfirmConversion({
+               go: () => {
+                  setConfirmConversion(undefined);
+                  resolve(prepare(run) as Promise<void> | undefined);
+               },
+               stop: () => {
+                  setConfirmConversion(undefined);
+                  resolve();
+               },
+            }),
+         );
+      },
+      [prepare],
+   );
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
-      prepare,
+      prepare: prepareSave,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onDirtyChange,
-      onSaveNoticeChange,
       onChange,
       shortcuts,
       report: {
@@ -558,7 +580,12 @@ export function DashboardBuilder({
       editor.update((draft) => {
          // A source the file cannot see yet comes in by name, with the tile.
          if (tile.modelPath)
-            draft.imports = withSource(draft, tile.base, tile.modelPath);
+            draft.imports = withSource(
+               draft,
+               tile.base,
+               tile.modelPath,
+               ...(modelPath ? [modelPath] : []),
+            );
          let extension = draft.sources.find((s) => s.base === tile.base);
          if (!extension) {
             // A name of the file's own: the base's, suffixed, since an
@@ -697,7 +724,7 @@ export function DashboardBuilder({
    const empty = editor.document.tiles.length === 0;
    const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
    // The builder's actions: on the title's line, at the right, above the
-   // description — the page's own heading row rather than a second header.
+   // description.
    const actions = (
       <BuilderToolbar
          {...session.toolbarProps}
@@ -879,6 +906,19 @@ export function DashboardBuilder({
                                  {...(columns > 1 && resizable(each)
                                     ? {
                                          resizing: resize?.index === index,
+                                         width: {
+                                            span: each.colspan ?? 1,
+                                            columns,
+                                            onStep: (to: number) => {
+                                               if (to === (each.colspan ?? 1))
+                                                  return;
+                                               editor.update((draft) => {
+                                                  const tile =
+                                                     draft.tiles[index];
+                                                  if (tile) tile.colspan = to;
+                                               });
+                                            },
+                                         },
                                          onResizeStart: (event) =>
                                             startResize(event, index),
                                          onResizeMove: onResize,
@@ -1002,6 +1042,27 @@ export function DashboardBuilder({
                      })
                   }
                />
+               <AppDialog
+                  open={confirmConversion !== undefined}
+                  onClose={() => confirmConversion?.stop()}
+                  title="Convert this notebook?"
+                  description="Saving rewrites this notebook in the tile layout. The builder cannot take that back; the file's history in your repository can."
+                  actions={
+                     <>
+                        <Button onClick={() => confirmConversion?.stop()}>
+                           Cancel
+                        </Button>
+                        <Button
+                           variant="contained"
+                           onClick={() => confirmConversion?.go()}
+                        >
+                           Convert and save
+                        </Button>
+                     </>
+                  }
+               >
+                  {null}
+               </AppDialog>
                <AddTileDialog
                   open={addingTile}
                   document={editor.document}
