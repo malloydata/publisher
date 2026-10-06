@@ -537,7 +537,7 @@ export function unwrapFilterLiteral(value: string): string {
  * time the next form was found by someone else. MOTLY's own grammar is the
  * authority on what parses, so it is asked instead of imitated.
  */
-function parseMotly(texts: readonly string[]): {
+export function parseMotly(texts: readonly string[]): {
    tag: Tag | undefined;
    errors: string[];
 } {

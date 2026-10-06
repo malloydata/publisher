@@ -294,6 +294,14 @@ run: open_src -> { aggregate: c }
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
 
+      it("keeps a document whose cell carries the documented bare filter literal in a starting-value tag", async () => {
+         const result = await compile(
+            `## artifact { kind=notebook }\n# artifact { autorun=false givens { REGION=f'US' } }\nrun: open_src -> { aggregate: c }\n`,
+            { ROLE: "analyst" },
+         );
+         expect(result.document?.cells.map((c) => c.kind)).toEqual(["query"]);
+      });
+
       it("leaves an ordinary tile's givens exactly as they were", async () => {
          const result = await compile(
             `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,

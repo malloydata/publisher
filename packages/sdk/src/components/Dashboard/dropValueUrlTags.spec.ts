@@ -100,6 +100,24 @@ describe("dropValueUrlTags", () => {
       expect(plain[0]).toContain("a < b");
    });
 
+   it("removes each markup shape in a label and keeps a bare angle bracket", () => {
+      for (const label of [
+         "<b>x</b>",
+         "</b>",
+         "<!-- x -->",
+         "<b onclick=x a> y",
+      ]) {
+         const out = annotationsOf(
+            dropValueUrlTags(resultWith(`# label="${label}"\n`)),
+         );
+         expect(out.join("")).not.toContain("label");
+      }
+      for (const label of ["a<b", "Actual<Target", "a < b"]) {
+         const source = resultWith(`# label="${label}"\n`);
+         expect(dropValueUrlTags(source)).toBe(source);
+      }
+   });
+
    it("leaves chart tags, doc notes and a field named link as a value alone", () => {
       const source = resultWith(
          "# bar_chart { x = link }\n",

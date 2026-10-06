@@ -1900,7 +1900,8 @@ paths:
         before anything compiles, for a field, view or query alike; a model file
         keeps the tags it defines itself. The same refusal covers an annotation that
         reads `@env.`, one the tag parser rejects or that exceeds 8,192 characters,
-        and a fragment that excepts a column and declares one of the same name.
+        a fragment that frees a column (`except:`, `rename:`) and declares one of the same name
+        in the same extend chain, and one with over 1,000 annotations or 64 KB of them.
         This removes the author-written paths only: the renderer's other
         value-to-HTML sinks are not covered by it. A cell that names a source
         that is both gated and hidden from the caller answers 404 for the whole

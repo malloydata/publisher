@@ -3,13 +3,13 @@
 
 import type { LogMessage, Model, Runtime } from "@malloydata/malloy";
 import { Malloy, MalloyError, MalloyTranslator } from "@malloydata/malloy";
-import type { Tag } from "@malloydata/malloy-tag";
+import { ParseUtil, type Tag } from "@malloydata/malloy-tag";
 import { CompileRefusedError, UnparseableTextError } from "../errors";
 import {
    hasEnvReference,
    MAX_ANNOTATION_CHARS,
    onMotlyRoute,
-   parseBounded,
+   parseMotly,
    tagText,
 } from "./motly";
 
@@ -90,14 +90,29 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * axis label measured through `innerHTML`, pivot headers). Those are the
  * renderer's to fix, and a host content-security-policy is the backstop.
  */
-const HTML_START = /<[A-Za-z!/]/;
+/** A tag is markup when it is an opening or closing tag closed by `>`, a comment or a doctype; `a<b` is text. */
+const HTML_START = /<\/?[A-Za-z][^>]*>|<!--|<![A-Za-z]/;
+
+/** Generous multiples of the largest legitimate fragment (322 annotations, 22 KB), so the parse work stays bounded. */
+const MAX_HASHES = 4_096;
+const MAX_ANNOTATIONS = 1_000;
+const MAX_ANNOTATION_CHARS_TOTAL = 65_536;
+
+/** One `extend { … }` block (or the loose text outside one) and the field names it frees and declares. */
+interface Block {
+   /** The source a statement names, and the source it extends. */
+   owner?: string;
+   base?: string;
+   /** The block this one extends in the same statement (`extend { … } extend { … }`). */
+   chain?: Block;
+   excepted: Set<string>;
+   declared: Set<string>;
+}
 
 interface FragmentScan {
    /** Every single-hash annotation, a `#|` block's body included, as the lexer captured it. */
    annotations: string[];
-   /** Names a field list excepts, and names a dimension, measure, join or rename declares. */
-   excepted: Set<string>;
-   declared: Set<string>;
+   blocks: Block[];
 }
 
 const DECLARING = new Set([
@@ -109,9 +124,9 @@ const DECLARING = new Set([
    "RENAME",
 ]);
 
-/** The name an identifier token spells, backticks removed. */
+/** The name an identifier token spells, with Malloy's own backtick decoding so an escaped spelling cannot hide it. */
 function nameOf(text: string): string {
-   return text.startsWith("`") ? text.slice(1, -1) : text;
+   return text.startsWith("`") ? ParseUtil.parseString(text, "`") : text;
 }
 
 /** Scan the fragment's lexer tokens: no schema and no connection, so the answer cannot depend on the data. */
@@ -121,11 +136,7 @@ function scanFragment(source: string): FragmentScan {
       urls: { [url]: source },
    });
    const parsed = translator.parseStep.step(translator).parse;
-   const scan: FragmentScan = {
-      annotations: [],
-      excepted: new Set(),
-      declared: new Set(),
-   };
+   const scan: FragmentScan = { annotations: [], blocks: [] };
    if (!parsed) return scan;
    // Symbolic names, not numeric types or parse-tree class names, so a Malloy upgrade or a minified build cannot silently blind the scan.
    const vocabulary = (
@@ -137,21 +148,39 @@ function scanFragment(source: string): FragmentScan {
       name: vocabulary.getSymbolicName(token.type) ?? "",
       text: token.text ?? "",
    }));
-   let mode: "except" | "declare" | undefined;
-   let block: string | undefined;
-   const closeBlock = () => {
-      if (block !== undefined) scan.annotations.push(block);
-      block = undefined;
+   const newBlock = (from?: Partial<Block>): Block => {
+      const block: Block = {
+         excepted: new Set(),
+         declared: new Set(),
+         ...from,
+      };
+      scan.blocks.push(block);
+      return block;
    };
+   const stack: { depth: number; block: Block }[] = [];
+   let loose = newBlock();
+   let depth = 0;
+   let owner: string | undefined;
+   let wantOwner = false;
+   let pending: Partial<Block> | undefined;
+   let lastClosed: Block | undefined;
+   let lastName: string | undefined;
+   let mode: "except" | "declare" | "rename" | undefined;
+   let text$: string | undefined;
+   const closeBlock = () => {
+      if (text$ !== undefined) scan.annotations.push(text$);
+      text$ = undefined;
+   };
+   const current = () => stack[stack.length - 1]?.block ?? loose;
    for (let i = 0; i < tokens.length; i++) {
       const { name, text } = tokens[i];
       if (name === "BLOCK_ANNOTATION_BEGIN") {
          closeBlock();
-         block = text;
+         text$ = text;
          continue;
       }
       if (name === "BLOCK_ANNOTATION_TEXT") {
-         if (block !== undefined) block += text;
+         if (text$ !== undefined) text$ += text;
          continue;
       }
       if (name === "BLOCK_ANNOTATION_END") {
@@ -164,24 +193,87 @@ function scanFragment(source: string): FragmentScan {
          if (/^#(?!#)/.test(text)) scan.annotations.push(text);
          continue;
       }
-      if (name === "EXCEPT") mode = "except";
-      else if (DECLARING.has(name)) mode = "declare";
-      else if (/^[a-z_]+:$/.test(text)) mode = undefined;
-      else if (
-         mode === "except" &&
-         (name === "IDENTIFIER" || name === "BQ_STRING")
-      ) {
-         scan.excepted.add(nameOf(text));
-      } else if (
-         mode === "declare" &&
-         (name === "IDENTIFIER" || name === "BQ_STRING") &&
-         tokens[i + 1]?.name === "IS"
-      ) {
-         scan.declared.add(nameOf(text));
+      if (name === "OCURLY") {
+         depth++;
+         if (pending) {
+            stack.push({ depth, block: newBlock(pending) });
+            pending = undefined;
+         }
+         continue;
+      }
+      if (name === "CCURLY") {
+         if (stack[stack.length - 1]?.depth === depth) {
+            lastClosed = stack.pop()?.block;
+         }
+         depth--;
+         continue;
+      }
+      pending = undefined;
+      const isName = name === "IDENTIFIER" || name === "BQ_STRING";
+      if (name === "EXTEND") {
+         pending = {
+            owner,
+            base: lastName,
+            chain: tokens[i - 1]?.name === "CCURLY" ? lastClosed : undefined,
+         };
+         continue;
+      }
+      if (/^[a-z_]+:$/.test(text)) {
+         if (depth === 0) {
+            owner = undefined;
+            loose = newBlock();
+         }
+         wantOwner = name === "SOURCE";
+         mode =
+            name === "EXCEPT"
+               ? "except"
+               : name === "RENAME"
+                 ? "rename"
+                 : DECLARING.has(name)
+                   ? "declare"
+                   : undefined;
+         continue;
+      }
+      if (isName) {
+         if (wantOwner) {
+            owner = nameOf(text);
+            wantOwner = false;
+         }
+         lastName = nameOf(text);
+         if (mode === "except") current().excepted.add(nameOf(text));
+         else if (mode && tokens[i + 1]?.name === "IS") {
+            current().declared.add(nameOf(text));
+            // A rename frees the name it moves away from.
+            const from = tokens[i + 2];
+            if (mode === "rename" && from)
+               current().excepted.add(nameOf(from.text));
+         }
       }
    }
    closeBlock();
    return scan;
+}
+
+/** The excepted names a block inherits: its own, its chain's, and those of the block its source extends. */
+function freedNames(
+   block: Block,
+   blocks: readonly Block[],
+   seen = new Set<Block>(),
+): Set<string> {
+   const freed = new Set<string>();
+   if (seen.has(block)) return freed;
+   seen.add(block);
+   for (const name of block.excepted) freed.add(name);
+   const parents = [
+      ...(block.chain ? [block.chain] : []),
+      ...(block.base
+         ? blocks.filter((other) => other.owner === block.base)
+         : []),
+   ];
+   for (const parent of parents) {
+      for (const name of freedNames(parent, blocks, seen)) freed.add(name);
+   }
+   return freed;
 }
 
 /** The first property in `tag` that is a URL-producing render tag, or markup in a `label`. */
@@ -209,8 +301,17 @@ function offendingTag(tag: Tag): string | undefined {
  * The refusal for a fragment that writes a render tag turning a value into a URL or markup, reads
  * the server's environment from an annotation, or re-points a model field by excepting and redeclaring a column.
  */
-function renderTagRefusal(source: string): string | undefined {
+export function renderTagRefusal(source: string): string | undefined {
+   // Counted before parsing, so an oversized body costs a scan and not a parse.
+   if (source.split("#").length - 1 > MAX_HASHES) return TOO_MANY;
    const scan = scanFragment(source);
+   const total = scan.annotations.reduce((sum, text) => sum + text.length, 0);
+   if (
+      scan.annotations.length > MAX_ANNOTATIONS ||
+      total > MAX_ANNOTATION_CHARS_TOTAL
+   ) {
+      return TOO_MANY;
+   }
    for (const text of scan.annotations) {
       // `#(docs)`, `#"` and the other routes are prose or another namespace, not render tags.
       if (!onMotlyRoute(text)) continue;
@@ -218,9 +319,10 @@ function renderTagRefusal(source: string): string | undefined {
       if (hasEnvReference(text)) {
          return "an annotation reads the server's environment (`@env.`), which a fragment may not do";
       }
-      const parsed = parseBounded([text]);
+      // The same rescue the renderer's own readers use, so a bare `f'…'` filter literal is not stricter here than there.
+      const parsed = parseMotly([text]);
       // A tag the parser rejects is one the renderer may still read differently, so it fails closed.
-      if (parsed.messages.length > 0 || !parsed.tag) {
+      if (parsed.errors.length > 0 || !parsed.tag) {
          return `an annotation does not parse as a tag, or exceeds ${MAX_ANNOTATION_CHARS} characters`;
       }
       const found = offendingTag(parsed.tag);
@@ -232,17 +334,21 @@ function renderTagRefusal(source: string): string | undefined {
          );
       }
    }
-   const shadowed = [...scan.excepted].filter((name) =>
-      scan.declared.has(name),
-   );
-   if (shadowed.length > 0) {
-      return (
-         `the submitted text excepts and then declares \`${shadowed[0]}\`, which would re-point every ` +
-         `model field derived from it, tags included. Fix: give the new field another name.`
-      );
+   for (const block of scan.blocks) {
+      if (block.declared.size === 0) continue;
+      const freed = freedNames(block, scan.blocks);
+      const shadowed = [...block.declared].find((name) => freed.has(name));
+      if (shadowed !== undefined) {
+         return (
+            `the submitted text frees \`${shadowed}\` (except: or rename:) and then declares it, which would re-point every ` +
+            `model field derived from it, tags included. Fix: give the new field another name.`
+         );
+      }
    }
    return undefined;
 }
+
+const TOO_MANY = `the submitted text carries more annotations than a fragment may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
 
 /**
  * Compile `source` against `model` in restricted mode and throw if it uses a

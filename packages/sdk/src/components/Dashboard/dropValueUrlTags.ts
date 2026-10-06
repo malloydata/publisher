@@ -17,7 +17,7 @@ import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
  * them; the default is the safe one.
  */
 
-const HTML_START = /<[A-Za-z!/]/;
+const HTML_START = /<\/?[A-Za-z][^>]*>|<!--|<![A-Za-z]/;
 
 /** Remove the offending properties from `tag`, in place, at any depth; whether any was removed. */
 function strip(tag: Tag): boolean {

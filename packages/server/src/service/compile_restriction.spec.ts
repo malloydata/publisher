@@ -24,10 +24,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import fsSync from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../errors";
+import { renderTagRefusal } from "./compile_restriction";
 import { Environment } from "./environment";
 
 // The curated model. It publishes `base_source` and nothing else; every
@@ -467,6 +469,12 @@ source: published is duckdb.sql("select 1 as id") extend {
             grp('  # label="\\u003cimg src=x>"'),
             HTML,
          ],
+         "a closing tag in a label": [grp('  # label="</b>"'), HTML],
+         "a comment in a label": [grp('  # label="<!-- x -->"'), HTML],
+         "an opening tag with attributes closed later in the label": [
+            grp('  # label="<b onclick=x a> y"'),
+            HTML,
+         ],
          "a single-quoted label with markup": [
             grp("  # label='<b>x</b>'"),
             HTML,
@@ -546,6 +554,74 @@ source: published is duckdb.sql("select 1 as id") extend {
          }
       });
 
+      describe("a fragment with more annotations than any document carries", () => {
+         const run = "run: base_source -> { group_by: id }";
+         const timed = async (source: string) => {
+            const started = performance.now();
+            const error = await refusalFor(source, "append");
+            return { error, ms: performance.now() - started };
+         };
+
+         it("refuses a body of many annotations in well under a second", async () => {
+            const { error, ms } = await timed(
+               `${"# a\n".repeat(250_000)}${run}`,
+            );
+            expect(error.message).toContain("more annotations");
+            expect(ms).toBeLessThan(1500);
+         });
+
+         it("refuses an annotation count over the cap", async () => {
+            const { error } = await timed(`${"# a\n".repeat(1_001)}${run}`);
+            expect(error.message).toContain("more annotations");
+         });
+
+         it("refuses many long annotations, which cost parse time rather than count", async () => {
+            const nested = `# ${"a{".repeat(2_700)}${"}".repeat(2_700)}\n`;
+            const { error, ms } = await timed(`${nested.repeat(125)}${run}`);
+            expect(error.message).toContain("more annotations");
+            expect(ms).toBeLessThan(1500);
+         });
+
+         it("accepts as many annotations as the largest committed model", async () => {
+            const lines = Array.from(
+               { length: 322 },
+               (_, i) => `# label="l${i}"`,
+            ).join("\n");
+            expect(
+               await errorsFor(
+                  `source: s is base_source extend {\n${lines}\n  measure: m is count()\n}\nrun: s -> { aggregate: m }`,
+                  "append",
+               ),
+            ).toEqual([]);
+         });
+      });
+
+      it("accepts every committed .malloy file, so no fixture is refused that the renderer reads fine", () => {
+         const roots = [
+            path.resolve(__dirname, "../../tests/fixtures"),
+            path.resolve(__dirname, "../../../../examples"),
+            path.resolve(__dirname, "../../../skills/skills"),
+         ];
+         const refused: string[] = [];
+         const walk = (dir: string) => {
+            for (const entry of fsSync.readdirSync(dir, {
+               withFileTypes: true,
+            })) {
+               const full = path.join(dir, entry.name);
+               if (entry.isDirectory()) {
+                  if (entry.name !== "node_modules") walk(full);
+               } else if (entry.name.endsWith(".malloy")) {
+                  const reason = renderTagRefusal(
+                     fsSync.readFileSync(full, "utf8"),
+                  );
+                  if (reason) refused.push(`${full}: ${reason}`);
+               }
+            }
+         };
+         for (const root of roots) walk(root);
+         expect(refused).toEqual([]);
+      });
+
       describe("a column excepted and declared again", () => {
          const shadow: Record<string, string> = {
             "a dimension in the same extend": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
@@ -555,14 +631,28 @@ source: published is duckdb.sql("select 1 as id") extend {
             "an inline extend inside a query": `run: base_source extend {\n  except: id\n  dimension: id is 'x'\n} -> { group_by: id }`,
             "a backtick-quoted name": `source: s2 is base_source extend {\n  except: \`my col\`\n  dimension: \`my col\` is 'x'\n}\nrun: s2 -> { group_by: id }`,
             "a name declared in a later statement": `source: s2 is base_source extend { except: id }\nsource: s3 is s2 extend {\n  dimension: id is 'x'\n}\nrun: s3 -> { group_by: id }`,
+            "a name freed by rename: and then declared": `source: leaky is base_source extend {\n  rename: id0 is id\n  dimension: id is 'x'\n}\nrun: leaky -> { group_by: id }`,
+            "a backtick name with a unicode escape": `source: s2 is base_source extend {\n  except: id\n  dimension: \`\\u0069d\` is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "an excepted name spelled with an escape and declared plainly": `source: s2 is base_source extend {\n  except: \`\\u0069d\`\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a name declared in a chained extend": `source: s2 is base_source extend { except: id } extend {\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
          };
          for (const [name, source] of Object.entries(shadow)) {
             it(`refuses ${name}`, async () => {
                const error = await refusalFor(source, "append");
                expect(error).toBeInstanceOf(CompileRefusedError);
-               expect(error.message).toContain("excepts and then declares");
+               expect(error.message).toContain("and then declares");
             });
          }
+
+         it("accepts a name excepted in one source and declared in an unrelated one", async () => {
+            // The gate must not refuse; Malloy may still report its own redefinition.
+            await expect(
+               compile(
+                  `source: aa is base_source extend { except: id }\nsource: bb is base_source extend {\n  dimension: id is 7\n}\nrun: bb -> { group_by: id }`,
+                  "append",
+               ),
+            ).resolves.toBeDefined();
+         });
 
          it("still accepts an except: that declares nothing of the same name", async () => {
             const errors = await errorsFor(
@@ -580,6 +670,9 @@ source: published is duckdb.sql("select 1 as id") extend {
          "a model-level ## image note": `## image\nrun: base_source -> { group_by: pic is 'x' }`,
          "a doc note naming image": `#(docs) image of the data\nrun: base_source -> { group_by: pic is 'x' }`,
          "a label that mentions a less-than sign": `run: base_source -> {\n  group_by:\n  # label="a < b"\n  id\n}`,
+         "a label with an unclosed angle bracket in text": `run: base_source -> {\n  group_by:\n  # label="Actual<Target"\n  id\n}`,
+         "a label that compares a<b": `run: base_source -> {\n  group_by:\n  # label="a<b"\n  id\n}`,
+         "a field-level artifact tag with a bare filter literal": `# artifact { autorun=false givens { REGION=f'US' } }\nquery: regions is base_source -> { group_by: id }`,
       };
       for (const [name, source] of Object.entries(accepted)) {
          it(`accepts ${name}`, async () => {
