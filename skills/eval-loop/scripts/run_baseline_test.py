@@ -2211,6 +2211,48 @@ class McpCallToolErrors(unittest.TestCase):
                          "isError": False})
         self.assertEqual(got, {"sources": []})
 
+    def test_a_retrieval_error_reply_stops_the_wait_after_one_probe(self):
+        # The shape `jsonToolError` builds for get_context's retrieval
+        # failure: the JSON payload as an embedded resource, then the prose.
+        payload = {"error": "Semantic search is unavailable: 401",
+                   "suggestions": ["check the key"], "sources": [],
+                   "retrieval": "error", "retrieval_reason": "provider-error"}
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps(payload)}},
+            {"type": "text", "text": "Semantic search is unavailable: 401"}]}
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        calls = []
+        real = rb.mcp_call
+
+        def counted(*args, **kw):
+            calls.append(1)
+            return real(*args, **kw)
+
+        with self.reply(result), \
+                mock.patch.object(rb, "mcp_call", counted), \
+                mock.patch.object(rb.time, "sleep", lambda s: None):
+            ready, said = rb.wait_retrieval_ready(a)
+        self.assertFalse(ready)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(said, rb.retrieval_error_message("provider-error"))
+
+    def test_an_error_reply_without_a_retrieval_error_still_raises(self):
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps({"error": "no such package",
+                                              "suggestions": [],
+                                              "sources": []})}},
+            {"type": "text", "text": "no such package"}]}
+        with self.reply(result), self.assertRaises(rb.McpToolError) as cm:
+            rb.retrieval_probe(a)
+        self.assertIn("no such package", str(cm.exception))
+
 
 class RowsGoldenInAFile(unittest.TestCase):
     """A `rows` golden may keep its rows in a CSV named by `golden.path`. Read

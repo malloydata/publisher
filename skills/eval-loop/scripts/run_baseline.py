@@ -909,23 +909,44 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
     result = envelope.get("result") or {}
+    texts = [t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                         for ch in result.get("content") or []) if t]
     if result.get("isError"):
-        # A tool error is an ordinary reply whose text is the message, not
-        # JSON. Parsing it below reported "Expecting value: line 1 column 1"
-        # and hid what the server actually said (for example a rejected enum
-        # value in the arguments).
-        said = " ".join(
-            t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
-                        for ch in result.get("content") or []) if t)
-        raise ValueError(
-            f"{tool} returned isError: {said[:500] or '(no message)'}")
-    for chunk in result.get("content") or []:
-        text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
-        if not text:
-            continue
+        # A tool error is an ordinary reply. Its text may be plain prose (an
+        # argument validation failure) or a JSON payload followed by prose
+        # (`jsonToolError`, which is how get_context reports a retrieval
+        # failure). Parsing the prose as JSON reported "Expecting value: line
+        # 1 column 1" and hid what the server said, so raise with the text,
+        # and carry the payload when there is one for a caller that reads it.
+        raise McpToolError(tool, " ".join(texts), _first_json(texts))
+    for text in texts:
         m = RESOURCE.search(text)
         return json.loads(m.group(1) if m else text)
     raise ValueError("tools/call returned no readable content")
+
+
+def _first_json(texts: list[str]) -> Any:
+    """The first text chunk that parses as JSON, else None."""
+    for text in texts:
+        m = RESOURCE.search(text)
+        try:
+            return json.loads(m.group(1) if m else text)
+        except ValueError:
+            continue
+    return None
+
+
+class McpToolError(ValueError):
+    """A `tools/call` reply with `isError: true`.
+
+    `payload` is the reply's JSON payload when it carried one (the
+    `{error, suggestions, ...}` object `jsonToolError` builds), else None.
+    """
+
+    def __init__(self, tool: str, said: str, payload: Any = None):
+        self.payload = payload
+        super().__init__(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
 
 
 class AuthRequired(Exception):
@@ -974,6 +995,14 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
+        raise
+    except McpToolError as e:
+        # get_context reports a retrieval-provider failure (a bad API key,
+        # say) as an error reply whose payload says `retrieval: "error"`.
+        # That is an answer the gate stops on, not a failed probe to retry.
+        # Any other error reply (an unknown package) stays a failed probe.
+        if isinstance(e.payload, dict) and e.payload.get("retrieval") == "error":
+            return retrieval_of(e.payload)
         raise
     return retrieval_of(payload)
 
