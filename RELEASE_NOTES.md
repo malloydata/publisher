@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `compile_model` at package scope reports dashboard and render-tag findings before you save
+
+A tile naming a view that does not exist, a `# drill` pointing at no dashboard, a `suggest` naming a missing query, a tile reading a source the package's surface does not export, and an unknown render tag all compile cleanly. Until now only a package load reported them, so `compile_model` returned `success` and the problem showed up after saving and reloading.
+
+`compile_model` and `POST …/compile` at `scope: "package"` now run the render-tag and dashboard checks a reload runs, over the compiled result, what-if replacement included. Findings come back with code `render-tag` or `dashboard-lint`, no position, and the subject (the view, field or given) leading the message. Each keeps the severity a load gives it, so a finding the load reports as an error makes the compile `status: "error"`. `scope: "file"` is unchanged and does not run these checks. `publisher_notebook_discovery_total` still counts served packages only.
+
+- **A what-if dashboard that does not compile is still a dashboard.** It is judged by the replacement text you sent, so a `# drill` to it is no longer reported as pointing at nothing.
+- **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets a `warn` of its own, and every other file keeps its findings.
+- **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
