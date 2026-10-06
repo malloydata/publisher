@@ -14,6 +14,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import {
@@ -244,14 +245,54 @@ describe.serial("compile errors on a curated package", () => {
             // Over MCP all three read the same.
             expect(a.mcp).toEqual(missing.mcp);
          }
-         // Over REST a hidden, ungated source and a missing one read the same.
-         // (A hidden source that is itself gated can answer in the words of
-         // the named-source refusal where the others use the generic ones;
-         // that predates this and is not what this test pins.)
+         // Over REST too: status and body, so a gated name answered in other
+         // words than a missing one would fail here.
          expect(stores.rest).toEqual(missing.rest);
-         expect(vault.rest.status).toBe(missing.rest.status);
+         expect(vault.rest).toEqual(missing.rest);
       }
    }, 120_000);
+
+   it("returns the compiler's message for `~` against a date literal on /compile at every scope", async () => {
+      // Malloy throws a plain Error here, not a MalloyError. /compile read it
+      // as a server fault (500) at every scope; it is the caller's text.
+      const query = "run: orders -> { where: d ~ @2025 aggregate: n is total }";
+      const file = `${fs.readFileSync(path.join(fixture(OPEN), "index.malloy"), "utf8")}\n${query}\n`;
+      for (const [scope, source] of [
+         ["append", query],
+         ["file", file],
+         ["package", file],
+      ]) {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN}/models/index.malloy/compile`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ source, scope }),
+            },
+         );
+         const body = (await res.json()) as {
+            status?: string;
+            problems?: { code?: string; severity?: string; message?: string }[];
+         };
+         expect({ scope, status: res.status, outcome: body.status }).toEqual({
+            scope,
+            status: 200,
+            outcome: "error",
+         });
+         const errors = (body.problems ?? []).filter(
+            (p) => p.severity === "error",
+         );
+         expect(errors.map((p) => p.code)).toEqual(["translator-error"]);
+         expect(errors[0].message).toBe(
+            "Malloy could not compile this query: mysterious error in range " +
+               "computation. This comes from comparing a date or timestamp to " +
+               "a date literal such as @2025 with `~`, which Malloy cannot " +
+               "compile. Use `=` to match the whole year, month or day " +
+               "(`order_date = @2025`), or an explicit range " +
+               "(`order_date ? @2025-01-01 to @2026-01-01`).",
+         );
+      }
+   }, 60_000);
 
    it("still returns the compiler's message for the agent's own mistake when something is gated", async () => {
       const r = await viaRest(

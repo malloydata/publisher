@@ -16,6 +16,7 @@ import {
    parseMotly,
    tagText,
 } from "./motly";
+import { translatorMalloyError } from "./translator_error";
 
 /**
  * Construct containment for caller-submitted `/compile` text.
@@ -470,8 +471,12 @@ export async function assertNoRestrictedConstructs(
       // URL) and must stay distinguishable from "the caller wrote something
       // forbidden" -- silently treating it as a pass would open the gate on
       // exactly the errors that carry no evidence either way.
-      if (!(error instanceof MalloyError)) throw error;
-      problems = error.problems;
+      // The translator's plain Error is the caller's text, not the
+      // infrastructure: it is read as the one problem it stands for.
+      const compileError =
+         error instanceof MalloyError ? error : translatorMalloyError(error);
+      if (!compileError) throw error;
+      problems = compileError.problems;
    }
 
    const rejected = restrictedRejections(problems);

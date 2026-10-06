@@ -36,6 +36,7 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import {
    PackageLoadPool,
@@ -167,6 +168,41 @@ describe("Package.create via worker pool", () => {
          await expect(
             Package.create("env", "pkg", tempDir, malloyConfig),
          ).rejects.toBeInstanceOf(Error);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("loads a model whose query compares a date to @2025 with ~ as a compile error, not a worker outage", async () => {
+      // The translator throws a plain Error here. Serialized as one, it reached
+      // the main thread as a bare Error and read as an outage; the worker now
+      // classifies it before serializing, so it crosses as a compile error.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "tilde.malloy"),
+         `source: s is duckdb.sql("select DATE '2025-03-01' as d") extend {
+  measure: n is count()
+}
+run: s -> { where: d ~ @2025 aggregate: n }
+`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const error = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         ).then(
+            () => undefined,
+            (e: unknown) => e,
+         );
+         expect(error).toBeInstanceOf(ModelCompilationError);
+         expect((error as Error).message).toContain(
+            "mysterious error in range computation. This comes from comparing " +
+               "a date or timestamp to a date literal such as @2025 with `~`",
+         );
       } finally {
          await duckdb.close();
       }

@@ -264,6 +264,7 @@ import {
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+import { translatorMalloyError } from "./translator_error";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -613,46 +614,8 @@ async function compileErrorOf(runnable: {
       return undefined;
    } catch (error) {
       if (error instanceof MalloyError) return error;
-      const invariant = translatorInvariantProblem(error);
-      return invariant
-         ? new MalloyError(invariant.message, [invariant])
-         : undefined;
+      return translatorMalloyError(error);
    }
-}
-
-/**
- * Malloy's translator throws a plain Error, with no problem list, where it
- * hits a case it did not expect in the caller's text (`order_date ~ @2025`
- * reaches "mysterious error in range computation"; `order_date ~ 2025` throws
- * a TypeMismatch). Malloy's own runtime reports such an Error as one problem;
- * this does the same, so the agent gets a message instead of the boundary's 404.
- *
- * Only an Error thrown from the translator (the top stack frame is in
- * `@malloydata/malloy/dist/lang/`) counts. A connection or filesystem failure
- * is also a plain Error and must keep surfacing as it did, so it stays
- * undefined here.
- */
-const TRANSLATOR_FRAME = /[\\/]@malloydata[\\/]malloy[\\/]dist[\\/]lang[\\/]/;
-const RANGE_COMPARISON_MESSAGE = "mysterious error in range computation";
-
-function translatorInvariantProblem(error: unknown): LogMessage | undefined {
-   if (!(error instanceof Error)) return undefined;
-   const topFrame = (error.stack ?? "")
-      .split("\n")
-      .find((line) => line.trimStart().startsWith("at "));
-   if (!topFrame || !TRANSLATOR_FRAME.test(topFrame)) return undefined;
-   const hint =
-      error.message === RANGE_COMPARISON_MESSAGE
-         ? " This comes from comparing a date or timestamp to a date literal such as " +
-           "@2025 with `~`, which Malloy cannot compile. Use `=` to match the whole " +
-           "year, month or day (`order_date = @2025`), or an explicit range " +
-           "(`order_date ? @2025-01-01 to @2026-01-01`)."
-         : "";
-   return {
-      code: "translator-error",
-      severity: "error",
-      message: `Malloy could not compile this query: ${error.message}.` + hint,
-   } as LogMessage;
 }
 
 /**
@@ -4634,11 +4597,14 @@ export class Model {
          model.setGateRuntime(runtime as HydrationRuntime);
          model.compiledSourceText = compiledTextFor(modelURL);
          return model;
-      } catch (error) {
-         let computedError = error;
-         if (error instanceof Error && error.stack) {
-            logger.error("Error stack", error.stack);
+      } catch (thrown) {
+         if (thrown instanceof Error && thrown.stack) {
+            logger.error("Error stack", thrown.stack);
          }
+         // The translator's plain Error is the author's mistake too, as it is
+         // on the worker path (package_load_worker.ts compileOneModel).
+         const error = translatorMalloyError(thrown) ?? thrown;
+         let computedError = error;
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
