@@ -10,7 +10,6 @@
     "eval-judge",
     "eval-loop",
     "eval-report",
-    "malloy",
     "malloy-analysis",
     "malloy-charts",
     "malloy-dashboards",
@@ -49,7 +48,6 @@
     ],
     "modeling": [
       "malloy-modeling",
-      "malloy",
       "malloy-model",
       "malloy-model-as-you-go",
       "malloy-materialization",

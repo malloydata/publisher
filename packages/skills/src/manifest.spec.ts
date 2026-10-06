@@ -35,7 +35,7 @@ const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
 /** The routing skill an agent reads to find a sibling. */
-const INDEX_SKILL = "malloy";
+const INDEX_SKILL = "malloy-getting-started";
 
 /**
  * A description is the only text a host reads before deciding whether to load a
@@ -218,13 +218,13 @@ describe("publisher-local manifest", () => {
     * `malloy-analysis-report` -> `malloy-model`), which is why both now name
     * those skills in prose instead.
     *
-    * The `malloy` index is the case that forces the distinction: it is the
-    * catalogue of every skill, so it names skills outside whatever group it
-    * ships in. It states them as plain names rather than `skill:` references,
-    * which is the same thing `malloy-getting-started` does for
-    * `malloy-gotchas-modeling`. A catalogue row is not an instruction to go
-    * read something, and now it does not look like one either, so the index
-    * needs no exemption from this test.
+    * The catalogue in `malloy-getting-started` is the case that forces the
+    * distinction: it lists every skill, so it names skills outside whatever
+    * group it ships in. It states them as plain names rather than `skill:`
+    * references, which is the same thing it does for `malloy-gotchas-modeling`.
+    * A catalogue entry is not an instruction to go read something, and does
+    * not look like one either, so the catalogue needs no exemption from this
+    * test.
     */
    it("keeps each group's references inside it", () => {
       const escapes: string[] = [];

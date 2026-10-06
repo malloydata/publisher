@@ -1,6 +1,6 @@
 ---
 name: malloy-getting-started
-description: First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Covers verifying the server, discovering data with get_context, and running a first grounded query.
+description: First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Also use for "malloy help" or which Malloy skill to read. Covers verifying the server, discovering data with get_context, and running a first grounded query.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -130,6 +130,17 @@ Answering questions is the start, not the whole surface. When the user asks what
 - `malloy-analysis`: explore a package and answer data questions.
 - `malloy-html-data-apps`: build a data app, a hand-authored HTML page in the package's `public/` directory that Publisher serves, backed by the package's models and needing no build step.
 - `malloy-review`: check Malloy for correctness.
+
+No `.malloy` files in the workspace? The user can say "model my data" and `malloy-modeling` runs the whole workflow (discover, scope, define, build, review, curate). Check the Publisher MCP tools are configured first.
+
+### Every skill, by what it is for
+
+This is a catalogue of what exists, not of what is loaded. A host that installs one group (`analysis`, `modeling` or `eval`) takes that group's skills alone, so a name below may not be installed. The names are plain text, not `skill:` references, for that reason.
+
+- **Answering and presenting:** `malloy-analysis` (a data question, or open-ended exploration), `malloy-phrase-detection` (turn a question into search targets for `get_context`), `malloy-queries` (query syntax and compile errors), `malloy-charts` (chart choice, renderer tags, scale rules), `malloy-notebooks` (notebooks, and a report built from queries already run), `malloy-dashboards` (a saved dashboard: a tagged `.malloy` file in the package's `dashboards/` directory), `malloy-notebook-chat` (a chat bound to a notebook), `malloy-source-unreachable` (a source missing from discovery, or a query refused with a 404 or 403), `malloy-html-data-apps` (in-package HTML data apps: design, runtime, embedding).
+- **Modeling, in order:** `malloy-modeling` (the driver), `malloy-discover` (silent data discovery, prior art), `malloy-define` (scope, source plan, field definitions), `malloy-model` (write and curate the `.malloy` files), `malloy-document` (`#(doc)` tags), `malloy-model-as-you-go` (grow the model from answered questions), `malloy-gotchas-modeling` (mistakes to avoid, and fixing compile errors in a model), `malloy-review` (review existing Malloy), `malloy-lookml-review` and `malloy-powerbi-review` (prior-art adapters).
+- **Serving a package:** `malloy-publish` (move a finished model into a served package), `malloy-materialization` (persist an expensive source), `malloy-materialization-tuning` (tune what to persist and when).
+- **Evaluating a model** (the `eval` group, which neither `analysis` nor `modeling` includes): `eval-loop` (the loop), `eval-answer`, `eval-judge`, `eval-diagnose`, `eval-improve`, `eval-import`, `eval-report`.
 
 ## Contract
 

@@ -126,7 +126,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 These supplemental skills may also be loaded as needed:
 
-- **`skill:malloy`**: Index of Malloy skills and routing guide
+- **`skill:malloy-getting-started`**: routing guide to the other Malloy skills
 - **`skill:malloy-gotchas-modeling`**: also the place to fix compile errors and read diagnostics
 
 ## Publisher MCP Tools
