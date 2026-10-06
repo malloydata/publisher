@@ -1480,10 +1480,14 @@ function modelCtx(contents: Record<string, unknown>) {
       sourceNameById,
    };
 }
+// The walk's predicate sees a definition's `sourceID`; these fixtures use
+// `modelId(name)`, so a name list is the set of ids the plan would hold.
 const persistedIn =
    (...names: string[]) =>
-   (name: string) =>
-      names.includes(name);
+   (_name: string, sourceID: string) =>
+      names.map(modelId).includes(sourceID);
+/** The walk's report of a stop: the model's name for it and its id. */
+const stop = (name: string) => ({ name, sourceID: modelId(name) });
 
 describe("reachedPersistedSources", () => {
    it("stops at the first persist source on each path, through any number of intermediates", () => {
@@ -1497,7 +1501,7 @@ describe("reachedPersistedSources", () => {
       expect(
          reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
       ).toEqual({
-         persisted: ["daily"],
+         persisted: [stop("daily")],
          raw: false,
          rawLeaves: [],
          rawVia: [],
@@ -1523,7 +1527,7 @@ describe("reachedPersistedSources", () => {
             "monthly",
             persistedIn("daily", "daily_regional", "monthly"),
          ),
-      ).toMatchObject({ persisted: ["daily_regional"], raw: false });
+      ).toMatchObject({ persisted: [stop("daily_regional")], raw: false });
    });
 
    it("follows the joins an extension adds, which its table does not hold, and reports raw by them", () => {
@@ -1544,7 +1548,7 @@ describe("reachedPersistedSources", () => {
             persistedIn("daily", "daily_regional", "monthly"),
          ),
       ).toEqual({
-         persisted: ["daily_regional"],
+         persisted: [stop("daily_regional")],
          raw: true,
          rawLeaves: ["regions"],
          rawVia: ["daily_regional"],
@@ -1573,7 +1577,7 @@ describe("reachedPersistedSources", () => {
             "monthly",
             persistedIn("daily", "ext", "monthly"),
          ),
-      ).toMatchObject({ persisted: ["ext"], raw: false });
+      ).toMatchObject({ persisted: [stop("ext")], raw: false });
    });
 
    it("collects every persist source an intermediate joins", () => {
@@ -1590,7 +1594,10 @@ describe("reachedPersistedSources", () => {
             "monthly",
             persistedIn("daily", "sites", "monthly"),
          ),
-      ).toMatchObject({ persisted: ["daily", "sites"], raw: false });
+      ).toMatchObject({
+         persisted: [stop("daily"), stop("sites")],
+         raw: false,
+      });
    });
 
    it("walks into a reference carried as the embedded definition", () => {
@@ -1607,7 +1614,7 @@ describe("reachedPersistedSources", () => {
       });
       expect(
          reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
-      ).toMatchObject({ persisted: ["daily"], raw: false });
+      ).toMatchObject({ persisted: [stop("daily")], raw: false });
    });
 
    it("does not stop at the root, which is persisted by definition", () => {

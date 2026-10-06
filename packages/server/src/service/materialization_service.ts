@@ -128,23 +128,27 @@ import {
  * which is what `aliasesBySourceName` records.
  */
 export interface ChainedPlanFacts {
-   /** Every persist source's name, inheritors and renames included. */
-   persistNames: ReadonlySet<string>;
+   /**
+    * Every persist source's `sourceID`, inheritors and renames included. By id,
+    * not name: a name is not unique across a package's models (two files may
+    * each declare `daily`), and the walk has each definition's id.
+    */
+   persistSourceIds: ReadonlySet<string>;
    /** The names sharing one table, keyed by each of them (groupAliasesByName). */
    aliasesBySourceName: Record<string, string[]>;
    /**
-    * Each name's content address — the key the compiler looks a table up by
-    * when it substitutes a manifest entry into a build's SQL. Absent for a
-    * source whose SQL could not be rendered.
+    * Each source's content address by `sourceID` — the key the compiler looks
+    * a table up by when it substitutes a manifest entry into a build's SQL.
+    * Absent for a source whose SQL could not be rendered.
     */
-   addressByName: Record<string, string | undefined>;
+   addressBySourceId: Record<string, string | undefined>;
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
 const NO_PLAN_FACTS: ChainedPlanFacts = {
-   persistNames: new Set(),
+   persistSourceIds: new Set(),
    aliasesBySourceName: {},
-   addressByName: {},
+   addressBySourceId: {},
 };
 
 /**
@@ -162,11 +166,25 @@ const NO_PLAN_FACTS: ChainedPlanFacts = {
  * drops because a warehouse build cannot read them. For a `storage=` build they
  * are the parents to stack on; for a colocated build they are recomputed.
  * `missing` are upstreams no manifest holds — neither built in this run nor
- * supplied by reference — which only a recompute can supply.
+ * supplied by reference — which only a recompute can supply. An upstream with
+ * no address (its SQL could not be rendered) is neither: its table cannot be
+ * looked up, so it is reported as recomputed and never refused on that
+ * account — a build that truly cannot render it fails on its own.
+ *
+ * `sqlInlinesStored` is the compiler's own reach, as a floor under the walk.
+ * The walk stops at a persist source and follows only an extension's added
+ * joins, so a join declared on the stored stop itself — `daily` carrying
+ * `join_one: c is daily_counts`, with `daily_counts` in a `storage=` destination
+ * — is reached by the compiler (it inlines `daily_counts` into the build SQL)
+ * and not by the walk. Rendering the source's SQL with every stored entry
+ * available and comparing it with the SQL this build runs says whether some
+ * stored table was inlined, whatever the walk named; when it was, the answer
+ * is `recomputed` even if every upstream the walk names was read from its
+ * table. That is also what gates a `storage=` build's stack-on-parent attempt.
  */
 export function upstreamReuseFromManifest(params: {
-   reached: readonly string[];
-   addressByName: Record<string, string | undefined>;
+   reached: readonly { name: string; sourceID: string }[];
+   addressBySourceId: Record<string, string | undefined>;
    /** The manifest the compiler substituted from (storage entries excluded). */
    substituted: Record<string, unknown>;
    /** The run's whole manifest, storage entries included. */
@@ -174,6 +192,8 @@ export function upstreamReuseFromManifest(params: {
    /** The run's entries so far, by id, for a storage entry's destination. */
    builtEntries: Record<string, ManifestEntry>;
    tier: "colocated" | "storage";
+   /** The build SQL differs from the SQL rendered with every stored entry available. */
+   sqlInlinesStored: boolean;
 }): {
    fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
    inManifestOnly: string[];
@@ -182,10 +202,17 @@ export function upstreamReuseFromManifest(params: {
    const inManifestOnly: string[] = [];
    const missing: string[] = [];
    const reasons: string[] = [];
-   for (const name of params.reached) {
-      const address = params.addressByName[name];
-      if (address !== undefined && address in params.substituted) continue;
-      if (address !== undefined && address in params.full) {
+   for (const { name, sourceID } of params.reached) {
+      const address = params.addressBySourceId[sourceID];
+      if (address === undefined) {
+         reasons.push(
+            `'${name}' has no content address (its SQL could not be rendered), ` +
+               `so its table could not be looked up`,
+         );
+         continue;
+      }
+      if (address in params.substituted) continue;
+      if (address in params.full) {
          inManifestOnly.push(name);
          if (params.tier === "colocated") {
             const destination =
@@ -204,11 +231,17 @@ export function upstreamReuseFromManifest(params: {
             `run nor supplied by reference)`,
       );
    }
+   if (params.sqlInlinesStored && reasons.length === 0) {
+      reasons.push(
+         `the build SQL inlines a stored table reached through a refinement ` +
+            `declared on a stored upstream (a join the walk does not follow)`,
+      );
+   }
    const fields: Pick<
       ManifestEntry,
       "upstreamReuse" | "upstreamRecomputeReason"
    > =
-      params.reached.length === 0
+      params.reached.length === 0 && !params.sqlInlinesStored
          ? {}
          : reasons.length === 0
            ? { upstreamReuse: "reused" }
@@ -239,18 +272,26 @@ export function upstreamReuseFromManifest(params: {
  *
  * When the builder moves to `getBuildTargets`, this is the one place the
  * chained build reads plan facts from: per model, `runtime.getBuildTargets`
- * → every `target.sources` name into `persistNames`, each target's names as one
- * alias group. That move likely wants a core change first — a planning mode
- * that reports an unrenderable source instead of throwing, and takes a
- * `virtualMap` — or a pre-filter of the sources the eligibility gate refused.
+ * → every `target.sources` id into `persistSourceIds` and its `buildId` into
+ * `addressBySourceId`, each target's names as one alias group. That move
+ * likely wants a core change first — a planning mode that reports an
+ * unrenderable source instead of throwing, and takes a `virtualMap` — or a
+ * pre-filter of the sources the eligibility gate refused. It also closes a
+ * key divergence: `computeSourceEntityId` appends a `partition=` layout to the
+ * address and the compiler's own table lookup (`mkBuildID` of digest and SQL)
+ * does not, so a partitioned entry is never found by the compiler. Today that
+ * is unreachable — `partition=` requires `storage=`, and storage entries are
+ * excluded from the manifest a warehouse build substitutes from — except in
+ * the permissive compare render below, where a partitioned storage upstream
+ * reached only through a join declared on a stored stop goes unnoticed.
  */
 function chainedPlanFacts(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
 ): ChainedPlanFacts {
    const planSources: { name: string; sourceEntityId?: string }[] = [];
-   const addressByName: Record<string, string | undefined> = {};
-   for (const source of Object.values(sources)) {
+   const addressBySourceId: Record<string, string | undefined> = {};
+   for (const [sourceID, source] of Object.entries(sources)) {
       let sourceEntityId: string | undefined;
       try {
          sourceEntityId = computeSourceEntityId(source, connectionDigests);
@@ -260,14 +301,12 @@ function chainedPlanFacts(
          // on its own path, and here it is a name with no table-mates.
       }
       planSources.push({ name: source.name, sourceEntityId });
-      if (!(source.name in addressByName)) {
-         addressByName[source.name] = sourceEntityId;
-      }
+      addressBySourceId[sourceID] = sourceEntityId;
    }
    return {
-      persistNames: new Set(planSources.map((s) => s.name)),
+      persistSourceIds: new Set(Object.keys(sources)),
       aliasesBySourceName: groupAliasesByName(planSources),
-      addressByName,
+      addressBySourceId,
    };
 }
 import type { ApiConnection } from "./model";
@@ -3069,15 +3108,26 @@ export class MaterializationService {
       const reached = reachedPersistedSources(
          lift,
          persistSource.name,
-         (name) => planFacts.persistNames.has(name),
+         (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
       );
+      // The compiler's reach, as the floor: render the SQL with every stored
+      // entry available (permissively — the explicit refusal below is what
+      // strict relies on, not a miss here) and compare it with the SQL this
+      // build runs. A difference means a stored table the full manifest holds
+      // was inlined, whether or not the walk named it.
+      const sqlInlinesStored =
+         persistSource.getSQL({
+            buildManifest: { ...manifest.buildManifest, strict: false },
+            connectionDigests,
+         }) !== buildSQL;
       const reuse = upstreamReuseFromManifest({
          reached: reached.persisted,
-         addressByName: planFacts.addressByName,
+         addressBySourceId: planFacts.addressBySourceId,
          substituted: buildManifest.entries,
          full: manifest.buildManifest.entries,
          builtEntries,
          tier: isStorageBuild ? "storage" : "colocated",
+         sqlInlinesStored,
       });
 
       // Every statement of this source's build carries the same metadata, so the
@@ -3106,8 +3156,8 @@ export class MaterializationService {
          // handed over by reference — is one only a recompute can stand in for,
          // and under strict that recompute is exactly what the orchestrator
          // forbade. The warehouse build SQL above was rendered permissively
-         // (`strict: false`), so the refusal is made here, by name, rather than
-         // left to the compiler's strict miss. Non-strict, the build recomputes
+         // (`strict: false`), so the refusal is made here, from the stops the
+         // walk reached, rather than left to the compiler's strict miss. Non-strict, the build recomputes
          // and the entry says so.
          if (manifest.strict && reuse.missing.length > 0) {
             recordChainedStorageBuild("strict_refused");
@@ -3122,10 +3172,12 @@ export class MaterializationService {
             );
          }
          // Stack on the parent when the source reads a stored upstream whose
-         // table a storage destination holds: the full manifest carries it and
-         // the warehouse manifest does not, so the build SQL above inlined it,
-         // and reading the parent's lake table instead is the chained build.
-         const dependsOnStorageUpstream = reuse.inManifestOnly.length > 0;
+         // table a storage destination holds — one the walk named, or one the
+         // compiler reached through a join on a stored stop: either way the
+         // build SQL above inlined it, and reading the parent's lake table
+         // instead is the chained build.
+         const dependsOnStorageUpstream =
+            reuse.inManifestOnly.length > 0 || sqlInlinesStored;
          // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
          // underlying column, including ones the source hides (`except:`, non-public
          // access modifiers). Query reachability is bounded by the declared
@@ -3981,11 +4033,11 @@ export class MaterializationService {
       const reached = reachedPersistedSources(
          lift,
          persistSource.name,
-         (name) => planFacts.persistNames.has(name),
+         (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
       );
       const present = new Set(upstreams.map((b) => b.sourceName));
       const missing = missingPersistedTables(
-         reached.persisted,
+         reached.persisted.map((p) => p.name),
          planFacts.aliasesBySourceName,
          present,
       );
@@ -4078,7 +4130,7 @@ export class MaterializationService {
          if (err instanceof MaterializationEligibilityError) {
             throw new ChainedShapeNotCarriedError(
                `'${persistSource.name}' reaches only stored upstreams ` +
-                  `(${reached.persisted.map((n) => `'${n}'`).join(", ")}), but ` +
+                  `(${reached.persisted.map((p) => `'${p.name}'`).join(", ")}), but ` +
                   `the build could not express it over them — a refinement ` +
                   `declared on a stored upstream that the build does not ` +
                   `re-declare, or a construct the destination's dialect lacks: ` +

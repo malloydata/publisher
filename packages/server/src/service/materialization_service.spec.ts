@@ -3792,18 +3792,23 @@ describe("buildOneSource", () => {
       // A colocated downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a colocated upstream is kept.
+      // inlined/recomputed); a colocated upstream is kept. The build SQL is
+      // the first render; the second is the permissive full-manifest render
+      // the reuse classification compares it with.
       const runSQL = sinon.stub().resolves();
-      let seenManifest:
-         | { entries?: Record<string, { tableName?: string }> }
-         | undefined;
+      type SeenManifest = {
+         entries?: Record<string, { tableName?: string }>;
+         strict?: boolean;
+      };
+      const seenManifests: (SeenManifest | undefined)[] = [];
       const down = fakeSource({
          name: "down",
          sourceEntityId: "downdowndowndown",
          sql: "SELECT 1",
          onGetSQL: (o) => {
-            seenManifest = (o as { buildManifest?: typeof seenManifest })
-               .buildManifest;
+            seenManifests.push(
+               (o as { buildManifest?: SeenManifest }).buildManifest,
+            );
          },
       });
       const manifest = new Manifest();
@@ -3844,8 +3849,11 @@ describe("buildOneSource", () => {
          },
          builtEntries,
       );
-      expect(seenManifest?.entries?.up_storage).toBeUndefined();
-      expect(seenManifest?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      const [buildRender, compareRender] = seenManifests;
+      expect(buildRender?.entries?.up_storage).toBeUndefined();
+      expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      expect(compareRender?.entries?.up_storage?.tableName).toBe("daily__mabc");
+      expect(compareRender?.strict).toBe(false);
    });
 
    it("records the QUOTED just-built name in the build manifest (matches the CREATE)", async () => {
@@ -5691,7 +5699,12 @@ describe("buildOneSource: incremental refresh", () => {
 });
 
 describe("upstreamReuseFromManifest", () => {
-   const addressByName = { daily: "addr-daily", sites: "addr-sites" };
+   const addressBySourceId = {
+      "daily@m": "addr-daily",
+      "sites@m": "addr-sites",
+   };
+   const daily = { name: "daily", sourceID: "daily@m" };
+   const sites = { name: "sites", sourceID: "sites@m" };
    const builtEntries = {
       "addr-daily": {
          sourceEntityId: "addr-daily",
@@ -5703,8 +5716,9 @@ describe("upstreamReuseFromManifest", () => {
 
    it("reused when every upstream's address is in the manifest the SQL was rendered with", () => {
       const out = upstreamReuseFromManifest({
-         reached: ["daily", "sites"],
-         addressByName,
+         reached: [daily, sites],
+         addressBySourceId,
+         sqlInlinesStored: false,
          substituted: { "addr-daily": {}, "addr-sites": {} },
          full: { "addr-daily": {}, "addr-sites": {} },
          builtEntries: {},
@@ -5720,8 +5734,9 @@ describe("upstreamReuseFromManifest", () => {
    it("an entry handed over by reference counts, whatever it is called: the lookup is by address, never by name", () => {
       // A thin reference carries no sourceName. By address it is present.
       const out = upstreamReuseFromManifest({
-         reached: ["daily"],
-         addressByName,
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
          substituted: { "addr-daily": { tableName: "daily__g1" } },
          full: { "addr-daily": { tableName: "daily__g1" } },
          builtEntries: {
@@ -5737,8 +5752,9 @@ describe("upstreamReuseFromManifest", () => {
 
    it("a colocated build recomputes a storage-tier upstream and says which destination holds it", () => {
       const out = upstreamReuseFromManifest({
-         reached: ["daily"],
-         addressByName,
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
@@ -5753,8 +5769,9 @@ describe("upstreamReuseFromManifest", () => {
 
    it("a storage build treats a storage-tier upstream as a parent to stack on, not a reason", () => {
       const out = upstreamReuseFromManifest({
-         reached: ["daily"],
-         addressByName,
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
@@ -5767,8 +5784,9 @@ describe("upstreamReuseFromManifest", () => {
 
    it("an upstream in no manifest is missing, and the reason says what would have supplied it", () => {
       const out = upstreamReuseFromManifest({
-         reached: ["daily"],
-         addressByName,
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
          substituted: {},
          full: {},
          builtEntries: {},
@@ -5785,13 +5803,83 @@ describe("upstreamReuseFromManifest", () => {
       expect(
          upstreamReuseFromManifest({
             reached: [],
-            addressByName,
+            addressBySourceId,
+            sqlInlinesStored: false,
             substituted: {},
             full: {},
             builtEntries: {},
             tier: "colocated",
          }).fields,
       ).toEqual({});
+   });
+
+   it("the compiler's reach is the floor: a stored table inlined past the walk is recomputed, with a reason", () => {
+      // Every upstream the walk named was read from its table, but the build
+      // SQL differs from the SQL rendered with every stored entry available:
+      // a join declared on a stored stop reached a storage-tier table.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+      });
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /inlines a stored table reached through a refinement declared on a stored upstream/,
+      );
+   });
+
+   it("the floor reports even when the walk named nothing", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+      });
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("an upstream with no content address is recomputed, not missing: nothing to refuse on", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [{ name: "given", sourceID: "given@m" }],
+         addressBySourceId: { ...addressBySourceId, "given@m": undefined },
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+      });
+      expect(out.missing).toEqual([]);
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'given' has no content address/,
+      );
+   });
+
+   it("two models' same-named sources resolve by id, not by name", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [
+            { name: "daily", sourceID: "daily@a" },
+            { name: "daily", sourceID: "daily@b" },
+         ],
+         addressBySourceId: { "daily@a": "addr-a", "daily@b": "addr-b" },
+         substituted: { "addr-a": {} },
+         full: { "addr-a": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
    });
 });
 
@@ -5822,9 +5910,9 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
       },
    };
    const planFacts = {
-      persistNames: new Set(["daily", "rollup"]),
+      persistSourceIds: new Set(["daily@m", "rollup@m"]),
       aliasesBySourceName: {},
-      addressByName: { daily: "addr-daily", rollup: "addr-rollup" },
+      addressBySourceId: { "daily@m": "addr-daily", "rollup@m": "addr-rollup" },
    };
 
    async function build(

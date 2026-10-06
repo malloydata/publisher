@@ -1235,14 +1235,15 @@ export function buildChainedStorageBuildModel(params: {
 /** What {@link reachedPersistedSources} found on the paths out of a source. */
 export interface ReachedSources {
    /**
-    * The persist sources the walk stopped at, by name: the stored tables the
-    * source depends on, whether it reads them directly or through
-    * intermediates. A name, not a table — several names share one table
-    * (`#@ persist` is inherited and `extend` never changes the SQL), so the
-    * caller resolves each to its address group before asking whether the table
-    * is present.
+    * The persist sources the walk stopped at — the stored tables the source
+    * depends on, whether it reads them directly or through intermediates — as
+    * the model's name for each and its `sourceID`. Neither is a table: several
+    * names share one (`#@ persist` is inherited and `extend` never changes the
+    * SQL), and a name is not unique across a package's models, so the caller
+    * resolves each to its content address by `sourceID` before asking whether
+    * the table is present.
     */
-   persisted: string[];
+   persisted: { name: string; sourceID: string }[];
    /**
     * Set when some path ends at a source with no stored table behind it — a
     * table or SQL source, or a reference with no in-model identity — which is a
@@ -1296,9 +1297,9 @@ export interface ReachedSources {
 export function reachedPersistedSources(
    ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById">,
    name: string,
-   isPersisted: (sourceName: string) => boolean,
+   isPersisted: (sourceName: string, sourceID: string) => boolean,
 ): ReachedSources {
-   const persisted = new Set<string>();
+   const persisted = new Map<string, { name: string; sourceID: string }>();
    const rawLeaves = new Set<string>();
    const rawVia = new Set<string>();
    const seen = new Set<unknown>();
@@ -1373,8 +1374,14 @@ export function reachedPersistedSources(
       seen.add(def);
       // The root is the source being built: it is persisted by definition, and
       // the question is what IT reaches, so only its descendants can stop the walk.
-      if (!root && sourceName !== undefined && isPersisted(sourceName)) {
-         persisted.add(sourceName);
+      const sourceID = (def as { sourceID?: unknown }).sourceID;
+      if (
+         !root &&
+         sourceName !== undefined &&
+         typeof sourceID === "string" &&
+         isPersisted(sourceName, sourceID)
+      ) {
+         persisted.set(sourceID, { name: sourceName, sourceID });
          // Its table is its base's; only what it adds is computed over it.
          if (typeof def.extends === "string") {
             followJoins(ownJoins(def), sourceName);
@@ -1403,7 +1410,7 @@ export function reachedPersistedSources(
    };
    visit(ctx.contents[name], name, true, name);
    return {
-      persisted: [...persisted],
+      persisted: [...persisted.values()],
       raw: rawLeaves.size > 0,
       rawLeaves: [...rawLeaves],
       rawVia: [...rawVia],
