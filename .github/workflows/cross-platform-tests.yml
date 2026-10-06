@@ -126,26 +126,34 @@ jobs:
       # Extra runs rather than a matrix entry: a matrix would double the whole
       # job, and setting TZ on the existing run would trade away UTC coverage
       # instead of adding to it.
+      #
+      # The whole suite runs once above, under UTC. These two run only the specs
+      # that handle a date (the sdk's `test:tz` script, 7 of its spec files),
+      # since no other spec can fail differently in another zone. They keep the
+      # measurement above intact: the same revert fails the same 0, 3 and 1 of
+      # them. src/timezone_runs.spec.ts fails when a spec that handles a date
+      # is missing from `test:tz`, so a new one cannot quietly skip these runs.
+      #
       # Each run checks the zone the runtime actually resolved before testing in
       # it, and fails if TZ did not take effect. Without that, a run would be
       # green, slow and detecting nothing, the same silhouette as a suite
       # collecting no tests at all.
       #
       # Linux and macOS only. Bun on Windows does not honour an IANA TZ: both
-      # runs there resolve UTC, so they repeat the plain SDK run above at about
-      # 85s each and can fail none of the tests they exist for.
+      # runs there resolve UTC, so they would only repeat UTC coverage and can
+      # fail none of the tests they exist for.
       - name: Run SDK tests east of UTC
         if: runner.os != 'Windows'
         run: |
           TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
-          TZ=Australia/Sydney bun run --cwd packages/sdk test
+          TZ=Australia/Sydney bun run --cwd packages/sdk test:tz
         shell: bash
 
       - name: Run SDK tests west of UTC
         if: runner.os != 'Windows'
         run: |
           TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
-          TZ=America/Los_Angeles bun run --cwd packages/sdk test
+          TZ=America/Los_Angeles bun run --cwd packages/sdk test:tz
         shell: bash
 
       # Every `bun test` in this repo passes a path filter, and a filter is a
