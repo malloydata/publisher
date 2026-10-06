@@ -1450,6 +1450,23 @@ def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((c.get("givens") for c in reversed(ok or hits)), None)
 
 
+def queries_for_judge(att: dict[str, Any]) -> str:
+    """Every query the answerer ran, numbered, each with its givens.
+
+    Givens are an argument beside the text, so a query shown without them
+    reads as unfiltered next to rows that were filtered, and the judge can
+    fail a correct answer for it.
+    """
+    runs = [c for c in att.get("calls") or []
+            if c.get("tool") == "execute_query" and c.get("query")]
+    out = []
+    for i, q in enumerate(att.get("queries") or [], 1):
+        g = _givens_of(q, runs)
+        out.append(f"[{i}] {q}" + (f"\n    givens: {json.dumps(g, sort_keys=True)}"
+                                   if g else ""))
+    return "\n\n".join(out) or "(none)"
+
+
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
                      answer_text: str
                      ) -> tuple[str | None, str | None, str | None]:
@@ -2948,8 +2965,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
             or "(nothing beyond the rubric)"),
         answer=(att["answer_text"] or "(the answerer returned no prose; judge "
                 "from the queries and the re-executed rows)"),
-        query="\n\n".join(f"[{i}] {q}" for i, q in
-                          enumerate(att.get("queries") or [], 1)) or "(none)",
+        query=queries_for_judge(att),
         prediction=prediction_for(case, att, a, art, reexec),
         model=model_src or "(model source unavailable)")
 
@@ -3033,6 +3049,44 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
             f"package into loadErrors. Fix: pass an --out outside any package, "
             f"or omit it for {cfg.workdir() / 'runs'}")
     return cfg
+
+
+def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
+                  served_identity: dict[str, Any]) -> dict[str, Any]:
+    """The ledger `attempt` event for one case's attempt."""
+    return ledger.event(
+        "attempt", qid=c["qid"], sample=None, phase=phase,
+        question_sha=question_sha(c),
+        submitted=att["submitted"],
+        final_query=att["final_query"],
+        final_query_source=att.get("final_query_source"),
+        # The runtime parameters the final query ran under.
+        # Without them a replay of final_query runs unscoped.
+        final_givens=att.get("final_givens"),
+        # The revision that actually answered. Documented
+        # as "package revision actually queried" and left
+        # None until now, so nothing could tell an attempt
+        # answered before a reload from one answered after.
+        servedRevision=served_identity.get("servedRevision"),
+        n_get_context=att["n_get_context"],
+        n_execute=att["n_execute"],
+        n_execute_errors=att["n_execute_errors"],
+        host_tool_uses=att["host_tool_uses"],
+        mcp_tool_uses=att.get("mcp_tool_uses"),
+        skills_invoked=att.get("skills_invoked") or [],
+        reported_calls=att["n_get_context"] + att["n_execute"],
+        contaminated=bool(att.get("breaches")),
+        contamination_reasons=att.get("breaches") or [],
+        input_tokens=att.get("input_tokens"),
+        output_tokens=att.get("output_tokens"),
+        cache_read_tokens=att.get("cache_read_tokens"),
+        cache_write_tokens=att.get("cache_write_tokens"),
+        cost_usd=att.get("cost_usd"),
+        num_turns=att.get("num_turns"),
+        wall_seconds=att.get("wall_seconds"),
+        answer_text=att.get("answer_text"),
+        run_error=att.get("error"),
+        transcriptPath=att["transcriptPath"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3722,35 +3776,7 @@ def main(argv: list[str] | None = None) -> int:
         qid = c["qid"]
         att = attempts[qid]
         base = {"qid": qid, "sample": None, "phase": a.phase}
-        events.append(ledger.event("attempt", **base,
-                      question_sha=question_sha(c),
-                      submitted=att["submitted"],
-                      final_query=att["final_query"],
-                      final_query_source=att.get("final_query_source"),
-                      # The revision that actually answered. Documented
-                      # as "package revision actually queried" and left
-                      # None until now, so nothing could tell an attempt
-                      # answered before a reload from one answered after.
-                      servedRevision=served_identity.get("servedRevision"),
-                      n_get_context=att["n_get_context"],
-                      n_execute=att["n_execute"],
-                      n_execute_errors=att["n_execute_errors"],
-                      host_tool_uses=att["host_tool_uses"],
-                      mcp_tool_uses=att.get("mcp_tool_uses"),
-                      skills_invoked=att.get("skills_invoked") or [],
-                      reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=bool(att.get("breaches")),
-                      contamination_reasons=att.get("breaches") or [],
-                      input_tokens=att.get("input_tokens"),
-                      output_tokens=att.get("output_tokens"),
-                      cache_read_tokens=att.get("cache_read_tokens"),
-                      cache_write_tokens=att.get("cache_write_tokens"),
-                      cost_usd=att.get("cost_usd"),
-                      num_turns=att.get("num_turns"),
-                      wall_seconds=att.get("wall_seconds"),
-                      answer_text=att.get("answer_text"),
-                      run_error=att.get("error"),
-                      transcriptPath=att["transcriptPath"]))
+        events.append(attempt_event(c, att, a.phase, served_identity))
         for call in att["calls"]:
             events.append(ledger.event("tool_call", **base, **call,
                                        traceId=None))

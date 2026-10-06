@@ -1815,6 +1815,46 @@ class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
         self.assertEqual(got, new)
 
 
+class AttemptEventCarriesGivens(unittest.TestCase):
+    """`final_givens` was computed per attempt and never written, so a replay
+    of `final_query` from the ledger ran unscoped."""
+
+    def test_the_final_givens_reach_events_jsonl(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        att = {"submitted": True, "final_query": "run: s -> { aggregate: n }",
+               "final_givens": {"region": "West"}, "n_get_context": 1,
+               "n_execute": 1, "n_execute_errors": 0, "host_tool_uses": 0,
+               "answer_text": "12", "transcriptPath": "t/q1.jsonl"}
+        e = rb.attempt_event({"qid": "q1", "question": "how many?"}, att,
+                             "baseline", {})
+        rb.store_events(tmp / "events.jsonl", [e], None)
+        got = [json.loads(l) for l in
+               (tmp / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(got[0]["final_givens"], {"region": "West"})
+        self.assertEqual(got[0]["final_query"], "run: s -> { aggregate: n }")
+
+
+class JudgeSeesEachQuerysGivens(unittest.TestCase):
+    """The judge saw each query's text without its givens, beside rows the
+    givens had filtered, and could fail a correct answer for it."""
+
+    def test_a_query_is_shown_with_its_givens(self):
+        att = {"queries": ["run: s -> { aggregate: n }", "run: s -> { x }"],
+               "calls": [{"tool": "execute_query",
+                          "query": "run: s -> { aggregate: n }",
+                          "givens": {"region": "West"}},
+                         {"tool": "execute_query", "query": "run: s -> { x }",
+                          "givens": None}]}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            '[1] run: s -> { aggregate: n }\n    givens: {"region": "West"}'
+            "\n\n[2] run: s -> { x }")
+
+    def test_no_queries_reads_none(self):
+        self.assertEqual(rb.queries_for_judge({}), "(none)")
+
+
 class PersistedStubIsTheResult(unittest.TestCase):
     """Above a size the CLI decides, a tool result reaches the answerer as a
     stub naming a file. Reading the stub as the payload scored 14 of 74
