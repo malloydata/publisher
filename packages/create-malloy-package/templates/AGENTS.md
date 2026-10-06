@@ -221,6 +221,6 @@ real data usually springs:
   `avg(nullif(score, 'NA')::number)`. Where the two skills disagree,
   `malloy-gotchas-modeling` is the correct one.
 
-When something does not compile, reach for `malloy-debug` rather than guessing at the
-error: it covers reading Malloy's messages, and why fixing the first error usually
-clears the rest of a 20-error cascade.
+When something does not compile, read "When a Model Will Not Compile" in
+`malloy-gotchas-modeling` rather than guessing at the error: it covers reading Malloy's
+messages, and why fixing the first error usually clears the rest of a 20-error cascade.

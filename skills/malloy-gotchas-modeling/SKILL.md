@@ -1,6 +1,6 @@
 ---
 name: malloy-gotchas-modeling
-description: Common Malloy modeling mistakes, for writing source definitions, dimensions, measures or joins - reserved words, NULL checks, date functions, type casts, field management (extend except/accept/rename vs include public/internal/private), query-based source gotchas.
+description: Malloy modeling mistakes and compile-error fixes. Read before writing sources, dimensions, measures or joins, and when a .malloy file will not compile. Reserved words, NULLs, dates, field access.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -12,6 +12,28 @@ SPDX-License-Identifier: MIT
 > **Read this before writing Malloy code.** These patterns cause most modeling errors.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
+## When a Model Will Not Compile
+
+**Get the error.** Use an editor-diagnostics tool if your host has one. Otherwise run any query against the source with `execute_query` and read the error it returns; every host that can run Malloy can do this. Only ask the user to open the file in an editor when you know they have it open there.
+
+**Errors cascade.** Fix the FIRST error only, recompile, repeat; later errors are often caused by it. If the message is unclear, call `search_malloy_docs` with the message text.
+
+| Error | Fix |
+|-------|-----|
+| "Unknown field" | Check the typo, the source order, the wrong source, or a missing `import` |
+| "Can't use type string" | Cast it: `field::number` (see String Columns Need Casts) |
+| `Aggregate expressions are not allowed in `where:`; use `having:`` | Filter a measure with `having:` |
+| 20+ random errors | Backtick a reserved word (`` `date` ``, `` `hour` ``, `` `number` ``); see Reserved Words |
+| `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see Field Management) |
+| `IO Error: No files found that match the pattern "data/x.csv"` | A data-file path problem, not the model. See Relative Data-File Paths. The "not defined" errors under it are cascade |
+| "Can't find source X", or an import path error | The path is relative to the importing file: `import "orders.malloy"` from the same folder, `import "../orders.malloy"` from a subfolder. Subfolders are fine; do not move files to fix an import |
+| Circular imports | Source A imports B which imports A. Restructure to break the cycle |
+| `unexpected 'from'` | `from()` was removed. Write the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
+| Query-based source: "Can't find field" | The source query's `group_by` and `aggregate` fields must match what `extend {}` references; check imported sources exist |
+| "Cannot redefine 'X'" | See Cannot Redefine Query-Based Source Columns |
+| `sum(items.cost)` fails with `Join path is required for this calculation` | Over a `join_many` path write `items.cost.sum()`. Over a `join_one` path the call form compiles and is correct |
+| `order_by` on a joined path fails | Alias the field in `group_by` (`yr is races.year`) and order by the alias |
 
 ## Reserved Words: Backtick Them
 

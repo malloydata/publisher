@@ -64,8 +64,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | Skill | Use when... |
 |-------|-------------|
 | `skill:malloy-queries` | Query and view syntax and the common compile errors: dates, aggregates, join paths, filters, method syntax |
-| `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins |
-| `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
+| `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins; and fixing compile errors in a model |
 | `skill:malloy-review` | Reviewing, auditing, or critiquing existing Malloy |
 
 **Serving and operating a package**
