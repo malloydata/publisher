@@ -22,6 +22,7 @@ import {
    liftDerivedSources,
    missingPersistedTables,
    reachedPersistedSources,
+   authorModelLiftContext,
    documentFlagsForLifts,
    type DerivedSourceLift,
    buildServeShapeModel,
@@ -1679,6 +1680,139 @@ const persistedIn =
       names.map(modelId).includes(sourceID);
 /** The walk's report of a stop: the model's name for it and its id. */
 const stop = (name: string) => ({ name, sourceID: modelId(name) });
+
+describe("authorModelLiftContext sees the registry's hidden dependencies", () => {
+   it("adds a hidden dependency under its declared name, namespace winning a clash", () => {
+      const ctx = authorModelLiftContext(
+         {
+            contents: {
+               weekly: {
+                  sourceID: "weekly@file:///p/orders.malloy",
+                  type: "query_source",
+                  query: { structRef: "daily@file:///p/orders.malloy" },
+               },
+            },
+            sourceRegistry: {
+               "weekly@file:///p/orders.malloy": {
+                  entry: { type: "source_registry_reference", name: "weekly" },
+               },
+               "daily@file:///p/orders.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "daily",
+                     name: "QuerySource-uuid",
+                     sourceID: "daily@file:///p/orders.malloy",
+                     query: { structRef: "t@file:///p/orders.malloy" },
+                  },
+               },
+               "t@file:///p/orders.malloy": {
+                  entry: {
+                     type: "sql_select",
+                     as: "t",
+                     name: "sql://x",
+                     sourceID: "t@file:///p/orders.malloy",
+                  },
+               },
+               "weekly@file:///p/other.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "weekly",
+                     name: "QuerySource-other",
+                     sourceID: "weekly@file:///p/other.malloy",
+                  },
+               },
+            },
+         },
+         () => undefined,
+      );
+      expect(Object.keys(ctx.contents).sort()).toEqual([
+         "daily",
+         "t",
+         "weekly",
+      ]);
+      expect(ctx.sourceNameById.get("daily@file:///p/orders.malloy")).toBe(
+         "daily",
+      );
+      expect(ctx.sourceNameById.get("weekly@file:///p/orders.malloy")).toBe(
+         "weekly",
+      );
+      expect(
+         ctx.sourceNameById.get("weekly@file:///p/other.malloy"),
+      ).toBeUndefined();
+   });
+});
+
+describe("reachedPersistedSources through an import", () => {
+   it("stops at a hidden-dependency persist source the registry carries", () => {
+      const ctx = authorModelLiftContext(
+         {
+            contents: {
+               weekly: {
+                  sourceID: "weekly@file:///p/orders.malloy",
+                  type: "query_source",
+                  persistent: true,
+                  query: { structRef: "daily@file:///p/orders.malloy" },
+               },
+            },
+            sourceRegistry: {
+               "daily@file:///p/orders.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "daily",
+                     persistent: true,
+                     sourceID: "daily@file:///p/orders.malloy",
+                     query: { structRef: "t@file:///p/orders.malloy" },
+                  },
+               },
+               "t@file:///p/orders.malloy": {
+                  entry: {
+                     type: "sql_select",
+                     as: "t",
+                     sourceID: "t@file:///p/orders.malloy",
+                  },
+               },
+            },
+         },
+         () => undefined,
+      );
+      const out = reachedPersistedSources(
+         ctx,
+         "weekly",
+         (_n, id) => id.startsWith("daily@") || id.startsWith("weekly@"),
+      );
+      expect(out.persisted).toEqual([
+         { name: "daily", sourceID: "daily@file:///p/orders.malloy" },
+      ]);
+      expect(out.raw).toBe(false);
+   });
+
+   it("an id with no definition that the plan knows as a persist source is a stop, and a raw leaf never carries the model URL", () => {
+      const c = modelCtx({
+         monthly: {
+            sourceID: modelId("monthly"),
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "weekly@file:///srv/models/orders.malloy" },
+         },
+      });
+      const stop = reachedPersistedSources(c, "monthly", (_n, id) =>
+         id.startsWith("weekly@"),
+      );
+      expect(stop).toMatchObject({
+         persisted: [
+            {
+               name: "weekly",
+               sourceID: "weekly@file:///srv/models/orders.malloy",
+            },
+         ],
+         raw: false,
+      });
+      const raw = reachedPersistedSources(c, "monthly", () => false);
+      expect(raw.raw).toBe(true);
+      expect(raw.rawLeaves).toEqual(["weekly"]);
+      expect(JSON.stringify(raw)).not.toContain("file:///");
+   });
+});
 
 describe("liftDerivedSources through an inline parenthesized extend", () => {
    // `hits is (daily extend { join_one: r is regions_kept … }) -> { … }`: the

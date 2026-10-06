@@ -1377,11 +1377,26 @@ export function reachedPersistedSources(
    };
    // A reference is a sourceID (string), the referenced definition embedded
    // whole (object), or nothing usable.
+   // A `sourceID` is `name@<model URL>`; the name alone is what a reason may
+   // carry, since the URL is the server's path to the file.
+   const nameOf = (sourceID: string): string => sourceID.split("@")[0];
    const follow = (ref: unknown, via: string): void => {
       if (typeof ref === "string") {
          const next = ctx.sourceNameById.get(ref);
-         if (next === undefined) reachRaw(ref, via);
-         else visit(ctx.contents[next], next, false, via);
+         if (next !== undefined) {
+            visit(ctx.contents[next], next, false, via);
+            return;
+         }
+         // No definition to descend into, but the plan knows the id as a
+         // persist source: a stored table reached through an import the
+         // model's own view does not carry. A stop, never raw.
+         const name = nameOf(ref);
+         if (isPersisted(name, ref)) {
+            visited.add(name);
+            persisted.set(ref, { name, sourceID: ref });
+            return;
+         }
+         reachRaw(name, via);
          return;
       }
       if (ref !== null && typeof ref === "object") {
@@ -1616,17 +1631,35 @@ export function authorModelLiftContext(
    liftText: (location: SourceLocation) => string | undefined;
    fileText: (url: string) => string | undefined;
 } {
-   const contents =
-      (
-         modelDef as
-            | {
-                 contents?: Record<
-                    string,
-                    DerivedSourceDef & { sourceID?: unknown }
-                 >;
-              }
-            | undefined
-      )?.contents ?? {};
+   type Def = DerivedSourceDef & { sourceID?: unknown };
+   const md = modelDef as
+      | {
+           contents?: Record<string, Def>;
+           sourceRegistry?: Record<
+              string,
+              { entry?: (Def & { type?: unknown; as?: unknown }) | undefined }
+           >;
+        }
+      | undefined;
+   const namespace = md?.contents ?? {};
+   // The model's namespace, plus its hidden dependencies: a source an import
+   // brought in transitively without placing it in this model's namespace —
+   // `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly`
+   // is built from, out of `contents` — lives in `sourceRegistry` as a full
+   // definition under its declared name (`as`). The walk, the lift and the
+   // flag gathering read one view of what this model's sources are built
+   // from, so a stored parent reached only through an import is a stop and a
+   // carried declaration, not a table the model cannot name. The namespace
+   // wins a name clash: it is what the model's own text refers to.
+   const contents: Record<string, Def> = {};
+   for (const value of Object.values(md?.sourceRegistry ?? {})) {
+      const entry = value?.entry;
+      if (!entry || entry.type === "source_registry_reference") continue;
+      const name = typeof entry.as === "string" ? entry.as : undefined;
+      if (!name || name in namespace || name in contents) continue;
+      contents[name] = entry;
+   }
+   Object.assign(contents, namespace);
    // sourceID -> author source name, for the join materialization gate and
    // for resolving what a derived source extends.
    const sourceNameById = new Map<string, string>();

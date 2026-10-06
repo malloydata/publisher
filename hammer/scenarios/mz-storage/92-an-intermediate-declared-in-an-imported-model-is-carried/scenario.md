@@ -18,6 +18,11 @@ chain itself crosses one: `base.malloy` declares the raw source, the stored
 its text from that file, and compile it under that file's flags, not the
 importing file's.
 
+This is the whole-file form, `import "base.malloy"`, which places every
+exported name in the importing model's namespace. A selective import and a
+transitive one leave the stored parent out of that namespace; scenarios 103
+and 104 cover those.
+
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
