@@ -201,6 +201,8 @@ export interface DashboardBuilderProps {
    replaces?: string;
    /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
    modelPath?: string;
+   /** The document is held as text, which the server reads by its tags rather than its folder: a kind switch always writes `kind=`. */
+   explicitKind?: boolean;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save. Leaving is `onExit`, not this: the builder draws Done itself.
@@ -208,6 +210,12 @@ export interface DashboardBuilderProps {
    toolbar?: ReactNode;
    /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
    onExit?: () => void;
+   /**
+    * Why "Add filter" is off, or absent when it is on. A document kept as bare
+    * text has no `given:` of its own to write, so only the model's givens can
+    * be bound, from the chips.
+    */
+   addFilterDisabledReason?: string;
 }
 
 export function DashboardBuilder({
@@ -230,6 +238,8 @@ export function DashboardBuilder({
    saveLabel,
    replaces,
    modelPath,
+   explicitKind,
+   addFilterDisabledReason,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -238,6 +248,7 @@ export function DashboardBuilder({
       ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
       ...(modelPath !== undefined ? { modelPath } : {}),
+      ...(explicitKind ? { explicitKind } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
    // Undo and redo point at the tile they changed: lit briefly, and scrolled to.
@@ -780,6 +791,9 @@ export function DashboardBuilder({
                      unknownFieldsOf={unknownFieldsOf}
                      onEdit={(control) => setFilterDialog({ control })}
                      onAdd={() => setFilterDialog({})}
+                     {...(addFilterDisabledReason
+                        ? { addDisabledReason: addFilterDisabledReason }
+                        : {})}
                      onRemove={dropControl}
                   >
                      {controls}

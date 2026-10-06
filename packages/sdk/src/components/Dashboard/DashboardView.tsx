@@ -4,7 +4,7 @@
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
-import type { GivenValue } from "../../hooks/givenValue";
+import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import {
    useDrill,
@@ -14,7 +14,11 @@ import {
    type DrillRowsRequest,
 } from "../drill";
 import { GivensPanel } from "../given";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
+import {
+   givensToParams,
+   givensToRequest,
+   withHostGivens,
+} from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
@@ -36,7 +40,12 @@ export interface DashboardViewProps {
    versionId?: string;
    /** The slug or path the manifest was fetched under, which keys its control edits. */
    documentName: string;
-   givens?: Record<string, string>;
+   /**
+    * The host's values, typically its URL query parameters. A string drives a
+    * control; a value no control declares is sent as given to the tiles that
+    * read it, and only there may it be a list.
+    */
+   givens?: Record<string, HostGivenValue>;
    onGivensChange?: (
       givens: Record<string, string>,
       managed: readonly string[],
@@ -47,6 +56,16 @@ export interface DashboardViewProps {
    onEvent?: DashboardEventHandler;
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
+   /**
+    * Text-source mode: the document's definitions (see `documentPreamble`),
+    * sent ahead of each tile's `run:` so every query runs as the viewer's own
+    * text. Rows and Explore, which reopen a tile by name, are off in this mode.
+    */
+   preamble?: string;
+   /** Text-source mode: the model the text runs on top of, in place of `manifest.path`. */
+   runModelPath?: string;
+   /** Givens the host sets itself: no control is shown for them. */
+   hiddenGivens?: readonly string[];
 }
 
 /**
@@ -68,8 +87,33 @@ export function DashboardView({
    maxResultSize,
    onEvent,
    chrome = "card",
+   preamble,
+   runModelPath,
+   hiddenGivens,
 }: DashboardViewProps) {
-   const specs = useMemo(() => manifest.givens ?? [], [manifest]);
+   const specs = useMemo(
+      () =>
+         (manifest.givens ?? []).filter(
+            // In text-source mode, a `#(secure)` given is the host's to set: no control for it.
+            (spec) =>
+               !(preamble !== undefined && spec.secure === true) &&
+               !(spec.name !== undefined && hiddenGivens?.includes(spec.name)),
+         ),
+      [manifest, hiddenGivens, preamble],
+   );
+
+   // Only a string can be a control's value; a list has no URL form.
+   const controlParams = useMemo(
+      () =>
+         givens === undefined
+            ? undefined
+            : (Object.fromEntries(
+                 Object.entries(givens).filter(
+                    ([, value]) => typeof value === "string",
+                 ),
+              ) as Record<string, string>),
+      [givens],
+   );
 
    // The control row's state, options and `to=self` drill: the same hook the
    // notebook uses, so a control behaves identically on both surfaces.
@@ -77,7 +121,7 @@ export function DashboardView({
       specs,
       loaded: true,
       startingValues: manifest.startingGivens,
-      params: givens,
+      params: controlParams,
       onGivensChange,
       // Version included: two dashboards whose starting values coincide would
       // otherwise look like one document, and the one you came from would keep
@@ -87,24 +131,26 @@ export function DashboardView({
       autorun: manifest.autorun !== false,
       environmentName,
       packageName,
-      modelPath: manifest.path,
+      modelPath: runModelPath ?? manifest.path,
       versionId,
       documentName,
+      ...(preamble !== undefined ? { preamble } : {}),
+      ...(givens ? { hostGivens: givens } : {}),
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
 
    // A given only a gate reads is in a tile's `givenNames` but not the row, so
    // the host's value for it is sent as given: the row would drop it as undeclared.
-   const tileGivens = useMemo(() => {
+   const tileHostGivens = useMemo(() => {
       const named = new Set(
          (manifest.tiles ?? []).flatMap((tile) => tile.givenNames ?? []),
       );
-      const hostOnly = Object.entries(givens ?? {}).filter(
-         ([name]) => named.has(name) && !declaredTypes.has(name),
+      return Object.fromEntries(
+         Object.entries(givens ?? {}).filter(
+            ([name]) => named.has(name) && !declaredTypes.has(name),
+         ),
       );
-      if (hostOnly.length === 0) return applied;
-      return new Map<string, GivenValue>([...hostOnly, ...applied]);
-   }, [manifest, givens, declaredTypes, applied]);
+   }, [manifest, givens, declaredTypes]);
 
    // The rows behind a clicked value, and a tile's query in the explorer —
    // the two ways past a number. Composite tiles only: each names its
@@ -125,8 +171,12 @@ export function DashboardView({
    // The whole applied row and any gate givens: a source's own `where:` may read any of it, and a
    // given the rows query does not reference is ignored by the server.
    const rowsGivens = useMemo(
-      () => givensToRequest(tileGivens, declaredTypes),
-      [tileGivens, declaredTypes],
+      () =>
+         withHostGivens(
+            givensToRequest(applied, declaredTypes),
+            tileHostGivens,
+         ),
+      [applied, declaredTypes, tileHostGivens],
    );
 
    // The explorer's controls take the URL-string form, not the request form.
@@ -140,7 +190,7 @@ export function DashboardView({
       onSelf,
       canSelf,
       selfLabel: "Filter this dashboard",
-      onRows,
+      ...(preamble === undefined ? { onRows } : {}),
    });
    // Each tile's clicks carry the tile they came from, so the rows behind a
    // value know which source to run against.
@@ -164,7 +214,7 @@ export function DashboardView({
       );
    }
 
-   const modelPath = manifest.path;
+   const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
    const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
 
@@ -234,7 +284,8 @@ export function DashboardView({
                         label={tile.label}
                         subtitle={tile.subtitle}
                         borderless={tile.borderless}
-                        givens={tileGivens}
+                        givens={applied}
+                        hostGivens={tileHostGivens}
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={height ?? TILE_MAX_HEIGHT}
@@ -245,13 +296,17 @@ export function DashboardView({
                            tile.givenNames,
                            specs,
                         )}
-                        onExplore={() => {
-                           setExploring(tile.query);
-                           onEvent?.({
-                              type: "dashboard.explored",
-                              tile: tile.query ?? "",
-                           });
-                        }}
+                        {...(preamble !== undefined
+                           ? { preamble, restricted: tile.restricted }
+                           : {
+                                onExplore: () => {
+                                   setExploring(tile.query);
+                                   onEvent?.({
+                                      type: "dashboard.explored",
+                                      tile: tile.query ?? "",
+                                   });
+                                },
+                             })}
                      />
                   )
                }

@@ -859,6 +859,16 @@ describe("malloyGivenToApi: annotations", () => {
          annotations: { forRoute: () => notes },
       }) as unknown as MalloyGiven;
 
+   it("flags #(secure) and nothing that merely resembles it", () => {
+      expect(malloyGivenToApi(givenWith([note("#(secure)\n")])).secure).toBe(
+         true,
+      );
+      expect(
+         malloyGivenToApi(givenWith([note("#(secure_ish) x\n")])).secure,
+      ).toBeUndefined();
+      expect(malloyGivenToApi(givenWith([])).secure).toBeUndefined();
+   });
+
    it("carries app-route notes, and drops reserved ones and the given's own (markdown) prose", () => {
       const api = malloyGivenToApi(
          givenWith([
