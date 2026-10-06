@@ -226,3 +226,20 @@ describe("resolveMode", () => {
       expect(resolveMode(undefined, undefined, false)).toBe("light");
    });
 });
+
+describe("resolveTheme series in dark mode", () => {
+   it("draws the default series as it always was", () => {
+      expect(resolveTheme([], "dark").series).toEqual(
+         resolveTheme([], "light").series,
+      );
+   });
+
+   it("lifts an operator's series colour too dark for the dark canvas", () => {
+      const dark = resolveTheme(
+         [{ palette: { series: ["#1a1a1a", "#60a5fa"] } }],
+         "dark",
+      );
+      expect(dark.series[0]).not.toBe("#1a1a1a");
+      expect(dark.series[1]).toBe("#60a5fa");
+   });
+});

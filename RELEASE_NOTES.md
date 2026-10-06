@@ -55,16 +55,23 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
   statement is missing will now fail and should drop the check.
 - **Offscreen dashboard tiles wait.** A dashboard or notebook-layout tile runs its query once it is
   within about 600px of the viewport, rather than on mount, so a long dashboard no longer bills the
-  warehouse for tiles nobody scrolls to. Where `IntersectionObserver` is unavailable every tile runs
-  as before.
+  warehouse for tiles nobody scrolls to. The distance is measured in whatever box scrolls the page
+  (the Console scrolls inside one), and printing runs every tile. Where `IntersectionObserver` is
+  unavailable every tile runs as before. A tile waiting to come near reads "Loading…", not
+  "Running…".
 - **Superseded queries are cancelled.** Tile, result, suggestion and filter-value queries pass
   react-query's abort signal to the request, so a query whose givens changed or whose tile unmounted
-  is aborted instead of finishing. A cancelled query shows as still loading, never as an error.
+  is aborted instead of finishing. A cancelled query shows as still loading, never as an error. The
+  server cancels the query with it: when a client disconnects from `POST …/models/{path}/query`,
+  the query's abort signal fires (the path a query timeout already takes), so the database stops
+  work that nobody will read rather than running on after its concurrency slot was released.
 - **`usePublisherTheme` from `@malloy-publisher/sdk/client`.** The light entry now exports it (and the
   `Theme`, `ThemeMode` and `ResolvedTheme` types), so a host following the SDK's colour mode at its
   root no longer needs the main entry on its critical path.
-- **No refetch on refocus.** The SDK's query client no longer refetches every stale query when the
-  tab regains focus. Retries stay off.
+- **No refetch on refocus.** The SDK's `globalQueryClient` no longer refetches every stale query
+  when the tab regains focus, including the package, model and status queries of a host that shares
+  that client. Retries stay off. _What to do:_ a host that relied on a refresh on refocus calls
+  `invalidateQueries` itself.
 
 ## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
 
@@ -84,7 +91,7 @@ The builder is the read-only page in a second state, with fewer controls around 
 - **Save saves in place.** The builder stays open after a save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits. The first save of a cell-format notebook, which rewrites it in the tile layout, asks first.
 - **The builder's actions sit on the title's line**: + Tile, undo, redo and Save. + Filter is a chip after the filter chips.
 - **Settings is gone.** A document stays the kind it was created as. A tile's width is set by dragging its right edge, or by focusing that edge and pressing the arrow keys (Home and End for one column and the full grid); the tile menu's width presets, Grid width and "Run as controls change" are removed, and a file's own `columns` and `autorun` are kept. Adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list.
-- **Tile menu**: Drill, Delete, and a viz type that applies as it is picked. Editable titles, subtitles and descriptions carry a small pencil after their text. The description is edited in a text block's box and selected like a tile; it reads unboxed.
+- **Tile menu**: Drill, Delete, and a viz type that applies as it is picked. Editable titles, subtitles and descriptions carry a small pencil after their text. The description is drawn as the document's text tiles are, in both modes (a dashboard boxes it, a notebook leaves it bare), and selected like a tile.
 - **Dashboard tiles no longer offer Explore.**
 
 **Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is the palette's first series colour (`ResolvedTheme.accent`, `accentHover`, `accentContrast`, and `accentFor`), kept as picked when it reads against the page at 3:1 and otherwise moved only as far as it takes. In dark mode a series colour too dark for the canvas is lifted the same way, and a map colour set only for light is carried into dark. Drill links keep the Console's default blue. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
@@ -109,6 +116,9 @@ The builder is the read-only page in a second state, with fewer controls around 
 - `TileCard` takes `kind` (`query` or `text`), which sets its floor; the builder's text tiles and description use it.
 - `Notebook`'s embed dialog is removed; its copy-link button remains. The model page's copy link is a labelled button.
 - No bold: headings and labels use the theme's medium weight, as Credible's do.
+- Prose (package READMEs, notebook markdown, descriptions, text tiles) is set in the instance theme's `font.family`, as tile titles are, rather than the host MUI theme's font. The filter panel's Apply and Reset take the host theme's button casing.
+- Notebook blocks have one clear space around them when hovered or selected: the ring stands 12px off bare content, its menu sits on the ring's edge rather than over the text, notebook tiles are 40px apart in both modes, and document prose is flush at its top and bottom so a text tile lines up with a chart tile's title.
+- The builder's undo and redo shortcuts do nothing while a dialog or menu is open.
 - The builder's save state is announced to screen readers, and a tile's resize edge is a focusable separator with its width as its value.
 - `DashboardBuilder` and `DashboardEditor` are split into hooks and parts; their exports and props are unchanged.
 

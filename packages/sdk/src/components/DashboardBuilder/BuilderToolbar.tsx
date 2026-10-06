@@ -129,8 +129,8 @@ export function BuilderToolbar({
                </IconButton>
             </span>
          </Tooltip>
-         {/* The host's own actions, then Save, which keeps the builder open.
-          Leaving is the host's: the builder draws no way out of itself. */}
+         {/* The host's own actions, then Save, which keeps the builder open,
+          then Close only when the host opted into it with `onExit`. */}
          {(actions || onSave || onExit) && (
             <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
          )}

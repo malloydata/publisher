@@ -95,3 +95,56 @@ it("opens once the element comes within the margin, and stays open", () => {
    report(false);
    expect(screen.getByText("near")).toBeDefined();
 });
+
+it("measures against the box that scrolls the page, not the window", () => {
+   install(FakeObserver);
+   // The scroller is on screen; the tile is far down inside it.
+   Object.assign(HTMLElement.prototype, {
+      getBoundingClientRect(this: HTMLElement) {
+         return (
+            this.dataset.scroller
+               ? { top: 0, bottom: 400 }
+               : { top: 10_000, bottom: 10_400 }
+         ) as DOMRect;
+      },
+   });
+   const scrollHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollHeight",
+   );
+   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+         return (this as HTMLElement).dataset.scroller ? 5000 : 0;
+      },
+   });
+   try {
+      render(
+         <div data-scroller="yes" style={{ overflowY: "auto", height: 400 }}>
+            <Probe />
+         </div>,
+      );
+      expect(screen.getByText("far")).toBeDefined();
+      expect(
+         (options[0]?.root as HTMLElement | undefined)?.dataset.scroller,
+      ).toBe("yes");
+   } finally {
+      if (scrollHeight)
+         Object.defineProperty(
+            HTMLElement.prototype,
+            "scrollHeight",
+            scrollHeight,
+         );
+   }
+});
+
+it("opens for printing, which lays the whole page out at once", () => {
+   install(FakeObserver);
+   placeFarBelow();
+   render(<Probe />);
+   expect(screen.getByText("far")).toBeDefined();
+   act(() => {
+      window.dispatchEvent(new Event("beforeprint"));
+   });
+   expect(screen.getByText("near")).toBeDefined();
+});

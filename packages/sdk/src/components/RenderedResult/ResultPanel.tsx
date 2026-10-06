@@ -71,7 +71,14 @@ export function ResultPanel({
          </Box>
       );
    }
-   if (!isSuccess) return <Loading text={loadingText} />;
+   if (!isSuccess)
+      // Nothing is running while a query waits (a tile not yet scrolled near),
+      // so it does not say "Running…".
+      return (
+         <Loading
+            text={fetchStatus === "idle" ? LOADING_COPY.loading : loadingText}
+         />
+      );
    return (
       <ResultContainer
          result={result}

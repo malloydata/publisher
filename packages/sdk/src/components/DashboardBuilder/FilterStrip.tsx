@@ -68,6 +68,8 @@ export function FilterStrip({
             >
                <Stack
                   direction="row"
+                  // A named group, so the label is announced.
+                  role="group"
                   aria-label="Filters"
                   sx={{
                      gap: 1,

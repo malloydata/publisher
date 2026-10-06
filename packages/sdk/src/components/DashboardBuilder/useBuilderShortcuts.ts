@@ -84,6 +84,13 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
             }
             return;
          }
+         // A window (a dialog, a menu) has the keys: an undo behind a
+         // "Convert this notebook?" would change what its Save then writes.
+         if (inOverlay(event.target)) {
+            // Still not the browser's own Save page.
+            if (mod && key === "s") event.preventDefault();
+            return;
+         }
          if (mod && key === "z") {
             event.preventDefault();
             if (event.shiftKey) current.redo();
@@ -97,7 +104,7 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
          }
          if (mod && key === "s") {
             event.preventDefault();
-            if (!inOverlay(event.target)) current.save?.();
+            current.save?.();
             return;
          }
          if (

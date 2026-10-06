@@ -30,6 +30,7 @@ export function resolveTheme(
    };
 
    let series: string[] = [...((defaultPalette.series as string[]) ?? [])];
+   let seriesSet = false;
    let fontFamily: string = defaultFont.family ?? "sans-serif";
    let fontSize: number = defaultFont.size ?? 12;
 
@@ -62,6 +63,7 @@ export function resolveTheme(
       if (!layer) continue;
       if (Array.isArray(layer.palette?.series)) {
          series = [...(layer.palette.series as string[])];
+         seriesSet = true;
       }
       for (const key of PER_MODE_COLOR_KEYS) {
          const override = layer.palette?.[key];
@@ -93,8 +95,12 @@ export function resolveTheme(
    return {
       mode,
       // One series list for both modes, picked against a light page: in dark,
-      // a colour too dark to see on the canvas is lifted until it reads.
-      series: isDark ? series.map((c) => legibleOn(c, background)) : series,
+      // an operator's colour too dark to see on the canvas is lifted until it
+      // reads. The defaults are drawn as they always were.
+      series:
+         isDark && seriesSet
+            ? series.map((c) => legibleOn(c, background))
+            : series,
       ...accentFor(series[0], mode, background),
       font: { family: fontFamily, size: fontSize },
       background,
