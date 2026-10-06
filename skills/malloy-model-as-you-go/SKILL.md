@@ -234,7 +234,7 @@ carry the *why* and the evidence. It is also what lets you resume after losing c
 
 A saved `view:` turns "we answered that once" into "re-run it". A trend wanted again next
 month belongs in the file as a `view:` with its chart tag (`skill:malloy-charts`); views wanted
-side by side belong in a dashboard (`skill:malloy-dashboards`), or in a notebook
+side by side belong in a dashboard (`malloy-dashboards`, where your host has it), or in a notebook
 (`skill:malloy-notebooks`) only when the user asks for one or one already exists. A genuine one-off does not.
 
 > **This departs from `skill:malloy-model` on purpose.** Its "no views in source files" rule

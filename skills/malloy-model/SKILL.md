@@ -366,6 +366,6 @@ Step complete. Output: base source files (`.malloy`, one per table) and joined s
 **Suggest next steps to the user**, unless your host's instructions say it shows follow-up suggestions of its own:
 
 - Open the model to see it live. On a local Publisher server that is `http://localhost:4000/<environmentName>/<packageName>` for the package, or `http://localhost:4000/<environmentName>/<packageName>/<modelPath>` for a single model file. First confirm the running server actually serves this package (it is in the loaded `publisher.config.json`, or mounted live with `--server_root . --watch-env <env>`); a package the server has not loaded returns a 404, so do not hand over a link to a package that was just authored but never loaded.
-- Build a dashboard with filters over the model for views people will come back to (see `skill:malloy-dashboards`). Use a notebook (`skill:malloy-notebooks`) only when the user wants a narrative with prose, or the package already has notebooks.
+- Build a dashboard with filters over the model for views people will come back to (see `malloy-dashboards`, where your host has it). Use a notebook (`skill:malloy-notebooks`) only when the user wants a narrative with prose, or the package already has notebooks.
 - Run analysis questions against the model (see `skill:malloy-analysis`).
 - When you're ready to serve the model, publishing is out of scope for open-source Publisher v1: self-hosters commit the package to git and use their host's publish path.

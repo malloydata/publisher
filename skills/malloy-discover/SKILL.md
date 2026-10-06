@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-> **PREREQUISITE:** Make sure the Malloy tools (`get_context`, `execute_query`, `search_malloy_docs`) are reachable. If they are missing and a user is present, stop and have them fix the connection (`skill:malloy-getting-started` section 0). If you are running unattended against a local Publisher, with nobody to reconnect you, use its REST API instead: discovery, query, compile and reload all have REST equivalents, listed in the same section.
+> **PREREQUISITE:** Make sure the Malloy tools (`get_context`, `execute_query`, `search_malloy_docs`) are reachable. If they are missing and a user is present, stop and have them fix the connection (section 0 of `malloy-getting-started`, where your host has it). If you are running unattended against a local Publisher, with nobody to reconnect you, use its REST API instead: discovery, query, compile and reload all have REST equivalents, listed in the same section.
 
 **This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE). Silent does not mean unrecorded: append findings to your modeling workflow's `modeling-notes.md` as you go (grain proofs, key collisions, coverage cliffs, metadata drift, problems) so the scope proposal argues from a durable record rather than a reconstruction.
 
@@ -181,7 +181,7 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 | Signal | Source Type | Reference to Read |
 |--------|------------|-------------------|
 | `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
-| `.pbix`, `.pbip`, or a `definition/` folder of `.tmdl` files | power bi | `skill:malloy-powerbi-review` |
+| `.pbix`, `.pbip`, or a `definition/` folder of `.tmdl` files | power bi | `malloy-powerbi-review` (read it where your host has it) |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |
 | Dataset metadata (`metadata.json` and friends), metrics/KPI docs, catalog exports, data READMEs, existing SQL or report files, dashboard screenshots | direct | none: read it yourself (see below) |
 
