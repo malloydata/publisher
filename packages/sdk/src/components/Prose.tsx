@@ -167,6 +167,10 @@ export function Prose({
       <Box sx={[STYLES[variant], ...(Array.isArray(sx) ? sx : [sx])]}>
          <Markdown
             options={{
+               // A document's single line is a paragraph like any other, so a
+               // one-line text block reads with the same leading and spacing
+               // as a longer one rather than as a bare inline run.
+               forceBlock: variant === "document",
                overrides: {
                   a: { component: ProseLink, props: { context: links } },
                },

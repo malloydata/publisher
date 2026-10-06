@@ -53,7 +53,13 @@ import { withSource } from "./imports";
 import { FilterStrip } from "./FilterStrip";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
-import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
+import {
+   GapTarget,
+   GridGuides,
+   TILE_HOVER,
+   TileFrame,
+   TilePlaceholder,
+} from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
 import { TileCard } from "../Dashboard/TileCard";
 import { usePublisherTheme } from "../../theme/ThemeContext";
@@ -737,16 +743,17 @@ export function DashboardBuilder({
                    the title sits where the reader's view puts it. */}
                   <Box sx={{ my: "-4px" }}>{actions}</Box>
                </Stack>
-               {/* The description in a text block's box, edited where it is
-                read. It takes the solid accent outline a selected tile does
-                while the pointer is on it or it is being edited. */}
+               {/* The description in a text block's box, styled as one is: the
+                same card, lifting on hover as a tile does, and taking a
+                selected tile's accent outline while it is being edited. */}
                <TileCard
                   sx={{
                      minHeight: 72,
                      outline: "2px solid transparent",
                      outlineOffset: 2,
-                     transition: "outline-color 120ms",
-                     "&:hover, &:focus-within": { outlineColor: theme.accent },
+                     transition: "outline-color 120ms, box-shadow 120ms",
+                     "&:hover": TILE_HOVER(theme),
+                     "&:focus-within": { outlineColor: theme.accent },
                   }}
                >
                   <InlineMarkdown
