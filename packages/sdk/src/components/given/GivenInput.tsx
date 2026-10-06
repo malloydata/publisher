@@ -12,7 +12,6 @@ import {
    FormHelperText,
    IconButton,
    InputAdornment,
-   InputLabel,
    MenuItem,
    Slider,
    Stack,
@@ -26,7 +25,7 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
@@ -150,7 +149,6 @@ export function GivenInput({
    optionsFailed,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
-   const labelId = useId();
    const { theme: publisherTheme } = usePublisherTheme();
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
@@ -491,28 +489,22 @@ export function GivenInput({
       return (
          <FormControl fullWidth>
             {/* Drawn as an outlined field, label notched into its edge, so it
-                sits in a row of selects and date pickers as one of them. It is
-                a bordered Box rather than an OutlinedInput: a real input would
-                add a textbox role beside the handles' own, and the label names
-                a group, not either handle. The notch is the label's own opaque
-                background, as the Console themes its fields. The box is taller
-                than a text field (readout, track and min/max captions), so a
-                neighbour's helper line sits under its own box, not level. */}
-            <InputLabel
-               shrink
-               id={labelId}
-               sx={{ bgcolor: "background.paper", px: 0.5 }}
-            >
-               {label}
-            </InputLabel>
+                sits in a row of selects and date pickers as one of them. A
+                fieldset and legend rather than an OutlinedInput: a real input
+                would add a textbox role beside the handles' own, and the legend
+                names the group without painting a patch over the border. The
+                box is taller than a text field (readout, track and min/max
+                captions), so a neighbour's helper line sits under its own box,
+                not level. */}
             <Box
-               role="group"
-               aria-labelledby={labelId}
+               component="fieldset"
                sx={(theme) => ({
+                  m: 0,
+                  minWidth: 0,
                   border: publisherTheme.cardBorder,
                   borderRadius: 2,
                   px: `${INPUT_CONTENT_INSET}px`,
-                  pt: 1.25,
+                  pt: 0,
                   pb: 0.75,
                   minHeight: SLIDER_FIELD_HEIGHT,
                   transition: "border-color 120ms ease-in",
@@ -520,6 +512,14 @@ export function GivenInput({
                   "&:focus-within": { borderColor: theme.palette.text.primary },
                })}
             >
+               <Typography
+                  component="legend"
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 0.5, lineHeight: 1 }}
+               >
+                  {label}
+               </Typography>
                <Stack direction="row" alignItems="center" spacing={1}>
                   <Typography
                      variant="body2"
