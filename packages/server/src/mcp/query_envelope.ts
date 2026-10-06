@@ -98,17 +98,26 @@ export const MAX_RESULT_CHARS = 90_000;
  * returns that line six times. Tags fold last-wins and the importing model
  * comes last, so keeping the last copy preserves what the lines resolve to;
  * keeping the first could let an import's setting override the model's own.
+ *
+ * A clone line (`## b := $a`) copies what precedes it, so no copy is dropped
+ * across one: with `## a { x=1 }`, `## b := $a`, `## a { x=1 }`, dropping the
+ * first copy would change what `b` clones. Any line holding `:=` counts, even
+ * inside a string, which only dedupes less.
  */
 export function dedupeAnnotations(
    annotations: Malloy.Annotation[],
 ): Malloy.Annotation[] {
-   const seen = new Set<string>();
+   let seen = new Set<string>();
    const kept: Malloy.Annotation[] = [];
    for (let i = annotations.length - 1; i >= 0; i--) {
       const annotation = annotations[i];
       if (seen.has(annotation.value)) continue;
-      seen.add(annotation.value);
       kept.push(annotation);
+      if (annotation.value.includes(":=")) {
+         seen = new Set<string>();
+         continue;
+      }
+      seen.add(annotation.value);
    }
    return kept.reverse();
 }

@@ -129,7 +129,7 @@ run: orders -> {
     max_val is max(sale_price)
 }
 ```
-Stage one counts the rows for each distinct value and keeps a running total in value order. Stage two takes the smallest value whose running total reaches each fraction of all rows. The result is exact (the nearest-rank percentile). It uses no raw SQL, so it runs in an ad-hoc query on any dialect. Keep the `where: ... is not null`: NULL rows count toward `total` but never toward a value, and they push every percentile up. This is a query, not a measure. A percentile or median `measure:` cannot be expressed (see `skill:malloy-gotchas-modeling`).
+Stage one counts the rows for each distinct value and keeps a running total in value order. Stage two takes the smallest value whose running total reaches each fraction of all rows. The result is exact (the nearest-rank percentile). It uses no raw SQL, so it runs in an ad-hoc query on any dialect. Keep the `where: ... is not null`: NULL rows count toward `total` but never toward a value, so they push every percentile up, and the upper ones can come back null. This is a query, not a measure. A percentile or median `measure:` cannot be expressed (see `skill:malloy-gotchas-modeling`).
 
 **Denormalized vs joined**: compare pre-computed column against real aggregate, report match rate:
 ```malloy

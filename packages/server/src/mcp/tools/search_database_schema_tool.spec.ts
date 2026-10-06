@@ -256,6 +256,20 @@ describe("search_database_schema tiers", () => {
       ]);
    });
 
+   it("returns a tool error when the environment lookup fails for another reason", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new Error("storage unavailable");
+         },
+      });
+      const result = await handler({
+         environmentName: "nope",
+         connectionName: "c",
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).tables).toEqual([]);
+   });
+
    it("names the unknown environment and the ones that exist", async () => {
       const handler = captureHandler({
          getEnvironment: async () => {
