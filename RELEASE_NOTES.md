@@ -58,13 +58,24 @@ The builder is the read-only page in a second state, with fewer controls around 
 
 **For SDK embedders (BREAKING).** The viewer and the builder are separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
 
-- **`onExit` is removed** from `DashboardEditor`, `NotebookEditor` and `DashboardBuilder`, with the builder's Close button and its unsaved-changes prompt. _What to do:_ draw your own way out beside the builder and guard it with `onDirtyChange`; `UnsavedChangesDialog` is still exported for the prompt.
+- **`onExit` is optional.** Without it, `DashboardEditor`, `NotebookEditor` and `DashboardBuilder` draw no way out, and leaving is the host's (the Console's is View in its header): draw your own and guard it with `onDirtyChange`; `UnsavedChangesDialog` is still exported. With it, the toolbar shows **Close** after Save, and Close on unsaved work asks first, as before. _What to do:_ nothing, if you pass it.
 - **`onSaveNoticeChange` is removed** from `DashboardBuilder`, with the save notice. _What to do:_ drop the prop; there is no notice to hold a newer version behind.
 - **`DashboardBar` is removed.** _What to do:_ draw your own bar; nothing in the SDK used it.
 - **The builder's Show as switch is removed.** _What to do:_ nothing; a document's kind is chosen when it is created (`NewDocumentDialog`'s `allowKindChange` is unchanged).
 - **`Dashboard` no longer offers Explore from here on its tiles.** _What to do:_ if you want it, render `DashboardTile` with its `onExplore` prop, which is unchanged.
 - **`Notebook` no longer caps its width** at 1200px or pads its sides; it fills its container, as `Dashboard` does. _What to do:_ give it a container with the width you want. `DataAppViewer` lays out at 1600px.
 - **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`. Without it, `Package` navigates to the Console's routes as before.
+
+**Consistency and polish.**
+
+- Destructive text (Delete on a tile, Remove filter) takes the host MUI theme's error palette — `error.dark` in light mode, `error.main` in dark — through the exported `dangerTextColor`, so a host with its own error red gets it.
+- Filter wording is one set: the chip's ×, and the filter window's **Remove filter**; the drill window is titled **Drill**, matching the tile menu.
+- New exported tokens: `MOTION_FAST`, `reducedMotionSx`, `scrollBehavior`, `visibleWithoutHoverSx`, `ResolvedTheme.shadow` (`lift`, `drag`), `LOADING_COPY`, `STICKY_CONTROLS_Z`, `TILE_MIN_HEIGHT`, and `MONO_FONT_FAMILY` (which the Console now reads from the SDK). Motion respects `prefers-reduced-motion`.
+- `TileCard` takes `kind` (`query` or `text`), which sets its floor; the builder's text tiles and description use it.
+- `Notebook`'s embed dialog is removed; its copy-link button remains. The model page's copy link is a labelled button.
+- No bold: headings and labels use the theme's medium weight, as Credible's do.
+- The builder's save state is announced to screen readers, and a tile's resize edge is a focusable separator with its width as its value.
+- `DashboardBuilder` and `DashboardEditor` are split into hooks and parts; their exports and props are unchanged.
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 
