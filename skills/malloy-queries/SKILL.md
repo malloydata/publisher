@@ -287,7 +287,7 @@ Read the `malloy-charts` skill for chart types, properties, data shape requireme
 Wrong: `measure: cogs is sum(inventory_items.item_cost)`
 Right: `measure: cogs is inventory_items.item_cost.sum()`
 
-`count(joined.field)` is the exception: it is the correct distinct count through a join, so keep it as written (see Counting above).
+`count(joined.field)` is the exception: it is the correct distinct count through a join, so keep it as written (see Counting above). Do not rewrite it as `joined.count(field)`: that form does not compile (`Expression illegal inside path.count()`). `joined.count()` does compile, but it counts rows of the joined source, which is a different number from `count(joined.field)` when the field repeats.
 
 **Scalar functions never take method form, and nothing chains onto a function call.** `round`, `floor` and `ceil` are always `round(x, 2)`. The errors (`something is missing before 'round'`, `Cannot call function round(number, number) with source`) name `round` without saying so, and read like a typo somewhere else.
 

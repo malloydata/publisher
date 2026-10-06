@@ -138,7 +138,7 @@ Card-based multi-tile layout. Apply to a view whose body is a nested query; the 
 - `aggregate` measures -> KPI cards, one per measure
 - each `nest:` -> a tile, rendered by the tag above it (`# table` default, or `# bar_chart` / `# line_chart` / `# big_value`)
 
-**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile, `# break` starts a new row, overflow wraps.
+**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile (the old `# span` is gone), `# break` starts a new row, overflow wraps.
 
 ```malloy
 // Flex: measures become KPI cards, the nest becomes a tile
@@ -310,7 +310,7 @@ Publisher styles charts and tables from one structured theme. The instance sets 
 | `# theme.font.family` | Font for all rendered text | shared |
 | `# theme.font.size` | Table font size (px) | shared |
 
-The thirteen per-mode `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes.
+The thirteen per-mode `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes (a `.light` or `.dark` on them does nothing). `palette.mapColor` recolors choropleths only; heatmaps keep their built-in scheme. No annotation sets the default light or dark mode or the user toggle: that lives in the instance theme. Environment-level theming is not applied yet.
 
 ```malloy
 // Model-wide defaults (## applies to every view in the model):
