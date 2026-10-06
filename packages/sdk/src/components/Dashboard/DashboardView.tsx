@@ -295,7 +295,9 @@ function TextTile({
 function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
       <DashboardProse
-         chrome="card"
+         // Unboxed, as a notebook's text is: the description is the page's
+         // own prose, not a tile on it.
+         chrome="none"
          title={manifest.title ?? manifest.name}
          {...(manifest.description
             ? { description: manifest.description }
