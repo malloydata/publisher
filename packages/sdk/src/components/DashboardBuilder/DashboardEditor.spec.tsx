@@ -49,6 +49,9 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
                  ? { modelPath: path, sourceText: served }
                  : {
                       modelPath: path,
+                      modelInfo: JSON.stringify({
+                         entries: [{ kind: "source", name: "scoped_orders" }],
+                      }),
                       sources: [
                          {
                             name: "scoped_orders",
@@ -230,8 +233,13 @@ describe("DashboardEditor", () => {
             getModel.mock.calls.some((call) => call[2] === "broken.malloy"),
          ).toBe(true),
       );
-      // Adding a tile needs a catalog, so the button is the proof it built.
-      await screen.findByRole("button", { name: "Add tile", hidden: true });
+      // The picker offers the source the working model exports: an empty catalog would offer none.
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Add tile", hidden: true }),
+      );
+      expect(
+         await screen.findByRole("button", { name: "View by_category" }),
+      ).toBeDefined();
    });
 
    it("saves an edit into the browser and marks it saved", async () => {

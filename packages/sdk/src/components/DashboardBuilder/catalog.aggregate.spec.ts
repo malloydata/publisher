@@ -13,6 +13,7 @@ const REAL = String.raw`{"name":"s","schema":{"fields":[{"kind":"view","name":"k
 
 const MODEL = {
    modelPath: "notebooks/n.malloy",
+   modelInfo: JSON.stringify({ entries: [{ kind: "source", name: "s" }] }),
    sources: [
       {
          name: "s",

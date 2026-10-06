@@ -11,6 +11,15 @@ import {
    isDashboardModel,
 } from "./catalog";
 
+/** A `modelInfo` exporting these sources, and a named query beside them. */
+const infoOf = (...sources: string[]) =>
+   JSON.stringify({
+      entries: [
+         ...sources.map((name) => ({ kind: "source", name })),
+         { kind: "query", name: "a_named_query" },
+      ],
+   });
+
 /**
  * Shaped like the real response, including the two details that are easy to get
  * wrong from the type alone: annotations arrive RAW with their trailing newline,
@@ -18,6 +27,7 @@ import {
  */
 const MODEL: CompiledModel = {
    modelPath: "data_app.malloy",
+   modelInfo: infoOf("scoped_orders"),
    sources: [
       {
          name: "scoped_orders",
@@ -127,15 +137,64 @@ describe("buildCatalog", () => {
       expect(catalog.sources).toEqual([]);
    });
 
-   // An imported source appears in every model that imports it. The first one
-   // to declare it wins, so a preview runs against the file that defines it.
-   it("keeps one entry for a source that several models carry", () => {
+   // `sources` also lists names a model only imports; an import of one of
+   // those from the importer fails to compile.
+   it("credits a source to the model that exports it, not an importer listed first", () => {
+      const importer = {
+         ...MODEL,
+         modelPath: "data_app.malloy",
+         modelInfo: infoOf("scoped_orders"),
+         sources: [
+            ...MODEL.sources!,
+            { name: "order_items", views: [{ name: "by_category" }] },
+         ],
+      } as CompiledModel;
+      const exporter = {
+         modelPath: "storefront.malloy",
+         modelInfo: infoOf("order_items"),
+         sources: [{ name: "order_items", views: [{ name: "by_category" }] }],
+      } as CompiledModel;
+      const catalog = buildCatalog([importer, exporter]);
+      expect(catalog.sources.map((s) => [s.name, s.modelPath]).sort()).toEqual([
+         ["order_items", "storefront.malloy"],
+         ["scoped_orders", "data_app.malloy"],
+      ]);
+   });
+
+   it("lists every model that exports a source, the first as its modelPath", () => {
       const catalog = buildCatalog([
          MODEL,
          { ...MODEL, modelPath: "storefront.malloy" } as CompiledModel,
       ]);
       expect(catalog.sources).toHaveLength(1);
       expect(catalog.sources[0].modelPath).toBe("data_app.malloy");
+      expect(catalog.sources[0].exporters).toEqual([
+         "data_app.malloy",
+         "storefront.malloy",
+      ]);
+   });
+
+   // Falling back to the first model that lists a source would bring the
+   // unreachable import back.
+   it("offers nothing from a model with no modelInfo, or one that does not parse", () => {
+      expect(
+         buildCatalog([{ ...MODEL, modelInfo: undefined } as CompiledModel])
+            .sources,
+      ).toEqual([]);
+      expect(
+         buildCatalog([{ ...MODEL, modelInfo: "{not json" } as CompiledModel])
+            .sources,
+      ).toEqual([]);
+   });
+
+   it("does not make a source of a named query", () => {
+      const catalog = buildCatalog([
+         {
+            ...MODEL,
+            sources: [...MODEL.sources!, { name: "a_named_query" }],
+         } as CompiledModel,
+      ]);
+      expect(catalog.sources.map((s) => s.name)).toEqual(["scoped_orders"]);
    });
 });
 
@@ -144,6 +203,7 @@ describe("filterableFields", () => {
    // what people filter on, and a view is not a field at all.
    const model: CompiledModel = {
       modelPath: "storefront.malloy",
+      modelInfo: infoOf("order_items"),
       sources: [{ name: "order_items" }],
       sourceInfos: [
          JSON.stringify({

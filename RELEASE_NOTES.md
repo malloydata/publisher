@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
+
+Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
+
+Public SDK surface: `buildCatalog` credits a source only to a model whose `modelInfo` exports it, so **a model without `modelInfo` now contributes no catalog sources**, and a host passing a hand-built `PackageCatalog` should set `modelPath` to the exporting model. `CatalogSource` gains an optional `exporters` (every model that exports the source; absent means `[modelPath]`), and `NewTile` carries it. A document held as text (`DashboardEditor textSource`) is offered only its run model's sources and adds no import.
+
 ## [Unreleased] - Compile returns the document it describes
 
 `POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.

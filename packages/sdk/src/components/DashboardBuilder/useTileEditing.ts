@@ -21,6 +21,7 @@ export function useTileEditing({
    notebook,
    columns,
    modelPath,
+   textHeld,
    selectTile,
    deselectTile,
 }: {
@@ -29,6 +30,8 @@ export function useTileEditing({
    columns: number;
    /** The document's file within the package, which a tile's import is relative to. */
    modelPath: string | undefined;
+   /** The document is held as text: it has no `import`, so a tile's source is the run model's and nothing is imported. */
+   textHeld: boolean;
    selectTile: (index: number) => void;
    deselectTile: () => void;
 }) {
@@ -51,12 +54,13 @@ export function useTileEditing({
       setAddingTile(false);
       editor.update((draft) => {
          // A source the file cannot see yet comes in by name, with the tile.
-         if (tile.modelPath)
+         if (tile.modelPath && !textHeld)
             draft.imports = withSource(
                draft,
                tile.base,
                tile.modelPath,
-               ...(modelPath ? [modelPath] : []),
+               modelPath,
+               tile.exporters ?? [tile.modelPath],
             );
          let extension = draft.sources.find((s) => s.base === tile.base);
          if (!extension) {

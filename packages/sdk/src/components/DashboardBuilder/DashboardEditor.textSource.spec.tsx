@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+   cleanup,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+   within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    clearCache,
@@ -70,11 +77,14 @@ const executeQueryModel = mock(
       _body: { query?: string; queryName?: string },
    ) => pending(),
 );
-const getModel = mock(() => pending());
+const getModel = mock((..._args: unknown[]): Promise<unknown> => pending());
+const listModels = mock(
+   (..._args: unknown[]): Promise<unknown> => Promise.resolve({ data: [] }),
+);
 
 mockServerProvider(
    {
-      models: { compileModelSource, executeQueryModel, getModel },
+      models: { compileModelSource, executeQueryModel, getModel, listModels },
       dashboards: {
          getDashboard: mock(() => pending()),
          listDashboards: mock(() => Promise.resolve({ data: [] })),
@@ -146,6 +156,7 @@ beforeEach(() => {
    compileModelSource.mockClear();
    executeQueryModel.mockClear();
    getModel.mockClear();
+   listModels.mockClear();
 });
 
 describe("DashboardEditor in text-source mode", () => {
@@ -289,6 +300,62 @@ describe("DashboardEditor in text-source mode", () => {
       await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
       const ran = executeQueryModel.mock.calls.map((call) => call[3].query);
       expect(ran.some((query) => query?.includes("gated"))).toBe(false);
+   });
+
+   // A text-held document has no `import`, so it can only name what its run model exports.
+   it("offers only the run model's sources for a new tile, and writes no import for it", async () => {
+      const exporting = (name: string) => ({
+         modelPath: `models/${name}.malloy`,
+         modelInfo: JSON.stringify({ entries: [{ kind: "source", name }] }),
+         sources: [{ name, views: [{ name: "by_x" }] }],
+      });
+      listModels.mockImplementation(() =>
+         Promise.resolve({
+            data: [
+               { path: "models/other.malloy" },
+               { path: "models/orders.malloy" },
+            ],
+         }),
+      );
+      getModel.mockImplementation((_env, _pkg, path) =>
+         Promise.resolve({
+            data: exporting(String(path).replace(/^models\/|\.malloy$/g, "")),
+         }),
+      );
+      try {
+         const storage = documentStore();
+         mount(storage);
+
+         fireEvent.click(
+            await screen.findByRole("button", { name: "Add tile" }),
+         );
+         fireEvent.mouseDown(
+            await screen.findByRole("combobox", { name: /Source/ }),
+         );
+         const options = within(screen.getByRole("listbox")).getAllByRole(
+            "option",
+         );
+         expect(options.map((o) => o.textContent)).toEqual(["orders"]);
+         fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+         fireEvent.click(await screen.findByLabelText("View by_x"));
+         fireEvent.click(
+            screen.getByRole("button", { name: "Add tile", hidden: false }),
+         );
+         fireEvent.click(
+            screen.getByRole("button", { name: "Save", hidden: true }),
+         );
+
+         await waitFor(() =>
+            expect(
+               storage.documents.get("env/pkg/dashboards/ops.malloy"),
+            ).toContain("by_x_tile"),
+         );
+         const saved = storage.documents.get("env/pkg/dashboards/ops.malloy")!;
+         expect(saved).not.toMatch(/^import /m);
+      } finally {
+         listModels.mockImplementation(() => Promise.resolve({ data: [] }));
+         getModel.mockImplementation(() => pending());
+      }
    });
 
    it("turns Add filter off, since the document holds no given: of its own", async () => {
