@@ -117,8 +117,10 @@ gate over _who is asking_. Those gates are enforced against the complete source 
 weakened by curation: a hidden source keeps its gate.
 
 The boundary applies to the **query** surface (`getQueryResults` and the MCP query tool). It does
-**not** gate `/compile` (or `compile_model`): compile is the authoring loop, so a curated package
-stays authorable. The consequence is that `/compile` can reveal a hidden source's schema, and with
+**not** gate plain `/compile` (or `compile_model`) text: compile is the authoring loop, so a curated package
+stays authorable. A document compiled at scope `append` (text carrying a model-level `## artifact` tag) is
+the exception, because it is served and run: each cell and tile is held to the surface, so a document that
+compiles also runs. The consequence is that `/compile` can reveal a hidden source's schema, and with
 `includeSql` its SQL. That is by design. Use `#(authorize)` when the contents themselves must be
 protected rather than merely removed from discovery: a lock is truth-evaluated on `/compile`, so a
 refused caller gets a 403 and no SQL. `#(access_filter)` is not,

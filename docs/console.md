@@ -35,14 +35,14 @@ The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Consol
 
 ## Navigating
 
-- **Left sidebar** — **Home**, then an **Environments** list, and a **Settings** section
-  (Visualization theme). Pick an environment to see its packages; pick a package to see its models,
-  notebooks, dashboards, and data apps.
-- **Breadcrumbs** across the top track where you are: `environment › package › file`.
-- **Theme toggle** (top-right) switches light/dark when the deployment allows it (see
-  [theming.md](theming.md)).
-- **Footer links** jump to the Malloy docs, these Publisher docs, and the live **Publisher API**
-  explorer (see [api-overview.md](api-overview.md)).
+- **Left sidebar** — **Home**, then an **Environments** list. Pick an environment to see its
+  packages; pick a package to see its models, notebooks, dashboards, and data apps.
+- **Breadcrumbs** across the top track where you are: `environment › package › file`. They are the
+  way back up; pages carry no separate "Back to" link.
+- **Sidebar footer** holds the things about the Console rather than the data in it: **Theme** (the
+  visualization theme editor), the light/dark **mode toggle** when the deployment allows it (see
+  [theming.md](theming.md)), and links to the Malloy docs, these Publisher docs, and the live
+  **Publisher API** explorer (see [api-overview.md](api-overview.md)).
 
 ![The Publisher Console showing the storefront package under the examples environment](screenshots/console.png)
 
@@ -76,14 +76,16 @@ is a Console convenience.
   none; the folder path appears beside it only to tell apart two files with the same name, and a
   `.malloynb` keeps its path. A notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
-- **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
-  a grid you rearrange directly: drag a tile to move it, set its
-  width, view, label and chart from its own menu, add filters from the strip above. Titles, descriptions
-  and text tiles are edited where they are shown: click one and type, with no edit icon to find
-  first. A **text tile** holds markdown (a heading, a paragraph, a list) and is added from the same
-  dialog as a query tile. The classic dashboard-building feel, over a file you can still read and
-  review. **Save** writes the `dashboards/*.malloy` back into the package at once, then offers
-  **View change** (the diff, read-only) and **Undo save**
+- **Build a dashboard by dragging** — every dashboard page has an **Edit** button in the header,
+  beside the breadcrumbs, that turns it into a grid you rearrange directly: drag a tile's card to
+  move it, drag its right edge to set its width (it snaps to whole columns), and set its chart and
+  drill from its **⋯** menu; add filters with **+ Filter** on the filter row under the description.
+  Titles, descriptions and text tiles are edited where they are shown: click one (a small pencil
+  follows the text) and type. A **text tile** holds markdown (a heading, a paragraph, a list) and is
+  added from the same dialog as a query tile. The classic dashboard-building feel, over a file you
+  can still read and review. **Save** writes the `dashboards/*.malloy` back into the package and the
+  builder stays open; in the builder the header button reads **View** and returns to the read-only
+  page, asking first if edits are unsaved
   ([dashboards.md](dashboards.md#editing-in-the-console)).
 - **Create a dashboard or notebook** — the package page's **New** menu takes a type (Dashboard or Notebook), a
   model, a source and its view (one select), and a title, writes the file into the package (it never overwrites an existing one) and opens it in
@@ -107,17 +109,17 @@ is a Console convenience.
   a view that already carries a map chart. The picker is disabled, with the reason, for a tile whose
   chart line the builder does not model (such as `# bar_chart { size=spark }`), and that line is left
   alone. Tiles are dragged into a new order.
-  **Settings** holds **Show as** (Dashboard or Notebook, which is a tag edit on the same file, and a
-  notebook has no grid width) and the file's **Sources**: the imports are chips you remove and an
-  **Add a source** picker you add from, and a source a tile reads cannot be removed.
-  A cell-format notebook (the older shape, with `(markdown)` cells) opens already converted to this
-  layout and unsaved: **Save** writes the converted file, and **Undo save** puts the original text
-  back. Nothing is written until you save.
-  **Save** writes at once, with no review step; the caption under the button says where
-  (the package file, this browser, or where the host app keeps it). A notice then offers
-  **View change**, the file's diff read-only, and **Undo save**, which writes the file back as it was
-  before that save. The notice stays until the next edit or save. **Close** leaves, and asks first
-  when edits are unsaved. On a server that does not take writes there is no Save; while the server's answer is still loading, the caption under the button says so. A save whose text
+  A document stays the kind it was created as. Adding a tile offers every source the package
+  publishes; when the file cannot already see the chosen source, the builder adds a named import
+  for it (into that model's existing `import { … }` line when there is one).
+  A cell-format notebook (the older shape, with `run:` and `(markdown)` cells) opens already
+  converted to this layout and unsaved. Nothing is written until you save, and the first **Save**
+  asks before it rewrites the file in the tile layout: the builder cannot take that back, though
+  the file's history in your repository can. **Cancel** writes nothing.
+  **Save** (or Cmd/Ctrl+S) writes at once, with no review step, and the builder stays open; the
+  button reads **Saved**, greyed, until the next edit, and its tooltip says where it writes (the
+  package file, this browser, or where the host app keeps it). **View** in the header leaves, and
+  asks first when edits are unsaved. On a server that does not take writes there is no Save. A save whose text
   declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400, so
   the builder opens such a file but cannot save it from the Console; gates live in the model file.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;

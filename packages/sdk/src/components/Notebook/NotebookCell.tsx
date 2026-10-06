@@ -1,19 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import CloseIcon from "@mui/icons-material/Close";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CodeIcon from "@mui/icons-material/Code";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
    Box,
    CircularProgress,
-   Dialog,
-   DialogContent,
-   DialogTitle,
    IconButton,
    LinearProgress,
    Snackbar,
@@ -25,26 +20,23 @@ import React, { useEffect, useId, useState } from "react";
 import type { Given } from "../../client";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
+import { ErrorDetailAlert } from "../ApiErrorDisplay";
+import { AppDialog } from "../AppDialog";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import { FloatingIconButton } from "../FloatingIconButton";
 import { Prose } from "../Prose";
 import type { NavigationClick } from "../click_helper";
 import { useDrill, type DrillNavigation } from "../drill";
-import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard } from "../styles";
+import { CleanMetricCard, MONO_FONT_FAMILY } from "../styles";
 import { cellCaption, definitionSummary, stripProse } from "./cellKind";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
-   expandCodeCell?: boolean;
-   hideCodeCellIcon?: boolean;
-   expandEmbedding?: boolean;
-   hideEmbeddingIcon?: boolean;
    resourceUri: string;
    /** Whether this is the notebook's first markdown cell, which carries the copy-link icon. */
    showCopyLink?: boolean;
@@ -99,8 +91,6 @@ interface NotebookCellProps {
 
 export function NotebookCell({
    cell,
-   hideCodeCellIcon,
-   hideEmbeddingIcon,
    resourceUri,
    showCopyLink,
    maxResultSize,
@@ -114,13 +104,9 @@ export function NotebookCell({
    givenSpecs,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
-   const [embeddingDialogOpen, setEmbeddingDialogOpen] =
-      React.useState<boolean>(false);
    const [resultsDialogOpen, setResultsDialogOpen] =
       React.useState<boolean>(false);
    const [highlightedMalloyCode, setHighlightedMalloyCode] =
-      React.useState<string>();
-   const [highlightedEmbedCode, setHighlightedEmbedCode] =
       React.useState<string>();
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
@@ -233,11 +219,6 @@ export function NotebookCell({
       [cell.newSources, resourceUri, givenSpecs],
    );
 
-   const queryResultCodeSnippet = createEmbeddedQueryResult({
-      query: cell.text,
-      resourceUri: resourceUri,
-   });
-
    const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
@@ -245,12 +226,6 @@ export function NotebookCell({
             setHighlightedMalloyCode(code);
          });
    }, [cell, mode]);
-
-   useEffect(() => {
-      highlight(queryResultCodeSnippet, "typescript", mode).then((code) => {
-         setHighlightedEmbedCode(code);
-      });
-   }, [queryResultCodeSnippet, mode]);
 
    const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
    const header = cell.markdown ? (
@@ -268,54 +243,38 @@ export function NotebookCell({
    };
 
    const codeDialog = (
-      <Dialog
+      <AppDialog
          open={codeDialogOpen}
          onClose={() => setCodeDialogOpen(false)}
+         title="Malloy code"
          maxWidth="lg"
-         fullWidth
+         showClose
       >
-         <DialogTitle
-            sx={{
-               display: "flex",
-               justifyContent: "space-between",
-               alignItems: "center",
-            }}
+         <Box
+            sx={(theme) => ({
+               border: `1px solid ${theme.palette.divider}`,
+               borderRadius: "8px",
+               padding: "16px",
+               fontFamily: MONO_FONT_FAMILY,
+               fontSize: "14px",
+               lineHeight: "1.5",
+               overflow: "auto",
+               maxHeight: "70vh",
+               backgroundColor: theme.palette.background.paper,
+               color: theme.palette.text.primary,
+            })}
          >
-            Malloy Code
-            <IconButton
-               onClick={() => setCodeDialogOpen(false)}
-               sx={{ color: "text.secondary" }}
-            >
-               <CloseIcon />
-            </IconButton>
-         </DialogTitle>
-         <DialogContent>
-            <Box
-               sx={(theme) => ({
-                  border: `1px solid ${theme.palette.divider}`,
-                  borderRadius: "8px",
-                  padding: "16px",
-                  fontFamily: "monospace",
-                  fontSize: "14px",
-                  lineHeight: "1.5",
-                  overflow: "auto",
-                  maxHeight: "70vh",
-                  backgroundColor: theme.palette.background.paper,
-                  color: theme.palette.text.primary,
-               })}
-            >
-               <pre
-                  className="code-display"
-                  style={{
-                     margin: 0,
-                  }}
-                  dangerouslySetInnerHTML={{
-                     __html: highlightedMalloyCode,
-                  }}
-               />
-            </Box>
-         </DialogContent>
-      </Dialog>
+            <pre
+               className="code-display"
+               style={{
+                  margin: 0,
+               }}
+               dangerouslySetInnerHTML={{
+                  __html: highlightedMalloyCode,
+               }}
+            />
+         </Box>
+      </AppDialog>
    );
 
    return (
@@ -331,16 +290,14 @@ export function NotebookCell({
                      <Prose variant="document" links={links}>
                         {cell.text}
                      </Prose>
-                     <Tooltip title="Click to copy link">
-                        <LinkOutlinedIcon
-                           sx={{
-                              fontSize: "24px",
-                              color: "text.secondary",
-                              cursor: "pointer",
-                              marginTop: "26px",
-                           }}
+                     <Tooltip title="Copy link">
+                        <IconButton
+                           aria-label="Copy link"
                            onClick={copyToClipboard}
-                        />
+                           sx={{ color: "text.secondary", mt: "18px" }}
+                        >
+                           <LinkOutlinedIcon sx={{ fontSize: "24px" }} />
+                        </IconButton>
                      </Tooltip>
                   </Stack>
                ) : (
@@ -374,7 +331,7 @@ export function NotebookCell({
                   border: 0,
                   background: "none",
                   cursor: "pointer",
-                  fontFamily: "monospace",
+                  fontFamily: MONO_FONT_FAMILY,
                   fontSize: "13px",
                   color: "text.secondary",
                }}
@@ -413,9 +370,7 @@ export function NotebookCell({
                   {caption}
                </Typography>
             )}
-            {(!hideCodeCellIcon ||
-               (!hideEmbeddingIcon && cell.result) ||
-               (cell.newSources && cell.newSources.length > 0)) && (
+            {cell.newSources && cell.newSources.length > 0 && (
                <Stack
                   sx={{
                      flexDirection: "column",
@@ -423,48 +378,46 @@ export function NotebookCell({
                      marginBottom: "2px",
                   }}
                >
-                  {cell.newSources && cell.newSources.length > 0 && (
-                     <CleanMetricCard
+                  <CleanMetricCard
+                     sx={{
+                        position: "relative",
+                        padding: "0",
+                     }}
+                  >
+                     <Box
                         sx={{
-                           position: "relative",
-                           padding: "0",
+                           display: "flex",
+                           alignItems: "center",
+                           justifyContent: "space-between",
+                           paddingLeft: "24px",
+                           paddingRight: "8px",
                         }}
                      >
-                        <Box
-                           sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              paddingLeft: "24px",
-                              paddingRight: "8px",
-                           }}
-                        >
-                           {/* This shouldn't be needed but there's a compiler bug */}
-                           {highlightedMalloyCode && (
-                              <span
-                                 dangerouslySetInnerHTML={{
-                                    __html: highlightedMalloyCode,
-                                 }}
-                                 style={{
-                                    fontFamily: "monospace",
-                                    fontSize: "14px",
-                                    flex: 1,
-                                    marginRight: "8px",
-                                 }}
-                              />
-                           )}
-                           {hasValidImport && (
-                              <FloatingIconButton
-                                 aria-label="Data sources"
-                                 sx={{ flexShrink: 0 }}
-                                 onClick={() => setSourcesDialogOpen(true)}
-                              >
-                                 <SearchIcon />
-                              </FloatingIconButton>
-                           )}
-                        </Box>
-                     </CleanMetricCard>
-                  )}
+                        {/* This shouldn't be needed but there's a compiler bug */}
+                        {highlightedMalloyCode && (
+                           <span
+                              dangerouslySetInnerHTML={{
+                                 __html: highlightedMalloyCode,
+                              }}
+                              style={{
+                                 fontFamily: MONO_FONT_FAMILY,
+                                 fontSize: "14px",
+                                 flex: 1,
+                                 marginRight: "8px",
+                              }}
+                           />
+                        )}
+                        {hasValidImport && (
+                           <FloatingIconButton
+                              aria-label="Data sources"
+                              sx={{ flexShrink: 0 }}
+                              onClick={() => setSourcesDialogOpen(true)}
+                           >
+                              <SearchIcon />
+                           </FloatingIconButton>
+                        )}
+                     </Box>
+                  </CleanMetricCard>
                </Stack>
             )}
 
@@ -481,69 +434,6 @@ export function NotebookCell({
             />
 
             {codeDialog}
-            {/* Embedding Dialog */}
-            <Dialog
-               open={embeddingDialogOpen}
-               onClose={() => setEmbeddingDialogOpen(false)}
-               maxWidth="lg"
-               fullWidth
-            >
-               <DialogTitle
-                  sx={{
-                     display: "flex",
-                     justifyContent: "space-between",
-                     alignItems: "center",
-                  }}
-               >
-                  Embeddable Code
-                  <IconButton
-                     onClick={() => setEmbeddingDialogOpen(false)}
-                     sx={{ color: "text.secondary" }}
-                  >
-                     <CloseIcon />
-                  </IconButton>
-               </DialogTitle>
-               <DialogContent>
-                  <Stack
-                     sx={{
-                        flexDirection: "row",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
-                     }}
-                  >
-                     <Typography
-                        component="div"
-                        sx={{
-                           fontSize: "12px",
-                           fontFamily: "monospace",
-                           "& .line": { textWrap: "wrap" },
-                           flex: 1,
-                        }}
-                        dangerouslySetInnerHTML={{
-                           __html: highlightedEmbedCode,
-                        }}
-                     />
-                     <Tooltip title="Copy Embeddable Code">
-                        <IconButton
-                           sx={{
-                              width: "24px",
-                              height: "24px",
-                              marginLeft: "8px",
-                              color: "text.secondary",
-                           }}
-                           onClick={() => {
-                              navigator.clipboard.writeText(
-                                 queryResultCodeSnippet,
-                              );
-                           }}
-                        >
-                           <ContentCopyIcon />
-                        </IconButton>
-                     </Tooltip>
-                  </Stack>
-               </DialogContent>
-            </Dialog>
-
             {/* Results Dialog */}
             <ResultsDialog
                open={resultsDialogOpen}
@@ -575,28 +465,15 @@ export function NotebookCell({
                )}
 
             {!cell.result && cell.error && (
-               <CleanMetricCard sx={{ p: 2 }}>
-                  <Typography variant="body2" sx={{ color: "error.main" }}>
-                     This cell could not be run.
-                  </Typography>
-                  <Typography
-                     variant="body2"
-                     component="pre"
-                     sx={{
-                        color: "text.secondary",
-                        whiteSpace: "pre-wrap",
-                        m: 0,
-                        mt: 1,
-                     }}
-                  >
-                     {cell.error}
-                  </Typography>
-               </CleanMetricCard>
+               <ErrorDetailAlert
+                  summary="This cell could not be run."
+                  detail={cell.error}
+               />
             )}
 
             {cell.result && pendingRerun && (
                <LinearProgress
-                  aria-label="a re-run is pending"
+                  aria-label="Re-run pending"
                   sx={{ mb: 1, height: 2, borderRadius: 1 }}
                />
             )}
@@ -641,17 +518,15 @@ export function NotebookCell({
                         zIndex: 2,
                      }}
                   >
-                     {!hideCodeCellIcon && (
-                        <FloatingIconButton
-                           aria-label="Malloy code"
-                           onClick={(e) => {
-                              e.stopPropagation();
-                              setCodeDialogOpen(true);
-                           }}
-                        >
-                           <CodeIcon />
-                        </FloatingIconButton>
-                     )}
+                     <FloatingIconButton
+                        aria-label="Malloy code"
+                        onClick={(e) => {
+                           e.stopPropagation();
+                           setCodeDialogOpen(true);
+                        }}
+                     >
+                        <CodeIcon />
+                     </FloatingIconButton>
                      <FloatingIconButton
                         aria-label="Expand results"
                         onClick={() => setResultsDialogOpen(true)}

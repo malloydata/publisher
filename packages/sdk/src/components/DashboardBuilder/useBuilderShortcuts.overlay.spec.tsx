@@ -63,3 +63,35 @@ describe("useBuilderShortcuts: save inside a dialog or popover", () => {
       expect(onSave).toHaveBeenCalledTimes(1);
    });
 });
+
+describe("useBuilderShortcuts: undo and redo while a window is open", () => {
+   function UndoHarness({ onUndo }: { onUndo: () => void }) {
+      useBuilderShortcuts({
+         undo: onUndo,
+         redo: onUndo,
+         escape: () => {},
+      });
+      return null;
+   }
+
+   it("does not undo an edit behind a dialog", () => {
+      const onUndo = mock(() => {});
+      render(<UndoHarness onUndo={onUndo} />);
+      const host = document.createElement("div");
+      host.setAttribute("role", "dialog");
+      const button = document.createElement("button");
+      host.appendChild(button);
+      document.body.appendChild(host);
+      button.focus();
+      fireEvent.keyDown(button, { key: "z", ...mod });
+      fireEvent.keyDown(button, { key: "z", shiftKey: true, ...mod });
+      expect(onUndo).not.toHaveBeenCalled();
+   });
+
+   it("undoes from the page", () => {
+      const onUndo = mock(() => {});
+      render(<UndoHarness onUndo={onUndo} />);
+      fireEvent.keyDown(document.body, { key: "z", ...mod });
+      expect(onUndo).toHaveBeenCalledTimes(1);
+   });
+});

@@ -125,9 +125,8 @@ import {
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    buildDashboardManifest,
-   normalizeTileExpression,
+   compileTileGivens,
    readDashboardModelFacts,
-   type CompiledTileGivens,
    type DashboardManifest,
    type DashboardModelFacts,
 } from "./dashboard";
@@ -418,6 +417,29 @@ function declaredGivensPerCell(
    });
 }
 
+/** The `queryInfo` a plain cell gets from `anonymous_queries`, for a run compiled on its own on top of the model. */
+async function tileQueryInfo(
+   materializer: ModelMaterializer,
+   text: string,
+): Promise<Malloy.QueryInfo | undefined> {
+   try {
+      const def = (await materializer.extendModel(text).getModel())._modelDef;
+      const anonymous = modelInfoOf(def).anonymous_queries;
+      const last = anonymous?.[anonymous.length - 1];
+      const compiled = def.queryList[def.queryList.length - 1] as
+         | NamedQueryDef
+         | undefined;
+      return last && { ...last, name: compiled?.as || compiled?.name || "" };
+   } catch (error) {
+      // The cell still runs on its own; only its description is missing.
+      logger.warn("Could not describe a layout notebook tile's query", {
+         text,
+         error,
+      });
+      return undefined;
+   }
+}
+
 export interface RunnableNotebookCell {
    type: "code" | "markdown";
    /** Set on a served notebook's cells; a `.malloynb` cell has none. */
@@ -460,6 +482,8 @@ export interface RunnableNotebookCell {
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+   /** A layout tile's `queryInfo`, compiled on first read: its run is a string in the tag, so no `anonymous_queries` entry describes it. */
+   deriveQueryInfo?: () => Promise<Malloy.QueryInfo | undefined>;
 }
 
 /** What running one notebook cell answers; `kind` only on a served notebook's cell. */
@@ -669,6 +693,9 @@ export function bindingsAllowDegradeToLive(
  *  identity contract holds on the branch that never reaches the memo. */
 const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
    Object.freeze([]);
+
+/** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
+const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
 export class Model {
    private packageName: string;
@@ -2457,7 +2484,7 @@ export class Model {
                // convert HERE, on the base actually gated — a hidden one is a
                // 404, not a 403 naming it.
                if (error instanceof AccessDeniedError) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -2851,6 +2878,72 @@ export class Model {
    }
 
    /**
+    * The query boundary for the joins a document's own text writes, the same
+    * two checks the query route runs on a caller join: `text` read before
+    * compiling, then the compiled `runnable` once it exists. A document that
+    * passes both runs on the query route. A no-op when the boundary is inert.
+    */
+   public async assertDocumentJoinsQueryable(
+      text: string,
+      runnable?: { getPreparedQuery(): Promise<unknown> },
+   ): Promise<void> {
+      if (!runnable) {
+         await this.assertCallerJoinBasesEarly(text, {}, "boundary");
+         return;
+      }
+      await this.assertCallerJoinsQueryable(runnable as QueryMaterializer, {
+         kind: "query",
+         text,
+      });
+   }
+
+   /**
+    * The boundary's refusal for a gated name reached through an alias or a join,
+    * which the caller did not write. In a gated model its words are the generic
+    * sentence, since `No queryable source "<name>".` beside `Query target is not
+    * queryable.` would confirm the name is a real, locked source.
+    */
+   private refuseGatedNameAsBoundary(name: string): void {
+      try {
+         this.assertQueryBoundaryEarly(name, undefined, undefined);
+      } catch (error) {
+         if (
+            error instanceof NotQueryableError &&
+            !(error instanceof OffSurfaceError) &&
+            this.hasAnyAuthorizeNote()
+         ) {
+            throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
+         }
+         throw error;
+      }
+   }
+
+   /**
+    * Throws the generic 404 for `query` (with the document's `definitions`
+    * ahead of it) when a run target, or the base chain of a source the text
+    * declares, is not queryable, in a model where that 404 is the only answer:
+    * a hidden source, a hidden gated one and an absent one then read the same,
+    * so neither a compile problem nor a document that comes back confirms a
+    * name. An ungated model explains a hidden source already, so there the
+    * compile problem is shown. A no-op when the boundary is inert.
+    */
+   public assertTextNameVisible(query: string, definitions: string): void {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!this.hasAnyAuthorizeNote()) return;
+      const text = `${definitions}\n${query}`;
+      const queryable = (name: string): boolean =>
+         this.isCuratedSource(name) || this.derivesFromCurated(name, text);
+      if (
+         extractRunTargetSourceNames(text).every(queryable) &&
+         [...buildDerivationBaseMap(text).keys()].every(queryable)
+      ) {
+         return;
+      }
+      throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
+   }
+
+   /**
     * Decide, before compiling, what a caller-written join's TEXT reaches: the
     * boundary (`phase: "boundary"`) or every lock (`phase: "locks"`), so a
     * refused caller hears 404 or 403 rather than the compiler's opinion of a
@@ -2933,7 +3026,7 @@ export class Model {
                   error instanceof AccessDeniedError &&
                   !includeHiddenFilesAndSources
                ) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -4105,7 +4198,7 @@ export class Model {
                error instanceof AccessDeniedError &&
                !includeHiddenFilesAndSources
             ) {
-               this.assertQueryBoundaryEarly(source, undefined, undefined);
+               this.refuseGatedNameAsBoundary(source);
             }
             throw error;
          }
@@ -5023,45 +5116,12 @@ export class Model {
          // Discovery builds it again and reports the throw.
          return facts;
       }
-      const compiled = new Map<string, CompiledTileGivens>();
-      for (const tile of tiles) {
-         const key = normalizeTileExpression(tile);
-         if (compiled.has(key)) continue;
-         let prepared: {
-            _query?: {
-               givenUsage?: { id: string }[];
-               structRef?: unknown;
-            };
-            _modelDef?: ModelDef;
-         };
-         try {
-            prepared = (await materializer
-               .loadQuery(`run: ${tile}`)
-               .getPreparedQuery()) as typeof prepared;
-         } catch {
-            continue;
-         }
-         const usage = prepared._query?.givenUsage;
-         if (!usage) continue;
-         const registry =
-            prepared._modelDef?.givens ?? this.modelDef?.givens ?? {};
-         const reads = usage
-            .map((given) => registry[given.id]?.name)
-            .filter((name): name is string => name !== undefined);
-         const target = prepared._query?.structRef;
-         const sourceName =
-            typeof target === "string"
-               ? target
-               : (target as { as?: string; name?: string } | undefined)?.as ||
-                 (target as { name?: string } | undefined)?.name;
-         const gateReads = new Set<string>();
-         for (const expr of sourceName
-            ? (gateGivenSource(this.sources ?? [], sourceName) ?? [])
-            : []) {
-            for (const name of referencedGivenNames(expr)) gateReads.add(name);
-         }
-         compiled.set(key, { reads, gateReads: Array.from(gateReads) });
-      }
+      const compiled = await compileTileGivens(
+         tiles,
+         materializer,
+         this.modelDef?.givens,
+         (source) => gateGivenSource(this.sources ?? [], source),
+      );
       return { ...facts, compiledTileGivens: compiled };
    }
 
@@ -6220,13 +6280,17 @@ export class Model {
                continue;
             }
             const text = `run: ${tile.query}`;
+            let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
             cells.push({
                type: "code",
                kind: "query",
                text,
+               proseLines: [],
                runnable: materializer.loadQuery(text),
                modelMaterializer: materializer,
                modelDef,
+               deriveQueryInfo: () =>
+                  (queryInfo ??= tileQueryInfo(materializer, text)),
             });
          }
       }
@@ -8749,9 +8813,13 @@ export class Model {
       const shownCells = new Set<number>();
       for (const [index, cell] of cells.entries()) {
          const shown =
-            cell.queryInfo !== undefined &&
+            (cell.queryInfo !== undefined ||
+               cell.deriveQueryInfo !== undefined) &&
             (await this.showsCellQueryInfo(index, cell));
          if (shown) shownCells.add(index);
+         const queryInfo = shown
+            ? (cell.queryInfo ?? (await cell.deriveQueryInfo?.()))
+            : undefined;
          notebookCells.push({
             type: cell.type,
             kind: cell.kind,
@@ -8761,7 +8829,7 @@ export class Model {
             codeLine: cell.codeLine,
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
+            queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
          } as ApiNotebookCell);
       }
 
@@ -9705,9 +9773,11 @@ export class Model {
                            location: anonymousQuery.location,
                         } as Malloy.QueryInfo;
                      }
-                  } catch (_error) {
-                     // If we can't extract query info (e.g., no query in cell), that's okay
-                     // This can happen for cells that only define sources
+                  } catch (error) {
+                     // A cell that only defines sources has no query to describe, so this is routine.
+                     logger.debug("No query info for a .malloynb cell", {
+                        error,
+                     });
                   }
 
                   return {

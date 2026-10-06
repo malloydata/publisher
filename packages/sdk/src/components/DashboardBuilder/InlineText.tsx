@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, InputBase } from "@mui/material";
+import { usePublisherTheme } from "../../theme/ThemeContext";
+import { editableSx } from "./inlineEdit";
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useReportOpenDraft } from "./openDraft";
 
@@ -27,9 +29,10 @@ export function InlineText({
    ariaLabel: string;
    /** Called once per edit, with the new text, only when it differs from `value`. */
    onCommit: (next: string) => void;
-   /** Draws an empty value faintly, and only while its tile is hovered or focused. */
+   /** Hides an empty value until its tile is hovered or focused. */
    faintWhenEmpty?: boolean;
 }) {
+   const { theme } = usePublisherTheme();
    const [draft, setDraft] = useState<string | undefined>(undefined);
    // A cancelled edit unmounts the field, and a browser may report that as a blur.
    const cancelled = useRef(false);
@@ -49,7 +52,8 @@ export function InlineText({
    };
 
    if (draft === undefined) {
-      const faint = value === "" && faintWhenEmpty;
+      const empty = value === "";
+      const faint = empty && faintWhenEmpty;
       return (
          <Box
             component="button"
@@ -61,23 +65,25 @@ export function InlineText({
                event.preventDefault();
                open();
             }}
-            sx={{
-               all: "unset",
-               boxSizing: "border-box",
-               font: "inherit",
-               color: "inherit",
-               cursor: "text",
-               display: "inline-block",
-               maxWidth: "100%",
-               borderRadius: "2px",
-               opacity: faint ? 0 : 1,
-               fontStyle: faint ? "italic" : undefined,
-               "&:hover, &:focus-visible": {
-                  outline: "1px dashed currentColor",
+            sx={[
+               {
+                  all: "unset",
+                  boxSizing: "border-box",
+                  font: "inherit",
+                  color: "inherit",
+                  display: "inline-block",
+                  maxWidth: "100%",
+                  // An empty slot says what it is for, faintly; a tile's
+                  // own slot shows only while that tile is hovered.
+                  ...(empty && {
+                     fontStyle: "italic",
+                     opacity: faint ? 0 : 0.6,
+                  }),
                },
-            }}
+               editableSx(theme),
+            ]}
          >
-            {value === "" ? placeholder : value}
+            {empty ? placeholder : value}
          </Box>
       );
    }

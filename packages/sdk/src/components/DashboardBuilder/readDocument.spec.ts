@@ -955,3 +955,39 @@ describe("the compiler stays lazy", () => {
          expect(read(file)).not.toContain('import("@malloydata/malloy-tag")');
    });
 });
+
+describe("the kind of a document held as text", () => {
+   const { cases } = JSON.parse(
+      fs.readFileSync(
+         path.join(import.meta.dir, "testing/documentKindRule.json"),
+         "utf8",
+      ),
+   ) as { cases: { name: string; source: string; kind: string }[] };
+
+   // One case table for this reader and the server's `submittedTextKind`, whose spec reads the same file.
+   for (const { name, source, kind } of cases) {
+      it(`${name}: ${kind}`, async () => {
+         const result = await readDashboardDocument(source, undefined, true);
+         const notebook = readFailed(result)
+            ? result.legacyNotebook === true
+            : result.document.kind === "notebook";
+         expect(notebook).toBe(kind === "notebook");
+      });
+   }
+
+   it("still takes the folder's kind when the host has a folder", async () => {
+      const source = "## artifact { }\nrun: q -> { aggregate: c }\n";
+      const inNotebooks = await readDashboardDocument(
+         source,
+         "notebooks/x.malloy",
+      );
+      expect(readFailed(inNotebooks) && inNotebooks.legacyNotebook).toBe(true);
+      const inDashboards = await readDashboardDocument(
+         source,
+         "dashboards/x.malloy",
+      );
+      expect(
+         readFailed(inDashboards) && inDashboards.legacyNotebook,
+      ).toBeFalsy();
+   });
+});

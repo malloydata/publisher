@@ -264,8 +264,10 @@ removed, text blocks and the tag are rewritten, and everything else in the file 
 byte. A cell notebook opens converted and unsaved, and Save writes the conversion: each `run:`
 becomes a `view:` on a `<source>_tiles` extension appended to the file (a `query:` used by exactly
 one run is folded into its view), each prose note becomes a `##|(markdown) text_N` block, and
-definitions, imports, givens and comments stay where they were. Undo save puts the original text
-back. Write a cell notebook so it converts:
+definitions, imports, givens and comments stay where they were. The first Save asks before it
+rewrites the file ("Convert this notebook?"); Cancel writes nothing, and once saved the builder
+cannot undo the conversion, so the file's history in its repository is the way back. Write a cell
+notebook so it converts:
 
 - Every `run:` is `<source> -> <view or query body>` with a named source. An inline `extend` before
   the arrow, a source that is not a name, or a refinement (`q + { … }`) of a multi-stage query is

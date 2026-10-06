@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
    Autocomplete,
    Box,
@@ -18,6 +19,7 @@ import {
 } from "@mui/material";
 import { useMemo } from "react";
 import { titleCase, useFilterForm } from "./useFilterForm";
+import { dangerTextColor } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogField } from "./catalog";
 import {
@@ -283,7 +285,7 @@ export function FilterDialog({
                      : " · declared in this dashboard"}
                </>
             ) : (
-               "A control on the page, and the tiles it filters."
+               "A filter on the page, and the tiles it filters."
             )
          }
          actions={
@@ -291,11 +293,14 @@ export function FilterDialog({
                {editing && (
                   <Button
                      color="error"
+                     startIcon={<DeleteOutlineIcon />}
                      onClick={() => onRemove(shown.name)}
-                     aria-label={`Remove control ${shown.name}`}
-                     sx={{ mr: "auto" }}
+                     sx={(muiTheme) => ({
+                        mr: "auto",
+                        color: dangerTextColor(muiTheme),
+                     })}
                   >
-                     Remove from dashboard
+                     Remove filter
                   </Button>
                )}
                <Button onClick={onClose}>Cancel</Button>
@@ -342,7 +347,7 @@ export function FilterDialog({
                <TextField
                   select
                   size="small"
-                  label="Control"
+                  label="Filter"
                   value={source.name}
                   onChange={(event) => {
                      const picked = available.find(
@@ -397,7 +402,7 @@ export function FilterDialog({
                      placeholder={newName ? titleCase(newName) : ""}
                      value={label}
                      onChange={(event) => setLabel(event.target.value)}
-                     inputProps={{ "aria-label": "Control label" }}
+                     inputProps={{ "aria-label": "Filter label" }}
                      sx={{ flex: 1, minWidth: 160 }}
                   />
                )}
@@ -410,12 +415,12 @@ export function FilterDialog({
                   <TextField
                      select
                      size="small"
-                     label="Control"
+                     label="Filter kind"
                      value={kind}
                      onChange={(event) =>
                         pickKind(event.target.value as ControlKind)
                      }
-                     inputProps={{ "aria-label": "Kind of control" }}
+                     inputProps={{ "aria-label": "Filter kind" }}
                      slotProps={{
                         select: {
                            renderValue: (value) =>

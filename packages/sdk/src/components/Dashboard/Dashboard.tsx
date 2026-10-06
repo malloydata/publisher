@@ -6,7 +6,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillNavigation } from "../drill";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { DashboardView } from "./DashboardView";
 import type { DashboardEventHandler } from "./telemetry";
@@ -145,7 +145,7 @@ export function Dashboard({
       );
    }
    if (!isSuccess || !manifest) {
-      return <Loading text="Loading dashboard…" />;
+      return <Loading text={LOADING_COPY.opening("dashboard")} />;
    }
 
    return (

@@ -18,11 +18,11 @@ export type NotebookEditorProps = (
         notebookName: string;
      }
 ) &
-   Pick<DashboardEditorProps, "onExit" | "onEvent" | "onDirtyChange" | "path">;
+   Pick<DashboardEditorProps, "onEvent" | "onDirtyChange" | "onExit" | "path">;
 
 /** `DashboardEditor` opened on a notebook, under the name hosts already import. */
 export function NotebookEditor(props: NotebookEditorProps) {
-   const { onExit, onEvent, onDirtyChange, path } = props;
+   const { onEvent, onDirtyChange, onExit, path } = props;
    const target =
       "resourceUri" in props
          ? { resourceUri: props.resourceUri, dashboard: props.notebook }
@@ -35,9 +35,9 @@ export function NotebookEditor(props: NotebookEditorProps) {
       <DashboardEditor
          {...target}
          kind="notebook"
-         {...(onExit ? { onExit } : {})}
          {...(onEvent ? { onEvent } : {})}
          {...(onDirtyChange ? { onDirtyChange } : {})}
+         {...(onExit ? { onExit } : {})}
          {...(path !== undefined ? { path } : {})}
       />
    );

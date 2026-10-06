@@ -2,18 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
    encodeResourceUri,
    Notebook,
-   SecondaryButton,
    useGivenUrlParams,
    useNarrowScreen,
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import Box from "@mui/material/Box";
 import { useEffect } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface NotebookPageProps {
@@ -40,11 +36,9 @@ export default function NotebookPage({
    const onDrillNavigate = useDrillNavigate(environmentName, packageName);
    // Ordinary links inside the notebook's markdown, routed in-app.
    const navigate = useRouterClickHandler();
-   const goTo = useNavigate();
-   const { pathname } = useLocation();
    // A legacy `.malloynb` is never authored; the tag gate is the server listing only tagged notebooks, this is just a suffix check.
    const editable = notebookPath.endsWith(".malloy");
-   // Below 600px the editor steps aside: no Edit button, and no builder chunk to warm.
+   // Below 600px the editor steps aside: the header shows no Edit, and there is no builder chunk to warm.
    const narrow = useNarrowScreen();
 
    // Fetch the builder chunk (it carries the Malloy parser) while idle so Edit is a re-render, not a spinner.
@@ -61,23 +55,8 @@ export default function NotebookPage({
    }, [editable, narrow]);
 
    return (
-      <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
-         <BackLink
-            label={packageName}
-            href={`/${environmentName}/${packageName}`}
-            onClick={(event) =>
-               navigate(`/${environmentName}/${packageName}`, event)
-            }
-         />
-         {editable && !narrow && (
-            <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
-               <SecondaryButton
-                  label="Edit"
-                  icon={<EditOutlinedIcon />}
-                  onClick={() => goTo(`${pathname.replace(/\/$/, "")}/edit`)}
-               />
-            </Box>
-         )}
+      // The dashboard's width and edges, so a package's pages line up.
+      <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <Notebook
             resourceUri={encodeResourceUri({
                environmentName,

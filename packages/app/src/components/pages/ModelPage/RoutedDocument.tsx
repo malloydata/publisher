@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Loading, useDocumentLocation } from "@malloy-publisher/sdk";
+import {
+   Loading,
+   LOADING_COPY,
+   useDocumentLocation,
+} from "@malloy-publisher/sdk";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import DashboardPage from "../DashboardPage/DashboardPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
@@ -30,7 +34,7 @@ export default function RoutedDocument({
       routeKind,
       slug,
    );
-   if (!settled) return <Loading text="Opening..." />;
+   if (!settled) return <Loading text={LOADING_COPY.opening()} />;
    const kind = location?.kind ?? routeKind;
    if (edit)
       return (

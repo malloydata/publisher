@@ -15,13 +15,12 @@ import {
    registerPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
-import { saveChanges, undoSave } from "./helpers/save";
+import { saveChanges } from "./helpers/save";
 
 /**
  * A notebook is a one-column dashboard: authored in the dashboard builder,
- * saved at once with a way back, and read with no card around its tiles. A
- * notebook still in the cell format is converted when it is saved, and Undo
- * save puts the original text back.
+ * saved in place, and read with no card around its tiles. A notebook still in
+ * the cell format is converted when it is saved, once the writer confirms it.
  *
  * Both cases write into a throwaway copy of the storefront package.
  */
@@ -42,7 +41,7 @@ test.describe("layout notebooks", () => {
       await pe?.dispose();
    });
 
-   test("a new notebook takes a text tile and a query tile, an inline title, and reads with no card chrome; Undo save restores the file", async ({
+   test("a new notebook takes a text tile and a query tile, an inline title, and reads with no card chrome", async ({
       page,
       context,
    }) => {
@@ -53,7 +52,6 @@ test.describe("layout notebooks", () => {
          "Layout notebook",
       );
       const file = `notebooks/${slug}.malloy`;
-      const created = await pe.readSource(file);
 
       // A text tile, written where it is shown.
       await addTextTile(page);
@@ -112,13 +110,9 @@ test.describe("layout notebooks", () => {
       );
       expect(borders.every((style) => style === "none")).toBe(true);
       await reader.close();
-
-      // Undo save writes the file back as it was created.
-      await undoSave(page);
-      expect(await pe.readSource(file)).toBe(created);
    });
 
-   test("a notebook in the cell format opens as a conversion, saves as a layout, and Undo save restores the original text", async ({
+   test("a notebook in the cell format opens as a conversion, asks before converting, and saves as a layout", async ({
       page,
       context,
    }) => {
@@ -133,12 +127,22 @@ test.describe("layout notebooks", () => {
          ),
       ).toBeVisible();
       // Nothing was edited, and Save is already on: the conversion is the change.
-      await expect(
-         page.getByRole("button", { name: "Save changes" }),
-      ).toBeEnabled();
+      const save = page.getByRole("button", { name: "Save", exact: true });
+      await expect(save).toBeEnabled();
       await expect(queryTiles(page)).toHaveCount(3, { timeout: 60_000 });
 
-      await saveChanges(page);
+      // The first save asks, because the builder cannot take a conversion back.
+      await save.click();
+      const confirm = page.getByRole("dialog", {
+         name: "Convert this notebook?",
+      });
+      await expect(confirm).toBeVisible();
+      await confirm
+         .getByRole("button", { name: "Convert and save", exact: true })
+         .click();
+      await expect(
+         page.getByRole("button", { name: "Saved", exact: true }),
+      ).toBeVisible({ timeout: 30_000 });
       const converted = await pe.readSource(file);
       expect(converted).not.toBe(original);
       expect(converted).toContain("tiles=[");
@@ -152,9 +156,5 @@ test.describe("layout notebooks", () => {
       });
       await expect(reader.locator('[data-chrome="card"]')).toHaveCount(0);
       await reader.close();
-
-      // Byte for byte, not merely equivalent.
-      await undoSave(page);
-      expect(await pe.readSource(file)).toBe(original);
    });
 });

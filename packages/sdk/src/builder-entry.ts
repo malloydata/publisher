@@ -29,6 +29,7 @@ export type {
 export {
    DashboardEditor,
    type DashboardEditorProps,
+   type TextSourceOptions,
 } from "./components/DashboardBuilder/DashboardEditor";
 export type {
    SaveContext,

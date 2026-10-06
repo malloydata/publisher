@@ -20,7 +20,11 @@
  * minifiers leave alone.
  */
 
-import { blockSpans, markdownLines, textBlockOpener } from "./malloyText";
+import {
+   blockSpans,
+   markdownLines,
+   textBlockOpener,
+} from "../../utils/malloyText";
 import { loadMalloy } from "./loadMalloy";
 
 /** A half-open range of UTF-16 offsets into the source text. */
