@@ -140,6 +140,29 @@ const NO_PLAN_FACTS: ChainedPlanFacts = {
    aliasesBySourceName: {},
 };
 
+/**
+ * Derive {@link ChainedPlanFacts} from the compiled plan.
+ *
+ * This is the table→names map `Runtime.getBuildTargets()` returns as
+ * `target.sources` (malloydata/malloy#3029), derived here from the deprecated
+ * per-source plan with the publisher's own address recipe —
+ * `computeSourceEntityId` is pinned equal to `target.buildId` by
+ * `build_targets_address_equality.spec.ts`, so the groups are the same ones.
+ * Not a call to `getBuildTargets` yet, for one reason: `mkBuildTargets` renders
+ * every target's SQL while it plans, with no guard, so one persist source that
+ * cannot render — a free parameter, a given, refused on its own path — fails the
+ * call for the whole model, where this skips just that source. (The same eager
+ * render is why the chained build's transient model stays on `getBuildPlan`:
+ * its rebound parents are virtual sources, which cannot render without the
+ * `virtualMap` that call cannot take. See `buildDownstreamIntoStorage`.)
+ *
+ * When the builder moves to `getBuildTargets`, this is the one place the
+ * chained build reads plan facts from: per model, `runtime.getBuildTargets`
+ * → every `target.sources` name into `persistNames`, each target's names as one
+ * alias group. That move likely wants a core change first — a planning mode
+ * that reports an unrenderable source instead of throwing, and takes a
+ * `virtualMap` — or a pre-filter of the sources the eligibility gate refused.
+ */
 function chainedPlanFacts(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
