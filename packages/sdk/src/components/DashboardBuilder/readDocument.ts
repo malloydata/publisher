@@ -34,7 +34,7 @@ import {
    splitSourceLines,
    tagAnnotation,
    tileSteps,
-} from "./malloyText";
+} from "../../utils/malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -282,9 +282,11 @@ const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 export async function readDashboardDocument(
    sourceText: string,
    modelPath?: string,
+   /** A document the host keeps as text has no folder to take a kind from, so the layout decides. */
+   textHeld = false,
 ): Promise<ReadResult> {
    try {
-      return await readDocumentText(sourceText, modelPath);
+      return await readDocumentText(sourceText, modelPath, textHeld);
    } catch (error) {
       return {
          ok: false,
@@ -296,6 +298,7 @@ export async function readDashboardDocument(
 async function readDocumentText(
    sourceText: string,
    modelPath: string | undefined,
+   textHeld: boolean,
 ): Promise<ReadResult> {
    const { parseAnnotation } = await loadMalloyTag();
    const lines = splitSourceLines(sourceText);
@@ -330,10 +333,13 @@ async function readDocumentText(
    ]);
    const artifactTag = tag?.tag("artifact");
    const tagKind = artifactTag?.text("kind");
-   // The server's rule: a tag that names no kind takes the folder's.
+   // The server's rule: a tag that names no kind takes the folder's, and submitted text has none, so tiles or a grid width make it a dashboard.
+   const listsLayout =
+      artifactTag?.has("tiles") === true || tag?.tag("dashboard") !== undefined;
    const kind =
       tagKind === "notebook" ||
-      (tagKind !== "dashboard" && modelPath?.startsWith("notebooks/"))
+      (tagKind !== "dashboard" &&
+         (textHeld ? !listsLayout : modelPath?.startsWith("notebooks/")))
          ? ("notebook" as const)
          : undefined;
    const list = readTileList(artifactAt.text);

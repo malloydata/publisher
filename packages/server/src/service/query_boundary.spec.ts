@@ -1548,10 +1548,9 @@ source: locked is duckdb.sql("select 1 as id") extend {
             "source: y is base_locked extend {\n  measure: c is count()\n  view: hv is { aggregate: c }\n}\nrun: y -> hv",
          );
          expect(lockedAlias).not.toBeInstanceOf(OffSurfaceError);
-         // The caller's own word echoed back (`assertQueryBoundaryEarly`'s
-         // explicit-source branch), not the 403 the lock threw: a 404 that
-         // does not confirm which lock, if any, base_locked carries.
-         expect(lockedAlias.message).toBe('No queryable source "base_locked".');
+         // The generic sentence, the one `helper`'s alias gets: a sentence naming
+         // base_locked would tell it apart from an ungated hidden source.
+         expect(lockedAlias.message).toBe("Query target is not queryable.");
       } finally {
          await duckdb.close();
       }

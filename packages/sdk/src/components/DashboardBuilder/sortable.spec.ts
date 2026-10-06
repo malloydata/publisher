@@ -3,7 +3,7 @@
 
 import { PointerSensor } from "@dnd-kit/dom";
 import { describe, expect, it } from "bun:test";
-import { builderSensors } from "./sortable";
+import { builderSensors, NO_DRAG } from "./sortable";
 
 const preventActivation = PointerSensor.defaults.preventActivation as (
    event: PointerEvent,
@@ -18,6 +18,30 @@ const press = (target: Element, card: Element) =>
    });
 
 describe("builderSensors", () => {
+   it("never starts a move from a press on the resize edge or inside it", () => {
+      const card = document.createElement("div");
+      const edge = card.appendChild(document.createElement("div"));
+      edge.setAttribute(NO_DRAG, "");
+      const inner = edge.appendChild(document.createElement("span"));
+      const configured = builderSensors[0] as unknown as {
+         options: {
+            preventActivation: (
+               event: PointerEvent,
+               source: unknown,
+            ) => boolean;
+         };
+      };
+      const pressOn = (target: Element) =>
+         configured.options.preventActivation(
+            { target } as unknown as PointerEvent,
+            { element: card, handle: undefined },
+         );
+      expect(pressOn(edge)).toBe(true);
+      expect(pressOn(inner)).toBe(true);
+      // The card itself still drags.
+      expect(pressOn(card)).toBe(false);
+   });
+
    it("starts a drag from anywhere on the tile", () => {
       const card = document.createElement("div");
       const configured = builderSensors[0] as unknown as {

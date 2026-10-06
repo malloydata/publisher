@@ -102,6 +102,62 @@ describe("resolveTheme cascade", () => {
       expect(dark.valueColor).toBe("#f1f5f9");
       expect(light.pinnedBorder).toBe("1px solid #cbd5e1");
       expect(dark.pinnedBorder).toBe("1px solid #475569");
+      // Gridlines default to the axis colour; they are separate keys so a
+      // host can quieten the grid without touching the axis rule.
+      expect(light.gridline).toBe("#cbd5e1");
+      expect(dark.gridline).toBe("#475569");
+   });
+
+   it("the chrome colours are per-mode palette keys an operator can set", () => {
+      const layer: Theme = {
+         palette: {
+            border: { light: "#e5e7eb", dark: "#1f2937" },
+            cardBorder: { light: "#d1d5db", dark: "#374151" },
+            axis: { light: "#9ca3af", dark: "#6b7280" },
+            gridline: { light: "#f3f4f6", dark: "#111827" },
+            chartText: { light: "#4b5563", dark: "#d1d5db" },
+            value: { light: "#111111", dark: "#fafafa" },
+         },
+      };
+      const light = resolveTheme([layer], "light");
+      const dark = resolveTheme([layer], "dark");
+      expect(light.border).toBe("1px solid #e5e7eb");
+      expect(dark.border).toBe("1px solid #1f2937");
+      expect(light.cardBorder).toBe("1px solid #d1d5db");
+      expect(dark.cardBorder).toBe("1px solid #374151");
+      // The pinned table header's rule follows the card edge.
+      expect(light.pinnedBorder).toBe("1px solid #d1d5db");
+      expect(dark.pinnedBorder).toBe("1px solid #374151");
+      expect(light.axisFaint).toBe("#9ca3af");
+      expect(dark.axisFaint).toBe("#6b7280");
+      expect(light.gridline).toBe("#f3f4f6");
+      expect(dark.gridline).toBe("#111827");
+      expect(light.foreground).toBe("#4b5563");
+      expect(dark.foreground).toBe("#d1d5db");
+      expect(light.valueColor).toBe("#111111");
+      expect(dark.valueColor).toBe("#fafafa");
+   });
+
+   it("a chrome colour set only for light leaves dark on its default", () => {
+      const layer: Theme = {
+         palette: {
+            border: { light: "#e5e7eb" },
+            cardBorder: { light: "#d1d5db" },
+            axis: { light: "#9ca3af" },
+            gridline: { light: "#f3f4f6" },
+            chartText: { light: "#4b5563" },
+            value: { light: "#111111" },
+         },
+      };
+      const dark = resolveTheme([layer], "dark");
+      const unthemed = resolveTheme([], "dark");
+      expect(dark.border).toBe(unthemed.border);
+      expect(dark.cardBorder).toBe(unthemed.cardBorder);
+      expect(dark.pinnedBorder).toBe(unthemed.pinnedBorder);
+      expect(dark.axisFaint).toBe(unthemed.axisFaint);
+      expect(dark.gridline).toBe(unthemed.gridline);
+      expect(dark.foreground).toBe(unthemed.foreground);
+      expect(dark.valueColor).toBe(unthemed.valueColor);
    });
 
    it("drillLink is a link colour per mode, not a series colour", () => {
@@ -168,5 +224,22 @@ describe("resolveMode", () => {
 
    it("falls back to light when nothing is set", () => {
       expect(resolveMode(undefined, undefined, false)).toBe("light");
+   });
+});
+
+describe("resolveTheme series in dark mode", () => {
+   it("draws the default series as it always was", () => {
+      expect(resolveTheme([], "dark").series).toEqual(
+         resolveTheme([], "light").series,
+      );
+   });
+
+   it("lifts an operator's series colour too dark for the dark canvas", () => {
+      const dark = resolveTheme(
+         [{ palette: { series: ["#1a1a1a", "#60a5fa"] } }],
+         "dark",
+      );
+      expect(dark.series[0]).not.toBe("#1a1a1a");
+      expect(dark.series[1]).toBe("#60a5fa");
    });
 });

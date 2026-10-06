@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 
 /**
  * A copy of `value` to edit while a window is open, committed ONCE when it
- * closes, and only if something changed.
+ * closes, and only if something changed — or at once, through `apply`, for a
+ * change that should show while the window is open.
  *
  * Per-keystroke commits would put a document in the undo stack for every
  * letter typed into a title, and undo would then walk back through the word.
@@ -37,7 +38,19 @@ export function useDraft<T>(
          change(next);
          return next;
       });
+   /**
+    * Change the draft AND commit it at once, for a choice whose effect should
+    * show while the window is still open (a tile's chart). One choice, one
+    * history entry; the close then finds nothing left to commit.
+    */
+   const apply = (change: (draft: T) => void) => {
+      if (draft === undefined) return;
+      const next = structuredClone(draft);
+      change(next);
+      setDraft(next);
+      if (JSON.stringify(next) !== JSON.stringify(value)) onCommit(next);
+   };
    /** Drop the draft without committing: for an action that supersedes it. */
    const discard = () => setDraft(undefined);
-   return { draft, patch, close, discard };
+   return { draft, patch, apply, close, discard };
 }

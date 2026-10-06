@@ -4,23 +4,29 @@
 import type { Locator, Page } from "@playwright/test";
 
 /**
- * A real pointer drag from one grip onto another element: the sensors the
- * builders use only react to pointer events, so a synthetic drop would pass
- * without exercising the reorder at all.
+ * A real pointer drag of a tile, picked up by its card, onto another element:
+ * the sensors the builders use only react to pointer events, so a synthetic
+ * drop would pass without exercising the reorder at all. The whole card is the
+ * drag's activator (the grip is gone): a press on the card itself, rather
+ * than on a button, a link or a chart inside it, starts the move once the
+ * pointer travels a few pixels.
  */
-export async function dragGrip(
+export async function dragTile(
    page: Page,
-   grip: Locator,
+   tile: Locator,
    onto: Locator,
    where: "top" | "center" | "bottom" = "center",
 ): Promise<void> {
    await animationsDone(page);
-   await grip.scrollIntoViewIfNeeded();
-   const from = await grip.boundingBox();
+   await tile.scrollIntoViewIfNeeded();
+   const from = await tile.boundingBox();
    const target = await onto.boundingBox();
    if (!from || !target) throw new Error("drag endpoints are not on screen");
+   // The card's own top padding, inside its edge and above its title: the
+   // title is a button and the body may be a chart that takes the press, so
+   // the padding is the one place that is always the card.
    const startX = from.x + from.width / 2;
-   const startY = from.y + from.height / 2;
+   const startY = from.y + 8;
    const endX = target.x + Math.min(40, target.width / 2);
    const endY =
       where === "top"

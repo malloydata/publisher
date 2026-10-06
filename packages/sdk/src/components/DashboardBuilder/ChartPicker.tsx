@@ -88,6 +88,7 @@ export function ChartPicker({
    disabledReason,
    onOpen,
    onChange,
+   variant = "standard",
 }: {
    state: ChartState;
    /** The catalog's view this cell runs, when it is one the catalog knows. */
@@ -100,6 +101,8 @@ export function ChartPicker({
    /** The choices are being looked at, which is when a host may fetch what it needs to offer more. */
    onOpen?: () => void;
    onChange: (next: ChartState) => void;
+   /** The field's look: underlined in a compact menu, outlined beside a dialog's other fields. */
+   variant?: "standard" | "outlined";
 }) {
    const choices = chartChoices(view, state, viewStatus);
    const reasonId = useId();
@@ -107,7 +110,7 @@ export function ChartPicker({
       <TextField
          select
          size="small"
-         variant="standard"
+         variant={variant}
          label="Viz type"
          value={state}
          disabled={disabledReason !== undefined}

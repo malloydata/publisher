@@ -24,11 +24,10 @@ import { useId } from "react";
  * with the same padding every time — a text Cancel and a filled confirm, the
  * two roles `buttons.tsx` names.
  *
- * Three dialogs stay off it deliberately, and each needs something this does
- * not have: `ModelExplorerDialog` is `fullScreen`, and `RowsDialog` and
- * `MaterializationDetailDialog` title themselves with a node rather than a
- * string. Widening this for three callers would cost more than it saves —
- * but a fourth exception is a reason to widen it, not to hand-roll a fourth.
+ * `ModelExplorerDialog` stays off it deliberately: it is `fullScreen`. The
+ * title takes a node as well as a string, so a dialog that titles itself with
+ * more than text (`RowsDialog`, `MaterializationDetailDialog`) can move onto
+ * this rather than hand-roll its own close button and type.
  */
 export function AppDialog({
    open,
@@ -42,7 +41,8 @@ export function AppDialog({
 }: {
    open: boolean;
    onClose: () => void;
-   title: string;
+   /** The heading. A string in the common case; a node when it needs more. */
+   title: React.ReactNode;
    /** What the dialog is for, in a line. The page's description, in a box. */
    description?: React.ReactNode;
    maxWidth?: "xs" | "sm" | "md" | "lg" | false;
@@ -74,7 +74,8 @@ export function AppDialog({
                // The page heading's type, so a dialog reads as part of the same
                // application rather than as a system alert.
                fontSize: "1.25rem",
-               fontWeight: 600,
+               // Medium, not bold: a host that bans 600/700 gets its own weight.
+               fontWeight: "fontWeightMedium",
                letterSpacing: "-0.025em",
                lineHeight: 1.2,
             }}

