@@ -336,7 +336,11 @@ describe("PackageController.updatePackage explores validation", () => {
             },
          );
       const updatePackage = sinon.stub().resolves(mockPackage);
-      const environment = { installPackage, updatePackage };
+      const environment = {
+         peekPackage: () => undefined,
+         installPackage,
+         updatePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -384,7 +388,10 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const metadata = { name: "pkg", resource: "/pkg" };
       const _package = { getPackageMetadata: () => metadata };
       const getPackage = sinon.stub().resolves(_package);
-      const environment = { getPackage };
+      const environment = {
+         getPackage,
+         describePackageStatus: () => ({ serving: true, loading: false }),
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const environmentStore = {
          getEnvironment,
@@ -436,5 +443,137 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const { controller } = controllerWithIndex(undefined);
       const pkg = await controller.getPackage("env", "pkg", true);
       expect("embeddingIndex" in pkg).toBe(false);
+   });
+});
+
+describe("PackageController.updatePackage reinstall decision", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   const servedPackage = {
+      getPackageMetadata: () => ({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+      }),
+   };
+
+   function controllerWith(environment: object) {
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+      return {
+         controller: new PackageController(environmentStore),
+         addPackageToDatabase,
+      };
+   }
+
+   it("a PATCH whose location matches the installed one updates metadata without reinstalling", async () => {
+      // The orchestrator's post-build rebind carries the package's own location
+      // alongside the new manifestLocation. Nothing about the content changes
+      // under one URI, so this must not re-download and recompile the package.
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller, addPackageToDatabase } = controllerWith({
+         peekPackage: () => servedPackage,
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.called).toBe(false);
+      expect(updatePackage.calledOnce).toBe(true);
+      expect(addPackageToDatabase.calledOnce).toBe(true);
+   });
+
+   it("a PATCH with a different location reinstalls, applying the body inside the install", async () => {
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => servedPackage,
+         installPackage,
+         updatePackage,
+      });
+      const body = {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         description: "next",
+      };
+
+      await controller.updatePackage("env", "pkg", body);
+
+      expect(installPackage.calledOnce).toBe(true);
+      // The metadata rides with the install so both land under one lock hold;
+      // a separate update call is exactly the second lock acquisition that a
+      // queued delete could run between.
+      expect(installPackage.firstCall.args[3]).toEqual({ update: body });
+      expect(updatePackage.called).toBe(false);
+   });
+
+   it("a PATCH on a package not loaded here installs it", async () => {
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => undefined,
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(updatePackage.called).toBe(false);
+   });
+});
+
+describe("PackageController.addPackage manifestLocation", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("a publish with a location binds the body's manifestLocation as part of the install", async () => {
+      // The downloaded tree's publisher.json does not carry the manifest the
+      // orchestrator computed, so the body is the only place it arrives. Left
+      // unapplied, the package came up unbound and was fully reloaded by the
+      // next drift check.
+      const installPackage = sinon.stub().resolves({
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      });
+      const environment = { installPackage };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment: sinon.stub().resolves(environment),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: {
+            manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         },
+      });
    });
 });

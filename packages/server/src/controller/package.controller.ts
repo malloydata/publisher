@@ -96,6 +96,7 @@ export class PackageController {
          );
          const _package = await environment.getPackage(packageName, false);
          metadata = _package.getPackageMetadata();
+         metadata.status = environment.describePackageStatus(packageName);
       }
 
       // Enriched on BOTH paths. This sat below a `reload` early return, so
@@ -226,6 +227,15 @@ export class PackageController {
                      stagingPath,
                   ),
                (pkg) => formatPublishRejections(pkg),
+               // A publish that names a manifest binds it as part of the
+               // install, under the same lock. The downloaded tree's own
+               // publisher.json does not carry it (the orchestrator computes
+               // the manifest, not the author), so without this the package
+               // came up serving live and was fully reloaded moments later
+               // when the orchestrator's drift check rebound it.
+               body.manifestLocation !== undefined
+                  ? { update: { manifestLocation: body.manifestLocation } }
+                  : {},
             );
          } else {
             result = await environment.addPackage(packageName);
@@ -304,14 +314,31 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
+      // A `location` that matches the one the package was installed from is a
+      // metadata update, not a reinstall. A package version's content does not
+      // change under one URI, so re-downloading and recompiling it would only
+      // repeat work and hold two compiled copies for the duration; the rebind
+      // an orchestrator sends after a materialization build is exactly this
+      // shape. A caller that wants the same location fetched again reloads the
+      // package instead.
+      const installedFrom = environment
+         .peekPackage(packageName)
+         ?.getPackageMetadata().location;
+      const reinstall =
+         body.location !== undefined &&
+         body.location !== "" &&
+         body.location !== installedFrom;
+      let result: ApiPackage;
+      if (reinstall) {
          // Re-install: stream the new content into a staging dir (no lock)
          // and atomically swap it in (under the lock). Validate the effective
          // explores (the body override, else the new tree's own manifest)
          // INSIDE the swap window, so a rejected update rolls back to the
          // previous tree instead of swapping the bad one in and 400-ing after.
-         const bodyLocation = body.location;
-         await environment.installPackage(
+         // The metadata in the body is applied inside that same lock hold, so
+         // nothing can run between the swap and the update.
+         const bodyLocation = body.location as string;
+         const installed = await environment.installPackage(
             packageName,
             (stagingPath) =>
                this.downloadInto(
@@ -325,11 +352,14 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
+            { update: body },
          );
+         result = installed.getPackageMetadata();
+      } else {
+         // Apply metadata changes (publisher.json) under the per-package
+         // mutex via `Environment.updatePackage`.
+         result = await environment.updatePackage(packageName, body);
       }
-      // Apply metadata changes (publisher.json) under the same per-package
-      // mutex via `Environment.updatePackage`.
-      const result = await environment.updatePackage(packageName, body);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
