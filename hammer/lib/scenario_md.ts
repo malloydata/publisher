@@ -1350,7 +1350,7 @@ function parseUpstreams(
 ): { source: string; mode: UpstreamReuse }[] {
    const out: { source: string; mode: UpstreamReuse }[] = [];
    for (const raw of body) {
-      const m = raw.match(/expect\s+upstreams\s*:\s*(\S+)\s*->\s*(\S+)/i);
+      const m = raw.match(/expect\s+upstreams\s*:\s*(\S+)\s*->\s*(\S+)\s*$/i);
       if (!m) continue;
       const mode = m[2].toLowerCase();
       if (mode !== "reused" && mode !== "recomputed")

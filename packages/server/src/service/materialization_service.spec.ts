@@ -41,6 +41,8 @@ import {
    redactConnectionSecrets,
    stagingSuffix,
    upstreamReuseFromManifest,
+   strictMissSourceId,
+   manifestForCompiler,
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -5719,6 +5721,7 @@ describe("upstreamReuseFromManifest", () => {
          reached: [daily, sites],
          addressBySourceId,
          sqlInlinesStored: false,
+         compilerMissing: [],
          substituted: { "addr-daily": {}, "addr-sites": {} },
          full: { "addr-daily": {}, "addr-sites": {} },
          builtEntries: {},
@@ -5737,6 +5740,7 @@ describe("upstreamReuseFromManifest", () => {
          reached: [daily],
          addressBySourceId,
          sqlInlinesStored: false,
+         compilerMissing: [],
          substituted: { "addr-daily": { tableName: "daily__g1" } },
          full: { "addr-daily": { tableName: "daily__g1" } },
          builtEntries: {
@@ -5755,6 +5759,7 @@ describe("upstreamReuseFromManifest", () => {
          reached: [daily],
          addressBySourceId,
          sqlInlinesStored: false,
+         compilerMissing: [],
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
@@ -5772,6 +5777,7 @@ describe("upstreamReuseFromManifest", () => {
          reached: [daily],
          addressBySourceId,
          sqlInlinesStored: false,
+         compilerMissing: [],
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
@@ -5782,11 +5788,12 @@ describe("upstreamReuseFromManifest", () => {
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
 
-   it("an upstream in no manifest is missing, and the reason says what would have supplied it", () => {
+   it("an upstream the compiler misses is missing, and the reason says what would have supplied it", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,
          sqlInlinesStored: false,
+         compilerMissing: [daily],
          substituted: {},
          full: {},
          builtEntries: {},
@@ -5805,6 +5812,7 @@ describe("upstreamReuseFromManifest", () => {
             reached: [],
             addressBySourceId,
             sqlInlinesStored: false,
+            compilerMissing: [],
             substituted: {},
             full: {},
             builtEntries: {},
@@ -5825,6 +5833,7 @@ describe("upstreamReuseFromManifest", () => {
          builtEntries: {},
          tier: "storage",
          sqlInlinesStored: true,
+         compilerMissing: [],
       });
       expect(out.inManifestOnly).toEqual([]);
       expect(out.missing).toEqual([]);
@@ -5843,6 +5852,7 @@ describe("upstreamReuseFromManifest", () => {
          builtEntries: {},
          tier: "storage",
          sqlInlinesStored: true,
+         compilerMissing: [],
       });
       expect(out.fields.upstreamReuse).toBe("recomputed");
    });
@@ -5856,6 +5866,7 @@ describe("upstreamReuseFromManifest", () => {
          builtEntries: {},
          tier: "storage",
          sqlInlinesStored: false,
+         compilerMissing: [],
       });
       expect(out.missing).toEqual([]);
       expect(out.inManifestOnly).toEqual([]);
@@ -5877,9 +5888,121 @@ describe("upstreamReuseFromManifest", () => {
          builtEntries: {},
          tier: "storage",
          sqlInlinesStored: false,
+         compilerMissing: [{ name: "daily", sourceID: "daily@b" }],
       });
       expect(out.missing).toEqual(["daily"]);
       expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("a walk stop in no manifest that the compiler did not miss is a join the SQL never reads: not missing, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily, sites],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a dependency only the compiler reaches is missing even though the walk never named it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [{ name: "counts", sourceID: "counts@m" }],
+      });
+      expect(out.missing).toEqual(["counts"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'counts' is not in this build's manifest/,
+      );
+   });
+
+   it("a stop sharing the root's address is the table being built, not an upstream", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         rootAddress: "addr-daily",
+      });
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+   });
+});
+
+describe("manifestForCompiler", () => {
+   const facts = {
+      addressBySourceId: {
+         "p@m": "addr-p-partitioned",
+         "u@m": "addr-u",
+         "x@m": undefined,
+      },
+      compilerKeyBySourceId: {
+         "p@m": "key-p",
+         "u@m": "addr-u",
+         "x@m": "key-x",
+      },
+   };
+   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+      const full = {
+         entries: {
+            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-u": { tableName: "u__g1" },
+         },
+         strict: true,
+      } as never;
+      const out = manifestForCompiler(full, facts) as unknown as {
+         entries: Record<string, unknown>;
+         strict: boolean;
+      };
+      expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(Object.keys(out.entries).sort()).toEqual([
+         "addr-p-partitioned",
+         "addr-u",
+         "key-p",
+      ]);
+      expect(out.strict).toBe(true);
+   });
+   it("returns the same manifest when nothing needs aliasing", () => {
+      const full = { entries: { "addr-u": {} } } as never;
+      expect(manifestForCompiler(full, facts)).toBe(full);
+   });
+});
+
+describe("strictMissSourceId", () => {
+   it("names the source a compiler strict miss reports, and nothing else", () => {
+      const miss = Object.assign(
+         new Error(
+            "Persisted source 'counts@file:///m.malloy' not found in manifest (buildId: abc); strict manifest mode forbids fallback to live compilation.",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      expect(strictMissSourceId(miss)).toBe("counts@file:///m.malloy");
+      expect(
+         strictMissSourceId(
+            new Error("Persisted source 'x' not found in manifest"),
+         ),
+      ).toBeUndefined();
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("boom"), { code: "other" }),
+         ),
+      ).toBeUndefined();
+      expect(strictMissSourceId(undefined)).toBeUndefined();
    });
 });
 
@@ -5913,17 +6036,23 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
       persistSourceIds: new Set(["daily@m", "rollup@m"]),
       aliasesBySourceName: {},
       addressBySourceId: { "daily@m": "addr-daily", "rollup@m": "addr-rollup" },
+      compilerKeyBySourceId: {
+         "daily@m": "addr-daily",
+         "rollup@m": "addr-rollup",
+      },
    };
 
    async function build(
       manifest: Manifest,
       builtEntries: Record<string, unknown>,
+      onGetSQL?: (sqlOpts: unknown) => void,
    ) {
       const source = fakeSource({
          name: "rollup",
          sourceEntityId: "addr-rollup",
          sql: "SELECT * FROM t",
          modelDef,
+         onGetSQL,
       });
       const instruction: BuildInstruction = {
          sourceEntityId: "addr-rollup",
@@ -5970,8 +6099,25 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
       expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("recomputed, with the reason, when the upstream is in no manifest", async () => {
-      const entry = await build(new Manifest(), {});
+   it("recomputed, with the reason, when the upstream is in no manifest and the compiler's strict render misses it", async () => {
+      const entry = await build(new Manifest(), {}, (sqlOpts) => {
+         const m = (
+            sqlOpts as {
+               buildManifest?: {
+                  strict?: boolean;
+                  entries?: Record<string, unknown>;
+               };
+            }
+         ).buildManifest;
+         if (m?.strict === true && !("addr-daily" in (m.entries ?? {}))) {
+            throw Object.assign(
+               new Error(
+                  "Persisted source 'daily@m' not found in manifest (buildId: addr-daily); strict manifest mode forbids fallback to live compilation.",
+               ),
+               { code: "runtime-manifest-strict-miss" },
+            );
+         }
+      });
       expect(entry.upstreamReuse).toBe("recomputed");
       expect(entry.upstreamRecomputeReason).toMatch(
          /'daily' is not in this build's manifest/,

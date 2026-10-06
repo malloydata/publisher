@@ -75,11 +75,7 @@ import {
    liftDerivedSources,
    type ServeShapeGiven,
    buildVirtualMap,
-   extractJoins,
-   extractRefinements,
-   extractSourceFilters,
    buildServeShapeTiers,
-   extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
    authorModelLiftContext,
@@ -90,6 +86,7 @@ import {
    serveShapeDiagnostics,
    withholdUnreproducibleCallerScopedJoins,
    documentFlagsForLifts,
+   authorRefinementsFor,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -6980,23 +6977,16 @@ export class Model {
          );
       }
       const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
-      return kept.map((b) => {
-         const fields = contents?.[b.sourceName]?.fields;
-         const refinements = [
-            ...extractJoins(fields, {
-               sourceNameById,
-               materializedSourceNames,
-               liftText,
-            }),
-            ...extractRefinements(fields),
-            // The source's own `where:` clauses. Not part of the materialized
-            // relation (the build SQL is the persisted relation alone), so
-            // without these the shape serves rows the source excludes.
-            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-            ...extractViews(fields, liftText),
-         ];
-         return { ...b, refinements };
-      });
+      // What each source adds to its table, re-declared on the binding — the
+      // same assembly the chained build uses for its parents.
+      return kept.map((b) => ({
+         ...b,
+         refinements: authorRefinementsFor(
+            b.sourceName,
+            { contents, sourceNameById, liftText },
+            materializedSourceNames,
+         ),
+      }));
    }
 
    /**

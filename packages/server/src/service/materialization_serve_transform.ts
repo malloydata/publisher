@@ -1537,6 +1537,35 @@ function pipelineReferences(pipeline: unknown): unknown[] {
  * compile under. Order is kept and blank lines are dropped.
  */
 /**
+ * What a bound source adds to the relation its table holds: the joins,
+ * dimensions and measures, extend-block filters and views declared on it,
+ * which its build SQL leaves out (a persist source's build is the persisted
+ * relation alone) and which must be re-declared on its virtual binding to be
+ * applied when the table is read. One assembly for the serve shape and the
+ * chained build, so a table is read the same way wherever it is read; a
+ * binding missing its source's `where:` reads unfiltered rows, silently.
+ * `materializedSourceNames` bounds the joins carried: one to a source that is
+ * not on the shape is left off, and text that reads it then fails to compile.
+ */
+export function authorRefinementsFor(
+   sourceName: string,
+   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById" | "liftText">,
+   materializedSourceNames: ReadonlySet<string>,
+): SourceRefinement[] {
+   const fields = ctx.contents[sourceName]?.fields;
+   return [
+      ...extractJoins(fields, {
+         sourceNameById: ctx.sourceNameById,
+         materializedSourceNames,
+         liftText: ctx.liftText,
+      }),
+      ...extractRefinements(fields),
+      ...extractSourceFilters(ctx.contents[sourceName]?.filterList),
+      ...extractViews(fields, ctx.liftText),
+   ];
+}
+
+/**
  * The `##!` flags of every author file a set of lifts carries declarations
  * from, deduplicated in first-seen order — what a model that carries their
  * text must enable to compile it.
