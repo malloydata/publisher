@@ -1139,6 +1139,38 @@ source: gated is duckdb.table('customers') extend {
       await expect(admitted).rejects.toThrow("The query has 2 run: statements");
    });
 
+   it("keeps a row-level gate's 403 for several run: statements when its given is unsupplied", async () => {
+      // A row filter binds its given at prepare time, after the run-statement
+      // count. The count must not answer first: a caller who supplies nothing
+      // is denied, as they are with one `run:`, and learns nothing else.
+      await writeModel(
+         "rt_row_multi.malloy",
+         `##! experimental.givens
+
+given:
+  TENANTS :: number[]
+
+#(access_filter) id in $TENANTS
+source: filtered is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`,
+      );
+      const two =
+         "run: filtered -> { aggregate: c }\nrun: filtered -> { aggregate: c }";
+      const one = "run: filtered -> { aggregate: c }";
+      await expect(
+         runGated("rt_row_multi.malloy", one, {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(
+         runGated("rt_row_multi.malloy", two, {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // With the given supplied, nothing denies, so the count is the answer.
+      const supplied = runGated("rt_row_multi.malloy", two, { TENANTS: [1] });
+      await expect(supplied).rejects.toBeInstanceOf(BadRequestError);
+      await expect(supplied).rejects.toThrow("The query has 2 run: statements");
+   });
+
    it("leaves a source with no authorize annotations unrestricted", async () => {
       await writeModel(
          "rt_open.malloy",

@@ -2069,6 +2069,48 @@ export class Model {
    }
 
    /**
+    * The opaque 403 a row-level gate gives when a given it reads went
+    * unsupplied, or undefined when none did or no gate was grafted. Opaque on
+    * purpose: Malloy's own failure names the missing given, and
+    * `docs/authorize.md` promises a denied caller is never told which one.
+    * `fallbackLabel` names the source when no caller join's graft owns the
+    * missing given.
+    *
+    * One definition for the two places that must agree: the prepare-time
+    * failure handler, and the run-statement count, which has to give way to
+    * this denial rather than answer 400 ahead of it.
+    */
+   private unboundGateDenial(
+      runnable: QueryMaterializer,
+      givens: Record<string, unknown> | undefined,
+      fallbackLabel: string,
+   ): AccessDeniedError | undefined {
+      if (
+         !this.queryHadRowLevelFilterAttached(runnable) ||
+         ![...this.authorizeReferencedGivenNames].some(
+            (name) => !(name in (givens ?? {})),
+         )
+      ) {
+         return undefined;
+      }
+      // A caller join's graft answers under the caller's own alias.
+      const unbound = this.rowLevelFilteredRunnables
+         .get(runnable)
+         ?.find(
+            (graft) =>
+               graft.callerJoinPath &&
+               graft.givenNames.some((name) => !(name in (givens ?? {}))),
+         );
+      recordRowLevelGateDecision(
+         "denied_by_gate",
+         unbound ? "caller_join" : "entry_point",
+      );
+      return new AccessDeniedError(
+         `Access denied for source "${unbound?.label ?? fallbackLabel}".`,
+      );
+   }
+
+   /**
     * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned) has
     * a row-level `#(access_filter)` filter attached. Object-identity keyed
     * ({@link rowLevelFilteredRunnables}) rather than a field on `Model`, which
@@ -7939,7 +7981,16 @@ export class Model {
                servedFrom,
             }),
          );
-         throw multipleRunStatementsError(runCount);
+         // A row-level gate whose given went unsupplied denies at prepare, below,
+         // so the count must not answer first: that denial is what this request
+         // got before the count existed.
+         throw (
+            this.unboundGateDenial(
+               runnable,
+               givens,
+               compiledSource ?? sourceName ?? "unknown",
+            ) ?? multipleRunStatementsError(runCount)
+         );
       }
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
@@ -8129,35 +8180,20 @@ export class Model {
             // whole-source gate returned before the graft existed. Checked
             // ahead of the `MalloyError` rethrow below, which is where a
             // PREPARE-time binding failure would otherwise escape.
-            if (
-               isGivenBindingFailure(err) &&
-               this.queryHadRowLevelFilterAttached(runnable) &&
-               [...this.authorizeReferencedGivenNames].some(
-                  (name) => !(name in (givens ?? {})),
-               )
-            ) {
+            const gateDenial = isGivenBindingFailure(err)
+               ? this.unboundGateDenial(
+                    runnable,
+                    givens,
+                    compiledSource ?? sourceName ?? "unknown",
+                 )
+               : undefined;
+            if (gateDenial) {
                logger.debug("Gate given unbound; denying opaquely", {
                   environmentName: this.packageName,
                   modelPath: this.modelPath,
                   error: err instanceof Error ? err.message : String(err),
                });
-               // A caller join's graft answers under the caller's own alias.
-               const unbound = this.rowLevelFilteredRunnables
-                  .get(runnable)
-                  ?.find(
-                     (graft) =>
-                        graft.callerJoinPath &&
-                        graft.givenNames.some(
-                           (name) => !(name in (givens ?? {})),
-                        ),
-                  );
-               recordRowLevelGateDecision(
-                  "denied_by_gate",
-                  unbound ? "caller_join" : "entry_point",
-               );
-               throw new AccessDeniedError(
-                  `Access denied for source "${unbound?.label ?? compiledSource ?? sourceName ?? "unknown"}".`,
-               );
+               throw gateDenial;
             }
 
             const givenCode = (err as { code?: string })?.code;
