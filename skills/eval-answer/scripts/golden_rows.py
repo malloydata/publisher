@@ -78,8 +78,19 @@ def load_rows(golden: dict[str, Any] | None, set_dir: pathlib.Path | None,
                     f"row objects")
             return rows
         with target.open(newline="", encoding="utf-8-sig") as fh:
-            return [{k: _cell(v) for k, v in row.items()}
-                    for row in csv.DictReader(fh)]
+            reader = csv.DictReader(fh)
+            out = []
+            for row in reader:
+                # DictReader puts a long row's extra fields in a list under
+                # the key None, and fills a short row's missing ones with None.
+                # Both are a malformed file, not a row of nulls.
+                if None in row or None in row.values():
+                    raise GoldenRowsError(
+                        f"{qid}: golden.path {rel!r} line {reader.line_num} "
+                        f"has a different number of fields than the header "
+                        f"({len(reader.fieldnames or [])}); fix the row")
+                out.append({k: _cell(v) for k, v in row.items()})
+            return out
     except (OSError, ValueError, csv.Error) as exc:
         if isinstance(exc, GoldenRowsError):
             raise

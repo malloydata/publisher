@@ -358,6 +358,26 @@ class RefreshNeverWritesAnEmptyResult(unittest.TestCase):
         self.assertEqual(stored["golden"]["value"], {"total": 99})
         self.assertEqual(r["refreshed"], ["q1"])
 
+    def test_a_file_held_rows_golden_is_not_refreshed_into_cases(self):
+        # Writing `value` would shadow `path` from then on, and the case would
+        # silently stop reading its file.
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q1.csv").write_text("brand,n\na,3\n")
+        golden = {"status": "verified", "kind": "rows", "path": "gold/q1.csv"}
+        self.write(golden)
+        before = (self.tmp / "cases.jsonl").read_text()
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=("diff", "", [{"brand": "a", "n": 4}])):
+            r = verify(self.tmp, "http://truth", "samples", refresh=True,
+                       quiet=True)
+        self.assertEqual((self.tmp / "cases.jsonl").read_text(), before)
+        self.assertEqual(r["refreshed"], [])
+        self.assertIn(
+            "q1: not refreshed: its rows live in gold/q1.csv, which --refresh "
+            "does not rewrite. Replace that file with the fresh rows",
+            r["findings"])
+
 
 class QuestionDrift(unittest.TestCase):
     def sealed(self, question, asked=None):
@@ -1045,6 +1065,14 @@ class NumericRendering(unittest.TestCase):
     def test_a_real_difference_is_still_drift(self):
         self.assertFalse(close_enough("75.70", "76.1", None))
 
+    def test_a_boolean_matches_its_spelling_as_text(self):
+        # A CSV-held golden has no types: its `True` is the string 'True'.
+        self.assertTrue(close_enough("True", True, None))
+        self.assertTrue(close_enough("false", False, None))
+        self.assertTrue(close_enough(True, "TRUE", None))
+        self.assertFalse(close_enough("True", False, None))
+        self.assertFalse(close_enough("yes", True, None))
+
     def test_a_compound_string_is_left_alone(self):
         # Out of scope on purpose: it parses as no single number, so it stays
         # an exact compare rather than being guessed at.
@@ -1328,6 +1356,11 @@ class RowsGoldenInAFile(unittest.TestCase):
         status, detail, _ = self.check([{"region": "West", "total": 13}])
         self.assertEqual(status, "diff")
         self.assertIn("total", detail)
+
+    def test_a_csv_boolean_matches_a_returned_boolean(self):
+        (self.tmp / "gold" / "q.csv").write_text("enabled\nTrue\n")
+        status, detail, _ = self.check([{"enabled": True}])
+        self.assertEqual((status, detail), ("ok", "1 rows"))
 
     def test_an_unreadable_file_is_an_error_naming_the_path(self):
         c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/none.csv",

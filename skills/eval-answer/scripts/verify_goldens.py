@@ -192,6 +192,12 @@ def close_enough(want: Any, got: Any, places: int | None) -> bool:
         # Compare at the precision the golden is stated to, not float exactness.
         tol = 10 ** -places / 2 if places is not None else max(abs(w) * 1e-9, 1e-9)
         return abs(w - g) <= max(tol, 0.011)
+    # A boolean against text, by the same spelling on both sides. A CSV-held
+    # golden has no types, so its `True` is the string 'True' while Publisher
+    # returns the boolean, and a plain `==` reported drift on rows that agree.
+    if isinstance(want, bool) != isinstance(got, bool) \
+            and isinstance(want, (bool, str)) and isinstance(got, (bool, str)):
+        return str(want).strip().lower() == str(got).strip().lower()
     return want == got
 
 
