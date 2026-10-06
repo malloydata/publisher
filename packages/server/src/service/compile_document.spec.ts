@@ -3,6 +3,7 @@
 
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fsSync from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -20,9 +21,10 @@ import {
 import {
    blankSpans,
    compileDocument,
+   submittedTextKind,
    type CompiledDocument,
 } from "./compile_document";
-import type { NotebookCellSpan } from "./notebook";
+import type { DocumentKind, NotebookCellSpan } from "./notebook";
 import type { DashboardQueryTileSpec } from "./dashboard";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 
@@ -241,7 +243,7 @@ run: open_src -> { aggregate: c }
          ]);
       });
 
-      it("text that does not parse is refused by the construct gate before any cell is read", async () => {
+      it("text that does not parse is refused by the construct gate once every cell has been judged", async () => {
          await expect(
             compile(
                `## artifact { kind=notebook }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
@@ -366,10 +368,9 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
          await harness.shutdown();
       });
 
-      const refusals = () =>
-         harness.collectCounter("publisher_compile_refusals_total", {
-            reason: "restricted_construct",
-         });
+      const refusalsFor = (reason: string) =>
+         harness.collectCounter("publisher_compile_refusals_total", { reason });
+      const refusals = () => refusalsFor("restricted_construct");
       const tiles = (...expressions: string[]) =>
          `## artifact { kind=dashboard tiles=[${expressions
             .map((e) => `"${e}"`)
@@ -422,6 +423,20 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
             compile(tiles("open_src -> { select: y is f!number(x) }")),
          ).rejects.toBeInstanceOf(CompileRefusedError);
          expect(await refusals()).toBe(1);
+      });
+
+      it("counts a render-tag refusal apart from a restricted construct, in a definition cell and in a tile", async () => {
+         await expect(
+            compile(
+               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
+            ),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+         expect(await refusalsFor("render_tag")).toBe(1);
+         await expect(
+            compile(tiles("open_src -> { select: # image\\n y is region }")),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+         expect(await refusalsFor("render_tag")).toBe(2);
+         expect(await refusals()).toBe(0);
       });
 
       it("refuses a tile that uses a sql_ function", async () => {
@@ -639,6 +654,42 @@ export { customers }
          );
       });
 
+      describe("a cell with a restricted construct", () => {
+         const cellRefusal = async (
+            name: string,
+            givens?: Record<string, string>,
+         ) => {
+            try {
+               await env.compileSource(
+                  "pkg",
+                  "index.malloy",
+                  `## artifact { kind=notebook }\nrun: ${name} -> { select: y is f!number(id) }\n`,
+                  false,
+                  givens,
+               );
+            } catch (error) {
+               return error;
+            }
+            throw new Error("expected a refusal");
+         };
+
+         it("gives a hidden gated source and a missing one the same generic 404, so the construct gate is no oracle", async () => {
+            for (const name of ["locked_hidden", "nosuch"]) {
+               const error = await cellRefusal(name);
+               expect(error).toBeInstanceOf(NotQueryableError);
+               expect((error as Error).message).toBe(
+                  "Query target is not queryable.",
+               );
+            }
+         });
+
+         it("is still refused for a source the caller can read", async () => {
+            expect(await cellRefusal("customers")).toBeInstanceOf(
+               CompileRefusedError,
+            );
+         });
+      });
+
       describe("a definition whose base is not one the caller can see", () => {
          const GENERIC = "Query target is not queryable.";
          const bases = ["nosuch", "helper", "locked_hidden"];
@@ -829,6 +880,7 @@ source: t is duckdb.sql("select 1 as a") extend {
             gates: {
                text: async () => {},
                constructs: async () => {},
+               document: async () => {},
                nameVisible: () => {},
                boundary: async () => {},
                boundaryCompiled: async () => {},
@@ -860,4 +912,22 @@ source: t is duckdb.sql("select 1 as a") extend {
       expect(tiles[1].restricted).toBeUndefined();
       expect(tiles[1].givenNames).toEqual([]);
    });
+});
+
+describe("submittedTextKind", () => {
+   // One case table for this rule and the SDK reader's, whose spec reads the same file.
+   const { cases } = JSON.parse(
+      fsSync.readFileSync(
+         path.resolve(
+            __dirname,
+            "../../../sdk/src/components/DashboardBuilder/testing/documentKindRule.json",
+         ),
+         "utf8",
+      ),
+   ) as { cases: { name: string; source: string; kind: string }[] };
+   for (const { name, source, kind } of cases) {
+      it(`${name}: ${kind}`, () => {
+         expect(submittedTextKind(source)).toBe(kind as DocumentKind);
+      });
+   }
 });

@@ -157,6 +157,10 @@ const STYLES: Record<ProseVariant, SxProps<Theme>> = {
    },
 };
 
+function ProseImageAlt({ alt }: { alt?: string }) {
+   return <>{alt}</>;
+}
+
 export function Prose({
    children,
    variant = "caption",
@@ -171,6 +175,8 @@ export function Prose({
                disableParsingRawHTML: true,
                overrides: {
                   a: { component: ProseLink, props: { context: links } },
+                  // `![](url)` would otherwise load from any server on view; the alt text is all that renders.
+                  img: { component: ProseImageAlt },
                },
             }}
          >

@@ -3,6 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { parseAnnotation } from "@malloydata/malloy-tag";
+import fs from "node:fs";
+import path from "node:path";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 
 const resultWith = (...values: string[]) =>
@@ -151,4 +153,25 @@ describe("dropValueUrlTags", () => {
    it("returns text that is not JSON untouched", () => {
       expect(dropValueUrlTags("not json")).toBe("not json");
    });
+});
+
+// One case table for this list and the server's `renderTagRefusal`, whose spec reads the same file.
+const { cases } = JSON.parse(
+   fs.readFileSync(
+      path.join(
+         import.meta.dir,
+         "../DashboardBuilder/testing/urlRenderTags.json",
+      ),
+      "utf8",
+   ),
+) as { cases: { name: string; annotation: string; offends: boolean }[] };
+
+describe("dropValueUrlTags agrees with the server's render-tag refusal", () => {
+   for (const { name, annotation, offends } of cases) {
+      it(`${offends ? "strips" : "keeps"} ${name}`, () => {
+         const line = `${annotation}\n`;
+         const [out] = annotationsOf(dropValueUrlTags(resultWith(line)));
+         expect(out !== line).toBe(offends);
+      });
+   }
 });

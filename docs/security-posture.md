@@ -192,7 +192,8 @@ surfaces ([#931](https://github.com/malloydata/publisher/issues/931)).
 
 **3. Package markdown is rendered without raw HTML parsing (closed).** The SDK's `Prose`, which draws
 every markdown surface (text tiles, descriptions, notebook cells and an environment's About panel), runs
-`markdown-to-jsx` with `disableParsingRawHTML: true`, so raw HTML in a package's markdown renders as text.
+`markdown-to-jsx` with `disableParsingRawHTML: true`, so raw HTML in a package's markdown renders as text, and its `img` override renders a markdown
+image (`![](url)`) as alt text only, so no image loads from a package-chosen server.
 Link `href`s are scheme-checked as well, because packages can come from untrusted git or S3 sources.
 A new markdown surface should go through `Prose` rather than call the library directly.
 

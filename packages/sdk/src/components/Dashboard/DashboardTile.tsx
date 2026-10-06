@@ -5,9 +5,9 @@ import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryResult } from "../../hooks/useQueryResult";
-import type { GivenValue } from "../../hooks/givenValue";
+import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
-import { givensToRequest } from "../given/paramCodec";
+import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
@@ -50,6 +50,8 @@ export interface DashboardTileProps {
     * does.
     */
    givens: Map<string, GivenValue>;
+   /** Givens the host sets with no control, which may be lists; narrowed by `givenNames` like `givens`. */
+   hostGivens?: Readonly<Record<string, HostGivenValue>>;
    /** Declared type per given name, which decides how a value is encoded. */
    declaredTypes: ReadonlyMap<string, string | undefined>;
    /**
@@ -118,6 +120,7 @@ export function DashboardTile({
    heading,
    borderless,
    givens,
+   hostGivens,
    declaredTypes,
    givenNames,
    height,
@@ -145,7 +148,11 @@ export function DashboardTile({
                  )
                : undefined,
          // Narrowed to the givens this tile references: see `givenNames`.
-         givens: givensToRequest(givens, declaredTypes, givenNames),
+         givens: withHostGivens(
+            givensToRequest(givens, declaredTypes, givenNames),
+            hostGivens,
+            givenNames,
+         ),
       },
       { enabled: restricted !== true },
    );

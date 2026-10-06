@@ -44,7 +44,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (`notebooks/<slug>.malloy`; an existing `.malloynb` still reads) |
-| `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
+| `skill:malloy-analysis-report` | Combining validated queries into a notebook report |
 | `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
 | `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |

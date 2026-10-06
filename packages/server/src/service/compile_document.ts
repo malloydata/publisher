@@ -29,11 +29,13 @@ import {
 import { ownModelNoteObjects } from "./annotations";
 import { motlyTag } from "./motly";
 import {
+   artifactKindInText,
    artifactKindOfNotes,
    artifactTagText,
    cellOffsets,
    claimsToBeANotebook,
    documentKind,
+   type DocumentKind,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
@@ -77,6 +79,8 @@ export interface DocumentGates {
    ): Promise<void>;
    /** Throws CompileRefusedError when `text` uses a construct append-scope text may not (a data root of its own). */
    constructs(text: string): Promise<void>;
+   /** Throws CompileRefusedError when the text that compiles (restricted cells blanked) uses a construct append-scope text may not; run after every access check so a hidden source and an absent one answer alike. */
+   document(text: string): Promise<void>;
    /** Throws NotQueryableError when `query` names a source a gated model keeps the caller from confirming, so a tile that does not compile reads the same for a hidden source and an absent one. */
    nameVisible(query: string, definitions: string): void;
 }
@@ -134,6 +138,14 @@ function pathForKind(source: string, slug: string): string {
       tags?.tag("artifact")?.has("tiles") === true ||
       tags?.tag("dashboard") !== undefined;
    return `${dashboard ? "dashboards" : "notebooks"}/${slug}.malloy`;
+}
+
+/** The kind submitted text is: its tag's `kind`, else a dashboard when it lists tiles or sets a grid width, else a notebook. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
+export function submittedTextKind(source: string): DocumentKind {
+   return documentKind(
+      pathForKind(source, "document"),
+      artifactKindInText(source),
+   );
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
@@ -329,6 +341,8 @@ export async function compileDocument(input: {
    // Phase 2: compile what the caller may read, as an extension of the base so
    // the base's own `run:` statements and `##` notes never join the document.
    const compiledText = blankSpans(source, [...restrictedCells]);
+   // Definition cells compile with no restricted option, so this whole-text gate is the only thing refusing a data root or an import in one.
+   await gates.document(compiledText);
    const extended = base.extendModel(compiledText);
    let model: Awaited<ReturnType<typeof extended.getModel>>;
    try {

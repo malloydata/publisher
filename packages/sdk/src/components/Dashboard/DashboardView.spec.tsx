@@ -209,6 +209,26 @@ describe("DashboardView gate givens", () => {
       expect(tileGivens("orders -> by_year")).toEqual({ REGION: "CA" });
       expect(screen.queryByText("ORG")).toBeNull();
    });
+
+   it("sends a list-valued host given to the tiles that name it", async () => {
+      render(
+         <DashboardView
+            manifest={gated}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            givens={{ ORG: ["1", "2"], REGION: "CA" }}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await waitFor(() =>
+         expect(tileGivens("orders -> by_month")).toEqual({
+            ORG: ["1", "2"],
+            REGION: "CA",
+         }),
+      );
+   });
 });
 
 describe("DashboardView in text-source mode", () => {

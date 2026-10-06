@@ -115,7 +115,10 @@ class FakeStorage implements DocumentStorage {
 
 const mount = (
    storage: DocumentStorage,
-   textSource: { modelPath: string; givens?: Record<string, string> } = {
+   textSource: {
+      modelPath: string;
+      givens?: Record<string, string | string[]>;
+   } = {
       modelPath: "models/orders.malloy",
    },
 ) =>
@@ -188,6 +191,82 @@ describe("DashboardEditor in text-source mode", () => {
       } finally {
          compileModelSource.mockImplementation(async () => compiled([]));
       }
+   });
+
+   describe("a host given no control shows", () => {
+      // A select control whose option source is gated on the host's given, beside a tile that reads it.
+      const withSuggestControl = (given: string) =>
+         compileModelSource.mockImplementation(async () => {
+            const result = compiled([given]);
+            result.data.document.manifest.givens = [
+               {
+                  name: "REGION",
+                  type: "string",
+                  control: "select",
+                  suggest: {
+                     source: "a",
+                     dimension: "category",
+                     givenNames: [given],
+                  },
+               },
+            ] as never;
+            return result;
+         });
+      const gatedDocumentStore = () => {
+         const storage = new FakeStorage();
+         storage.documents.set(
+            "env/pkg/dashboards/ops.malloy",
+            DOCUMENT.replace(
+               "view: by_cat is by_category",
+               "view: by_cat is by_category + { where: cat ~ $REGION }",
+            ),
+         );
+         return storage;
+      };
+      const suggestBody = () =>
+         executeQueryModel.mock.calls
+            .map((call) => call[3])
+            .find((body) => body.query?.includes("group_by: category"));
+
+      it("is carried by a select control's suggest, which would otherwise be denied by the gate", async () => {
+         withSuggestControl("TENANT");
+         try {
+            mount(gatedDocumentStore(), {
+               modelPath: "models/orders.malloy",
+               givens: { TENANT: "acme" },
+            });
+            await waitFor(() => expect(suggestBody()).toBeDefined());
+            expect(suggestBody()).toMatchObject({
+               givens: { TENANT: "acme" },
+            });
+         } finally {
+            compileModelSource.mockImplementation(async () => compiled([]));
+         }
+      });
+
+      it("reaches the compile, a tile run and a suggest when it is a list", async () => {
+         withSuggestControl("TENANTS");
+         try {
+            const givens = { TENANTS: ["acme", "globex"] };
+            mount(gatedDocumentStore(), {
+               modelPath: "models/orders.malloy",
+               givens,
+            });
+            await waitFor(() => expect(suggestBody()).toBeDefined());
+            expect(compileModelSource.mock.calls[0][3].givens).toEqual(givens);
+            expect(suggestBody()).toMatchObject({ givens });
+            const tile = executeQueryModel.mock.calls
+               .map((call) => call[3])
+               .find(
+                  (body) =>
+                     body.query?.includes("run: a ->") &&
+                     !body.query.includes("group_by: category"),
+               );
+            expect(tile).toMatchObject({ givens });
+         } finally {
+            compileModelSource.mockImplementation(async () => compiled([]));
+         }
+      });
    });
 
    it("runs a tile as the document's definitions followed by one run:, with no import, flag or given", async () => {

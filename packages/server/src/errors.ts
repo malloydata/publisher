@@ -383,6 +383,9 @@ export class InvalidArgumentError extends BadRequestError {}
  */
 export class CompileRefusedError extends BadRequestError {}
 
+/** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
+export class RenderTagRefusedError extends CompileRefusedError {}
+
 /** The restricted-construct gate could not parse the text, so it judged nothing: a refusal for a fragment, a plain compile problem for one tile of a document. */
 export class UnparseableTextError extends CompileRefusedError {
    constructor(

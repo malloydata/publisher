@@ -642,6 +642,28 @@ source: published is duckdb.sql("select 1 as id") extend {
          expect(refused).toEqual([]);
       });
 
+      describe("agrees with the SDK's strip list on one case table", () => {
+         const { cases } = JSON.parse(
+            fsSync.readFileSync(
+               path.resolve(
+                  __dirname,
+                  "../../../sdk/src/components/DashboardBuilder/testing/urlRenderTags.json",
+               ),
+               "utf8",
+            ),
+         ) as {
+            cases: { name: string; annotation: string; offends: boolean }[];
+         };
+         for (const { name, annotation, offends } of cases) {
+            it(`${offends ? "refuses" : "accepts"} ${name}`, () => {
+               const refusal = renderTagRefusal(
+                  `${annotation}\nsource: s is base_source extend { measure: m is count() }\n`,
+               );
+               expect(refusal !== undefined).toBe(offends);
+            });
+         }
+      });
+
       describe("a column excepted and declared again", () => {
          const shadow: Record<string, string> = {
             "a dimension in the same extend": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,

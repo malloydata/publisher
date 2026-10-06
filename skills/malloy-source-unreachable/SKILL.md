@@ -58,7 +58,7 @@ Work down this list. The first three are far more common than the last.
 ## What curation does not do
 
 - **It does not hide fields.** A published source may `join` an unpublished one, and a query grouping by a joined field returns that field's values normally. Hiding a source removes it as a landing point; it does not redact columns a published source pulls in.
-- **It does not gate `/compile`.** `compile_model` is exempt, because compile is the authoring loop. A hidden source can still be compile-checked, and that is intended. The exception is a hidden source that is also gated, which answers 404 at compile too.
+- **It does not gate `/compile`.** `compile_model` is exempt, because compile is the authoring loop. A hidden source can still be compile-checked, and that is intended. The exceptions are a hidden source that is also gated, which answers 404 at compile too, and a document (text with a model-level `## artifact` tag): its tiles and cells are held to the surface, so one over a source off it comes back as a `query-not-queryable` problem rather than compiling.
 - **It is not access control.** Curation answers "what is queryable by name", not "who may query it". Identity is `#(authorize)` and `#(access_filter)`. A source is not protected by being hidden.
 
 ## Reaching an unpublished source from your own model

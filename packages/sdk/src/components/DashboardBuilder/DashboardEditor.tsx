@@ -5,7 +5,7 @@ import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest, Given } from "../../client";
-import type { GivenValue } from "../../hooks/givenValue";
+import type { HostGivenValue } from "../../hooks/givenValue";
 import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -138,7 +138,7 @@ export interface TextSourceOptions {
    /** Givens the host sets itself: no control is shown for them. */
    hiddenGivens?: readonly string[];
    /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
-   givens?: Record<string, GivenValue>;
+   givens?: Record<string, HostGivenValue>;
 }
 
 /** A compile with no readable document: no manifest, but the text still opens. */
@@ -160,6 +160,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       textSource,
    } = props;
    const notebook = kind === "notebook";
+   const textHeld = textSource !== undefined;
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
       environmentName,
@@ -375,7 +376,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readForEditor(opening, modelPath)
+      void readForEditor(opening, modelPath, textHeld)
          .then((result) => {
             if (stale) return;
             if (result.ok === false) {
@@ -438,6 +439,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       notebook,
       noun,
       refusedEvent,
+      textHeld,
    ]);
 
    useEffect(() => {
@@ -1097,15 +1099,18 @@ function Surface({
       versionId,
       documentName: slug,
       ...(preamble !== undefined ? { preamble } : {}),
+      ...(hostGivens ? { hostGivens } : {}),
    });
    // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
-   const tileGivens = useMemo(() => {
-      const hostOnly = Object.entries(hostGivens ?? {}).filter(
-         ([name]) => !declaredTypes.has(name),
-      );
-      if (hostOnly.length === 0) return applied;
-      return new Map<string, GivenValue>([...hostOnly, ...applied]);
-   }, [hostGivens, declaredTypes, applied]);
+   const tileHostGivens = useMemo(
+      () =>
+         Object.fromEntries(
+            Object.entries(hostGivens ?? {}).filter(
+               ([name]) => !declaredTypes.has(name),
+            ),
+         ),
+      [hostGivens, declaredTypes],
+   );
 
    const manifestSettled = !served || isSuccess || isError;
    // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
@@ -1156,7 +1161,8 @@ function Surface({
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
-                  givens={tileGivens}
+                  givens={applied}
+                  hostGivens={tileHostGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
@@ -1176,7 +1182,7 @@ function Surface({
          preamble,
          restrictedTiles,
          applied,
-         tileGivens,
+         tileHostGivens,
          declaredTypes,
          specs,
       ],

@@ -106,6 +106,14 @@ describe("Prose: raw HTML", () => {
       });
    }
 
+   it("renders a markdown image as its alt text without an <img>", () => {
+      const { container } = render(
+         <Prose>{"![chart](https://attacker.example/p.png)"}</Prose>,
+      );
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).toContain("chart");
+   });
+
    it("still renders ordinary markdown", () => {
       const { container } = render(<Prose>{"**bold** and `code`"}</Prose>);
       expect(container.querySelector("strong")?.textContent).toBe("bold");

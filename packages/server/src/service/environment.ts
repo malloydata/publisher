@@ -34,6 +34,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    CompileRefusedError,
+   RenderTagRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -53,7 +54,10 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { assertNoRestrictedConstructs } from "./compile_restriction";
+import {
+   assertNoRenderTags,
+   assertNoRestrictedConstructs,
+} from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -192,12 +196,13 @@ let compileRefusalsCounter: Counter | null = null;
 /**
  * Append-scope compile refusals, by reason.
  *
- * Both reasons answer 4xx or 5xx on the same endpoint, so without the label a
+ * The reasons answer 4xx or 5xx on the same endpoint, so without the label a
  * dependency outage and a caller sending forbidden text are one indistinguishable
  * spike -- and the one that needs paging looks like the one that does not.
  * `restricted_construct` is the caller's text; `base_model_load_failed` is the
  * named model failing to load, which includes the schema-fetch case that answers
- * 503.
+ * 503. `render_tag` is a document carrying a URL-producing render tag or markup
+ * in a label, also the caller's text but a different fix than a data root.
  */
 function getCompileRefusalsCounter(): Counter {
    if (compileRefusalsCounter) return compileRefusalsCounter;
@@ -1096,6 +1101,45 @@ export class Environment {
          // The model the append-scope fragment is judged against, loaded once for the gate and for a document.
          let appendBase: ReturnType<Runtime["loadModel"]> | undefined;
 
+         // Counted here rather than inside the gate so every reason shares one instrument and one label set; only a refusal is counted, since anything else the gate rethrows is an infrastructure failure.
+         const countRefusal = (error: unknown): void => {
+            // An unparseable tile is a compile problem for the document, not a refusal.
+            if (
+               error instanceof CompileRefusedError &&
+               !(error instanceof UnparseableTextError)
+            ) {
+               getCompileRefusalsCounter().add(1, {
+                  environment: this.environmentName,
+                  reason:
+                     error instanceof RenderTagRefusedError
+                        ? "render_tag"
+                        : "restricted_construct",
+               });
+            }
+         };
+         const refuseConstructs = async (
+            baseModel: MalloyModel,
+            text: string,
+            renderTags: boolean,
+         ): Promise<void> => {
+            try {
+               await assertNoRestrictedConstructs(runtime, baseModel, text, {
+                  renderTags,
+               });
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
+         const refuseRenderTags = (text: string): void => {
+            try {
+               assertNoRenderTags(text);
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
+
          // Containment for caller-submitted fragments. Scope "append" is the
          // one scope whose text is a FRAGMENT checked against a curated model
          // rather than a file the author owns, so it has no legitimate need to
@@ -1179,38 +1223,22 @@ export class Environment {
                      `"${modelName}" could not be loaded to check it against.`,
                );
             }
-            try {
-               // The fragment ALONE, against the compiled base model. The
-               // concatenation the real compile runs cannot be passed here:
-               // `extendModel` judges text as an extension of a model that
-               // already holds those declarations, so feeding it the model's
-               // own text yields `Cannot redefine` for every source in the file
-               // and aborts before the appended fragment is ever classified --
-               // which is a bypass rather than a stricter check.
-               //
-               // What closes the continuation hole instead is the gate refusing
-               // when it could not parse what it was given (see
-               // assertNoRestrictedConstructs). A continuation fragment is a
-               // syntax error on its own, and that is now a refusal rather than
-               // silence read as approval.
-               await assertNoRestrictedConstructs(
-                  runtime,
-                  baseModel,
-                  source ?? "",
-                  { renderTags: documentCandidate },
-               );
-            } catch (error) {
-               // Counted here rather than inside the gate so both reasons share
-               // one instrument and one label set. Only the refusal is counted:
-               // anything else the gate rethrows is an infrastructure failure it
-               // deliberately does not convert into a caller-facing verdict.
-               if (error instanceof CompileRefusedError) {
-                  getCompileRefusalsCounter().add(1, {
-                     environment: this.environmentName,
-                     reason: "restricted_construct",
-                  });
-               }
-               throw error;
+            // The fragment ALONE, against the compiled base model. The
+            // concatenation the real compile runs cannot be passed here:
+            // `extendModel` judges text as an extension of a model that
+            // already holds those declarations, so feeding it the model's
+            // own text yields `Cannot redefine` for every source in the file
+            // and aborts before the appended fragment is ever classified --
+            // which is a bypass rather than a stricter check.
+            //
+            // What closes the continuation hole instead is the gate refusing
+            // when it could not parse what it was given (see
+            // assertNoRestrictedConstructs). A continuation fragment is a
+            // syntax error on its own, and that is now a refusal rather than
+            // silence read as approval.
+            // A document's whole-text gate runs on the text that compiles, after the per-cell access phase.
+            if (!documentCandidate) {
+               await refuseConstructs(baseModel, source ?? "", false);
             }
          }
 
@@ -1220,6 +1248,8 @@ export class Environment {
             const base = appendBase;
             if (!base) throw new Error("append base model was not loaded");
             const baseModel = await base.getModel();
+            // Syntactic and cheap, so it runs ahead of the cell reader; the compile-based gate runs once access is settled.
+            refuseRenderTags(source);
             const result = await compileDocument({
                base,
                source,
@@ -1258,28 +1288,8 @@ export class Environment {
                                      ),
                           )
                         : Promise.resolve(),
-                  constructs: async (text) => {
-                     try {
-                        await assertNoRestrictedConstructs(
-                           runtime,
-                           baseModel,
-                           text,
-                           { renderTags: true },
-                        );
-                     } catch (error) {
-                        // An unparseable tile is a compile problem for the document, not a refusal.
-                        if (
-                           error instanceof CompileRefusedError &&
-                           !(error instanceof UnparseableTextError)
-                        ) {
-                           getCompileRefusalsCounter().add(1, {
-                              environment: this.environmentName,
-                              reason: "restricted_construct",
-                           });
-                        }
-                        throw error;
-                     }
-                  },
+                  constructs: (text) => refuseConstructs(baseModel, text, true),
+                  document: (text) => refuseConstructs(baseModel, text, false),
                   nameVisible: (query, definitions) => {
                      gate?.assertTextNameVisible(query, definitions);
                   },
@@ -1320,6 +1330,8 @@ export class Environment {
                   ...(result.document && { document: result.document }),
                };
             }
+            // Not a readable document after all, so the ordinary compile runs and the whole text is judged as one.
+            await refuseConstructs(baseModel, source, false);
             await runEarlyGate();
          }
 

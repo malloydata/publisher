@@ -4,7 +4,11 @@
 import type { LogMessage, Model, Runtime } from "@malloydata/malloy";
 import { Malloy, MalloyError, MalloyTranslator } from "@malloydata/malloy";
 import { ParseUtil, type Tag } from "@malloydata/malloy-tag";
-import { CompileRefusedError, UnparseableTextError } from "../errors";
+import {
+   CompileRefusedError,
+   RenderTagRefusedError,
+   UnparseableTextError,
+} from "../errors";
 import {
    hasEnvReference,
    MAX_ANNOTATION_CHARS,
@@ -369,6 +373,17 @@ const ENV_REFUSAL =
 
 const TOO_MANY = `the submitted document carries more annotations than one may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
 
+/** Throws RenderTagRefusedError when document text writes a render tag that turns a value into a URL or markup. Syntactic, so it answers a hidden source and an absent one alike. */
+export function assertNoRenderTags(source: string): void {
+   const refusal = renderTagRefusal(source);
+   if (refusal) {
+      throw new RenderTagRefusedError(
+         `This Malloy cannot be compiled at scope "append", which validates a ` +
+            `fragment against the model's published surface: ${refusal}`,
+      );
+   }
+}
+
 /**
  * Compile `source` against `model` in restricted mode and throw if it uses a
  * construct that reaches outside the model's curated surface.
@@ -419,13 +434,7 @@ export async function assertNoRestrictedConstructs(
     */
    { renderTags }: { renderTags: boolean },
 ): Promise<void> {
-   const refusal = renderTags ? renderTagRefusal(source) : undefined;
-   if (refusal) {
-      throw new CompileRefusedError(
-         `This Malloy cannot be compiled at scope "append", which validates a ` +
-            `fragment against the model's published surface: ${refusal}`,
-      );
-   }
+   if (renderTags) assertNoRenderTags(source);
    let problems: readonly LogMessage[];
    try {
       const compiled = await Malloy.compile({

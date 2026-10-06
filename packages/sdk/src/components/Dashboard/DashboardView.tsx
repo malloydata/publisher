@@ -4,7 +4,7 @@
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
-import type { GivenValue } from "../../hooks/givenValue";
+import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import {
    useDrill,
@@ -14,7 +14,11 @@ import {
    type DrillRowsRequest,
 } from "../drill";
 import { GivensPanel } from "../given";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
+import {
+   givensToParams,
+   givensToRequest,
+   withHostGivens,
+} from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
@@ -36,7 +40,12 @@ export interface DashboardViewProps {
    versionId?: string;
    /** The slug or path the manifest was fetched under, which keys its control edits. */
    documentName: string;
-   givens?: Record<string, string>;
+   /**
+    * The host's values, typically its URL query parameters. A string drives a
+    * control; a value no control declares is sent as given to the tiles that
+    * read it, and only there may it be a list.
+    */
+   givens?: Record<string, HostGivenValue>;
    onGivensChange?: (
       givens: Record<string, string>,
       managed: readonly string[],
@@ -93,13 +102,26 @@ export function DashboardView({
       [manifest, hiddenGivens, preamble],
    );
 
+   // Only a string can be a control's value; a list has no URL form.
+   const controlParams = useMemo(
+      () =>
+         givens === undefined
+            ? undefined
+            : (Object.fromEntries(
+                 Object.entries(givens).filter(
+                    ([, value]) => typeof value === "string",
+                 ),
+              ) as Record<string, string>),
+      [givens],
+   );
+
    // The control row's state, options and `to=self` drill: the same hook the
    // notebook uses, so a control behaves identically on both surfaces.
    const controls = useDocumentControls({
       specs,
       loaded: true,
       startingValues: manifest.startingGivens,
-      params: givens,
+      params: controlParams,
       onGivensChange,
       // Version included: two dashboards whose starting values coincide would
       // otherwise look like one document, and the one you came from would keep
@@ -113,21 +135,22 @@ export function DashboardView({
       versionId,
       documentName,
       ...(preamble !== undefined ? { preamble } : {}),
+      ...(givens ? { hostGivens: givens } : {}),
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
 
    // A given only a gate reads is in a tile's `givenNames` but not the row, so
    // the host's value for it is sent as given: the row would drop it as undeclared.
-   const tileGivens = useMemo(() => {
+   const tileHostGivens = useMemo(() => {
       const named = new Set(
          (manifest.tiles ?? []).flatMap((tile) => tile.givenNames ?? []),
       );
-      const hostOnly = Object.entries(givens ?? {}).filter(
-         ([name]) => named.has(name) && !declaredTypes.has(name),
+      return Object.fromEntries(
+         Object.entries(givens ?? {}).filter(
+            ([name]) => named.has(name) && !declaredTypes.has(name),
+         ),
       );
-      if (hostOnly.length === 0) return applied;
-      return new Map<string, GivenValue>([...hostOnly, ...applied]);
-   }, [manifest, givens, declaredTypes, applied]);
+   }, [manifest, givens, declaredTypes]);
 
    // The rows behind a clicked value, and a tile's query in the explorer —
    // the two ways past a number. Composite tiles only: each names its
@@ -148,8 +171,12 @@ export function DashboardView({
    // The whole applied row and any gate givens: a source's own `where:` may read any of it, and a
    // given the rows query does not reference is ignored by the server.
    const rowsGivens = useMemo(
-      () => givensToRequest(tileGivens, declaredTypes),
-      [tileGivens, declaredTypes],
+      () =>
+         withHostGivens(
+            givensToRequest(applied, declaredTypes),
+            tileHostGivens,
+         ),
+      [applied, declaredTypes, tileHostGivens],
    );
 
    // The explorer's controls take the URL-string form, not the request form.
@@ -257,7 +284,8 @@ export function DashboardView({
                         label={tile.label}
                         subtitle={tile.subtitle}
                         borderless={tile.borderless}
-                        givens={tileGivens}
+                        givens={applied}
+                        hostGivens={tileHostGivens}
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={height ?? TILE_MAX_HEIGHT}
