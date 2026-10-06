@@ -18,6 +18,12 @@ To learn the skills with nothing installed, read <code>https://unpkg.com/@malloy
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js >=20"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/v/@malloy-publisher/server" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/dm/@malloy-publisher/server" alt="npm downloads"></a>
+  <a href="https://hub.docker.com/r/ms2data/malloy-publisher"><img src="https://img.shields.io/docker/pulls/ms2data/malloy-publisher" alt="Docker pulls"></a>
+  <a href="https://github.com/malloydata/publisher/stargazers"><img src="https://img.shields.io/github/stars/malloydata/publisher?style=social" alt="GitHub Stars"></a>
 </p>
 
 <p align="center">
