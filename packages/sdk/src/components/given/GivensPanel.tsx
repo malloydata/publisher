@@ -10,7 +10,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 /**
  * How the control row is laid out.
  *
- * - `panel`: the vertical "Parameters" block a notebook shows above its cells.
+ * - `panel`: the vertical "Filters" block a notebook shows above its cells.
  * - `bar`: a horizontal filter bar above a dashboard grid.
  *
  * Two presentations of one control implementation, rather than two
@@ -39,7 +39,7 @@ export interface GivensPanelProps {
       /** Whether anything has changed since the last apply. */
       pending: boolean;
    };
-   /** Overrides the `panel` layout's "Parameters" heading. */
+   /** Overrides the `panel` layout's "Filters" heading. */
    title?: string;
 }
 
@@ -107,18 +107,12 @@ export function GivensPanel({
                disableElevation
                onClick={apply.onApply}
                disabled={!apply.pending}
-               sx={{ textTransform: "none" }}
             >
                Apply
             </Button>
          )}
          {hasValues && (
-            <Button
-               variant="text"
-               size="small"
-               onClick={onReset}
-               sx={{ textTransform: "none" }}
-            >
+            <Button variant="text" size="small" onClick={onReset}>
                Reset
             </Button>
          )}
@@ -178,9 +172,9 @@ export function GivensPanel({
          >
             <Typography
                variant="subtitle2"
-               sx={{ fontWeight: 600, color: "text.primary" }}
+               sx={{ fontWeight: "fontWeightMedium", color: "text.primary" }}
             >
-               {title ?? "Parameters"}
+               {title ?? "Filters"}
             </Typography>
             {actions}
          </Stack>

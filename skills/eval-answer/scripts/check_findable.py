@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Can a right-typed search actually retrieve each `required` entity? Stdlib only.
 
+  python3 check_findable.py --set <set-dir>   # server and names from its eval.toml
   python3 check_findable.py --set evals/faa-v1 --mcp-url http://localhost:4045/mcp \
       --environment samples --package faa
 
@@ -44,6 +45,8 @@ EXIT CODES
   1  at least one is not
   2  usage error
   3  the check could not run (no server, no scope); says nothing either way
+  4  inconclusive: the server answered `indexing` or `error` instead of searching,
+     so no id was checked. Re-run once the index is ready.
 """
 from __future__ import annotations
 
@@ -58,7 +61,8 @@ import urllib.request
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from mcp_payload import entity_hits  # noqa: E402
+import config  # noqa: E402
+from mcp_payload import entity_hits, unavailable_state  # noqa: E402
 
 # An entity kind, and the target type that can return it. The inverse of the
 # server's KINDS_BY_TARGET; `score_retrieval.KINDS_BY_TARGET` is the forward map
@@ -102,6 +106,24 @@ def get_context(mcp_url: str, targets: list[dict[str, str]],
     content = d["result"]["content"]
     text = content[0].get("text") or content[0].get("resource", {}).get("text")
     return json.loads(text)
+
+
+def add_fields(bucket: set[str], fields: list[Any], prefix: str = "") -> None:
+    """Every field as `kind:name`, and every field reached through a join as
+    `kind:join.name`, the dotted path get_context names it by.
+
+    A join field carries the joined source's schema, so each hop of a path is
+    checked against the join the source actually declares. Looking the last
+    hop up as a source name instead passed a bogus first hop, and failed a
+    join whose name is not its source's (`join_one: buyer is customers`).
+    """
+    for f in fields:
+        if not (isinstance(f, dict) and f.get("name") and f.get("kind")):
+            continue
+        bucket.add(f"{f['kind']}:{prefix}{f['name']}")
+        if f["kind"] == "join":
+            add_fields(bucket, (f.get("schema") or {}).get("fields") or [],
+                       f"{prefix}{f['name']}.")
 
 
 def compiled_entities(rest_url: str, environment: str,
@@ -161,9 +183,7 @@ def compiled_entities(rest_url: str, environment: str,
                 continue
             bucket = out.setdefault(src, set())
             bucket.add(f"source:{src}")
-            for f in fields:
-                if isinstance(f, dict) and f.get("name") and f.get("kind"):
-                    bucket.add(f"{f['kind']}:{f['name']}")
+            add_fields(bucket, fields)
         for q in doc.get("queries") or []:
             if not isinstance(q, dict):
                 continue
@@ -177,14 +197,17 @@ def compiled_entities(rest_url: str, environment: str,
     return out or None
 
 
-def embedding_index_status(rest_url: str, environment: str, package: str,
-                           timeout: int = 15) -> str | None:
-    """`embeddingIndex.status` for one package, or None if it cannot be read.
+def embedding_index(rest_url: str, environment: str, package: str,
+                    timeout: int = 15) -> dict[str, Any] | None:
+    """The package's `embeddingIndex` object, or None if it cannot be read.
 
-    Retrieval is semantic only once this reaches `ready`; before that the
-    server answers the same calls from the lexical matcher without saying so,
-    and fewer entities come back. A checker that does not wait for it reports
-    the difference as a broken answer key.
+    `status` is `lexical` (no embedding provider: a mode, not a failure),
+    `indexing`, `ready` or `error`. An `error` carries `reason` (`cooldown`,
+    `too-many-entities`, `provider-error`, `unavailable`) and `lastError`
+    (`message`, `retryAt`). With a provider configured, get_context answers
+    semantically only at `ready`; a checker that ignores the status reports a
+    server-side state as a broken answer key. None also covers a server too old
+    to send the field.
     """
     url = (f"{rest_url.rstrip('/')}/api/v0/environments/"
            f"{urllib.parse.quote(environment)}/packages/"
@@ -195,10 +218,76 @@ def embedding_index_status(rest_url: str, environment: str, package: str,
     except (urllib.error.URLError, OSError, ValueError):
         return None
     index = body.get("embeddingIndex")
-    if not isinstance(index, dict):
+    if not isinstance(index, dict) or not isinstance(index.get("status"), str):
         return None
+    return index
+
+
+# `indexing` is the only state that can still change on its own. `lexical`
+# (no provider) and `error` are settled; `error` clears only by a re-run.
+# Neither pass (0) nor findings (1): the check could not run.
+EXIT_INCONCLUSIVE = 4
+
+def index_cannot_search(index: dict[str, Any] | None) -> bool:
+    """Whether the wait ended on an index that answers no search.
+
+    `indexing` after the deadline and `error` both do. `lexical` and `ready`
+    search, and an unreadable status (None) is left to the per-search check.
+    """
+    return index is not None and index.get("status") in ("indexing", "error")
+
+
+TERMINAL = ("ready", "lexical", "error")
+
+
+def index_message(index: dict[str, Any] | None, wait: int) -> str | None:
+    """What to tell the user about the index, or None when it is `ready`."""
+    if index is None:
+        return ("! the embedding index status could not be read (the server "
+                "may be too old to report it); a miss below may be the "
+                "lexical matcher rather than the key")
     status = index.get("status")
-    return status if isinstance(status, str) else None
+    if status == "ready":
+        return None
+    if status == "lexical":
+        return ("! no embedding provider is configured, so this run measures "
+                "the lexical matcher. The misses below are real for this "
+                "server and say nothing about semantic retrieval")
+    if status == "indexing":
+        return (f"! the embedding index was still indexing after {wait}s, so "
+                f"get_context is not answering semantically yet. Re-run "
+                f"rather than acting on a miss below")
+    if status == "error":
+        reason = index.get("reason")
+        last = index.get("lastError")
+        detail = last.get("message") if isinstance(last, dict) else None
+        if reason == "cooldown":
+            return ("! the embedding provider failed recently and is in "
+                    "cooldown, so get_context returns an error rather than "
+                    "an answer. Re-run once it has cleared"
+                    + (f" ({detail})" if detail else ""))
+        if reason == "too-many-entities":
+            return ("! this package is over the embedding entity cap, so it "
+                    "will never be indexed. Raise retrieval.indexing."
+                    "maxEntities, or split the package")
+        return (f"! the embedding index is in error (reason: "
+                f"{reason or 'unknown'}): {detail or 'no message given'}")
+    return (f"! the embedding index reported an unknown status {status!r}; "
+            f"a miss below may be the index, not the key")
+
+
+def wait_for_index(rest_url: str, environment: str, package: str, wait: int,
+                   read=None, sleep=time.sleep,
+                   clock=time.monotonic) -> dict[str, Any] | None:
+    """Poll until the index status is terminal, unreadable, or `wait` runs out."""
+    read = read or embedding_index
+    deadline = clock() + wait
+    index = read(rest_url, environment, package)
+    while index is not None and index["status"] not in TERMINAL \
+            and clock() < deadline:
+        sleep(2)
+        index = read(rest_url, environment, package)
+    return index
 
 
 def stale_packages(rest_url: str, timeout: int = 30) -> set[tuple[str, str]] | None:
@@ -224,14 +313,46 @@ def stale_packages(rest_url: str, timeout: int = 30) -> set[tuple[str, str]] | N
             if isinstance(e, dict) and e.get("stale")}
 
 
+def current_entities(rest_url: str, environment: str,
+                     package: str) -> tuple[dict[str, set[str]] | None, str | None]:
+    """`compiled_entities`, unless the package is stale, and a warning if any.
+
+    Staleness first. A stale package answers the models endpoint normally
+    while describing the compile BEFORE the last save, so an entity deleted
+    since then reads as declared. Refusing to check says so; checking anyway
+    would be one more number nobody had earned. Every caller that treats the
+    compiled model as the authority goes through here.
+    """
+    stale = stale_packages(rest_url)
+    if stale and (environment, package) in stale:
+        return None, (f"{environment}/{package} is serving a STALE model (its "
+                      f"last reload failed to compile), so the compiled model "
+                      f"is not the authority on what exists; existence and "
+                      f"kind were NOT checked. Fix the model and reload, then "
+                      f"re-run.")
+    declared = compiled_entities(rest_url, environment, package)
+    if declared is None:
+        return None, ("the compiled model could not be read; existence and "
+                      "kind were NOT checked")
+    if stale is None:
+        return declared, ("the server's status could not be read, so "
+                          "staleness is unknown; treating the compiled model "
+                          "as current")
+    return declared, None
+
+
 def declared_findings(cases: list[dict[str, Any]],
                       declared: dict[str, set[str]]) -> list[str]:
     """Ids the compiled model does not declare, or declares as another kind."""
     out = []
     for eid, qids in sorted(required_ids(cases).items()):
         parts = eid.split(":", 2)
-        if len(parts) < 3:
-            continue          # malformed; `check` reports it on its own
+        if len(parts) < 3 or not all(parts):
+            # Reported here as well as by `check`: the in-run lint calls only
+            # this, and an id it skips is one no retrieval can ever match.
+            out.append(f"{eid}: not a kind:source:name id "
+                       f"(required by {', '.join(qids)})")
+            continue
         kind, src, name = parts
         if src not in declared:
             out.append(f"{eid}: the compiled model has no source {src!r} "
@@ -239,25 +360,23 @@ def declared_findings(cases: list[dict[str, Any]],
             continue
         if f"{kind}:{name}" in declared[src]:
             continue
-        # A DOTTED name is a join path, not a field name. `declared[src]` holds
-        # the source's OWN fields, so `dimension:order_items:products.brand`
-        # never matched and every dotted id was reported as a missing field --
-        # five of them on one set, against a get_context that returns each as
-        # its top result. Resolve it where it lives: the last segment is the
-        # field, the segment before it names the joined source.
+        # A DOTTED name is a join path. `compiled_entities` records every
+        # field reached through a join under its path, so a miss above means a
+        # hop or the leaf is wrong. Name the first hop that does not exist.
         if "." in name:
             *path, leaf = name.split(".")
-            hop = path[-1]
-            if hop in declared and f"{kind}:{leaf}" in declared[hop]:
-                continue
-            if hop not in declared:
-                out.append(f"{eid}: the join path names {hop!r}, which the "
-                           f"compiled model has no source for "
-                           f"(required by {', '.join(qids)})")
+            reached = ""
+            for hop in path:
+                if f"join:{reached}{hop}" not in declared[src]:
+                    out.append(f"{eid}: the compiled {src} source has no join "
+                               f"{reached + hop!r} (required by "
+                               f"{', '.join(qids)})")
+                    break
+                reached += hop + "."
             else:
-                out.append(f"{eid}: the compiled {hop} source declares no "
-                           f"{kind} {leaf!r} to reach through that join "
-                           f"(required by {', '.join(qids)})")
+                out.append(f"{eid}: the join {'.'.join(path)!r} from {src} "
+                           f"reaches no {kind} {leaf!r} (required by "
+                           f"{', '.join(qids)})")
             continue
         other = sorted(k.split(":", 1)[0] for k in declared[src]
                        if k.split(":", 1)[1] == name)
@@ -299,6 +418,10 @@ def finding_id(message: str) -> str:
     return message.split(": ", 1)[0]
 
 
+class Inconclusive(Exception):
+    """The search could not run, so the check says nothing about the key."""
+
+
 def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
           package: str) -> tuple[list[str], list[dict[str, Any]]]:
     findings: list[str] = []
@@ -324,6 +447,15 @@ def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
             raise SystemExit(f"get_context failed for {eid}: {e}\n"
                              f"The check did not run; this says nothing about "
                              f"the key.") from e
+        state = unavailable_state(payload)
+        if state:
+            # An `indexing` or `error` answer carries no entities. Reading it
+            # as a miss would report "not retrievable" for an id the server
+            # never searched for.
+            raise Inconclusive(
+                f"get_context answered `{state}` for {eid}, so the server did "
+                f"not search. The check is inconclusive: it says nothing "
+                f"about the key.")
         hit = next((h for h in entity_hits(payload)
                     if h["entity_id"] == eid), None)
         rows.append({"entity_id": eid, "target": target, "search_text": phrase,
@@ -341,11 +473,15 @@ def check(cases: list[dict[str, Any]], mcp_url: str, environment: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--mcp-url", required=True,
+    ap.add_argument("--mcp-url", default=None,
                     help="the MCP endpoint of the model UNDER TEST, not the "
-                         "truth server")
-    ap.add_argument("--environment", required=True)
-    ap.add_argument("--package", required=True)
+                         "truth server. Default: from [model] in the set's "
+                         "eval.toml")
+    ap.add_argument("--environment", default=None,
+                    help="Default: [model] environment in the set's eval.toml")
+    ap.add_argument("--package", default=None,
+                    help="Default: [model] package in the set's eval.toml, then "
+                         "set.json's targetPackage")
     ap.add_argument("--publisher", default=None,
                     help="REST URL of the same server, e.g. "
                          "http://localhost:4811. With it, each id is also "
@@ -361,6 +497,10 @@ def main(argv: list[str] | None = None) -> int:
                          "wait, which risks reading the lexical matcher as a "
                          "missing entity")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.environment = cfg.need(a.environment, "model", "environment", "--environment")
+    a.package = cfg.need(a.package, "model", "package", "--package")
+    a.mcp_url = a.mcp_url or cfg.model_mcp_url()
 
     f = a.set_dir / "cases.jsonl"
     if not f.exists():
@@ -368,85 +508,50 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     cases = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
 
-    # The embedding index is built lazily, on the first call that ranks. A
-    # search run seconds after a server start is answered by the LEXICAL
-    # matcher, which finds fewer things -- and this check reads "fewer things"
-    # as "the key names entities that cannot be retrieved" and tells you to fix
-    # the key. Three ids were reported missing that way on one set and all
-    # three passed on a re-run. So wait for it, and say so when it cannot.
+    # With an embedding provider configured, get_context does not fall back to
+    # the lexical matcher while the index builds: it answers "indexing" or an
+    # error, and this check would read that empty answer as "the key names
+    # entities that cannot be retrieved". So wait for a terminal status first,
+    # and say so when the wait ends on anything but `ready`.
     if a.publisher and a.index_wait:
-        # The server's enum is indexing | ready | cooldown | too-many-entities.
-        # `cooldown` (the embedding provider failed recently) and
-        # `too-many-entities` (over the cap, permanently lexical) will never
-        # become `ready`, so waiting on them burns the whole timeout for a
-        # result that is knowable on the first read.
-        TERMINAL = ("ready", "cooldown", "too-many-entities")
-        # `indexing` does NOT clear on its own: the docs say it clears "once a
-        # get_context question triggers a sync, which is what builds the
-        # index". Polling the package resource never triggers one, so a wait
-        # that only polls is a guaranteed stall on a freshly loaded package.
-        # One ranking call first, as serve.py --warm-retrieval does.
+        # Current servers start indexing when the package loads, so polling
+        # alone is enough. Older servers only started a sync on the first
+        # ranking call, and polling never triggers one, so send one ranking
+        # call first (as serve.py --warm-retrieval does). It is harmless on a
+        # current server.
         try:
             get_context(a.mcp_url, [{"target_type": "source"}],
                         a.environment, a.package)
         except (urllib.error.URLError, RuntimeError, OSError):
             pass                      # the search below reports it properly
-        deadline = time.monotonic() + a.index_wait
-        status = embedding_index_status(a.publisher, a.environment, a.package)
-        while status not in TERMINAL and status is not None \
-                and time.monotonic() < deadline:
-            time.sleep(2)
-            status = embedding_index_status(a.publisher, a.environment,
-                                            a.package)
-        if status is None:
-            print("! the embedding index status could not be read; a miss "
-                  "below may be the lexical matcher rather than the key",
-                  file=sys.stderr)
-        elif status == "too-many-entities":
-            print("! this package is over the embedding cap, so retrieval is "
-                  "permanently lexical here. The misses below are real for "
-                  "this server and say nothing about a semantic one",
-                  file=sys.stderr)
-        elif status == "cooldown":
-            print("! the embedding provider is in cooldown, so retrieval is "
-                  "lexical for now. Re-run rather than acting on a miss below",
-                  file=sys.stderr)
-        elif status != "ready":
-            print(f"! the embedding index is {status!r} after "
-                  f"{a.index_wait}s, so this search may be answered "
-                  f"lexically; a miss below may be the index, not the key",
-                  file=sys.stderr)
+        index = wait_for_index(a.publisher, a.environment, a.package,
+                               a.index_wait)
+        note = index_message(index, a.index_wait)
+        if note:
+            print(note, file=sys.stderr)
+        if index_cannot_search(index):
+            # The wait ended on a server that cannot rank. Every search below
+            # would come back empty and read as a missing entity.
+            print(f"inconclusive: the embedding index is "
+                  f"`{index.get('status')}`, so no search was run. Re-run "
+                  f"once it is ready.", file=sys.stderr)
+            return EXIT_INCONCLUSIVE
 
     declared_out: list[str] = []
     if a.publisher:
-        # Staleness first. A stale package answers the models endpoint normally
-        # while describing the compile BEFORE the last save, so reading it as
-        # the authority prints findings nobody can act on: the id may be fine
-        # and the served model simply old. Refusing to check says so; checking
-        # anyway would be one more number the harness had not earned.
-        stale = stale_packages(a.publisher)
-        if stale is None:
-            print("! the server's status could not be read, so staleness is "
-                  "unknown; treating the compiled model as current",
-                  file=sys.stderr)
-        is_stale = bool(stale) and (a.environment, a.package) in stale
-        declared = (None if is_stale
-                    else compiled_entities(a.publisher, a.environment, a.package))
-        if is_stale:
-            print(f"! {a.environment}/{a.package} is serving a STALE model "
-                  f"(its last reload failed to compile), so the compiled model "
-                  f"is not the authority on what exists; existence and kind "
-                  f"were NOT checked. Fix the model and reload, then re-run.",
-                  file=sys.stderr)
-        elif declared is None:
-            print("! the compiled model could not be read; existence and kind "
-                  "were NOT checked", file=sys.stderr)
-        else:
+        declared, warning = current_entities(a.publisher, a.environment, a.package)
+        if warning:
+            print(f"! {warning}", file=sys.stderr)
+        if declared is not None:
             declared_out = declared_findings(cases, declared)
             print(f"compiled model: {sum(len(v) for v in declared.values())} "
                   f"entities across {len(declared)} sources")
 
-    findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+    try:
+        findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+    except Inconclusive as e:
+        print(f"inconclusive: {e}", file=sys.stderr)
+        return EXIT_INCONCLUSIVE
     # An id the compiled model already rejected is not also reported as
     # unretrievable: it is the same defect, and saying it twice reads as two.
     # The compiled message is the useful one, because it names the real kind.

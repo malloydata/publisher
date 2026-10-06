@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { Box } from "@mui/material";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { QueryResultState } from "../../hooks/useQueryResult";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillBinding } from "../drill/useDrill";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
+import { warmMalloyRenderer } from "./loadRenderer";
 import ResultContainer from "./ResultContainer";
 
 export interface ResultPanelProps {
@@ -18,6 +19,8 @@ export interface ResultPanelProps {
    maxHeight?: number;
    maxResultSize?: number;
    drill?: DrillBinding;
+   /** See `ResultContainer`: stretch the result to its cell. */
+   fill?: boolean;
    /**
     * Rewrites the result before it is rendered — a dashboard tile promotes a
     * one-row measure result to KPI cards this way. Memoized on the result
@@ -40,13 +43,21 @@ export interface ResultPanelProps {
 export function ResultPanel({
    state,
    context,
-   loadingText = "Running…",
+   loadingText = LOADING_COPY.running,
    maxHeight,
    maxResultSize,
    drill,
+   fill,
    transform,
 }: ResultPanelProps) {
-   const { data, isSuccess, isError, error } = state;
+   const { data, isSuccess, isError, error, fetchStatus } = state;
+   // Fetch the renderer while the query runs, so the first chart does not wait
+   // on it after the rows arrive. Not before: a tile still waiting to scroll
+   // into view has asked for nothing, and neither should its renderer.
+   const resultOnItsWay = isSuccess || fetchStatus === "fetching";
+   useEffect(() => {
+      if (resultOnItsWay) warmMalloyRenderer();
+   }, [resultOnItsWay]);
    const raw = data?.data.result;
    const result = useMemo(
       () => (raw !== undefined && transform ? transform(raw) : raw),
@@ -60,7 +71,14 @@ export function ResultPanel({
          </Box>
       );
    }
-   if (!isSuccess) return <Loading text={loadingText} />;
+   if (!isSuccess)
+      // Nothing is running while a query waits (a tile not yet scrolled near),
+      // so it does not say "Running…".
+      return (
+         <Loading
+            text={fetchStatus === "idle" ? LOADING_COPY.loading : loadingText}
+         />
+      );
    return (
       <ResultContainer
          result={result}
@@ -68,6 +86,7 @@ export function ResultPanel({
          maxResultSize={maxResultSize}
          renderLogs={data.data.renderLogs}
          drill={drill}
+         fill={fill}
       />
    );
 }

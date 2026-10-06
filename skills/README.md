@@ -5,6 +5,11 @@ SPDX-License-Identifier: MIT
 
 # Publisher skills
 
+**To use these skills without cloning this repo:**
+
+1. **Learn.** Read the getting-started skill. Nothing to install, no server: <https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md>. Every skill reads the same way; put its name in place of `malloy-getting-started`.
+2. **Install.** With a shell, run `npx -y @malloy-publisher/skills@latest install` to copy every skill into this project, or add `--global` for your home directory. `npx -y @malloy-publisher/skills@latest list` shows what ships. [`packages/skills/README.md`](../packages/skills/README.md) says how `install` picks the agent.
+
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
 [`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. The MCP prompts carry the same tree: each `SKILL.md` body as one prompt, plus every `reference/*.md` as its own prompt named `<skill>/<file stem>`. It copies this tree in when it is packed, so adding a skill here needs no packaging step and no version bump: [`packages/skills/package.json`](../packages/skills/package.json) carries a fixed placeholder version, and what actually publishes is decided at release time from npm's own published content, not from anything committed here. **Two packages ship it, not one:** `packages/create-malloy-package` copies this tree into a scaffolded package, so a skills edit is published content there too, and its release publishes independently of skills' own decision (see `.github/workflows/CONTEXT.md`).
@@ -15,7 +20,7 @@ Task-specific guides for working with Malloy through this Publisher deployment. 
 
 That matters because the four channels used to take "everything under `skills/` minus `credible-*`" independently, so a skill added here shipped everywhere by default and there was nowhere to say otherwise. Registering a skill is now one line in the manifest, and forgetting to is a red build rather than a silent non-ship.
 
-`groups` names the two roles a consumer can take on its own: `analysis` (12 skills) is what an agent answering questions over a published model loads, `modeling` (34) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
+`groups` names the two roles a consumer can take on its own: `analysis` (11 skills) is what an agent answering questions over a published model loads, `modeling` (34) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
 
 **A group is installable on its own**, which is a property `manifest.spec.ts` holds it to: a member never `skill:`-references a skill outside its group, so nothing tells the agent to read what it does not have. That is why `malloy-getting-started` and `malloy-analysis-report` name `malloy-gotchas-modeling` and `malloy-model` in prose rather than as `skill:` references. Both are modeling doctrine, and an answerer that followed the reference would hold exactly what the `analysis` group exists to withhold.
 
@@ -36,7 +41,7 @@ Two rules make it work:
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-data-app-design`, `malloy-lookml-review`, `malloy-powerbi-review`, `malloy-patterns`.
+- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-data-app-design`, `malloy-lookml-review`, `malloy-powerbi-review`, `malloy-patterns`.
 - **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills

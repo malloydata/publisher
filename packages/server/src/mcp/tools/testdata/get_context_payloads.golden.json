@@ -1,0 +1,1704 @@
+{
+   "configured/listing": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "configured-listing",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            }
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "configured-listing",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 2
+   },
+   "fallback/cooldown": {
+      "error": "Semantic search for this package is paused after an embedding failure: Embedding request failed (500): down",
+      "suggestions": [
+         "The next question after <retry-at> tries again; nothing retries on its own before then.",
+         "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
+         "A request with no search_text (a listing) still works; it needs no embeddings."
+      ],
+      "sources": [],
+      "retrieval": "error",
+      "retrieval_reason": "cooldown"
+   },
+   "fallback/indexing": {
+      "sources": [],
+      "ranking": "relevance",
+      "total_available": 0,
+      "returned": 0,
+      "retrieval": "indexing",
+      "retrieval_progress": {
+         "embedded": 0,
+         "total": 13
+      },
+      "warnings": [
+         "This package's semantic index is still being built (0 of 13 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
+      ]
+   },
+   "fallback/indexing with stale note": {
+      "sources": [],
+      "ranking": "relevance",
+      "total_available": 0,
+      "returned": 0,
+      "retrieval": "indexing",
+      "retrieval_progress": {
+         "embedded": 0,
+         "total": 13
+      },
+      "warnings": [
+         "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error.",
+         "This package's semantic index is still being built (0 of 13 vectors built), so there are no results yet. Nothing is wrong: ask the same question again in a few seconds. It was not answered by keyword search because an embedding provider is configured, and a keyword ranking would differ from what the finished index returns. A request with no search_text (a listing) works now."
+      ]
+   },
+   "fallback/provider-error": {
+      "error": "The embedding provider failed to embed the search text: Embedding request failed (500): down",
+      "suggestions": [
+         "The next question after <retry-at> tries again; nothing retries on its own before then.",
+         "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
+         "A request with no search_text (a listing) still works; it needs no embeddings."
+      ],
+      "sources": [],
+      "retrieval": "error",
+      "retrieval_reason": "provider-error"
+   },
+   "fallback/too-many-entities": {
+      "error": "The package has 5001 entities, over the semantic index cap of 5000. Fix: set retrieval.indexing.maxEntities to 20000 or more in publisher.config.json (for example \"retrieval\": { \"indexing\": { \"maxEntities\": 20000 } }) and restart the server. A higher cap makes the first index take longer, in proportion to the number of entities.",
+      "suggestions": [
+         "Ask the operator to raise retrieval.indexing.maxEntities in publisher.config.json and restart the server.",
+         "A request with no search_text (a listing) still works; it needs no embeddings."
+      ],
+      "sources": [],
+      "retrieval": "error",
+      "retrieval_reason": "too-many-entities"
+   },
+   "fallback/unavailable malformed config": {
+      "error": "Semantic search is unavailable: Invalid value for EMBEDDING_API_BASE: expected a URL, got \"not a url\"",
+      "suggestions": [
+         "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
+         "A request with no search_text (a listing) still works; it needs no embeddings."
+      ],
+      "sources": [],
+      "retrieval": "error",
+      "retrieval_reason": "unavailable"
+   },
+   "fallback/unavailable no storage": {
+      "error": "Semantic search is unavailable: the semantic index storage could not be reached (see the server log)",
+      "suggestions": [
+         "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
+         "A request with no search_text (a listing) still works; it needs no embeddings."
+      ],
+      "sources": [],
+      "retrieval": "error",
+      "retrieval_reason": "unavailable"
+   },
+   "semantic/empty package": {
+      "sources": [],
+      "ranking": "relevance",
+      "total_available": 0,
+      "returned": 0,
+      "retrieval": "semantic",
+      "below_cutoff_count": 0,
+      "total_entities": 0
+   },
+   "semantic/multiple targets of different kinds": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-multiple targets of different kinds",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "relevance": 1,
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-multiple targets of different kinds",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "total_revenue",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:total_revenue",
+                  "relevance": 1,
+                  "description": "Sum of order revenue.",
+                  "matched_targets": [
+                     {
+                        "search_text": "sum of order revenue",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "order_count",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:order_count",
+                  "relevance": 0.2887,
+                  "matched_targets": [
+                     {
+                        "search_text": "sum of order revenue",
+                        "relevance": 0.2887
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.8944
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 3,
+      "total_entities": 10
+   },
+   "semantic/per-source entity cut warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-per-source entity cut warning",
+                  "model_path": "wide.malloy",
+                  "source": "telemetry"
+               },
+               "one_line_summary": "Device readings.",
+               "docs": "Device readings.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "metric_00",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_00",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_01",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_01",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_02",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_02",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_03",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_03",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_04",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_04",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_05",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_05",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_06",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_06",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_07",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_07",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_08",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_08",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "metric_09",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_09",
+                  "relevance": 1,
+                  "description": "A metric reading.",
+                  "matched_targets": [
+                     {
+                        "search_text": "a metric reading",
+                        "relevance": 1
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1,
+      "retrieval": "semantic",
+      "below_cutoff_count": 0,
+      "total_entities": 12,
+      "warnings": [
+         "2 further entities matched but were cut at 10 per source per target. Scope to one source to list all of its fields."
+      ]
+   },
+   "semantic/query with little overlap": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-query with little overlap",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3162,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "zzqx wwvk",
+                        "relevance": 0.3162
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3162
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-query with little overlap",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 0.2673,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "zzqx wwvk",
+                        "relevance": 0.2673
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.2673
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 3,
+      "total_entities": 5
+   },
+   "semantic/scoped to a model path": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-scoped to a model path",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1,
+      "retrieval": "semantic",
+      "below_cutoff_count": 1,
+      "total_entities": 3
+   },
+   "semantic/scoped to a source": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-scoped to a source",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3381
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1,
+      "retrieval": "semantic",
+      "below_cutoff_count": 1,
+      "total_entities": 2
+   },
+   "semantic/scoped to an entity name": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-scoped to an entity name",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-scoped to an entity name",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3381
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 0,
+      "total_entities": 2
+   },
+   "semantic/single target": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-single target",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 1,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the customer lives in",
+                        "relevance": 1
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-single target",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 0.3381,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the customer lives in",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3381
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 3,
+      "total_entities": 5
+   },
+   "semantic/source cut warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-source cut warning",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 1,
+      "retrieval": "semantic",
+      "below_cutoff_count": 2,
+      "total_entities": 5,
+      "warnings": [
+         "Returned 1 of 2 matching sources. Raise limit (max 150) or narrow with scopes to see the rest."
+      ]
+   },
+   "semantic/stale package": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-stale package",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-stale package",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3381
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 2,
+      "total_entities": 5,
+      "warnings": [
+         "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error."
+      ]
+   },
+   "semantic/unsupported target warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-unsupported target warning",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "relevance": 1,
+                  "description": "State the order ships to.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 1
+                     }
+                  ]
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "relevance": 0.2182,
+                  "description": "Order lifecycle status.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.2182
+                     }
+                  ]
+               }
+            ],
+            "relevance": 1
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "sem-unsupported target warning",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "relevance": 0.3381,
+                  "description": "State the customer lives in.",
+                  "matched_targets": [
+                     {
+                        "search_text": "state the order ships to",
+                        "relevance": 0.3381
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.3381
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "retrieval": "semantic",
+      "below_cutoff_count": 2,
+      "total_entities": 5,
+      "warnings": [
+         "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
+      ]
+   },
+   "unconfigured/lexical: multiple targets of different kinds": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "total_revenue",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:total_revenue",
+                  "description": "Sum of order revenue."
+               },
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2
+   },
+   "unconfigured/lexical: no match": {
+      "sources": [],
+      "ranking": "relevance",
+      "total_available": 0,
+      "returned": 0
+   },
+   "unconfigured/lexical: per-source entity cut warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "wide.malloy",
+                  "source": "telemetry"
+               },
+               "one_line_summary": "Device readings.",
+               "docs": "Device readings.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "metric_00",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_00",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_01",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_01",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_02",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_02",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_03",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_03",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_04",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_04",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_05",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_05",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_06",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_06",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_07",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_07",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_08",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_08",
+                  "description": "A metric reading."
+               },
+               {
+                  "name": "metric_09",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:telemetry:metric_09",
+                  "description": "A metric reading."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1,
+      "warnings": [
+         "2 further entities matched but were cut at 10 per source per target. Scope to one source to list all of its fields."
+      ]
+   },
+   "unconfigured/lexical: scoped to a model path": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1
+   },
+   "unconfigured/lexical: scoped to a source": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1
+   },
+   "unconfigured/lexical: scoped to an entity name": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2
+   },
+   "unconfigured/lexical: single target": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2
+   },
+   "unconfigured/lexical: source cut warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 1,
+      "warnings": [
+         "Returned 1 of 2 matching sources. Raise limit (max 150) or narrow with scopes to see the rest."
+      ]
+   },
+   "unconfigured/lexical: stale package": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "warnings": [
+         "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error."
+      ]
+   },
+   "unconfigured/lexical: stale, unsupported and source cut together": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 1,
+      "warnings": [
+         "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error.",
+         "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension }).",
+         "Returned 1 of 2 matching sources. Raise limit (max 150) or narrow with scopes to see the rest."
+      ]
+   },
+   "unconfigured/lexical: unsupported target warning": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "warnings": [
+         "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
+      ]
+   },
+   "unconfigured/listing: drill-down into one source": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "by_month",
+                  "entity_type": "view",
+                  "entity_id": "view:orders:by_month",
+                  "description": "Orders per month."
+               },
+               {
+                  "name": "status",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:status",
+                  "description": "Order lifecycle status."
+               },
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:state",
+                  "description": "State the order ships to."
+               },
+               {
+                  "name": "city",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:orders:city"
+               },
+               {
+                  "name": "total_revenue",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:total_revenue",
+                  "description": "Sum of order revenue."
+               },
+               {
+                  "name": "order_count",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:order_count"
+               },
+               {
+                  "name": "customer",
+                  "entity_type": "join",
+                  "entity_id": "join:orders:customer",
+                  "description": "The customer who placed it."
+               },
+               {
+                  "name": "top_orders",
+                  "entity_type": "query",
+                  "entity_id": "query:orders:top_orders",
+                  "description": "The largest orders."
+               }
+            ]
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 1,
+      "returned": 1
+   },
+   "unconfigured/listing: empty package": {
+      "sources": [],
+      "ranking": "prominence",
+      "total_available": 0,
+      "returned": 0,
+      "warnings": [
+         "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages."
+      ]
+   },
+   "unconfigured/listing: every source": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            }
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 2
+   },
+   "unconfigured/listing: first page with next_offset": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 1,
+      "next_offset": 1,
+      "warnings": [
+         "Returned 1 of 2 sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes."
+      ]
+   },
+   "unconfigured/listing: include_code": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "customer_count",
+                  "entity_type": "measure",
+                  "entity_id": "measure:customers:customer_count",
+                  "description": "Distinct customers."
+               }
+            ]
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "total_revenue",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:total_revenue",
+                  "description": "Sum of order revenue."
+               },
+               {
+                  "name": "order_count",
+                  "entity_type": "measure",
+                  "entity_id": "measure:orders:order_count"
+               }
+            ]
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 3,
+      "returned": 2
+   },
+   "unconfigured/listing: non-source kinds, capped by limit": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "state",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:state",
+                  "description": "State the customer lives in."
+               },
+               {
+                  "name": "region",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:customers:region"
+               }
+            ]
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 5,
+      "returned": 1,
+      "warnings": [
+         "Returned 2 of 5 matching entities. Raise limit (max 150) or narrow the query to see the rest."
+      ]
+   },
+   "unconfigured/listing: offset beyond the results": {
+      "sources": [],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 0,
+      "warnings": [
+         "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages."
+      ]
+   },
+   "unconfigured/listing: second page via offset": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 1,
+      "warnings": [
+         "Returned 1 of 2 sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes."
+      ]
+   },
+   "unconfigured/listing: stale package": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            }
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 2,
+      "warnings": [
+         "This package is STALE: its most recent reload failed to compile at 2026-08-13T00:00:00.000Z, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error."
+      ]
+   },
+   "unconfigured/listing: unsupported target type": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "customers.malloy",
+                  "source": "customers"
+               },
+               "one_line_summary": "One row per customer.",
+               "docs": "One row per customer.",
+               "joins": []
+            }
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "orders.malloy",
+                  "source": "orders"
+               },
+               "one_line_summary": "One row per customer order.",
+               "docs": "One row per customer order.",
+               "joins": []
+            }
+         }
+      ],
+      "ranking": "prominence",
+      "total_available": 2,
+      "returned": 2,
+      "warnings": [
+         "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
+      ]
+   }
+}

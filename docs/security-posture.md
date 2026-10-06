@@ -45,12 +45,45 @@ Concretely:
   close registration on a deployment where that matters. A `.zip` environment or package that
   contains a symlink entry is refused, and nothing from it is left on disk, because the
   extractor would otherwise follow the link out of the destination directory.
-- **Writing a dashboard is an operator action too.** `PUT …/models/dashboards/<slug>.malloy` — the
-  dashboard builder's save — writes a file into a package and reloads it. It accepts only that one
-  kind of file, compiles the text before writing, and is gated by `frozenConfig` like package
-  registration; it has no authentication of its own, so on a reachable server it sits behind the
-  same gateway or is closed by the same setting. An attacker who can reach it can already register
-  a package, so it opens no door that was shut.
+- **Writing a dashboard or a notebook is an operator action too.** `PUT …/models/{path}` — the
+  builder's save — writes a file into a package and reloads it. It accepts two path shapes and
+  nothing else, `dashboards/<slug>.malloy` and `notebooks/<slug>.malloy`, compiles the text before
+  writing, and is gated by `frozenConfig` like package registration; it has no authentication of
+  its own, so on a reachable server it sits behind the same gateway or is closed by the same
+  setting. An attacker who can reach it can already register a package, so it opens no door that
+  was shut. What a document is comes from the `kind` in its `## artifact` tag; the path only
+  confines where it may live, to the top of those two directories, so a notebook can sit in
+  `dashboards/` and a dashboard in `notebooks/` and the confinement is unchanged. Notebook paths
+  carry one gate the dashboard paths do not: the text must carry an `## artifact` tag (an untagged
+  file there is a shared include that other models import, and is refused with 400), and a tagged
+  write over an existing `notebooks/` file the package does not serve as a notebook is refused with
+  400, including one whose only tag is commented out, so a shared include cannot be overwritten
+  into a notebook. Both path shapes then share the same post-write check: after the reload the
+  compiled model must carry the `## artifact` tag and no other file may hold the name, read as
+  discovery reads it, off the compiled model (off the text only for a file that does not compile);
+  a tagged dashboard with no tiles saves and is not served until it has one. An untagged
+  `dashboards/` file, one with no `# artifact` or `## artifact` tag in its text (an `artifact`
+  property anywhere on a tag line, outside a string), is refused with 400 before compiling. A write
+  whose only `## artifact` sits inside a `/* */` block comment passes that text check and compile
+  and is then rolled back with a 500, so no untagged file lands in either folder; and
+  a dashboard whose name another file already holds is refused with 409 before anything is
+  written, since the name is its URL and its `# drill` target. The compile-first gate is per file,
+  and the reload verify checks only the written model, so a model that imports the written file is
+  not checked; the editor's own edits are invisible to an importer, since markdown and `run:` order
+  define nothing. The text goes through the same caller-text guard as `/compile`, so a save that
+  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with 400;
+  gates live in the model file.
+- **Error bodies name the server's own paths, deliberately.** A filesystem access the server
+  cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
+  path, and `/api/v0/status` names the config path in `initError` and the failing path in a
+  `loadErrors` entry. Those are the server's own paths -- a mount the operator has to fix -- and
+  the message is composed from the errno's fields, never copied from a driver or an SDK. Every
+  other 5xx keeps the generic body, because its message can carry a warehouse host, caller SQL
+  or a connection string, and a recorded load failure never says more than the response did.
+  A caller who can reach the port can already register a package at any readable path, so
+  naming the path of a refused one widens nothing; it does mean an unauthenticated reader of
+  `/status` learns the layout of the server's data directory, which the gateway in front is
+  expected to keep from the public.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
@@ -157,15 +190,12 @@ and is not is worse than its absence: it invites an integrator to believe a page
 Either verify it or remove it until it can be verified. It also gates widening embedding to more
 surfaces ([#931](https://github.com/malloydata/publisher/issues/931)).
 
-**3. Package markdown is rendered with raw HTML parsing enabled.** `markdown-to-jsx` runs with
-its default `disableParsingRawHTML: false`, so raw HTML in a package's markdown becomes JSX.
-React will not execute an inline `<script>` this way, and link `href`s are already scheme-checked
-precisely because packages can come from untrusted git or S3 sources — so this is a narrow
-surface, not an open one. Still, it is the one place a declarative artifact touches
-author-controlled HTML, and it is worth either disabling raw HTML or sanitizing deliberately.
-Two call sites, not one: notebook cells and an environment's About panel (`NotebookCell.tsx`,
-`About.tsx`). Neither passes the option, so fixing one and calling it done would leave the other
-open.
+**3. Package markdown is rendered without raw HTML parsing (closed).** The SDK's `Prose`, which draws
+every markdown surface (text tiles, descriptions, notebook cells and an environment's About panel), runs
+`markdown-to-jsx` with `disableParsingRawHTML: true`, so raw HTML in a package's markdown renders as text, and its `img` override renders a markdown
+image (`![](url)`) as alt text only, so no image loads from a package-chosen server.
+Link `href`s are scheme-checked as well, because packages can come from untrusted git or S3 sources.
+A new markdown surface should go through `Prose` rather than call the library directly.
 
 **4. Resize messages are not origin-checked.** Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer

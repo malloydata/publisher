@@ -14,8 +14,7 @@ import {
    type ScaffoldResult,
 } from "./scaffold";
 import { REQUIRED_NODE_RANGE } from "./node_version";
-import { countSkills } from "./skills";
-import { skillsDir } from "@malloy-publisher/skills";
+import { countSkills, skillsDir } from "@malloy-publisher/skills";
 
 /**
  * Derived from the payload, never hardcoded: a count in here would fail the

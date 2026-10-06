@@ -29,7 +29,12 @@ export type {
 export {
    DashboardEditor,
    type DashboardEditorProps,
+   type TextSourceOptions,
 } from "./components/DashboardBuilder/DashboardEditor";
+export type {
+   SaveContext,
+   SaveHandler,
+} from "./components/DashboardBuilder/useDocumentEditor";
 export type {
    DashboardDocument,
    DashboardTile,
@@ -53,3 +58,34 @@ export type {
    DashboardEvent,
    DashboardEventHandler,
 } from "./components/Dashboard/telemetry";
+export {
+   NotebookEditor,
+   type NotebookEditorProps,
+} from "./components/DashboardBuilder/NotebookEditor";
+export type {
+   BuilderEvent,
+   NotebookEvent,
+   NotebookEventHandler,
+} from "./components/DashboardBuilder/telemetry";
+export {
+   createDocument,
+   createRoute,
+   documentPathFor,
+   documentPathForTitle,
+   locatorFor,
+   MAX_SLUG_ATTEMPTS,
+   newDashboardSource,
+   newDocumentProblem,
+   newNotebookSource,
+   slugFor,
+   slugOrFallback,
+   useDocumentChoices,
+   type CreatedDocument,
+   type CreateDocumentOptions,
+   type CreateTarget,
+   type DashboardCreatedEvent,
+   type DocumentChoice,
+   type DocumentCreatedEvent,
+   type NewDocument,
+   type NotebookCreatedEvent,
+} from "./components/DocumentCreate";

@@ -31,32 +31,34 @@ The one-line version:
 
 If you have built dashboards in a classic BI tool, the dashboard is the surface that will feel
 familiar: [the Console's builder](dashboards.md#editing-in-the-console) is drag-to-move,
-drag-the-edge-to-resize, pick-a-tile-from-a-menu. The difference is what it writes. There is no
+set-a-width-from-a-menu, pick-a-tile-and-its-chart-from-a-menu. A notebook opens in the same builder as a one-column
+layout of text and query tiles (see [the Console](console.md)), and the package page's **New** menu
+starts either one. The difference is what it writes. There is no
 proprietary layout document behind it — it edits the `dashboards/*.malloy` file in your package,
 which you can read, diff, review and commit like any other source file, and which an agent can
 write just as well as the builder can.
 
 ## Side by side
 
-|                      | Notebook                                                                                                       | Dashboard                                                                                                                | HTML data app                                                                                                                 |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| **What it is**       | A `notebooks/*.malloy` file: markdown prose + live query cells                                                 | A `dashboards/*.malloy` file: a tagged Malloy query that _is_ the dashboard                                              | A `public/` directory of HTML/CSS/JS, served as-is                                                                            |
-| **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                           | Whatever you design                                                                                                           |
-| **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                            | Fully custom                                                                                                                  |
-| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: drag tiles in the Console's builder, or write the layout tags (`# artifact`, `# dashboard {columns}`) by hand | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
-| **Portability**      | Plain Malloy, a `.malloy` notebook (a legacy `.malloynb` is read, not authored)                                | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the canonical grid width is `dashboard { columns=N }`, with `dashboard_columns` read as a deprecated alias)            | Standard web page; the `Publisher.*` runtime is Publisher-specific                                                            |
-| **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                        | Auto-rendered from the givens the query references: select, slider, date picker                                          | You build the controls and pass givens through `Publisher.query` yourself                                                     |
-| **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                                 | Anything the web platform can do                                                                                              |
-| **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup]          | `Publisher.embed`: auto-resizing iframe in any host page                                                                      |
-| **Maintenance cost** | Low: the model does the work                                                                                   | Low: the model does the work                                                                                             | You own layout, state, and error handling                                                                                     |
+|                      | Notebook                                                                                                       | Dashboard                                                                                                                                                                                         | HTML data app                                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **What it is**       | A `notebooks/*.malloy` file: markdown prose + live query tiles, in one column                                  | A `dashboards/*.malloy` file: a `## artifact { tiles=[…] }` tag over named views that _is_ the dashboard                                                                                          | A `public/` directory of HTML/CSS/JS, served as-is                                                                            |
+| **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                                                                                                    | Whatever you design                                                                                                           |
+| **Layout**           | Vertical document flow, in `tiles=[…]` order                                                                   | Column grid via tags (`# colspan`, `# break`)                                                                                                                                                     | Fully custom                                                                                                                  |
+| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: drag tiles in the Console's builder, or write the layout tags (`## artifact { tiles=[…] }`, `# dashboard {columns}`) by hand                                                           | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
+| **Portability**      | Plain Malloy, a `.malloy` notebook (a legacy `.malloynb` is read, not authored)                                | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the canonical grid width is `dashboard { columns=N }`, with `dashboard_columns` read as a deprecated alias) | Standard web page; the `Publisher.*` runtime is Publisher-specific                                                            |
+| **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                        | Auto-rendered from the givens the query references: select, slider, date picker                                                                                                                   | You build the controls and pass givens through `Publisher.query` yourself                                                     |
+| **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                                                                                                          | Anything the web platform can do                                                                                              |
+| **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup]                                                                                   | `Publisher.embed`: auto-resizing iframe in any host page                                                                      |
+| **Maintenance cost** | Low: the model does the work                                                                                   | Low: the model does the work                                                                                                                                                                      | You own layout, state, and error handling                                                                                     |
 
 [embed-followup]: https://github.com/malloydata/publisher/issues/931
 [sdk-internal]: embedded-data-apps.md
 
 Read the table this way: notebooks and dashboards differ in the rows above **Filters**, and from
 **Filters** down they behave the same, because the two surfaces run the same code. The one
-difference is which givens get a control. A dashboard is one query, so it can tell: it renders a
-control for each given that query references. A notebook is many queries, so it renders one per
+difference is which givens get a control. A dashboard names its tiles, so it can tell: it renders a
+control for each given its tiles reference. A notebook is many queries, so it renders one per
 given the file imports, and importing a given no cell filters by leaves a control that moves
 nothing. Import the ones you filter by.
 
@@ -64,17 +66,31 @@ nothing. Import the ones you filter by.
 
 A notebook interleaves markdown prose with live query cells, in the order the author wants them
 read. A cell tagged `# dashboard` can render a KPI grid inline, and a model's givens surface as a
-Parameters panel above the cells. A new notebook is a
+Filters panel above the cells. A new notebook is a
 `.malloy` file directly under `notebooks/` whose model-level notes include `## artifact { kind=notebook }`.
-Its prose is `(markdown)` annotations: `##|(markdown)` … `|##` or `##(markdown) text` for a cell of its own,
-and `#(markdown) text` above a `run:` for a header that renders with that query's result.
-The `.malloynb` format is deprecated — read-only support stays, and the bundled examples no longer
-ship one.
+A notebook is written one of two ways. The format to author is a one-column layout of tiles, the
+same shape a dashboard has: `## artifact { kind=notebook title="…" tiles=[intro { kind=text }, "source -> view", …] }`,
+with each prose entry's body in a `##|(markdown) name` block and each query a `view:` on a source.
+Every `source -> view` entry is a quoted string; a text entry is a bare name followed by `{ kind=text }`
+(a bare name without it is the query-tile form for a `query:`, so its block would not be shown).
+The tag can instead be a multi-line `##| artifact { … }` … `|##` block, one tile per line, which
+reads, lints and edits the same and is what the Console writes for a new notebook. Tiles read in
+`tiles=[…]` order wherever their blocks sit; the file body groups the prose blocks, in tile order,
+ahead of the `<source>_tiles` extension that defines the views, and the editor inserts a new block
+after the last one. A `colspan` or `break` on a notebook's tile entry is ignored (a notebook is one
+column) and the lint warns.
+The older form is a file of `run:` cells with `(markdown)` annotations between them (`##|(markdown)` … `|##`
+or `##(markdown) text` for a cell of its own, `#(markdown) text` above a `run:` for a header); it is
+still read and served, and it converts to a layout when someone saves it in the Console.
+The artifact tag's `kind=` decides what a document is, not its folder, so `notebooks/` and
+`dashboards/` are where documents live by convention; an untagged `.malloy` file in `notebooks/` is
+a shared include. The `.malloynb` format is deprecated — read-only support stays, and the bundled
+examples no longer ship one.
 
 Interactivity is not the axis to choose on: a notebook and a dashboard run the same givens code,
 so both get URL-addressable parameters, the same controls, starting values and Apply batching (a
-notebook asks for those with file-level `## givens { … }` and `## autorun=false`, a dashboard with
-the same two properties on its artifact tag), and `# drill`. Nor is polish: both are listed by
+served notebook asks for those with `givens { … }` and `autorun=false` inside its `## artifact`
+tag, as a dashboard does), and `# drill`. Nor is polish: both are listed by
 title rather than filename, and the same load-time lint covers the drill tags either one fires.
 Pick on the shape of the deliverable instead.
 
@@ -104,7 +120,7 @@ queries, it's a notebook.
 ## Dashboards: the operational grid
 
 A dashboard is a self-contained `.malloy` file in the package's `dashboards/` directory: it
-imports the model, declares one query (or composes tiles), applies its filters, and tags the
+imports the model, composes tiles, applies its filters, and tags the
 layout. Filter controls render automatically from the givens the query references; `# drill`
 makes dimension cells navigate between dashboards; filter state lives in the URL. The package
 page lists them, and the Console renders them at `dashboards/<name>`. How to write one:

@@ -91,6 +91,21 @@ class Gate(unittest.TestCase):
         # make the gate unusable rather than safe.
         self.assertEqual(ft.retrieval_gate({}, {}, "a", "b", False), 0)
 
+    def test_an_arm_with_unavailable_searches_is_refused(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "semantic"},
+                                           {"retrievalMode": "unavailable"},
+                                           "a", "b", False), 2)
+
+    def test_two_unavailable_arms_are_refused_not_called_equal(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "unavailable"},
+                                           {"retrievalMode": "unavailable"},
+                                           "a", "b", False), 2)
+
+    def test_unavailable_can_be_reported_anyway_when_asked(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "unavailable"},
+                                           {"retrievalMode": "semantic"},
+                                           "a", "b", True), 0)
+
 
 class Main(unittest.TestCase):
     def setUp(self):

@@ -47,6 +47,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
 const withTitle = (title: string) =>
    PACKAGE_FILE.replace('title="Storefront"', `title="${title}"`);
 
@@ -217,11 +218,7 @@ const button = (name: string | RegExp) =>
 
 /** Rename the one tile, which is a non-structural edit and saves directly. */
 const renameTile = (to: string, from = "By category") => {
-   fireEvent.click(screen.getByLabelText(`Settings for ${from}`));
-   fireEvent.change(screen.getByLabelText("Tile title"), {
-      target: { value: to },
-   });
-   fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+   editInline(from, "Tile title", to);
 };
 
 /**
@@ -297,7 +294,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
 
       expect(await screen.findByText("Storefront")).toBeDefined();
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() =>
          expect(storage.documents.get(PATH)).toContain('# label="Categories"'),
@@ -320,7 +317,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
 
       expect(await screen.findByText("Recorded")).toBeDefined();
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() =>
          expect(storage.documents.get(PATH)).toContain('# label="Categories"'),
@@ -339,7 +336,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(await screen.findByText("Recorded")).toBeDefined();
       expect(screen.queryByText("Storefront")).toBeNull();
       expect(
-         screen.queryByRole("button", { name: "Save changes", hidden: true }),
+         screen.queryByRole("button", { name: "Save", hidden: true }),
       ).toBeNull();
       expect(screen.getByText(/you cannot save into it/)).toBeDefined();
    });
@@ -363,13 +360,27 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(opens[0]).toMatchObject({ from: "record" });
    });
 
-   it("says where the record is, in the workspace's own words", async () => {
+   it("says where the record is in Save's tooltip, in the workspace's words", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, PACKAGE_FILE);
       mount(storage);
-      expect(
-         await screen.findByText("Saved to the draft branch"),
-      ).toBeDefined();
+      await screen.findByText("Storefront");
+      fireEvent.mouseOver(screen.getByRole("button", { name: /Save/ }));
+      const text = (await screen.findByRole("tooltip")).textContent;
+      expect(text).toBe("Saved to the draft branch");
+      expect(text).not.toMatch(/embedded in|host app/);
+   });
+
+   it("keeps the generic Save tooltip when the workspace says nothing", async () => {
+      const { description: _omitted, ...bare } = RECORD;
+      const storage = new FakeStorage(bare as Workspace);
+      storage.documents.set(PATH, PACKAGE_FILE);
+      mount(storage);
+      await screen.findByText("Storefront");
+      fireEvent.mouseOver(screen.getByRole("button", { name: /Save/ }));
+      expect((await screen.findByRole("tooltip")).textContent).toBe(
+         "Saves to the app this is embedded in",
+      );
    });
 
    it("keeps a reader out when the record could not be read", async () => {
@@ -398,7 +409,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       ).toBeDefined();
       renameTile("Categories");
       expect(
-         screen.queryByRole("button", { name: "Save changes", hidden: true }),
+         screen.queryByRole("button", { name: "Save", hidden: true }),
       ).toBeNull();
    });
 
@@ -418,7 +429,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() => expect(button("Saved")).toBeDefined());
       expect(
@@ -450,7 +461,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       expect(await screen.findByText("Drafted")).toBeDefined();
 
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
       expect(updateModelSource).toHaveBeenCalledTimes(1);
@@ -461,7 +472,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       expect(button("Undo").hasAttribute("disabled")).toBe(false);
 
       renameTile("Regions", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       // On "Saved" rather than on the call count, which rises before the write
       // it started has finished and would leave it running into the next test.
       await waitFor(() => expect(button("Saved")).toBeDefined());
@@ -486,7 +497,7 @@ describe("DashboardEditor, after a save", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
       // The save alone must not have remounted the builder: its own write
@@ -510,7 +521,7 @@ describe("DashboardEditor, after a save", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
       // The save alone must not have remounted the builder: its own write
@@ -530,7 +541,7 @@ describe("DashboardEditor, after a save", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
       // The save alone must not have remounted the builder: its own write
@@ -557,7 +568,7 @@ describe("DashboardEditor, after a save", () => {
       await screen.findByText("Drafted");
 
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
       expect(button("Undo").hasAttribute("disabled")).toBe(false);
@@ -565,6 +576,21 @@ describe("DashboardEditor, after a save", () => {
       renameTile("Regions", "Categories");
       await settle();
       expect(screen.getByLabelText("Settings for Regions")).toBeDefined();
+      expect(screen.queryByText(/changed since you opened it/)).toBeNull();
+   });
+
+   it("loads a new version at once after a save, since nothing is left unsaved", async () => {
+      serverContext.mutable = true;
+      mount(new FakeStorage(BESIDE));
+
+      await screen.findByText("Storefront");
+      renameTile("Categories");
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      await settle();
+
+      await packageChangedTo(withTitle("Elsewhere"));
+      expect(await screen.findByText("Elsewhere")).toBeDefined();
       expect(screen.queryByText(/changed since you opened it/)).toBeNull();
    });
 
@@ -577,11 +603,12 @@ describe("DashboardEditor, after a save", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
 
       await packageChangedTo(withTitle("Elsewhere"));
+      // Nothing is unsaved, so the other writer's version is simply shown.
       expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 
@@ -593,11 +620,14 @@ describe("DashboardEditor, after a save", () => {
 
       await screen.findByText("Storefront");
       renameTile("Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       await settle();
 
       await packageChangedTo(withTitle("Elsewhere"));
+      // Held: the copy beside the package is work the package does not have.
+      expect(screen.getByText(/changed since you opened it/)).toBeDefined();
+      fireEvent.click(button("Load it"));
       expect(await screen.findByText("Elsewhere")).toBeDefined();
    });
 });
@@ -633,7 +663,7 @@ describe("DashboardEditor, when a new version of the file arrives", () => {
       await packageChangedTo(withTitle("Elsewhere"));
       expect(screen.getByText(/changed since you opened it/)).toBeDefined();
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
       expect(updateModelSource.mock.calls[0][3].expectedHash).toBe(
          await sha256Hex(PACKAGE_FILE),
@@ -666,7 +696,7 @@ describe("DashboardEditor, when a new version of the file arrives", () => {
       // Moved underneath, with nothing telling the editor.
       serverText = withTitle("Elsewhere");
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() =>
          expect(
             screen
@@ -696,7 +726,7 @@ describe("DashboardEditor, when a new version of the file arrives", () => {
       await waitFor(() => expect(seen).toEqual([false]));
       renameTile("Categories");
       await waitFor(() => expect(seen.at(-1)).toBe(true));
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(seen.at(-1)).toBe(false));
       await settle();
       // Exactly those three: the builder fires this from an effect, so a

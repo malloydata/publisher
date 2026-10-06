@@ -2,11 +2,23 @@
 """Start a Publisher that outlives the shell that started it. Stdlib only.
 
   python3 serve.py --publisher-dir <publisher>/packages/server \\
-      --server-root <scratch>/evalroot --port 4811 --mcp-port 4040 \\
+      --server-root <scratch>/evalroot --port 4811 --mcp-port 4812 \\
       [--allow-proxy] [--trace-retrieval] [--reinit] [--wait 60] \\
       [--warm-retrieval --environment <env> --package <pkg>]
 
   python3 serve.py --stop --server-root <scratch>/evalroot
+
+  python3 serve.py --role model|truth --set <set-dir> [--reinit] [--stop]
+
+WITH --role
+
+The set's eval.toml (skills/eval-answer/scripts/config.py) supplies the ports,
+the server root (under the set's workdir) and this clone's packages/server.
+The script writes the server's publisher.config.json itself: for `model`, the
+[model] environment serving the package at [model] repo; for `truth`, the
+[truth] environment serving set.json's truthPackage from truth-package/. It
+refuses a role whose ports collide with the other role's, because the truth
+server exists so the answerer cannot reach it.
 
 WHY THIS EXISTS
 
@@ -22,22 +34,31 @@ where both ports bind before the database initialises (Publisher's own
 friction log, item 7) is caught here rather than 25 hours later.
 
 A restart PRESERVES the server root. `--init` is passed only to seed a fresh
-one, or when `--reinit` asks for a wipe, because it drops every table including
-`entity_embeddings` and a restart that re-embeds silently answers the calls
-arriving during the sync from lexical retrieval instead. `--reinit` is also how
-a `publisher.config.json` edit takes effect, since reading that manifest is
-the flag's other job; the start line says which mode it chose.
+one, when `--reinit` asks for a wipe, or, with --role, when the config this
+script writes differs from the one on disk, because it drops every table
+including `entity_embeddings` and a restart that re-embeds makes every call
+during the sync answer `retrieval: "indexing"` instead of ranking. Reading
+`publisher.config.json` is the flag's other job, so without --role `--reinit`
+is how a hand edit to it takes effect. With --role, an eval.toml edit to the
+role's environment, package name, or package directory re-embeds on the next
+start; a port edit does not. The start line says which mode it
+chose.
 
 `--warm-retrieval` closes the gap between "the server answers" and "the server
-answers SEMANTICALLY". The embedding sync is lazy: it is kicked by the first
-call that ranks, and calls arriving while it runs are answered lexically
-without recording that they were. So a run that starts measuring the moment
-the REST root replies measures the lexical matcher for its first few cases and
-reports the number as if it were the model's.
+answers SEMANTICALLY". With an embedding provider configured, the server
+indexes a package after it loads, and get_context does not rank during that
+sync: it returns `retrieval: "indexing"` (with `retrieval_progress`) and no
+sources, or `retrieval: "error"` with a `retrieval_reason` after a failure. A
+run that starts the moment the REST root replies would record those empty
+answers as retrieval misses.
 
-It drives one ranking call, then polls the package resource until
-`embeddingIndex.status` reaches a terminal value and prints it. Only `ready`
-licenses reading a run's discoverability findings.
+It drives one ranking call (older servers only started the sync on the first
+one), then polls the package resource until `embeddingIndex.status` reaches a
+terminal value and prints it. The values are `lexical` (no provider: a mode),
+`indexing` (the only non-terminal one), `ready`, and `error`, which carries a
+`reason` and `lastError.message` that are printed. Only `ready` licenses
+reading a run's discoverability findings. A package resource with no
+`embeddingIndex` at all comes from an older server and is reported as lexical.
 
 The status field is the readiness signal to poll; an earlier version of this
 script scraped the log for a "Synced entity embeddings" line instead and
@@ -50,11 +71,18 @@ while the next question was still ranked lexically, because readiness was
 derived from cached rows covering the current entity NAMES and rows outlive a
 reload. On such a build, `ready` here is necessary but not sufficient.
 
-Two flags name the two things a run needs that are off by default:
---allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true (a `publisher`-type
+--allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true: a `publisher`-type
 connection is refused without it, and the server still reports `serving` with
-load_errors=1); --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, without
-which failures cannot be attributed.
+load_errors=1. --trace-retrieval sets PUBLISHER_MCP_TRACE=retrieval, which
+Publisher reads: each ranked get_context call writes one "Retrieval trace" line
+to publisher.log with the count and timing of every pipeline stage. It adds
+nothing to a response, so the answering agent sees what it would without the
+flag. The line has no per-target ranked results; attribution reads each call's
+rankedSummary, copied at capture, and does not read this line yet.
+
+A server started without EMBEDDING_API_KEY has no provider (`lexical`): it
+ranks get_context with the lexical matcher, and the start line says so. A retrieval number from it is not comparable with a
+semantic run.
 """
 from __future__ import annotations
 
@@ -63,10 +91,15 @@ import json
 import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 import time
 import urllib.request
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "eval-answer" / "scripts"))
+import config  # noqa: E402
 
 
 def alive(port: int) -> bool:
@@ -78,6 +111,21 @@ def alive(port: int) -> bool:
         return False
 
 
+def listening(port: int) -> bool:
+    """Something accepts connections on 127.0.0.1:port, HTTP or not.
+
+    Not `alive`: that asks for a Publisher REST route, and the MCP port answers
+    no such route. A second process can also bind 127.0.0.1 beside another's
+    0.0.0.0 on the same port, so a bind would succeed and the answerer's URL
+    would reach whichever the OS picks. A connect sees both.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 # `--init` only when there is no store to preserve, or when asked for.
 #
 # It sets `force=true` on `initializeSchema`, which calls `dropAllTables`, and
@@ -85,9 +133,10 @@ def alive(port: int) -> bool:
 # Passed on every start, as it was, each restart wiped the embedded facets and
 # the next `get_context` re-embedded all of them. The cost is real money and
 # ~180 log lines, but the reason this is a correctness bug rather than a slow
-# one is that the sync is lazy and NON-BLOCKING: calls arriving in that window
-# fall back to lexical retrieval and say nothing. A run measured across it
-# reads as a mix of semantic and lexical answers with no recorded cause, which
+# one is that the sync is NON-BLOCKING: calls arriving in that window get
+# `retrieval: "indexing"` and no sources (older servers answered lexically and
+# said nothing). A run measured across it reads as a mix of real answers and
+# empty ones with no recorded cause, which
 # is how four runs came back inconclusive. Publisher's own incremental sync is
 # content-addressed by `content_hash` and re-embeds only documents that
 # changed; the drop is what defeats it.
@@ -103,9 +152,16 @@ def alive(port: int) -> bool:
 DB_NAME = "publisher.db"
 
 
-def init_decision(root: pathlib.Path, reinit: bool) -> tuple[bool, str]:
+def init_decision(root: pathlib.Path, reinit: bool,
+                  config_changed: bool = False) -> tuple[bool, str]:
     """Whether to pass `--init`, and the line that says why."""
     db = root / DB_NAME
+    if config_changed and db.exists():
+        # The server reads publisher.config.json only under --init, so a
+        # config this script just rewrote would otherwise be ignored.
+        return True, ("publisher.config.json changed: re-reading it with "
+                      "--init; the semantic index re-embeds on the first "
+                      "get_context")
     if reinit and db.exists():
         return True, (f"--reinit: dropping {DB_NAME} and re-reading "
                       f"publisher.config.json; the semantic index re-embeds "
@@ -132,9 +188,10 @@ def init_decision(root: pathlib.Path, reinit: bool) -> tuple[bool, str]:
 # the fix.
 WARM_SEARCH_TEXT = "what data is in this package"
 
-# `indexing` is the only non-terminal one: the other three are all settled
-# answers, and two of them are settled bad news.
-TERMINAL_INDEX_STATES = frozenset({"ready", "cooldown", "oversize"})
+# `indexing` is the only non-terminal one. `lexical` (no provider configured)
+# and `error` (the reason says why) are settled answers, and `error` clears
+# only when something outside the poll changes.
+TERMINAL_INDEX_STATES = frozenset({"ready", "lexical", "error"})
 
 
 def warm_arguments(environment: str, package: str) -> dict:
@@ -149,8 +206,9 @@ def warm_arguments(environment: str, package: str) -> dict:
 def index_status(package_payload: dict) -> str | None:
     """`embeddingIndex.status` from a package resource, or None if absent.
 
-    Absent means the server has no embedding provider configured, which is a
-    different fact from `indexing` and must not be waited on.
+    Absent means a server older than the status field, which reported nothing
+    when it had no provider. That is a different fact from `indexing` and must
+    not be waited on.
     """
     index = package_payload.get("embeddingIndex")
     return index.get("status") if isinstance(index, dict) else None
@@ -179,7 +237,7 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
     url = (f"http://localhost:{port}/api/v0/environments/{environment}"
            f"/packages/{package}")
     deadline = time.time() + wait
-    status, last_error, read_one = None, None, False
+    status, last_error, read_one, index = None, None, False, {}
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
@@ -200,9 +258,10 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
         status = index_status(payload)
         if status is None:
             return None, ("no embeddingIndex on the package resource; this "
-                          "server has no embedding provider, so every run "
-                          "against it is LEXICAL -- do not report "
-                          "discoverability findings from it")
+                          "server has no embedding provider or predates the "
+                          "status field, so every run against it is LEXICAL "
+                          "-- do not report discoverability findings from it")
+        index = payload["embeddingIndex"]
         if status in TERMINAL_INDEX_STATES:
             break
         time.sleep(2)
@@ -213,11 +272,21 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
                       f"-- check the environment and package names first")
     if status == "ready":
         return status, "retrieval index ready: rankings are semantic"
-    if status in TERMINAL_INDEX_STATES:
-        return status, (f"retrieval index {status}: rankings are NOT semantic "
-                        f"-- do not report discoverability findings")
-    return status, (f"retrieval index still {status} after {wait}s; it may "
-                    f"settle later, but nothing measured now is semantic")
+    if status == "lexical":
+        return status, ("retrieval index lexical: no embedding provider is "
+                        "configured, so a run measures the lexical matcher "
+                        "-- do not report discoverability findings")
+    if status == "error":
+        last = index.get("lastError")
+        message = last.get("message") if isinstance(last, dict) else None
+        return status, (f"retrieval index error (reason: "
+                        f"{index.get('reason') or 'unknown'}): "
+                        f"{message or 'no message given'}. get_context "
+                        f"returns an error, not an answer -- do not report "
+                        f"discoverability findings")
+    return status, (f"retrieval index still {status} after {wait}s; "
+                    f"get_context returns 'indexing', not an answer, until "
+                    f"it settles, so nothing measured now is semantic")
 
 
 def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
@@ -228,14 +297,143 @@ def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
     return [*cmd, "--init"] if seed else cmd
 
 
-def main() -> int:
+def truth_inside_model(cfg: config.Config) -> str | None:
+    """Why the set's truth package leaks through the model server, or None.
+
+    Publisher serves every .malloy under a package directory. A truth package
+    inside the model package, or AT it, is served by the MODEL server as one of
+    the model's own files, so both roles refuse to start over that layout. A
+    set with a truth package but no [model] repo is refused too: the check
+    cannot run, and passing it unchecked would let the leak through.
+    """
+    if not cfg.set_meta.get("truthPackage"):
+        return None
+    repo, truth = cfg.get("model", "repo"), cfg.truth_package_dir()
+    if not repo:
+        return (f"cannot tell whether the model server would serve the truth "
+                f"package: {cfg.file_hint} names no model package directory. "
+                f"Fix: add `repo = \"<model package dir>\"` under [model]")
+    if config.within(truth, repo):
+        return (f"the truth package {truth} is inside the model package {repo}, "
+                f"so the model server serves it to the answerer as one of the "
+                f"model's own files. Fix: move it outside {repo} and set "
+                f"[truth] package_dir in {cfg.file_hint}")
+    return None
+
+
+def role_config(cfg: config.Config, role: str) -> dict:
+    """The publisher.config.json a role's server serves: one environment, one package."""
+    leak = truth_inside_model(cfg)
+    if leak:
+        raise SystemExit(leak)
+    if role == "model":
+        env = cfg.need(None, "model", "environment")
+        name = cfg.need(None, "model", "package")
+        location = cfg.need(None, "model", "repo")
+    else:
+        env = cfg.get("truth", "environment")
+        name = cfg.set_meta.get("truthPackage")
+        if not name:
+            raise SystemExit(f"{cfg.set_dir / 'set.json'} names no truthPackage, "
+                             f"so there is nothing to serve as truth. "
+                             f"init_truth_package.py scaffolds one.")
+        location = cfg.truth_package_dir()
+        if not location.is_dir():
+            raise SystemExit(f"no truth package at {location}. Fix: set "
+                             f"[truth] package_dir in {cfg.file_hint}")
+    return {"frozenConfig": False, "environments": [
+        {"name": env, "connections": [],
+         "packages": [{"name": name, "location": str(location)}]}]}
+
+
+def port_clash(cfg: config.Config, role: str, port: int, mcp_port: int) -> str | None:
+    """Why this role may not bind these ports, or None."""
+    other = "truth" if role == "model" else "model"
+    theirs = {cfg.get(other, "port"), cfg.get(other, "mcp_port")} - {None}
+    if theirs & {port, mcp_port}:
+        return (f"--role {role} would bind {port}/{mcp_port}, which the {other} "
+                f"server uses. The truth server must be a separate server the "
+                f"answerer cannot reach. Fix: give [model] and [truth] "
+                f"different ports in {cfg.file_hint}")
+    return None
+
+
+def write_config(root: pathlib.Path, wanted: dict) -> tuple[bool, str | None]:
+    """Write publisher.config.json. Returns whether it differs from what was
+    there, and the text that was there, for `restore_config`.
+
+    A missing or unreadable file counts as different: a store seeded from some
+    other config (a start without --role, a deleted file) must be re-read too.
+    `init_decision` passes --init for it only when a store exists.
+    """
+    path = root / "publisher.config.json"
+    try:
+        previous = path.read_text()
+    except OSError:
+        previous = None
+    try:
+        before = json.loads(previous) if previous is not None else None
+    except json.JSONDecodeError:
+        before = None
+    path.write_text(json.dumps(wanted, indent=2) + "\n")
+    return before != wanted, previous
+
+
+def restore_config(root: pathlib.Path, previous: str | None) -> None:
+    """Put back the config a failed start replaced.
+
+    The file is written before the server starts, and --init is what makes the
+    server read it. A start that dies before that point would otherwise leave
+    the new file beside the old store, and the next start would see no change
+    and skip --init.
+    """
+    path = root / "publisher.config.json"
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(previous)
+
+
+def retrieval_note(env: dict[str, str]) -> str | None:
+    """The warning for a server that will rank lexically, or None."""
+    if (env.get("EMBEDDING_API_KEY") or "").strip():
+        return None
+    return ("  ! no EMBEDDING_API_KEY: this server ranks get_context lexically, "
+            "so a run against it measures the lexical matcher. Its retrieval "
+            "numbers are not comparable with a semantic run")
+
+
+def warm_by_default(role: str, opted_out: bool, env: dict[str, str]) -> bool:
+    """Whether `--role` warms retrieval without being asked.
+
+    With a key, the model server indexes its package after it loads, and
+    calls during that answer `retrieval: "indexing"` with no sources. A run
+    started right after `serve` would record those as misses in its first
+    cases. Without a key there is nothing to warm: the status is `lexical`,
+    every call ranks lexically, and
+    `retrieval_note` says so.
+    """
+    return (role == "model" and not opted_out
+            and bool((env.get("EMBEDDING_API_KEY") or "").strip()))
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--server-root", required=True, type=pathlib.Path)
+    ap.add_argument("--role", choices=("model", "truth"),
+                    help="serve this role for --set, configured from its eval.toml")
+    ap.add_argument("--set", dest="set_dir", type=pathlib.Path,
+                    help="the eval set (with --role)")
+    ap.add_argument("--server-root", type=pathlib.Path,
+                    help="required without --role")
     ap.add_argument("--publisher-dir", type=pathlib.Path,
-                    help="Publisher's packages/server directory (holds dist/server.mjs)")
-    ap.add_argument("--port", type=int, default=4811)
-    ap.add_argument("--mcp-port", type=int, default=4040)
+                    help="Publisher's packages/server directory (holds "
+                         "dist/server.mjs). With --role, defaults to this clone's")
+    ap.add_argument("--port", type=int, default=None, help="default 4811. With "
+                    "--role it is the role's port in eval.toml, and a different "
+                    "value is refused: later steps read the file")
+    ap.add_argument("--mcp-port", type=int, default=None, help="default 4812. "
+                    "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
     ap.add_argument("--reinit", action="store_true",
@@ -250,11 +448,50 @@ def main() -> int:
                     help="after the server answers, drive one ranking call and "
                          "poll embeddingIndex.status until it settles. Requires "
                          "--environment and --package")
+    ap.add_argument("--no-warm-retrieval", action="store_true",
+                    help="with --role model: skip the warm-up that is on by "
+                         "default when EMBEDDING_API_KEY is set")
     ap.add_argument("--environment", help="environment to warm (--warm-retrieval)")
     ap.add_argument("--package", help="package to warm (--warm-retrieval)")
     ap.add_argument("--stop", action="store_true",
                     help="stop the server recorded in <server-root>/publisher.pid")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+
+    cfg = None
+    if a.role:
+        if not a.set_dir:
+            ap.error("--role needs --set")
+        cfg = config.load(a.set_dir)
+        if a.role == "truth" and not cfg.has_truth and not a.stop:
+            raise SystemExit(
+                f"{cfg.file_hint} has no [truth] section, so no later step would "
+                f"find a truth server started here. Fix: add `[truth]` to it "
+                f"(an empty section takes ports 4881/4882).")
+        a.server_root = a.server_root or cfg.server_root(a.role)
+        a.publisher_dir = a.publisher_dir or cfg.publisher_dir()
+        # Every later step reads this role's ports from eval.toml, so a server
+        # started on others is one they cannot find, or one they find in its
+        # place: another Publisher left on the file's port.
+        for flag, key, given in (("--port", "port", a.port),
+                                 ("--mcp-port", "mcp_port", a.mcp_port)):
+            want = cfg.get(a.role, key)
+            if given is not None and given != want:
+                raise SystemExit(
+                    f"{flag} {given}: every later step reads [{a.role}] {key} = "
+                    f"{want} from {cfg.file_hint}, so it would not find this "
+                    f"server. Fix: set `{key} = {given}` under [{a.role}] there "
+                    f"and drop the flag.")
+        a.port = a.port or cfg.get(a.role, "port")
+        a.mcp_port = a.mcp_port or cfg.get(a.role, "mcp_port")
+        a.warm_retrieval = a.warm_retrieval or warm_by_default(
+            a.role, a.no_warm_retrieval, os.environ)
+        if a.role == "model" and a.warm_retrieval:
+            a.environment = a.environment or cfg.get("model", "environment")
+            a.package = a.package or cfg.get("model", "package")
+    elif not a.server_root:
+        ap.error("--server-root is required without --role")
+    a.port = a.port or config.BUILTIN[("model", "port")]
+    a.mcp_port = a.mcp_port or config.BUILTIN[("model", "mcp_port")]
 
     root = a.server_root.resolve()
     pidfile = root / "publisher.pid"
@@ -275,22 +512,42 @@ def main() -> int:
     if a.warm_retrieval and not (a.environment and a.package):
         raise SystemExit("--warm-retrieval needs --environment and --package")
     if not a.publisher_dir:
-        raise SystemExit("--publisher-dir is required to start")
+        raise SystemExit("--publisher-dir is required to start. Build Publisher "
+                         "in this clone (bun run build), or set [paths] "
+                         "publisher_dir in the set's eval.toml")
+    # Resolved: it is also the child's cwd, so a relative path would be read
+    # twice over, once from here and once from inside itself.
+    a.publisher_dir = a.publisher_dir.resolve()
     server = a.publisher_dir / "dist" / "server.mjs"
     if not server.exists():
         raise SystemExit(f"{server} not found; build Publisher first")
-    if alive(a.port):
-        raise SystemExit(f"something already answers on port {a.port}; use another "
-                         f"port or --stop the recorded server first")
+    for key, port in (("port", a.port), ("mcp_port", a.mcp_port)):
+        if listening(port):
+            fix = (f"change `{key}` under [{a.role}] in {cfg.file_hint}; every "
+                   f"later step reads the port from there"
+                   if cfg is not None else f"pass another --{key.replace('_', '-')}")
+            raise SystemExit(f"port {port} is already in use. If it is this "
+                             f"server from an earlier start, --stop it first; "
+                             f"otherwise {fix}.")
+
+    if cfg is not None:
+        clash = port_clash(cfg, a.role, a.port, a.mcp_port)
+        if clash:
+            raise SystemExit(clash)
 
     root.mkdir(parents=True, exist_ok=True)
+    changed, previous = (write_config(root, role_config(cfg, a.role))
+                         if cfg is not None else (False, None))
     env = {**os.environ, "SERVER_ROOT": str(root)}
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
-    seed, why = init_decision(root, a.reinit)
+    seed, why = init_decision(root, a.reinit, changed)
     print(why)
+    note = retrieval_note(env) if a.role != "truth" else None
+    if note:
+        print(note)
     cmd = server_cmd(server, root, a.port, a.mcp_port, seed)
     log = (root / "publisher.log").open("a")
     p = subprocess.Popen(
@@ -303,6 +560,8 @@ def main() -> int:
     deadline = time.time() + a.wait
     while time.time() < deadline:
         if p.poll() is not None:
+            if changed:
+                restore_config(root, previous)
             print(f"server exited with {p.returncode}; see {root / 'publisher.log'}")
             return 1
         if alive(a.port):
@@ -319,14 +578,27 @@ def main() -> int:
                                               a.package, a.wait)
                 print(f"  {line}")
                 # Not a server failure: it started and serves. The caller
-                # decides whether a lexical run is worth having, so say which
-                # it is and let the exit code mean "the server is up".
+                # decides whether a run without semantic retrieval is worth
+                # having, so say which state it is and let the exit code mean
+                # "the server is up".
                 if status != "ready":
                     return 3
             return 0
         time.sleep(1)
-    print(f"no answer on port {a.port} after {a.wait}s; server still running as "
-          f"pid {p.pid}, log {root / 'publisher.log'}")
+    # Stopped, not left running. A server still starting may or may not have
+    # read the new config yet, and restoring the file under a live one would
+    # leave a store nobody can name. Stopped with the old file back, the next
+    # start sees the change and passes --init again.
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+        p.wait(timeout=15)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+    pidfile.unlink(missing_ok=True)
+    if changed:
+        restore_config(root, previous)
+    print(f"no answer on port {a.port} after {a.wait}s, so the server was "
+          f"stopped; see {root / 'publisher.log'}. Fix: pass a longer --wait")
     return 1
 
 

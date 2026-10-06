@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
    Autocomplete,
    Box,
@@ -18,6 +19,7 @@ import {
 } from "@mui/material";
 import { useMemo } from "react";
 import { titleCase, useFilterForm } from "./useFilterForm";
+import { dangerTextColor } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogField } from "./catalog";
 import {
@@ -27,7 +29,13 @@ import {
    type ControlKind,
    type MappingRow,
 } from "./controls";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type DashboardTile,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
 import { AppDialog } from "../AppDialog";
 
 /**
@@ -70,7 +78,7 @@ export interface FilterDialogProps {
     * source the host has no catalog for, in which case any name is accepted
     * for it and nothing is searched.
     */
-   fieldsFor?: (tile: DashboardTile) => readonly CatalogField[] | undefined;
+   fieldsFor?: (tile: QueryTile) => readonly CatalogField[] | undefined;
    onClose: () => void;
    /**
     * Bind a control. `declare` is set when the control is new to this file, or
@@ -170,7 +178,7 @@ function FieldPicker({
  * situations, and saying "from the model" about the second one is untrue.
  */
 const unbindable = (tile: DashboardTile | undefined) =>
-   tile?.declaration.kind === "opaque"
+   tile && isQueryTile(tile) && tile.declaration.kind === "opaque"
       ? {
            label: "Not bindable",
            reason: `Its body is ${tile.declaration.why}, so a filter has no single place to go.`,
@@ -277,7 +285,7 @@ export function FilterDialog({
                      : " · declared in this dashboard"}
                </>
             ) : (
-               "A control on the page, and the tiles it filters."
+               "A filter on the page, and the tiles it filters."
             )
          }
          actions={
@@ -285,11 +293,14 @@ export function FilterDialog({
                {editing && (
                   <Button
                      color="error"
+                     startIcon={<DeleteOutlineIcon />}
                      onClick={() => onRemove(shown.name)}
-                     aria-label={`Remove control ${shown.name}`}
-                     sx={{ mr: "auto" }}
+                     sx={(muiTheme) => ({
+                        mr: "auto",
+                        color: dangerTextColor(muiTheme),
+                     })}
                   >
-                     Remove from dashboard
+                     Remove filter
                   </Button>
                )}
                <Button onClick={onClose}>Cancel</Button>
@@ -336,7 +347,7 @@ export function FilterDialog({
                <TextField
                   select
                   size="small"
-                  label="Control"
+                  label="Filter"
                   value={source.name}
                   onChange={(event) => {
                      const picked = available.find(
@@ -391,7 +402,7 @@ export function FilterDialog({
                      placeholder={newName ? titleCase(newName) : ""}
                      value={label}
                      onChange={(event) => setLabel(event.target.value)}
-                     inputProps={{ "aria-label": "Control label" }}
+                     inputProps={{ "aria-label": "Filter label" }}
                      sx={{ flex: 1, minWidth: 160 }}
                   />
                )}
@@ -404,12 +415,12 @@ export function FilterDialog({
                   <TextField
                      select
                      size="small"
-                     label="Control"
+                     label="Filter kind"
                      value={kind}
                      onChange={(event) =>
                         pickKind(event.target.value as ControlKind)
                      }
-                     inputProps={{ "aria-label": "Kind of control" }}
+                     inputProps={{ "aria-label": "Filter kind" }}
                      slotProps={{
                         select: {
                            renderValue: (value) =>
@@ -477,6 +488,7 @@ export function FilterDialog({
                </Stack>
                <Stack sx={{ gap: perTile ? 1 : 0 }}>
                   {document.tiles.map((tile, index) => {
+                     if (!isQueryTile(tile)) return null;
                      const row = rows[index];
                      const title = tile.label ?? tile.name;
                      const problem = perTile ? rowProblems[index] : undefined;

@@ -7,7 +7,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { skillsDir } from "./payload.js";
 
 /** A skill's frontmatter, plus where its files live. */
 export interface Skill {
@@ -16,19 +16,6 @@ export interface Skill {
    /** Absolute path to the skill's directory: SKILL.md and any reference/. */
    dir: string;
 }
-
-/**
- * Absolute path to the directory holding the skill directories.
- *
- * Resolved from this module's own URL, which works both from dist/ once
- * installed and from src/ in the repo, since both sit one level under the
- * package root.
- */
-export const skillsDir: string = path.join(
-   path.dirname(fileURLToPath(import.meta.url)),
-   "..",
-   "skills",
-);
 
 function unquote(value: string): string {
    return value.trim().replace(/^["']|["']$/g, "");
@@ -65,3 +52,16 @@ export function listSkills(): Skill[] {
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
    );
 }
+
+/**
+ * The installer is re-exported here so `@malloy-publisher/skills` has one entry
+ * point: consumers get `skillsDir` to read from and `installSkills` to write
+ * with, without reaching into a subpath.
+ */
+export { skillsDir } from "./payload.js";
+export {
+   countSkills,
+   installSkills,
+   isWithinDirectory,
+   type SkillInstall,
+} from "./install.js";

@@ -220,7 +220,7 @@ describe("compile_model, package scope: curation findings", () => {
          "package",
       );
 
-   const refusals = (problems: { message: string }[]) =>
+   const refusals = <T extends { message: string }>(problems: T[]) =>
       problems.filter((p) => p.message.includes("won't load"));
 
    it("reports a tile reading a source the package's surface does not export", async () => {

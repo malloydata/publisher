@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { useParams } from "react-router-dom";
-import { encodeResourceUri, Package } from "@malloy-publisher/sdk";
-import { useRouterClickHandler } from "@malloy-publisher/sdk";
+import { documentPath } from "../../common/documentRoutes";
+import {
+   encodeResourceUri,
+   Package,
+   useRouterClickHandler,
+} from "@malloy-publisher/sdk";
 
 function PackagePage() {
    const { environmentName, packageName } = useParams();
@@ -26,7 +30,18 @@ function PackagePage() {
          packageName,
       });
       return (
-         <Package onClickPackageFile={navigate} resourceUri={resourceUri} />
+         <Package
+            onClickPackageFile={navigate}
+            // The Console decides where reading and editing live: the
+            // document's route, and the builder one segment under it.
+            onOpenDocument={({ kind, slug, mode }, event) =>
+               navigate(
+                  documentPath(environmentName, packageName, kind, slug, mode),
+                  event,
+               )
+            }
+            resourceUri={resourceUri}
+         />
       );
    }
 }

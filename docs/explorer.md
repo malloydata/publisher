@@ -35,9 +35,9 @@ Malloy Explorer is organized into three main panels:
 
 <img src="explorer-screenshots/explorer-full-UI.png" alt="Explorer Full UI" width="900" style="max-width: 100%; height: auto;">
 
-### Parameters
+### Filters
 
-When the model declares [givens](givens.md), a **Parameters** row appears above the Explorer, one
+When the model declares [givens](givens.md), a **Filters** row appears above the Explorer, one
 control per given, the same controls a notebook shows. Every Run sends the current values, so a
 source gated with [`#(authorize)`](authorize.md) or scoped by [row-level access](row-level-access.md)
 can be explored from the Console instead of refusing with a 403.
@@ -51,8 +51,9 @@ can be explored from the Console instead of refusing with a 403.
   values, and so can browser history and server access logs, so keep an identifier you would not
   share out of a link. The link does not grant the recipient your view: the server decides what
   their request may see.
-- **Explore from here** on a dashboard tile, and a notebook cell's **Data sources** dialog, open the
-  Explorer with that document's current values. Reset there returns to those values.
+- A notebook cell's **Data sources** dialog, and **Explore from here** on a dashboard tile in a host
+  that passes the SDK's `onExplore`, open the Explorer with that document's current values. Reset
+  there returns to those values.
 - A refused query, such as an `#(authorize)` expression that evaluates false, shows the server's
   message in the Results Panel.
 

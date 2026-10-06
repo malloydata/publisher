@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Turn one or more runs into a Malloy package you can serve. Stdlib only.
 
-  python build_run_package.py --run results/sonnet --run results/opus \
-      --set evals/ecommerce --out /tmp/evalpkg
+  python build_run_package.py --run <workdir>/runs/sonnet --run <workdir>/runs/opus \
+      --set <set-dir>      # --out defaults to <workdir>/packages/eval-<run>
 
 Writes CSVs, a Malloy model over them, a notebook for the analytical tables and
 an in-package HTML app for the case matrix.
@@ -29,13 +29,17 @@ import csv
 import json
 import re
 import pathlib
+import shlex
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-run-package"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
 from score_retrieval import delivery, groups, score_case  # noqa: E402
 from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
@@ -484,8 +488,11 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             for qid in c.get("qids") or []:
                 member_rows.append({"cluster_id": c.get("clusterId"), "qid": qid})
     if not cluster_rows:
-        print("  ! no clusters.jsonl in any run: the data app's cluster views "
-              "will be empty (run diagnose first)")
+        if all((rd / "clusters.jsonl").exists() for rd in run_dirs):
+            print("  no failure clusters: diagnose found nothing to diagnose")
+        else:
+            print("  ! no clusters.jsonl in any run: the data app's cluster "
+                  "views will be empty (run diagnose first)")
 
     write_csv(data / "runs.csv", runs, [
         "run_id", "label", "target", "model", "effort", "started",
@@ -544,17 +551,117 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "steps": len(steps_rows)}
 
 
+def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
+                  out: pathlib.Path, on_model_server: bool = False) -> list[str]:
+    """The registration command and both URLs, which are in different path spaces.
+
+    Registered on the truth server when the set has one. The package holds the
+    answer key, and the truth server is the one the answerer has no route to.
+    With no truth server the only Publisher is the answerer's, so the command
+    is printed only when asked for, and with the DELETE that must follow it.
+    """
+    run = read_json(run_dirs[0] / "run.json")
+    name = out.name
+    base = cfg.truth_publisher()
+    env = cfg.get("truth", "environment")
+    if not base and not on_model_server:
+        return [f"# not registered: {cfg.file_hint} has no [truth] section, so the",
+                "# only Publisher is the model server, and this package holds the",
+                "# answer key. Registered there, the next run's answerer can read it.",
+                "# Fix: add [truth] and start it with `eval.py serve truth`, then",
+                "# package again. Or pass --on-model-server for the command, and",
+                "# DELETE the package before the next run."]
+    note, tail = [], []
+    if not base:
+        base = run.get("publisher") or cfg.model_publisher()
+        env = run.get("environment") or cfg.get("model", "environment") or "<env>"
+        note = ["# this is the MODEL server: the package holds the answer key,",
+                "# so delete it before the next run answers from this server"]
+        tail = [f"curl -sS -X DELETE {base}/api/v0/environments/{env}/packages/{name}"]
+    body = json.dumps({"name": name, "location": str(out.resolve())})
+    return [*note,
+            f"curl -sS -X POST {base}/api/v0/environments/{env}/packages \\",
+            f"    -H 'content-type: application/json' -d {shlex.quote(body)}",
+            f"# case matrix: {base}/environments/{env}/packages/{name}/",
+            f"# notebook:    {base}/{env}/{name}/notebooks/eval_run",
+            *tail]
+
+
+def register(base: str, env: str, out: pathlib.Path) -> str | None:
+    """Register the built package on `base`, or return why it could not be.
+
+    A POST for a name the server already has re-copies the package, so a
+    rebuilt report replaces the one it served; no delete is needed first.
+    """
+    body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/api/v0/environments/{env}/packages", data=body,
+        method="POST", headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120):
+            return None
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"
+    except (urllib.error.URLError, OSError) as e:
+        return str(getattr(e, "reason", e))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="append", required=True, type=pathlib.Path,
                     help="run directory with events.jsonl; repeat for an A/B")
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="default: <workdir>/packages/eval-<run>, outside the "
+                         "repository")
+    ap.add_argument("--without-diagnosis", action="store_true",
+                    help="build from runs with no clusters.jsonl. The cluster "
+                         "views are then empty, or show the mechanical "
+                         "candidates, which are not a diagnosis")
+    ap.add_argument("--on-model-server", action="store_true",
+                    help="with no truth server, print the command that registers "
+                         "the report on the model server anyway, and the DELETE "
+                         "that removes it before the next run")
+    ap.add_argument("--no-register", action="store_true",
+                    help="build and print the registration command, but do not "
+                         "register the report on the truth server")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
 
-    counts = build(a.run, a.set_dir, a.out)
-    print(f"{a.out}")
+    outer = config.enclosing_package(out)
+    if outer:
+        raise SystemExit(
+            f"{out} is inside the Malloy package {outer}. Built there, it puts "
+            f"that package into loadErrors. Fix: pass an --out outside any "
+            f"package, or omit it for {cfg.workdir() / 'packages'}")
+    undiagnosed = [r for r in a.run if not (r / "clusters.jsonl").exists()]
+    if undiagnosed and not a.without_diagnosis:
+        raise SystemExit(
+            "no clusters.jsonl in " + ", ".join(str(r) for r in undiagnosed)
+            + ": the report's cluster views would be empty. Fix: run "
+              "`eval.py diagnose` on each run first, or pass "
+              "--without-diagnosis")
+
+    counts = build(a.run, a.set_dir, out)
+    lines = serving_lines(cfg, a.run, out, a.on_model_server)
+    (out / "README.md").write_text(
+        "# Serving this report\n\n```bash\n" + "\n".join(lines) + "\n```\n")
+    print(f"{out}")
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    base = cfg.truth_publisher()
+    if base and not a.no_register:
+        env = cfg.get("truth", "environment")
+        failed = register(base, env, out)
+        if failed is None:
+            print(f"registered on the truth server, {base}")
+            print("\n".join(l for l in lines if l.startswith("# ")))
+            return 0
+        print(f"  ! could not register on {base}: {failed}. Is `eval.py serve "
+              f"truth` running? Start it, then run:", file=sys.stderr)
+        print("\n".join(lines))
+        return 1
+    print("\n".join(lines))
     return 0
 
 

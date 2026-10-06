@@ -30,7 +30,9 @@ const executeQueryModel = mock(
 
 mockServerProvider({ models: { executeQueryModel } });
 
-const { useSuggestOptions } = await import("./useSuggestOptions");
+const { buildSuggestQuery, useSuggestOptions } = await import(
+   "./useSuggestOptions"
+);
 
 const SPECS: Given[] = [
    {
@@ -147,4 +149,41 @@ it("sends no givens when the suggest names none, or the caller offers none", asy
    expect(
       (executeQueryModel.mock.calls[0][3] as { givens?: unknown }).givens,
    ).toBeUndefined();
+});
+
+it("runs a suggest as the document's definitions plus one run:, by name or by dimension, when a preamble is given", async () => {
+   const specs: Given[] = [
+      {
+         name: "REGION",
+         control: "select",
+         suggest: { source: "a", dimension: "region" },
+      },
+      { name: "BRAND", control: "select", suggest: { query: "brands" } },
+   ];
+   executeQueryModel.mockClear();
+   renderHook(
+      () =>
+         useSuggestOptions(
+            "env",
+            "pkg",
+            "models/orders.malloy",
+            specs,
+            undefined,
+            undefined,
+            "source: a is orders",
+         ),
+      { wrapper: serverWrapper },
+   );
+
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   const requests = executeQueryModel.mock.calls.map(
+      (call) => call[3] as { query?: string; queryName?: string },
+   );
+   expect(requests.every((request) => request.queryName === undefined)).toBe(
+      true,
+   );
+   expect(requests.map((request) => request.query)).toEqual([
+      `source: a is orders\n\n${buildSuggestQuery("a", "region")}`,
+      "source: a is orders\n\nrun: brands",
+   ]);
 });

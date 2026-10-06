@@ -1,0 +1,18 @@
+# Where each step of a run finds its servers. Read, through
+# skills/eval-answer/scripts/config.py, by every eval script that takes --set;
+# a flag still overrides any of it.
+
+[model]                  # the Publisher the answerer queries
+environment = "examples"
+package     = "storefront"
+repo        = "../.."    # examples/storefront, the package under test
+port        = 4811    # not 4000/4040, which a Publisher started the usual way holds
+mcp_port    = 4812
+
+[truth]                  # a second Publisher, which the answerer has no route to
+environment = "truth"
+# Outside examples/storefront: Publisher serves every .malloy under a
+# package directory, so a truth package in here is served to the answerer.
+package_dir = "../../../storefront-tour-truth"
+port        = 4881
+mcp_port    = 4882

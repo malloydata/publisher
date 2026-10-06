@@ -17,6 +17,8 @@ import {
    Stack,
    TextField,
    Typography,
+   type SxProps,
+   type Theme,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -504,7 +506,10 @@ export function GivenInput({
                   <Typography variant="body2" color="text.secondary" noWrap>
                      {label}
                   </Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  <Typography
+                     variant="body2"
+                     sx={{ fontWeight: "fontWeightMedium" }}
+                  >
                      {/* `≥ N` only for a FILTER, whose value IS a lower
                          bound. A plain `number` given is an ordinary value, and
                          the onChange below says so by committing `picked`
@@ -521,20 +526,16 @@ export function GivenInput({
                             : String(position)}
                   </Typography>
                   {isOverridden && (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
+                     <ClearButton
                         // `null`, like every other × in this file: revert the
                         // override. It used to send `""` for a filter, which
                         // `decodeAtLeast` reads back as undefined, so the
                         // control redrew as "Any" and hid this button while the
                         // given was still explicitly set to the empty filter.
                         // The reader could neither see the override nor undo it.
-                        onClick={() => onChange(null)}
+                        onClear={() => onChange(null)}
                         sx={{ p: 0 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   )}
                </Stack>
                <Slider
@@ -735,14 +736,7 @@ export function GivenInput({
                   label={label}
                />
                {isOverridden && (
-                  <IconButton
-                     size="small"
-                     aria-label="clear value"
-                     onClick={() => onChange(null)}
-                     edge="end"
-                  >
-                     <ClearIcon fontSize="small" />
-                  </IconButton>
+                  <ClearButton onClear={() => onChange(null)} edge="end" />
                )}
             </Stack>
             {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
@@ -889,17 +883,39 @@ export function GivenInput({
    );
 }
 
+/**
+ * The × that reverts a control to its default: one button, so every control
+ * says the same thing to a screen reader and offers the same 24px target.
+ */
+function ClearButton({
+   onClear,
+   edge,
+   sx,
+}: {
+   onClear: () => void;
+   edge?: "start" | "end";
+   sx?: SxProps<Theme>;
+}) {
+   return (
+      <IconButton
+         size="small"
+         aria-label="Clear value"
+         onClick={onClear}
+         edge={edge}
+         sx={[
+            { minWidth: 24, minHeight: 24 },
+            ...(Array.isArray(sx) ? sx : [sx]),
+         ]}
+      >
+         <ClearIcon fontSize="small" />
+      </IconButton>
+   );
+}
+
 function ClearAdornment({ onClear }: { onClear: () => void }) {
    return (
       <InputAdornment position="end">
-         <IconButton
-            size="small"
-            aria-label="clear value"
-            onClick={onClear}
-            edge="end"
-         >
-            <ClearIcon fontSize="small" />
-         </IconButton>
+         <ClearButton onClear={onClear} edge="end" />
       </InputAdornment>
    );
 }
@@ -953,14 +969,10 @@ function BooleanFilterControl({
                },
                input: {
                   endAdornment: isOverridden ? (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => onChange(null)}
+                     <ClearButton
+                        onClear={() => onChange(null)}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}
@@ -1103,18 +1115,14 @@ function TimeRangeControl({
                   endAdornment: isOverridden ? (
                      // Before the dropdown arrow, which MUI positions on its
                      // own; the × reverts, like every × in this file.
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => {
+                     <ClearButton
+                        onClear={() => {
                            setCustom(false);
                            setDraft({});
                            onChange(null);
                         }}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_findable  # noqa: E402
@@ -115,6 +116,50 @@ class Findable(unittest.TestCase):
         self.assertIn("q1, q2", f[0])
 
 
+class ServerCannotSearch(unittest.TestCase):
+    """An `indexing` or `error` answer has no entities, and is not a miss."""
+
+    def setUp(self):
+        self._real = check_findable.get_context
+
+    def tearDown(self):
+        check_findable.get_context = self._real
+
+    def answer(self, payload):
+        check_findable.get_context = lambda *_a, **_k: payload
+
+    def test_an_indexing_answer_is_inconclusive_not_a_finding(self):
+        self.answer({"retrieval": "indexing", "sources": []})
+        with self.assertRaises(check_findable.Inconclusive) as ctx:
+            check_findable.check([case("q", ["measure:flights:flight_count"])],
+                                 "http://x/mcp", "e", "p")
+        self.assertIn("`indexing`", str(ctx.exception))
+        self.assertIn("measure:flights:flight_count", str(ctx.exception))
+
+    def test_an_error_answer_is_inconclusive_too(self):
+        self.answer({"retrieval": "error", "error": "provider down"})
+        with self.assertRaises(check_findable.Inconclusive):
+            check_findable.check([case("q", ["dimension:airports:state"])],
+                                 "http://x/mcp", "e", "p")
+
+    def test_a_semantic_answer_that_misses_is_still_a_finding(self):
+        self.answer({"retrieval": "semantic", "sources": []})
+        f, _ = check_findable.check([case("q", ["dimension:airports:state"])],
+                                    "http://x/mcp", "e", "p")
+        self.assertEqual(len(f), 1)
+
+    def test_the_wait_ending_on_indexing_or_error_blocks_the_check(self):
+        self.assertTrue(check_findable.index_cannot_search({"status": "indexing"}))
+        self.assertTrue(check_findable.index_cannot_search({"status": "error"}))
+
+    def test_ready_lexical_and_an_unreadable_status_do_not_block_it(self):
+        for index in ({"status": "ready"}, {"status": "lexical"}, None):
+            self.assertFalse(check_findable.index_cannot_search(index))
+
+    def test_the_exit_code_is_its_own(self):
+        self.assertEqual(check_findable.EXIT_INCONCLUSIVE, 4)
+
+
 class Phrase(unittest.TestCase):
     def test_an_identifier_becomes_the_easiest_possible_query(self):
         self.assertEqual(check_findable.phrase_for("average_plane_size"),
@@ -181,10 +226,12 @@ class CompiledModel(unittest.TestCase):
         self.assertEqual(self.find("measure:flights:flight_count",
                                    "dimension:airports:state"), [])
 
-    def test_a_malformed_id_is_left_to_the_other_check(self):
-        # `check` reports it before any search; reporting it twice reads as
-        # two defects.
-        self.assertEqual(self.find("flight_count"), [])
+    def test_a_malformed_id_is_reported(self):
+        # run_baseline's lint calls only this, so skipping it here dropped the
+        # id there. main() dedups on the id, so the CLI still says it once.
+        out = self.find("flight_count")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(check_findable.finding_id(out[0]), "flight_count")
 
     def test_a_finding_is_identified_by_its_whole_entity_id(self):
         # Splitting on the bare colon returns the KIND, and deduplicating the
@@ -321,43 +368,190 @@ class Staleness(unittest.TestCase):
         # silently treating the model as current.
         self.assertIsNone(check_findable.stale_packages("http://127.0.0.1:9"))
 
+    def test_current_entities_refuses_a_stale_package(self):
+        # run_baseline read the compiled model with no staleness check, so an
+        # entity deleted since the last good compile read as declared.
+        with mock.patch.object(check_findable, "stale_packages",
+                               return_value={("e", "p")}), \
+             mock.patch.object(check_findable, "compiled_entities") as compiled:
+            declared, warning = check_findable.current_entities("http://x", "e", "p")
+        self.assertIsNone(declared)
+        self.assertIn("STALE", warning)
+        compiled.assert_not_called()
+
+    def test_current_entities_passes_a_current_package_through(self):
+        with mock.patch.object(check_findable, "stale_packages", return_value=set()), \
+             mock.patch.object(check_findable, "compiled_entities",
+                               return_value={"s": {"source:s"}}):
+            self.assertEqual(check_findable.current_entities("http://x", "e", "p"),
+                             ({"s": {"source:s"}}, None))
+
 
 class DottedJoinPaths(unittest.TestCase):
-    """A dotted name is a join path, resolved on the joined source.
+    """A dotted name is a join path, checked hop by hop against the joins the
+    source declares.
 
-    `declared[src]` holds a source's OWN fields, so every dotted id read as a
-    field the source does not declare. On the storefront tour set that was five
-    of eight reported misses, each one an id get_context returns as its top
-    result -- and the check ends by telling you to fix the key, so a false miss
-    here sends you to break an answer key that is correct.
+    Reading only a source's OWN fields made every dotted id a miss: on the
+    storefront tour set, five of eight reported misses, each one an id
+    get_context returns as its top result. Resolving only the LAST hop, as a
+    source name, then passed a bogus first hop and failed an aliased join.
     """
 
-    DECLARED = {
-        "order_items": {"source:order_items", "measure:total_sales"},
-        "products": {"source:products", "dimension:brand", "measure:product_count"},
-    }
+    PRODUCTS = [{"kind": "dimension", "name": "brand"},
+                {"kind": "measure", "name": "product_count"}]
+    # The shape the server returns: a join field carries the joined schema.
+    FIELDS = [{"kind": "measure", "name": "total_sales"},
+              {"kind": "join", "name": "products", "relationship": "one",
+               "schema": {"fields": PRODUCTS}},
+              {"kind": "join", "name": "buyer", "relationship": "one",
+               "schema": {"fields": [{"kind": "dimension", "name": "state"}]}}]
 
     def findings(self, eid):
+        declared = {"order_items": {"source:order_items"}}
+        check_findable.add_fields(declared["order_items"], self.FIELDS)
         cases = [{"qid": "q1", "expectedEntities": {"required": [eid]}}]
-        return check_findable.declared_findings(cases, self.DECLARED)
+        return check_findable.declared_findings(cases, declared)
 
     def test_a_reachable_join_path_is_not_a_finding(self):
         self.assertEqual(self.findings("dimension:order_items:products.brand"), [])
 
+    def test_a_join_named_other_than_its_source_is_reachable(self):
+        # `join_one: buyer is customers`: no source is called `buyer`.
+        self.assertEqual(self.findings("dimension:order_items:buyer.state"), [])
+
     def test_the_kind_still_has_to_match_on_the_joined_source(self):
         out = self.findings("measure:order_items:products.brand")
         self.assertEqual(len(out), 1)
-        self.assertIn("declares no measure 'brand'", out[0])
+        self.assertIn("reaches no measure 'brand'", out[0])
 
     def test_an_unknown_hop_is_named_as_the_hop(self):
         out = self.findings("dimension:order_items:suppliers.name")
         self.assertEqual(len(out), 1)
-        self.assertIn("'suppliers'", out[0])
+        self.assertIn("has no join 'suppliers'", out[0])
+
+    def test_a_bogus_first_hop_is_caught_even_when_the_last_hop_exists(self):
+        out = self.findings("dimension:order_items:nowhere.products.brand")
+        self.assertEqual(len(out), 1)
+        self.assertIn("has no join 'nowhere'", out[0])
 
     def test_a_field_missing_on_the_joined_source_is_a_finding(self):
         out = self.findings("dimension:order_items:products.colour")
         self.assertEqual(len(out), 1)
         self.assertIn("'colour'", out[0])
+
+    def test_a_malformed_id_is_reported_not_dropped(self):
+        out = self.findings("dimension:brand")
+        self.assertEqual(len(out), 1)
+        self.assertIn("not a kind:source:name id", out[0])
+
+
+class IndexWait(unittest.TestCase):
+    """`embeddingIndex.status` is lexical | indexing | ready | error.
+
+    Only `indexing` is worth waiting on; the other three are settled, and each
+    says something different about what the misses mean.
+    """
+
+    def wait(self, reads, wait=300):
+        """Run wait_for_index over scripted reads; returns (index, reads used)."""
+        it = iter(reads)
+        used = []
+
+        def read(*_a):
+            used.append(1)
+            return next(it)
+
+        index = check_findable.wait_for_index(
+            "http://x", "e", "p", wait, read=read, sleep=lambda _s: None,
+            clock=iter(range(0, 10_000)).__next__)
+        return index, len(used)
+
+    def test_ready_ends_the_wait_and_says_nothing(self):
+        index, n = self.wait([{"status": "ready"}])
+        self.assertEqual(n, 1)
+        self.assertIsNone(check_findable.index_message(index, 300))
+
+    def test_indexing_is_waited_on_until_it_settles(self):
+        index, n = self.wait([{"status": "indexing"}, {"status": "indexing"},
+                              {"status": "ready"}])
+        self.assertEqual((index["status"], n), ("ready", 3))
+
+    def test_indexing_past_the_deadline_says_so_and_asks_for_a_re_run(self):
+        index, n = self.wait([{"status": "indexing"}] * 50, wait=3)
+        self.assertEqual(index["status"], "indexing")
+        self.assertLess(n, 50)
+        msg = check_findable.index_message(index, 3)
+        self.assertIn("still indexing after 3s", msg)
+        self.assertIn("Re-run", msg)
+
+    def test_lexical_is_terminal_and_says_the_run_measures_the_lexical_matcher(self):
+        index, n = self.wait([{"status": "lexical"}])
+        self.assertEqual(n, 1)
+        msg = check_findable.index_message(index, 300)
+        self.assertIn("no embedding provider", msg)
+        self.assertIn("measures the lexical matcher", msg)
+
+    def test_error_is_terminal_not_waited_on(self):
+        _index, n = self.wait([{"status": "error", "reason": "cooldown"}])
+        self.assertEqual(n, 1)
+
+    def test_cooldown_says_to_re_run(self):
+        msg = check_findable.index_message(
+            {"status": "error", "reason": "cooldown",
+             "lastError": {"message": "429 from provider"}}, 300)
+        self.assertIn("cooldown", msg)
+        self.assertIn("Re-run", msg)
+        self.assertIn("429 from provider", msg)
+
+    def test_too_many_entities_names_the_setting_to_raise(self):
+        msg = check_findable.index_message(
+            {"status": "error", "reason": "too-many-entities"}, 300)
+        self.assertIn("retrieval.indexing.maxEntities", msg)
+        self.assertNotIn("Re-run", msg)
+
+    def test_any_other_error_shows_the_reason_and_the_server_message(self):
+        msg = check_findable.index_message(
+            {"status": "error", "reason": "provider-error",
+             "lastError": {"message": "401 bad key"}}, 300)
+        self.assertIn("provider-error", msg)
+        self.assertIn("401 bad key", msg)
+
+    def test_an_error_with_no_reason_or_message_still_says_something(self):
+        msg = check_findable.index_message({"status": "error"}, 300)
+        self.assertIn("reason: unknown", msg)
+        self.assertIn("no message given", msg)
+
+    def test_a_server_with_no_field_ends_the_wait_and_is_not_read_as_ready(self):
+        index, n = self.wait([None])
+        self.assertIsNone(index)
+        self.assertEqual(n, 1)
+        self.assertIn("could not be read",
+                      check_findable.index_message(index, 300))
+
+
+class EmbeddingIndexRead(unittest.TestCase):
+    def read(self, payload):
+        import json as _json
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return _json.dumps(payload).encode()
+
+        with mock.patch.object(check_findable.urllib.request, "urlopen",
+                               lambda *a, **k: Resp()):
+            return check_findable.embedding_index("http://x", "e", "p")
+
+    def test_the_whole_object_comes_back_so_reason_is_not_lost(self):
+        idx = {"status": "error", "reason": "cooldown",
+               "lastError": {"message": "m"}}
+        self.assertEqual(self.read({"embeddingIndex": idx}), idx)
+
+    def test_an_older_server_with_no_field_reads_as_none(self):
+        self.assertIsNone(self.read({"name": "p"}))
+
+    def test_a_field_with_no_status_reads_as_none(self):
+        self.assertIsNone(self.read({"embeddingIndex": {}}))
 
 
 if __name__ == "__main__":

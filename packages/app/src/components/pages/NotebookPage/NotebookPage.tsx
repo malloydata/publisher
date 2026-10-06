@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
    encodeResourceUri,
    Notebook,
    useGivenUrlParams,
+   useNarrowScreen,
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
+import { useEffect } from "react";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface NotebookPageProps {
@@ -35,16 +36,27 @@ export default function NotebookPage({
    const onDrillNavigate = useDrillNavigate(environmentName, packageName);
    // Ordinary links inside the notebook's markdown, routed in-app.
    const navigate = useRouterClickHandler();
+   // A legacy `.malloynb` is never authored; the tag gate is the server listing only tagged notebooks, this is just a suffix check.
+   const editable = notebookPath.endsWith(".malloy");
+   // Below 600px the editor steps aside: the header shows no Edit, and there is no builder chunk to warm.
+   const narrow = useNarrowScreen();
+
+   // Fetch the builder chunk (it carries the Malloy parser) while idle so Edit is a re-render, not a spinner.
+   useEffect(() => {
+      if (!editable || narrow) return;
+      const warm = () => void import("@malloy-publisher/sdk/builder");
+      const idle = window.requestIdleCallback;
+      if (idle) {
+         const handle = idle(warm);
+         return () => window.cancelIdleCallback?.(handle);
+      }
+      const timer = setTimeout(warm, 1500);
+      return () => clearTimeout(timer);
+   }, [editable, narrow]);
 
    return (
-      <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
-         <BackLink
-            label={packageName}
-            href={`/${environmentName}/${packageName}`}
-            onClick={(event) =>
-               navigate(`/${environmentName}/${packageName}`, event)
-            }
-         />
+      // The dashboard's width and edges, so a package's pages line up.
+      <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <Notebook
             resourceUri={encodeResourceUri({
                environmentName,

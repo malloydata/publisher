@@ -228,7 +228,7 @@ the run records no summary for it. There is nothing to diagnose there: say the
 call was not measured.
 
 And **never attribute a miss to the embedding index unless `retrieval_mode`
-says `lexical`.** The mode is recorded per call precisely so this is checkable.
+says `indexing` or `error`.** The mode is recorded per call precisely so this is checkable.
 A diagnosis once explained a phantom empty result with "the index was not ready
 yet" on a run whose index was ready before the first question and whose
 response did hold results; the empty list was a parsing bug in the harness. An
@@ -321,7 +321,7 @@ model-owned finding deserves a probe of its own before it justifies an edit.
 
 ## Step 4: Append issue events, then stop
 
-Append to `evals/<set>/runs/<runId>/events.jsonl` with `kind: issue`
+Append to `<workdir>/runs/<runId>/events.jsonl` with `kind: issue`
 (shapes in `skill:eval-answer` `reference/ledger-schema.md`):
 
 - `issue_id`, affected `qids`, `primary_code`, `contributing_codes`
