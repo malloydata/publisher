@@ -2753,21 +2753,33 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
 
 def rows_golden_problems(cases: list[dict[str, Any]],
                          set_dir: pathlib.Path) -> list[str]:
-    """One line per `rows` golden whose `path` cannot be read.
+    """One line per `rows` golden the judge will be shown whose `path` cannot
+    be read.
 
     Checked before any model call, so a missing or misplaced file stops the run
-    where it costs nothing instead of surfacing as a judge error per case.
+    where it costs nothing instead of surfacing as a judge error per case. A
+    golden `golden_refusal` withholds a verdict for is never rendered, so its
+    file is not this run's problem and does not stop it.
     """
     out = []
     for c in cases:
         g = c.get("golden") or {}
-        if g.get("kind") != "rows":
+        if g.get("kind") != "rows" or golden_refusal(g):
             continue
         try:
             golden_rows.load_rows(g, set_dir, c["qid"])
         except golden_rows.GoldenRowsError as exc:
             out.append(str(exc))
     return out
+
+
+def renders_goldens(a: argparse.Namespace) -> bool:
+    """Whether this run shows any golden to a judge.
+
+    `--no-judge` judges nothing, and a rebuild without `--rejudge` reuses the
+    saved verdicts, so neither reads a golden's file.
+    """
+    return not a.no_judge and (not a.rebuild or bool(a.rejudge))
 
 
 def golden_for_judge(golden: dict[str, Any] | None,
@@ -3593,7 +3605,8 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
-    unreadable = rows_golden_problems(cases, a.set_dir)
+    unreadable = (rows_golden_problems(cases, a.set_dir)
+                  if renders_goldens(a) else [])
     if unreadable:
         raise SystemExit(
             "a rows golden names a file the run cannot read, so the judge "

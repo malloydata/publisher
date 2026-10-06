@@ -2351,6 +2351,23 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("q2", problems[0])
 
+    def test_a_golden_withheld_from_the_judge_does_not_stop_the_run(self):
+        # golden_refusal() keeps these from the judge, so their file is never
+        # read for this run.
+        cases = [{"qid": f"q{i}", "golden": {"kind": "rows", "status": st,
+                                             "path": "gold/no.csv"}}
+                 for i, st in enumerate(("provisional", "invalid",
+                                         "ambiguous", "verified_wrong"))]
+        self.assertEqual(rb.rows_golden_problems(cases, self.tmp), [])
+
+    def test_only_a_run_that_judges_now_reads_golden_files(self):
+        ns = lambda **kw: argparse.Namespace(
+            **{"no_judge": False, "rebuild": False, "rejudge": False, **kw})
+        self.assertTrue(rb.renders_goldens(ns()))
+        self.assertFalse(rb.renders_goldens(ns(no_judge=True)))
+        self.assertFalse(rb.renders_goldens(ns(rebuild=True)))
+        self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
+
 
 if __name__ == "__main__":
     unittest.main()
