@@ -301,6 +301,14 @@ jobs:
           done
 
           if wait "$unit_pid"; then unit_status=0; else unit_status=$?; fi
+
+          # bun leaves the step's stdout pipe non-blocking. Off Windows, a
+          # multi-megabyte `cat` into it then fails with "write error:
+          # Resource temporarily unavailable" as soon as the runner reads
+          # slower than cat writes, so make the pipe blocking again first.
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            python3 -c 'import fcntl, os; fcntl.fcntl(1, fcntl.F_SETFL, fcntl.fcntl(1, fcntl.F_GETFL) & ~os.O_NONBLOCK)'
+          fi
           echo "===== Unit tests (ran alongside the integration tests above) ====="
           cat "$unit_log"
 
