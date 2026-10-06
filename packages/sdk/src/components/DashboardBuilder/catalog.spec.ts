@@ -161,6 +161,22 @@ describe("buildCatalog", () => {
       ]);
    });
 
+   it("records every model that lists a source, imported or not, as where it is visible", () => {
+      const catalog = buildCatalog([
+         {
+            ...MODEL,
+            modelInfo: infoOf(),
+            modelPath: "importer.malloy",
+         } as CompiledModel,
+         MODEL,
+      ]);
+      expect(catalog.sources[0].exporters).toEqual(["data_app.malloy"]);
+      expect(catalog.sources[0].visibleIn).toEqual([
+         "importer.malloy",
+         "data_app.malloy",
+      ]);
+   });
+
    it("lists every model that exports a source, the first as its modelPath", () => {
       const catalog = buildCatalog([
          MODEL,

@@ -302,12 +302,18 @@ describe("DashboardEditor in text-source mode", () => {
       expect(ran.some((query) => query?.includes("gated"))).toBe(false);
    });
 
-   // A text-held document has no `import`, so it can only name what its run model exports.
+   // A text-held document has no `import`, so it can only name what its run model lists, imported or not.
    it("offers only the run model's sources for a new tile, and writes no import for it", async () => {
       const exporting = (name: string) => ({
          modelPath: `models/${name}.malloy`,
          modelInfo: JSON.stringify({ entries: [{ kind: "source", name }] }),
-         sources: [{ name, views: [{ name: "by_x" }] }],
+         // orders also lists `other`, which it imports without exporting.
+         sources: [
+            { name, views: [{ name: "by_x" }] },
+            ...(name === "orders"
+               ? [{ name: "other", views: [{ name: "by_x" }] }]
+               : []),
+         ],
       });
       listModels.mockImplementation(() =>
          Promise.resolve({
@@ -335,7 +341,10 @@ describe("DashboardEditor in text-source mode", () => {
          const options = within(screen.getByRole("listbox")).getAllByRole(
             "option",
          );
-         expect(options.map((o) => o.textContent)).toEqual(["orders"]);
+         expect(options.map((o) => o.textContent).sort()).toEqual([
+            "orders",
+            "other",
+         ]);
          fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
          fireEvent.click(await screen.findByLabelText("View by_x"));
          fireEvent.click(

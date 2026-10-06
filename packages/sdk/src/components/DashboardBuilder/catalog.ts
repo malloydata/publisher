@@ -45,6 +45,8 @@ export interface CatalogSource {
    modelPath: string;
    /** Every model that exports it: a whole-file import of any of them carries the source. Absent from a hand-built catalog, where `modelPath` is the only one. */
    exporters?: string[];
+   /** Every model that lists it, imported or exported: what a document extending that model can name without an import. */
+   visibleIn?: string[];
    description?: string;
    views: CatalogView[];
    /**
@@ -218,11 +220,14 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
    const seen = new Set<string>();
    const exporters = new Map<string, string[]>();
    const exported = new Map<CompiledModel, Set<string>>();
+   const listed = new Map<string, string[]>();
    for (const model of models) {
       const modelPath = pathOf(model);
       if (isDashboardModel(modelPath)) continue;
       const names = exportedSources(model.modelInfo);
       exported.set(model, names);
+      for (const { name } of model.sources ?? [])
+         if (name) listed.set(name, [...(listed.get(name) ?? []), modelPath]);
       for (const name of names)
          exporters.set(name, [...(exporters.get(name) ?? []), modelPath]);
    }
@@ -250,6 +255,7 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
             name,
             modelPath,
             exporters: exporters.get(name) ?? [modelPath],
+            visibleIn: listed.get(name) ?? [modelPath],
             ...(docOf(source.annotations)
                ? { description: docOf(source.annotations) as string }
                : {}),

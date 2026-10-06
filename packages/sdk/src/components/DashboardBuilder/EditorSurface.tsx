@@ -249,13 +249,15 @@ export function EditorSurface({
       },
    });
 
-   // A text-held document has no `import`, so only the run model's own sources resolve for it.
+   // A text-held document has no `import`, so only what its run model lists resolves for it.
    const runSources = useMemo(
       () =>
          textSource
             ? (catalog?.sources ?? [])
                  .filter((s) =>
-                    (s.exporters ?? [s.modelPath]).includes(runModelPath),
+                    (s.visibleIn ?? s.exporters ?? [s.modelPath]).includes(
+                       runModelPath,
+                    ),
                  )
                  .map((s) => s.name)
             : undefined,
