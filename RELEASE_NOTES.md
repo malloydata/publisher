@@ -31,6 +31,27 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
+
+- **No renderer download at idle.** `RenderedResult` no longer starts importing `@malloydata/render`
+  (about 3.4 MB, 1 MB gzipped) the moment its module is evaluated, which made every page of a host
+  that loaded the main entry download it whether or not it drew a result. A result panel now starts
+  the import when its query is in flight, so the first chart still does not wait on it. A host that
+  stripped the old statement at build time can drop that patch; one that fails its build when the
+  statement is missing will now fail and should drop the check.
+- **Offscreen dashboard tiles wait.** A dashboard or notebook-layout tile runs its query once it is
+  within about 600px of the viewport, rather than on mount, so a long dashboard no longer bills the
+  warehouse for tiles nobody scrolls to. Where `IntersectionObserver` is unavailable every tile runs
+  as before.
+- **Superseded queries are cancelled.** Tile, result, suggestion and filter-value queries pass
+  react-query's abort signal to the request, so a query whose givens changed or whose tile unmounted
+  is aborted instead of finishing. A cancelled query shows as still loading, never as an error.
+- **`usePublisherTheme` from `@malloy-publisher/sdk/client`.** The light entry now exports it (and the
+  `Theme`, `ThemeMode` and `ResolvedTheme` types), so a host following the SDK's colour mode at its
+  root no longer needs the main entry on its critical path.
+- **No refetch on refocus.** The SDK's query client no longer refetches every stale query when the
+  tab regains focus. Retries stay off.
+
 ## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
 
 `simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it

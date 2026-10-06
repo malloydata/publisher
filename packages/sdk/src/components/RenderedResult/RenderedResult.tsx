@@ -28,6 +28,7 @@ import {
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { loadMalloyRenderer } from "./loadRenderer";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -121,7 +122,7 @@ const createRenderer = async (
       throw new Error("MalloyRenderer can only be used in browser environment");
    }
 
-   const { MalloyRenderer } = await import("@malloydata/render");
+   const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
@@ -138,12 +139,9 @@ const createRenderer = async (
    return renderer.createViz() as MalloyVizHandle;
 };
 
-// Warm the renderer chunk as soon as this module loads so the first chart
-// paint doesn't have to wait on the dynamic import resolving (the async
-// import is what widened the clear-then-repaint gap into a visible flicker).
-if (typeof window !== "undefined") {
-   void import("@malloydata/render");
-}
+// No module-level warm-up here: evaluating this module must not download the
+// renderer. `ResultPanel` and `ResultContainer` warm it when a result is on its
+// way; see `loadRenderer.ts`.
 
 /**
  * Pull a per-chart Theme override out of a parsed Malloy result by reading

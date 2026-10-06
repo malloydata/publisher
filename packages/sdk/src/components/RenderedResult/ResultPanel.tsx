@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { Box } from "@mui/material";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { QueryResultState } from "../../hooks/useQueryResult";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillBinding } from "../drill/useDrill";
 import { Loading, LOADING_COPY } from "../Loading";
+import { warmMalloyRenderer } from "./loadRenderer";
 import ResultContainer from "./ResultContainer";
 
 export interface ResultPanelProps {
@@ -49,7 +50,14 @@ export function ResultPanel({
    fill,
    transform,
 }: ResultPanelProps) {
-   const { data, isSuccess, isError, error } = state;
+   const { data, isSuccess, isError, error, fetchStatus } = state;
+   // Fetch the renderer while the query runs, so the first chart does not wait
+   // on it after the rows arrive. Not before: a tile still waiting to scroll
+   // into view has asked for nothing, and neither should its renderer.
+   const resultOnItsWay = isSuccess || fetchStatus === "fetching";
+   useEffect(() => {
+      if (resultOnItsWay) warmMalloyRenderer();
+   }, [resultOnItsWay]);
    const raw = data?.data.result;
    const result = useMemo(
       () => (raw !== undefined && transform ? transform(raw) : raw),

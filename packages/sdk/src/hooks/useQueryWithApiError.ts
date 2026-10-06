@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   type QueryFunctionContext,
+   type QueryKey,
    useMutation,
    UseMutationOptions,
    UseMutationResult,
@@ -17,7 +19,12 @@ import { globalQueryClient } from "../utils/queryClient";
 export { globalQueryClient };
 export function useQueryWithApiError<TData = unknown, TError = ApiError>(
    options: Omit<UseQueryOptions<TData, TError>, "throwOnError" | "retry"> & {
-      queryFn: () => Promise<TData>;
+      /**
+       * Receives react-query's context. Pass its `signal` into the request
+       * (axios takes it as `{ signal }`) so a query superseded by a key change,
+       * or abandoned by an unmount, is cancelled rather than left to finish.
+       */
+      queryFn: (context: QueryFunctionContext<QueryKey>) => Promise<TData>;
    },
 ): UseQueryResult<TData, TError> {
    const { server } = useServer();
@@ -25,9 +32,9 @@ export function useQueryWithApiError<TData = unknown, TError = ApiError>(
       ...options,
       // Add in the server to the query key so that we can have a per-server caches.
       queryKey: [...options.queryKey, server],
-      queryFn: async () => {
+      queryFn: async (context) => {
          try {
-            return await options.queryFn();
+            return await options.queryFn(context);
          } catch (err) {
             // Standardized error handling for axios errors
             if (err && typeof err === "object" && "response" in err) {

@@ -9,6 +9,7 @@ import {
    visibleWithoutHoverSx,
 } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { useNearViewport } from "../../hooks/useNearViewport";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
@@ -120,22 +121,31 @@ export function DashboardTile({
    ignoredFilters,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
-   const state = useQueryResult({
-      environmentName,
-      packageName,
-      modelPath,
-      versionId,
-      queryName,
-      query:
-         tile !== undefined
-            ? `${annotation ? `${annotation}\n` : ""}run: ${tile}`
-            : undefined,
-      // Narrowed to the givens this tile references: see `givenNames`.
-      givens: givensToRequest(givens, declaredTypes, givenNames),
-   });
+   // A tile far below the fold waits to be scrolled near before it runs: its
+   // query is billed by the warehouse whether or not anyone ever sees it. The
+   // card holds its minimum height meanwhile, so the grid barely moves when it
+   // fills.
+   const [cardRef, nearViewport] = useNearViewport<HTMLDivElement>();
+   const state = useQueryResult(
+      {
+         environmentName,
+         packageName,
+         modelPath,
+         versionId,
+         queryName,
+         query:
+            tile !== undefined
+               ? `${annotation ? `${annotation}\n` : ""}run: ${tile}`
+               : undefined,
+         // Narrowed to the givens this tile references: see `givenNames`.
+         givens: givensToRequest(givens, declaredTypes, givenNames),
+      },
+      { enabled: nearViewport },
+   );
 
    return (
       <TileCard
+         cardRef={cardRef}
          borderless={borderless}
          chrome={chrome}
          sx={{

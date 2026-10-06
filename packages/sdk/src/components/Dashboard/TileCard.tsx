@@ -8,7 +8,7 @@ import {
    type SxProps,
    type Theme,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
@@ -56,6 +56,7 @@ export function TileCard({
    chrome = "card",
    kind = "query",
    sx,
+   cardRef,
    children,
 }: {
    borderless?: boolean;
@@ -64,12 +65,15 @@ export function TileCard({
    /** `none` drops the card entirely, for a document that reads top to bottom. */
    chrome?: TileChrome;
    sx?: SxProps<Theme>;
+   /** The card's element, for a caller that watches where it is on the page. */
+   cardRef?: Ref<HTMLDivElement>;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
    const bare = borderless || chrome === "none";
    return (
       <Paper
+         ref={cardRef}
          elevation={0}
          data-chrome={chrome}
          sx={[
