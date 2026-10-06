@@ -170,6 +170,16 @@ beforeAll(async () => {
       force: false,
       dataFile: path.join(here, "..", "fixtures", "budget.xlsx"),
    });
+   // And one from Parquet, which the READMEs and AGENTS.md advertise for
+   // --data. Nothing else executes that path: the unit specs only check the
+   // generated text.
+   scaffold({
+      name: "orders",
+      cwd: tmp,
+      host: "claude-code",
+      force: false,
+      dataFile: path.join(here, "..", "fixtures", "orders.parquet"),
+   });
 
    publisherPort = await freePort();
    mcpPort = await freePort();
@@ -327,6 +337,38 @@ describe("generated project serves against a real server", () => {
       expect(rows).toHaveLength(1);
       // record_count over the 3-row fixture spreadsheet.
       expect(rows[0].record_value[0].number_value).toBe(3);
+   });
+
+   test("a parquet-seeded package mounts, compiles, and answers a query", async () => {
+      const packages = await getJson<{ name: string }[]>(
+         `${api()}/environments/default/packages`,
+      );
+      const names = packages.map((p) => p.name);
+      if (!names.includes("orders")) {
+         throw new Error(
+            `Server is serving but did not mount the parquet-seeded "orders". ` +
+               `Packages: ${JSON.stringify(names)}. Log:\n${serverLog}`,
+         );
+      }
+
+      const models = await getJson<{ path: string; error?: string }[]>(
+         `${api()}/environments/default/packages/orders/models`,
+      );
+      const model = models.find((m) => m.path === "index.malloy");
+      expect(model).toBeDefined();
+      expect(model?.error).toBeUndefined();
+
+      const response = await postJson<{ result: string }>(
+         `${api()}/environments/default/packages/orders/models/index.malloy/query`,
+         { sourceName: "orders", queryName: "overview" },
+      );
+      const result = JSON.parse(response.result) as {
+         data: { array_value: { record_value: { number_value: number }[] }[] };
+      };
+      const rows = result.data.array_value;
+      expect(rows).toHaveLength(1);
+      // record_count over the 4-row fixture file.
+      expect(rows[0].record_value[0].number_value).toBe(4);
    });
 
    test("the probe the xlsx model's comment describes compiles in index.malloy", async () => {

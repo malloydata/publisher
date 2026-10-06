@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type DashboardTile,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
+import { isStrictName } from "../../utils/malloyText";
 
 /**
  * The builder's view of the dashboard's filter controls, and the pure edits it
@@ -61,7 +68,7 @@ export function controlsOf(
 ): BuilderControl[] {
    const bound = new Map<string, number>();
    for (const tile of document.tiles)
-      for (const filter of tile.filters ?? [])
+      for (const filter of isQueryTile(tile) ? (tile.filters ?? []) : [])
          bound.set(filter.given, (bound.get(filter.given) ?? 0) + 1);
 
    const out: BuilderControl[] = [];
@@ -198,7 +205,9 @@ export function givenNameFor(field: string, taken: Iterable<string>): string {
       .split(/[^A-Za-z0-9]+/)
       .filter(Boolean);
    const base = words.join("_").toUpperCase() || "FILTER";
-   const stem = /^[A-Z_]/.test(base) ? base : `F_${base}`;
+   const shaped = /^[A-Z_]/.test(base) ? base : `F_${base}`;
+   // Reserved words are case-insensitive, so `DATE` would not compile as a given name.
+   const stem = isStrictName(shaped) ? shaped : `${shaped}_FILTER`;
    const used = new Set(taken);
    if (!used.has(stem)) return stem;
    for (let n = 2; ; n++) if (!used.has(`${stem}_${n}`)) return `${stem}_${n}`;
@@ -230,7 +239,7 @@ export const CONTROL_KINDS: ReadonlyArray<{
    },
    {
       kind: "date",
-      label: "Since a date",
+      label: "On or after a date",
       hint: "A date picker; tiles keep rows on or after it",
    },
 ];
@@ -254,7 +263,7 @@ export function newLocalGiven(spec: {
    range?: { min: number; max: number };
 }): LocalGiven {
    const label = spec.label.trim() || spec.name;
-   const dimension = spec.field.split(".").at(-1) ?? spec.field;
+   const dimension = spec.field;
    switch (spec.kind) {
       case "select":
       case "multiselect":
@@ -315,8 +324,10 @@ export interface MappingRow {
  * excludes, and so is an `opaque` one: its body has no single block a binding
  * belongs in, which the reader can see before a save is ever attempted.
  */
-export const canBind = (tile: DashboardTile) =>
-   tile.declaration.kind !== "inherited" && tile.declaration.kind !== "opaque";
+export const canBind = (tile: DashboardTile): tile is QueryTile =>
+   isQueryTile(tile) &&
+   tile.declaration.kind !== "inherited" &&
+   tile.declaration.kind !== "opaque";
 
 /** The mapping a control has NOW, one row per tile, for the dialog to open on. */
 export function mappingOf(
@@ -324,7 +335,9 @@ export function mappingOf(
    control: { name: string; field?: string; type?: string },
 ): MappingRow[] {
    return document.tiles.map((tile) => {
-      const bound = (tile.filters ?? []).find((f) => f.given === control.name);
+      const bound = (isQueryTile(tile) ? (tile.filters ?? []) : []).find(
+         (f) => f.given === control.name,
+      );
       return {
          // Ticked where the tile ALREADY carries this control, so the window
          // opens on what is true rather than on what would be added. That is
@@ -390,6 +403,7 @@ export function declareControl(
  */
 export function removeControl(draft: DashboardDocument, name: string): void {
    for (const tile of draft.tiles) {
+      if (!isQueryTile(tile)) continue;
       const kept = (tile.filters ?? []).filter((f) => f.given !== name);
       if (kept.length > 0) tile.filters = kept;
       else delete tile.filters;

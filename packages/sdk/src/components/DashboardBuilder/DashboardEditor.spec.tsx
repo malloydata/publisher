@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    clearCache,
@@ -12,6 +18,7 @@ import {
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
 import type { DashboardEvent } from "../Dashboard/telemetry";
+import { globalQueryClient } from "../../utils/queryClient";
 
 /**
  * The Console's path through the builder, with the server mocked at the
@@ -26,14 +33,20 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
+import { editInline } from "./testing/inline";
+
+let served = PACKAGE_FILE;
+/** Set, and the dashboard's own file fails to fetch: a refetch the server could not answer. */
+let fetchFailure: Error | undefined;
 
 const getModel = mock((_env: string, _pkg: string, path: string) =>
-   path === "broken.malloy"
-      ? Promise.reject(new Error("reloading"))
+   path === "broken.malloy" ||
+   (fetchFailure && path === "dashboards/overview.malloy")
+      ? Promise.reject(fetchFailure ?? new Error("reloading"))
       : Promise.resolve({
            data:
               path === "dashboards/overview.malloy"
-                 ? { modelPath: path, sourceText: PACKAGE_FILE }
+                 ? { modelPath: path, sourceText: served }
                  : {
                       modelPath: path,
                       sources: [
@@ -76,10 +89,17 @@ const executeQueryModel = mock(() => pending());
 const listModels = mock(() =>
    Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
 );
-mockServerProvider({
-   models: { getModel, executeQueryModel, listModels },
-   dashboards: { getDashboard, listDashboards },
-});
+const serverContext: {
+   mutable: boolean | undefined;
+   isLoadingStatus: boolean;
+} = { mutable: undefined, isLoadingStatus: false };
+mockServerProvider(
+   {
+      models: { getModel, executeQueryModel, listModels },
+      dashboards: { getDashboard, listDashboards },
+   },
+   serverContext,
+);
 
 // Imported after the stub is registered: a static import would hoist above it.
 const { DashboardEditor } = await import("./DashboardEditor");
@@ -90,10 +110,7 @@ const DRAFT = {
    path: "env/pkg/dashboards/overview.malloy",
 };
 
-const mount = (
-   onExit?: () => void,
-   onEvent?: (event: DashboardEvent) => void,
-) => {
+const mount = (onEvent?: (event: DashboardEvent) => void) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -101,7 +118,6 @@ const mount = (
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
-            {...(onExit ? { onExit } : {})}
             {...(onEvent ? { onEvent } : {})}
          />
       </DocumentStorageProvider>,
@@ -116,6 +132,11 @@ const button = (name: string | RegExp) =>
 beforeEach(() => {
    clearCache();
    localStorage.clear();
+   served = PACKAGE_FILE;
+   fetchFailure = undefined;
+   serverContext.mutable = undefined;
+   serverContext.isLoadingStatus = false;
+   getDashboard.mockClear();
 });
 
 describe("DashboardEditor", () => {
@@ -134,6 +155,67 @@ describe("DashboardEditor", () => {
          ).toBe(true),
       );
       await screen.findByRole("button", { name: "Add tile", hidden: true });
+   });
+
+   it("opens a dashboard with no tiles without asking for a manifest the server would 404", async () => {
+      served = PACKAGE_FILE.replace('tiles=["a -> by_cat"]', "tiles=[]");
+      mount();
+      expect(
+         await screen.findByText(/not served until it has a tile/),
+      ).toBeDefined();
+      expect(
+         (
+            await screen.findAllByRole("button", {
+               name: "Add tile",
+               hidden: true,
+            })
+         ).length,
+      ).toBe(2);
+      expect(getDashboard).not.toHaveBeenCalled();
+   });
+
+   it("keeps the builder and its unsaved edit through a failed refetch", async () => {
+      mount();
+      await screen.findByText("Storefront");
+      editInline("By category", "Tile title", "Categories");
+
+      fetchFailure = new Error("the server went away");
+      await act(async () => {
+         await globalQueryClient.refetchQueries({
+            queryKey: ["dashboard-editor-model"],
+         });
+      });
+      expect(
+         await screen.findByText(/could not be re-read from the server/),
+      ).toBeDefined();
+      expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
+      expect(button("Save")).toBeDefined();
+   });
+
+   it("does not call an undecided server writable or read-only while its status loads", async () => {
+      serverContext.isLoadingStatus = true;
+      mount();
+      expect(
+         await screen.findByText("Checking whether this server takes writes."),
+      ).toBeDefined();
+   });
+
+   it("says the server did not say whether it takes writes, once status has settled", async () => {
+      mount();
+      expect(
+         await screen.findByText(
+            "This server did not say whether it takes writes, so Save is off.",
+         ),
+      ).toBeDefined();
+   });
+
+   it("says why when reading the file throws, rather than loading forever", async () => {
+      // A body the reader cannot take apart, so the read rejects instead of refusing.
+      served = 42 as unknown as string;
+      mount();
+      expect(
+         await screen.findByText(/cannot be opened in the builder/),
+      ).toBeDefined();
    });
 
    it("keeps the catalog when one published model fails to load", async () => {
@@ -155,12 +237,8 @@ describe("DashboardEditor", () => {
    it("saves an edit into the browser and marks it saved", async () => {
       const storage = mount();
       await screen.findByText("Storefront");
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.change(screen.getByLabelText("Tile title"), {
-         target: { value: "Categories" },
-      });
-      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
-      fireEvent.click(button("Save changes"));
+      editInline("By category", "Tile title", "Categories");
+      fireEvent.click(button("Save"));
       await waitFor(async () =>
          expect(await storage.getDocument(DRAFT)).toContain(
             '# label="Categories"',
@@ -180,7 +258,7 @@ describe("DashboardEditor", () => {
       );
       await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(undefined, onEvent);
+      mount(onEvent);
       expect(
          await screen.findByText(
             /edits to this dashboard saved in this browser/,
@@ -197,10 +275,9 @@ describe("DashboardEditor", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("hands the exit to the host and reports the open", async () => {
-      const onExit = mock(() => {});
+   it("reports the open, and offers Save rather than Close when it can save", async () => {
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(onExit, onEvent);
+      mount(onEvent);
       await screen.findByText("Storefront");
       await waitFor(() =>
          expect(onEvent.mock.calls.map((call) => call[0].type)).toContain(
@@ -212,7 +289,7 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      fireEvent.click(button("Done editing"));
-      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+      expect(button("Saved")).toBeDefined();
    });
 });

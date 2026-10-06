@@ -34,6 +34,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-powerbi-review` | Prior-art adapter for Power BI (TMDL tables and relationships, DAX measure classification, RLS roles, docs) |
 
 **Analysis and presentation**
 
@@ -42,11 +43,10 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
 | `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
-| `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
-| `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
+| `skill:malloy-notebooks` | Building Malloy notebooks (`notebooks/<slug>.malloy`; an existing `.malloynb` still reads) |
+| `skill:malloy-analysis-report` | Combining validated queries into a notebook report |
 | `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
 | `skill:malloy-source-unreachable` | A source is missing from discovery, or a query was refused with a 404 or 403 |
-| `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
 
 **Evaluating a model** (driven by `eval-loop`). These ship in the `eval` group, which neither `analysis` nor `modeling` includes.

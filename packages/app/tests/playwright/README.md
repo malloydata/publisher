@@ -68,6 +68,7 @@ tests/playwright/
 ├── packages.spec.ts             # package list + full create-from-git → open → delete lifecycle
 ├── package-models.spec.ts       # .malloy list, open, source combobox, run query → assert rows
 ├── package-notebooks.spec.ts    # .malloynb list, open → notebook route, content rendered
+├── package-served-notebook.spec.ts # storefront's notebooks/*.malloy: open by slug, caption + result, control re-runs
 └── package-databases.spec.ts    # embedded DBs + schema dialog + connection CRUD
 ```
 

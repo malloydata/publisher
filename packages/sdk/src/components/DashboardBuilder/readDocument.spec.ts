@@ -6,7 +6,11 @@ import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import { readForEditor } from "./readForEditor";
 import { parseMalloy, parseRefused } from "./malloyTree";
+import { queryTile } from "./testing/fixtures";
+import { tileKey } from "./document";
+import { newNotebookSource } from "../DocumentCreate/newNotebook";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -86,6 +90,59 @@ describe("blockAbove", () => {
       expect(at.tags).toEqual([]);
    });
 
+   it("leaves an attached markdown block and line out of the tags, whatever its body starts with", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  #|(markdown)",
+         "  # Lead tile",
+         "  |#",
+         "  #(markdown) a note",
+         "  # colspan=6",
+         "  view: revenue is sales",
+         "}",
+      ].join("\n");
+      const at = await block(source, 7);
+      expect(at.start).toBe(2);
+      expect(at.tags.map((t) => t.text)).toEqual(["# colspan=6"]);
+      expect(at.tags.map((t) => t.line)).toEqual([6]);
+      expect(at.prose).toEqual([2, 3, 4, 5]);
+   });
+
+   it("starts a markdown block at its own opener, not at a body line that begins `#|`", async () => {
+      const source = [
+         "source: s is a extend {",
+         "  dimension: d is 1",
+         "  #|(markdown)",
+         "  Notes",
+         "",
+         "  #| a body line",
+         "  |#",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 8);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([2, 3, 4, 5, 6]);
+   });
+
+   it("does not call `#(markdown)` text inside a block comment prose", async () => {
+      const source = [
+         "source: s is a extend {",
+         "",
+         "  /*",
+         "  #(markdown) only a comment",
+         "  */",
+         "  # colspan=6",
+         "  view: v is x",
+         "}",
+      ].join("\n");
+      const at = await block(source, 6);
+      expect(at.start).toBe(2);
+      expect(at.prose).toEqual([]);
+   });
+
    it("does not collect a `#` line written inside a block comment", async () => {
       const source = [
          "source: s is a extend {",
@@ -134,6 +191,132 @@ describe("blockAbove", () => {
 });
 
 describe("readDashboardDocument", () => {
+   it("reads a width spelled only as the dashboard_columns alias", async () => {
+      const doc = await read(
+         SIMPLE.replace(
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
+            '"a -> by_cat"] givens { CATEGORY="Jeans" } dashboard_columns=8 }',
+         ),
+      );
+      expect(doc.columns).toBe(8);
+   });
+
+   describe("a width written badly", () => {
+      const withTag = (tagLine: string) =>
+         SIMPLE.replace(/^## artifact.*$/m, tagLine);
+
+      it("lets a written columns win even when it is not a width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8 } dashboard { columns=1.5 }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+
+      it("reads the alias, spaced round its =, when no columns is written", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns = 8 }',
+            ),
+         );
+         expect(doc.columns).toBe(8);
+      });
+
+      it("takes text that only begins with digits as no width", async () => {
+         const doc = await read(
+            withTag(
+               '## artifact { tiles=["a -> by_cat"] dashboard_columns=8px }',
+            ),
+         );
+         expect(doc.columns).toBeUndefined();
+      });
+   });
+
+   describe("the description, by the server's rule", () => {
+      const rest = SIMPLE.split("\n").slice(5).join("\n");
+      const ARTIFACT = '## artifact { title="Probe" tiles=["a -> by_cat"] }';
+
+      it("reads the notes above the tag and ignores those below", async () => {
+         const doc = await read(`##" Above\n${ARTIFACT}\n##" Below\n${rest}`);
+         expect(doc.description).toBe("Above");
+      });
+
+      it("falls back to the notes below the tag when nothing above has prose", async () => {
+         const doc = await read(
+            `##"\n${ARTIFACT}\n##" Legacy\n##" text\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy\ntext");
+      });
+
+      it("finds the tag past a note whose prose says artifact", async () => {
+         const doc = await read(
+            `##" This artifact shows revenue\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("This artifact shows revenue");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it('reads a ##|" block above the tag, not the note below it', async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose");
+      });
+
+      it('does not count an empty ##|" block above the tag as prose', async () => {
+         const doc = await read(`##|"\n|##\n${ARTIFACT}\n##" Legacy\n${rest}`);
+         expect(doc.description).toBe("Legacy");
+      });
+
+      it("does not take an artifact line inside a block for the tag", async () => {
+         const doc = await read(
+            `##|(text) intro\n## artifact { title="Fake" tiles=["x -> y"] }\n|##\n##" Above\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.title).toBe("Probe");
+         expect(doc.description).toBe("Above");
+      });
+
+      it("ends a block only at a closer in the opener's column", async () => {
+         const doc = await read(
+            `##|"\nBlock prose\n  |##\nstill inside\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBe("Block prose\n|##\nstill inside");
+      });
+
+      it('takes a ##|" block below the tag as the fallback description, like the server', async () => {
+         const doc = await read(`${ARTIFACT}\n##|"\nBelow block\n|##\n${rest}`);
+         expect(doc.description).toBe("Below block");
+      });
+
+      it('ignores a ##" line inside a block', async () => {
+         const doc = await read(
+            `##|(text) intro\n##" not a note\n|##\n${ARTIFACT}\n${rest}`,
+         );
+         expect(doc.description).toBeUndefined();
+      });
+
+      it("reads neither a ##(markdown) line nor a ##|(markdown) block as the description or the tag", async () => {
+         const doc = await read(
+            `##(markdown) not a note\n##|(markdown) intro\n## How to read\n##" also not a note\n|##\n##" Above\n${ARTIFACT}\n##(markdown) nor this\n${rest}`,
+         );
+         expect(doc.description).toBe("Above");
+         expect(doc.title).toBe("Probe");
+      });
+
+      it("falls back to a note below the tag past a ##(markdown) line", async () => {
+         const doc = await read(
+            `##(markdown) skip\n${ARTIFACT}\n##(markdown) skip too\n##" Legacy\n${rest}`,
+         );
+         expect(doc.description).toBe("Legacy");
+      });
+
+      it("has no description when the only note is a malformed route", async () => {
+         const doc = await read(`##"word\n${ARTIFACT}\n${rest}`);
+         expect(doc.description).toBeUndefined();
+      });
+   });
+
    it("reads the whole shape", async () => {
       const doc = await read(SIMPLE);
       expect(doc.title).toBe("Probe");
@@ -182,10 +365,7 @@ source: b is two extend {
   view: y is vy
 }`);
       expect(doc.sources.map((s) => s.name)).toEqual(["a", "b"]);
-      expect(doc.tiles.map((t) => `${t.source}.${t.name}`)).toEqual([
-         "a.x",
-         "b.y",
-      ]);
+      expect(doc.tiles.map(tileKey)).toEqual(["a.x", "b.y"]);
    });
 
    it("reads a filter binding written as a refinement", async () => {
@@ -195,11 +375,11 @@ import "../m.malloy"
 source: a is one extend {
   view: x is vx + { where: products.brand ~ $BRAND }
 }`);
-      expect(doc.tiles[0].declaration).toEqual({
+      expect(queryTile(doc, 0).declaration).toEqual({
          kind: "reference",
          from: "vx",
       });
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "products.brand", given: "BRAND" },
       ]);
    });
@@ -227,6 +407,25 @@ source: a is one extend {
       // And the dimension itself, tagged or not, is where a drill can go.
       expect(doc.sources[0].dimensions).toEqual([
          { name: "cat", expression: "products.category" },
+      ]);
+   });
+
+   it("reads the givens an extension's own where: reads, compound or not", async () => {
+      const doc =
+         await read(`## artifact { title="T" tiles=["a -> x", "b -> y"] }
+import "../m.malloy"
+
+source: a is one extend {
+  where: region ~ $REGION, (brand ~ $BRAND or brand = null)
+  view: x is vx + { where: cat ~ $CATEGORY }
+}
+
+source: b is two extend {
+  view: y is vy
+}`);
+      expect(doc.sources.map((source) => source.scopedBy)).toEqual([
+         ["REGION", "BRAND"],
+         undefined,
       ]);
    });
 
@@ -266,7 +465,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is vx + { where: category ~ $CATEGORY, where: created_at >= $SINCE, limit: 5 }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
@@ -288,8 +487,8 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).declaration).toEqual({ kind: "inline" });
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -305,7 +504,7 @@ source: a is one extend {
     where: category ~ $CATEGORY
   }
 }`);
-      expect(last.tiles[0].filters).toEqual([
+      expect(queryTile(last, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
 
@@ -319,7 +518,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(middle.tiles[0].filters).toEqual([
+      expect(queryTile(middle, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -340,7 +539,7 @@ source: a is one extend {
     }
   }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 
    // "Whose ENTIRE text is one or more binding clauses" — `a ~ $A and c = 1`
@@ -356,7 +555,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 
    // `cleanBindingClauses` accepts a following statement keyword as a clean
@@ -378,7 +577,7 @@ source: a is one extend {
     where: a ~ $A, aggregate: n is count(), where: b ~ $B
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "a", given: "A" },
          { field: "b", given: "B" },
       ]);
@@ -396,7 +595,7 @@ source: a is one extend {
     where: a ~ $A, where: b ~ $B
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "a", given: "A" },
          { field: "b", given: "B" },
       ]);
@@ -418,7 +617,7 @@ source: a is one extend {
     select: category, n
   }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -430,7 +629,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is { aggregate: n is count() where: category ~ $CATEGORY }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -445,7 +644,7 @@ import "../m.malloy"
 source: a is one extend {
   view: x is { where: category ~ $CATEGORY, aggregate: n is count() }
 }`);
-      expect(doc.tiles[0].filters).toEqual([
+      expect(queryTile(doc, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -461,7 +660,7 @@ source: a is one extend {
     aggregate: n is count()
   }
 }`);
-      expect(opening.tiles[0].filters).toEqual([
+      expect(queryTile(opening, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
 
@@ -473,7 +672,7 @@ source: a is one extend {
     aggregate: n is count()
     where: category ~ $CATEGORY }
 }`);
-      expect(closing.tiles[0].filters).toEqual([
+      expect(queryTile(closing, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
    });
@@ -489,7 +688,7 @@ source: a is one extend {
 
   view: x is { aggregate: n is count() }
 }`);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
    });
 });
 
@@ -553,6 +752,46 @@ source: a is one extend {
    });
 });
 
+describe("readDashboardDocument: line endings", () => {
+   // A checkout with CRLF endings is the same document, so every field reads the same.
+   const SOURCES: Record<string, string> = {
+      "one-line tag, notes and tile tags": SIMPLE,
+      "a block tag and a text tile": newNotebookSource({
+         title: "Sales",
+         modelPath: "m.malloy",
+         source: "orders",
+         view: "by_brand",
+      }),
+      "a block description and a given contract": `##! experimental.givens
+##|"
+Block prose
+|##
+##| artifact { title="T"
+  tiles=["a -> x"]
+}
+|##
+import { one } from "../m.malloy"
+
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  # colspan=6
+  view: x is vx + { where: category ~ $CATEGORY }
+}`,
+   };
+   for (const [name, source] of Object.entries(SOURCES))
+      it(`reads ${name} the same with CRLF`, async () => {
+         const lf = await readDashboardDocument(source);
+         if (readFailed(lf)) throw new Error(lf.reason);
+         const crlf = await readDashboardDocument(
+            source.replace(/\n/g, "\r\n"),
+         );
+         if (readFailed(crlf)) throw new Error(crlf.reason);
+         expect(crlf.document).toEqual(lf.document);
+      });
+});
+
 describe("readDashboardDocument: what it refuses", () => {
    // All-or-nothing, and every refusal names what it could not understand.
    // "Cannot open this dashboard" with no reason reads as a bug.
@@ -593,8 +832,51 @@ describe("readDashboardDocument: what it refuses", () => {
       const doc = await read(
          `## artifact { title="T" tiles=["a -> x"] }\nimport "../m.malloy"\nsource: a is one extend {\n  # colspan=6\n  view: x is { aggregate: n }\n}`,
       );
-      expect(doc.tiles[0].declaration).toEqual({ kind: "inline" });
+      expect(queryTile(doc, 0).declaration).toEqual({ kind: "inline" });
       expect(doc.tiles[0].colspan).toBe(6);
+   });
+});
+
+// The server serves such a file; the builder's tag rewrites only know `artifact { … }` leading.
+describe("a tag whose artifact property is not the first", () => {
+   const rest = SIMPLE.split("\n").slice(5).join("\n");
+   const refused = async (text: string, modelPath?: string) => {
+      const result = await readDashboardDocument(text, modelPath);
+      if (!readFailed(result)) throw new Error("expected a refusal");
+      return result;
+   };
+
+   it("is refused with the reason, not read as untagged", async () => {
+      const result = await refused(
+         `## dashboard { columns=2 } artifact { title="Probe" tiles=["a -> by_cat"] }\n${rest}`,
+      );
+      expect(result.reason).toContain("`artifact { … }` first");
+      expect(result.reason).not.toContain("No `## artifact");
+   });
+
+   it("is refused in a ##| block too", async () => {
+      const result = await refused(
+         `##| dashboard { columns=2 }\n  artifact { title="Probe" tiles=["a -> by_cat"] }\n|##\n${rest}`,
+      );
+      expect(result.reason).toContain("`artifact { … }` first");
+   });
+
+   it("is refused, not converted, for a cell-format notebook", async () => {
+      const open = await readForEditor(
+         `##! experimental.givens\n## dashboard { columns=2 } artifact { kind=notebook title="T" }\nrun: a -> by_cat`,
+         "notebooks/n.malloy",
+      );
+      expect(open.ok === false && open.reason).toContain(
+         "`artifact { … }` first",
+      );
+   });
+
+   it("still opens when artifact leads and another property follows", async () => {
+      const doc = await read(
+         `## artifact { title="Probe" tiles=["a -> by_cat"] } dashboard { columns=2 }\n${rest}`,
+      );
+      expect(doc.title).toBe("Probe");
+      expect(doc.columns).toBe(2);
    });
 });
 
@@ -630,7 +912,7 @@ describe("every composite dashboard in the repository opens", () => {
       const name = path.relative(REPO, file);
       // The lint fixtures exist to BE broken; they are exercised by the refusal
       // tests above rather than expected to open.
-      const expectBroken = name.includes("dashboards-lint");
+      const expectBroken = /-lint[\\/]/.test(name);
       it(`${expectBroken ? "refuses" : "opens"} ${name}`, async () => {
          const result = await readDashboardDocument(
             fs.readFileSync(file, "utf8"),
@@ -656,11 +938,56 @@ describe("every composite dashboard in the repository opens", () => {
  */
 describe("the compiler stays lazy", () => {
    it("is never imported statically", () => {
-      const source = fs.readFileSync(
-         path.join(import.meta.dir, "malloyTree.ts"),
-         "utf8",
+      const read = (file: string) =>
+         fs.readFileSync(path.join(import.meta.dir, file), "utf8");
+      const staticImport = /^\s*import\s[^(]*@malloydata\/malloy"/m;
+      expect(read("malloyTree.ts")).not.toMatch(staticImport);
+      expect(read("legacyNotebook.ts")).not.toMatch(staticImport);
+      expect(read("malloyTree.ts")).toContain("await loadMalloy()");
+      expect(read("loadMalloy.ts")).toContain(
+         'await import("@malloydata/malloy")',
       );
-      expect(source).not.toMatch(/^\s*import\s[^(]*@malloydata\/malloy/m);
-      expect(source).toContain('await import("@malloydata/malloy")');
+      for (const pkg of ["malloy-tag", "malloy-query-builder"])
+         expect(read("loadMalloy.ts")).toContain(
+            `await import("@malloydata/${pkg}")`,
+         );
+      for (const file of ["readDocument.ts", "legacyNotebook.ts"])
+         expect(read(file)).not.toContain('import("@malloydata/malloy-tag")');
+   });
+});
+
+describe("the kind of a document held as text", () => {
+   const { cases } = JSON.parse(
+      fs.readFileSync(
+         path.join(import.meta.dir, "testing/documentKindRule.json"),
+         "utf8",
+      ),
+   ) as { cases: { name: string; source: string; kind: string }[] };
+
+   // One case table for this reader and the server's `submittedTextKind`, whose spec reads the same file.
+   for (const { name, source, kind } of cases) {
+      it(`${name}: ${kind}`, async () => {
+         const result = await readDashboardDocument(source, undefined, true);
+         const notebook = readFailed(result)
+            ? result.legacyNotebook === true
+            : result.document.kind === "notebook";
+         expect(notebook).toBe(kind === "notebook");
+      });
+   }
+
+   it("still takes the folder's kind when the host has a folder", async () => {
+      const source = "## artifact { }\nrun: q -> { aggregate: c }\n";
+      const inNotebooks = await readDashboardDocument(
+         source,
+         "notebooks/x.malloy",
+      );
+      expect(readFailed(inNotebooks) && inNotebooks.legacyNotebook).toBe(true);
+      const inDashboards = await readDashboardDocument(
+         source,
+         "dashboards/x.malloy",
+      );
+      expect(
+         readFailed(inDashboards) && inDashboards.legacyNotebook,
+      ).toBeFalsy();
    });
 });

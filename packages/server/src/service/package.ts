@@ -22,6 +22,12 @@ import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
+import { llmConfigured } from "../providers/active";
+import {
+   DEFAULT_PACKAGE_RETRIEVAL,
+   assertRequiredStagesAvailable,
+   type PackageRetrievalSettings,
+} from "./package_retrieval";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,
@@ -38,6 +44,7 @@ import {
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
+import { recordNotebookDiscovery } from "../notebook_metrics";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
@@ -96,17 +103,28 @@ import {
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import {
+   ANY_ARTIFACT_NOTE,
+   artifactKindInText,
+   claimsToBeANotebook,
+   documentKind,
+   hasArtifactLineOutsideBlocks,
+   isDocumentModelPath,
+   isNotebookModelPath,
+   type DocumentKind,
+} from "./notebook";
+import { lintNotebookText } from "./notebook_lint";
+import {
    buildDashboardManifest,
    COMPONENT_FILE_SUFFIXES,
    DASHBOARDS_DIR,
    dashboardSlug,
-   isDashboardModelPath,
    matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
    lintUndiscoveredDashboard,
+   queryTiles,
    type DashboardManifest,
    type DashboardModelFacts,
    factsCarryArtifactTag,
@@ -274,11 +292,15 @@ export class Package {
    // Load-time dashboard lint findings, on the same read-only warnings surface
    // as the render-tag ones. Refreshed with the dashboards on load and reload.
    private dashboardWarnings: ApiPackageWarning[] = [];
+   /** Served notebooks whose cells the reader refused; set by {@link discoverDashboards}. */
+   private notebookWarnings: ApiPackageWarning[] = [];
    // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
    // Computed once per load/reload rather than per request: the artifact tag is
    // a property of the compiled model, so it can only change when the models do.
    // A dashboard file that failed to compile has no readable tag, so it lands
    // here as a slug-titled entry carrying its error rather than disappearing.
+   // Notebooks written as a tile layout, by path: they are not listed as dashboards, but are linted as one.
+   private layoutNotebooks = new Map<string, DashboardManifest>();
    private dashboards: Map<string, DashboardManifest & { error?: string }> =
       new Map();
    /**
@@ -288,6 +310,13 @@ export class Package {
     * package's `warnings` (see getPackageMetadata).
     */
    private manifestWarnings: string[] = [];
+   /**
+    * The manifest's `retrieval` block as read at load (prompt files included).
+    * Replaced on reload, which is how an edit to it, or to a prompt file,
+    * takes effect.
+    */
+   private retrievalSettings: PackageRetrievalSettings =
+      DEFAULT_PACKAGE_RETRIEVAL;
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -524,6 +553,8 @@ export class Package {
             // it. An untagged file under dashboards/ is not a dashboard, so a
             // listing publishes it like any other file.
             if (this.isServedDashboard(modelPath)) continue;
+            // A served notebook reads the surface and never adds to it.
+            if (this.isServedNotebook(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
                add(sources, source.name, model.definitionIdentity(source.name));
             }
@@ -544,19 +575,23 @@ export class Package {
       for (const [modelPath, model] of this.models) {
          const dashboardText = this.dashboardFileText.get(modelPath);
          const dashboard = dashboardText !== undefined;
+         const notebookText = this.notebookFileText.get(modelPath);
+         const notebook = notebookText !== undefined;
          model.setQueryBoundary({
             mode,
             exploresDeclared,
-            // A discovered dashboard is always an entry point: it is always
-            // listed, and the model marks it as admitting nothing of its own.
+            // A discovered dashboard or notebook is always an entry point: it
+            // is always listed, and the model marks it as admitting nothing of
+            // its own.
             isQueryEntryPoint: exploreSet
-               ? exploreSet.has(modelPath) || dashboard
+               ? exploreSet.has(modelPath) || dashboard || notebook
                : true,
             packageCuratedSources,
             packageCuratedQueries,
             offSurface,
             dashboard,
-            derivationText: dashboardText,
+            notebook,
+            derivationText: dashboardText ?? notebookText,
          });
       }
    }
@@ -574,6 +609,20 @@ export class Package {
     *  `explores` lists is published like any other. */
    private isServedDashboard(modelPath: string): boolean {
       return this.dashboardFileText.has(modelPath);
+   }
+
+   /**
+    * The compiled text of each served notebook, keyed by file: a `.malloy`
+    * directly under `notebooks/` with a model-level `## artifact` note. Filled
+    * by {@link discoverDashboards} in the same pass and before the same
+    * boundary re-application as the dashboards. A reloaded model carries the
+    * flag from the previous map until that discovery pass replaces it.
+    */
+   private notebookFileText = new Map<string, string>();
+
+   /** Whether discovery made this file a served notebook. */
+   public isServedNotebook(modelPath: string): boolean {
+      return this.notebookFileText.has(modelPath);
    }
 
    /**
@@ -765,12 +814,22 @@ export class Package {
             }
             throw new ServiceUnavailableError(
                `Package-load worker pool unavailable: ${realError.message}`,
+               // The worker's failure may be a refused filesystem access on
+               // the package's own files, which the error mapper reads from
+               // the cause; a bare 503 would read as "retry".
+               { cause: realError },
             );
          });
       const [outcome, databases] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
       ]);
+      // A stage the package requires (`enabled: true`) needs the operator's
+      // LLM; without one the package does not load.
+      assertRequiredStagesAvailable(
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
+         llmConfigured(),
+      );
       const workerDoneTime = performance.now();
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -918,6 +977,8 @@ export class Package {
       pkg.renderTagWarnings = renderTagWarnings;
       await pkg.discoverDashboards();
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      pkg.retrievalSettings =
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
@@ -1221,6 +1282,11 @@ export class Package {
       });
    }
 
+   /** How this package is searched and indexed (publisher.json `retrieval`). */
+   public getRetrievalSettings(): PackageRetrievalSettings {
+      return this.retrievalSettings;
+   }
+
    /**
     * ON THE `/status` POLL PATH: this runs for every package in every
     * environment, every few seconds, because `EnvironmentStore.getStatus()`
@@ -1262,6 +1328,7 @@ export class Package {
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.dashboardWarnings,
+         ...this.notebookWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A `#@ persist` the compile-time gate refused. Without this the
@@ -1741,7 +1808,10 @@ export class Package {
       );
       const problems: { entry: string; reason: string }[] = [];
       for (const entry of declared) {
-         if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         if (
+            entry.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+            this.isServedNotebook(entry)
+         ) {
             problems.push({
                entry,
                reason:
@@ -2253,6 +2323,7 @@ export class Package {
       const warnings: Array<{ model: string; message: string }> = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (this.isServedNotebook(modelPath)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          // A dashboard exports nothing by design; it reads the surface.
          if (exploreSet && this.isServedDashboard(modelPath)) continue;
@@ -2317,7 +2388,8 @@ export class Package {
          ([modelPath]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             exploreSet.has(modelPath) &&
-            !this.isServedDashboard(modelPath),
+            !this.isServedDashboard(modelPath) &&
+            !this.isServedNotebook(modelPath),
       );
       if (surface.length === 0) return [];
       // Only when NOTHING on the surface compiled. One broken file beside a
@@ -2327,13 +2399,16 @@ export class Package {
          return [];
       }
       // Models off the surface that compiled FINE, which is the count worth
-      // reporting: they are the ones refused for someone else's typo. A hidden
+      // reporting: they are the ones refused for someone else's typo. Served
+      // dashboards and notebooks are not on the surface and not refused. A hidden
       // model that failed to compile of its own accord was not taken down by
       // this, and has its own error on the listing.
       const collateral = Array.from(this.models.entries()).filter(
          ([modelPath, model]) =>
             modelPath.endsWith(MODEL_FILE_SUFFIX) &&
             !exploreSet.has(modelPath) &&
+            !this.isServedDashboard(modelPath) &&
+            !this.isServedNotebook(modelPath) &&
             !model.getCompilationError(),
       ).length;
       // ONE message, however many files the surface spans. Emitting it per
@@ -2548,8 +2623,15 @@ export class Package {
          }
          throw new ServiceUnavailableError(
             `Package-load worker pool unavailable: ${realError.message}`,
+            { cause: realError },
          );
       }
+
+      // Same check as create, before anything is swapped.
+      assertRequiredStagesAvailable(
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
+         llmConfigured(),
+      );
 
       const nextModels = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
@@ -2628,6 +2710,8 @@ export class Package {
       await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      this.retrievalSettings =
+         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.
@@ -2675,24 +2759,35 @@ export class Package {
       return await model.getFileText(this.packagePath);
    }
 
-   public async listModels(): Promise<ApiModel[]> {
+   public async listModels(
+      options: { includeHiddenFilesAndSources?: boolean } = {},
+   ): Promise<ApiModel[]> {
       // When the package resolved a surface — an `explores` in publisher.json
       // or a root `index.malloy` — only those models are listed; every other
       // .malloy file still compiles for import/join resolution but is hidden.
       // No surface → every model is listed (backward-compatible default), but
       // note that means no surface, not merely no manifest key. Notebooks are
       // unaffected (see listNotebooks) — they are always public.
+      //
+      // `includeHiddenFilesAndSources` lists the hidden files too, each marked
+      // `isHidden: true`. Running them takes the same option on the query
+      // route (Model.getQueryResults).
       const exploreSet = this.exploreSet();
+      const isHidden = (modelPath: string) =>
+         !!exploreSet && !exploreSet.has(modelPath);
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
                if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+               // A served notebook is listed as a notebook, surface or not.
+               if (this.isServedNotebook(modelPath)) return false;
                // A dashboard file is not a model on the surface even when
                // `explores` lists it: it is listed as a dashboard instead.
                if (!exploreSet) return true;
+               if (this.isServedDashboard(modelPath)) return false;
                return (
-                  exploreSet.has(modelPath) &&
-                  !this.isServedDashboard(modelPath)
+                  options.includeHiddenFilesAndSources ||
+                  exploreSet.has(modelPath)
                );
             })
             .map(async (modelPath) => {
@@ -2709,6 +2804,7 @@ export class Package {
                   environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
+                  isHidden: isHidden(modelPath),
                   error,
                };
             }),
@@ -2755,7 +2851,7 @@ export class Package {
     * wrong tool; its comment says so.
     *
     * Deliberately textual and deliberately generous: it looks for an `artifact`
-    * annotation at the start of a line. Note the cost of a false positive is
+    * property anywhere on a `#` or `##` annotation line. Note the cost of a false positive is
     * NOT the same on every path. On the original one it lists a broken file
     * that was never a dashboard, which is merely noisy. On the drop paths it
     * emits an `error` finding claiming a dashboard should exist and registers
@@ -2769,9 +2865,41 @@ export class Package {
             safeJoinUnderRoot(this.packagePath, modelPath),
             "utf8",
          );
-         return /^[ \t]*##?[ \t]*artifact\b/m.test(source);
+         return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
       } catch {
          return false;
+      }
+   }
+
+   /**
+    * What a `.malloy` at the top of `dashboards/` or `notebooks/` is. The
+    * artifact tag's `kind` decides, read off the compiled model or, for a file
+    * that did not compile, off its text; the folder decides only when the tag
+    * names none. A file with no model-level `## artifact` is a shared include
+    * under `notebooks/`, and under `dashboards/` still a candidate (a query can
+    * carry the tag). Never throws.
+    */
+   private async classifyDocument(
+      model: Model,
+      modelPath: string,
+   ): Promise<DocumentKind | "include"> {
+      const untagged = isNotebookModelPath(modelPath) ? "include" : "dashboard";
+      try {
+         if (model.getModelDef()) {
+            return model.carriesNotebookArtifactNote()
+               ? documentKind(modelPath, model.artifactKind())
+               : untagged;
+         }
+         if (!model.getCompilationError()) return untagged;
+         const source = await fs.readFile(
+            safeJoinUnderRoot(this.packagePath, modelPath),
+            "utf8",
+         );
+         return claimsToBeANotebook(source)
+            ? documentKind(modelPath, artifactKindInText(source))
+            : untagged;
+      } catch {
+         return untagged;
       }
    }
 
@@ -2812,13 +2940,17 @@ export class Package {
       // against this, so a drop does not also turn a correct
       // `# drill { to=... }` into "not a dashboard in this package".
       const dashboardSlugs = new Set<string>();
+      const notebookPaths: string[] = [];
+      const layoutNotebooks = new Map<string, DashboardManifest>();
+      // Dashboards whose slug an earlier file already holds; the slug is the URL and the drill target.
+      const shadowed: { modelPath: string; name: string; by: string }[] = [];
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
          if (!model) continue;
 
          let facts: DashboardModelFacts | undefined;
          try {
-            facts = model.getDashboardModelFacts();
+            facts = await model.getCompiledDashboardModelFacts();
             if (facts) allFacts.set(modelPath, facts);
          } catch (err) {
             logger.warn("Reading a model's dashboard facts failed", {
@@ -2828,7 +2960,27 @@ export class Package {
             });
          }
 
-         if (!isDashboardModelPath(modelPath)) continue;
+         if (!isDocumentModelPath(modelPath)) continue;
+         const kind = await this.classifyDocument(model, modelPath);
+         if (kind === "include") continue;
+         if (kind === "notebook") {
+            notebookPaths.push(modelPath);
+            // A notebook written as a tile layout is linted like a dashboard.
+            try {
+               const layout = facts && buildDashboardManifest(facts);
+               if (facts && layout?.kind === "notebook" && layout.tiles) {
+                  layoutNotebooks.set(modelPath, layout);
+                  factsByPath.set(modelPath, facts);
+               }
+            } catch (err) {
+               logger.warn("Notebook layout discovery failed", {
+                  packageName: this.packageName,
+                  modelPath,
+                  error: errMessage(err),
+               });
+            }
+            continue;
+         }
          const name = dashboardSlug(modelPath);
 
          // Establish that the file IS a dashboard before any of the checks
@@ -2923,6 +3075,7 @@ export class Package {
             }
             manifest = {
                name,
+               kind: "dashboard",
                title: name,
                autorun: true,
                entryFile: modelPath,
@@ -2936,6 +3089,12 @@ export class Package {
          // what its tiles may read, not whether it is listed (see
          // applyQueryBoundaryToModels and lintTilesAgainstSurface).
          dashboardSlugs.add(name);
+
+         const holder = discovered.get(name);
+         if (holder) {
+            shadowed.push({ modelPath, name, by: holder.entryFile });
+            continue;
+         }
 
          // A name outside the documented `dashboardName` pattern is served and
          // only noted. Measured rather than assumed: the route is a plain
@@ -2953,6 +3112,7 @@ export class Package {
          if (facts) factsByPath.set(modelPath, facts);
       }
       this.dashboards = discovered;
+      this.layoutNotebooks = layoutNotebooks;
       // Which files are dashboards changes what the query boundary admits, so
       // it is re-applied now, before the lint asks it about each tile.
       const dashboardFileText = new Map<string, string>();
@@ -2971,15 +3131,116 @@ export class Package {
          }
       }
       this.dashboardFileText = dashboardFileText;
+      const notebookFileText = new Map<string, string>();
+      for (const modelPath of notebookPaths) {
+         const model = this.models.get(modelPath);
+         if (!model) continue;
+         try {
+            // The compiled text when the loader recorded it, so a reader slicing
+            // IR ranges never sees a file newer than the compile.
+            notebookFileText.set(
+               modelPath,
+               model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath)),
+            );
+         } catch {
+            notebookFileText.set(modelPath, "");
+         }
+      }
+      this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
+      this.notebookWarnings = [
+         ...this.attachNotebookCells(),
+         ...(await this.lintNotebookFiles()),
+      ];
       this.lintInputs = {
          factsByPath,
          allFacts,
          unconventionalSlugs,
          dashboardSlugs,
          droppedByError,
+         shadowed,
       };
       await this.relintDashboards();
+   }
+
+   /**
+    * Read every served notebook's cells and count every notebook, both formats.
+    * A reader refusal is the notebook's error; it is returned as a finding and
+    * logged, because the model still compiles and nothing else would say so.
+    */
+   private attachNotebookCells(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            recordNotebookDiscovery(
+               "malloynb",
+               model.getCompilationError() ? "broken" : "ok",
+            );
+            continue;
+         }
+         const text = this.notebookFileText.get(modelPath);
+         if (text === undefined) continue;
+         const outcome = model.attachServedNotebookCells(text);
+         recordNotebookDiscovery("malloy", outcome);
+         const refusal = model.getNotebookReaderRefusal();
+         if (outcome !== "refused" || !refusal) continue;
+         logger.warn("Notebook cells could not be read", {
+            packageName: this.packageName,
+            modelPath,
+            line: refusal.line,
+            detail: refusal.message,
+         });
+         warnings.push({
+            model: modelPath,
+            message: refusal.message,
+            severity: "error",
+         });
+      }
+      return warnings;
+   }
+
+   /**
+    * Lint every served notebook and every file under `dashboards/`, including
+    * one that failed to compile, since its fix-it is the part that explains the
+    * compile error. Read from the compiled text when the loader recorded it.
+    */
+   private async lintNotebookFiles(): Promise<ApiPackageWarning[]> {
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of Array.from(this.models).sort(
+         ([a], [b]) => (a < b ? -1 : 1),
+      )) {
+         if (!isDocumentModelPath(modelPath)) continue;
+         let text = this.notebookFileText.get(modelPath);
+         if (text === undefined) {
+            try {
+               text =
+                  model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath));
+            } catch {
+               continue;
+            }
+         }
+         for (const finding of lintNotebookText(modelPath, text)) {
+            // A dashboard whose tag does not parse is already reported by the dashboard lint.
+            if (
+               finding.code === "notebook-artifact-unparsed" &&
+               !this.isServedNotebook(modelPath)
+            )
+               continue;
+            logger.warn("Notebook lint", {
+               packageName: this.packageName,
+               model: modelPath,
+               detail: finding.message,
+            });
+            warnings.push({
+               model: modelPath,
+               message: finding.message,
+               severity: finding.severity,
+            });
+         }
+      }
+      return warnings;
    }
 
    /** What {@link discoverDashboards} found, kept so the lint can re-run
@@ -2990,6 +3251,7 @@ export class Package {
       unconventionalSlugs: readonly { modelPath: string; name: string }[];
       dashboardSlugs: ReadonlySet<string>;
       droppedByError: readonly { modelPath: string; name: string }[];
+      shadowed: readonly { modelPath: string; name: string; by: string }[];
    };
 
    /**
@@ -3006,6 +3268,7 @@ export class Package {
          inputs.unconventionalSlugs,
          inputs.dashboardSlugs,
          inputs.droppedByError,
+         inputs.shadowed,
       );
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
@@ -3036,7 +3299,9 @@ export class Package {
       const surfaceIsIndex = this.surfaceIsIndexModel();
       const listedModel = (this.packageMetadata.explores ?? []).find(
          (entry) =>
-            entry.endsWith(MODEL_FILE_SUFFIX) && !this.isServedDashboard(entry),
+            entry.endsWith(MODEL_FILE_SUFFIX) &&
+            !this.isServedDashboard(entry) &&
+            !this.isServedNotebook(entry),
       );
       const unexported = surfaceIsIndex
          ? `which ${INDEX_MODEL_NAME} doesn't export`
@@ -3059,11 +3324,11 @@ export class Package {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
       }[] = [];
-      for (const tile of manifest.tiles ?? []) {
+      for (const tile of queryTiles(manifest.tiles)) {
          checks.push({
             request: { query: `run: ${tile.query}` },
             describe: (source) =>
-               `Tile ${tile.query} on dashboard ${manifest.name} reads ` +
+               `Tile ${tile.query} on ${manifest.kind} ${manifest.name} reads ` +
                `${source}, ${unexported}, so it won't load.`,
          });
       }
@@ -3125,9 +3390,21 @@ export class Package {
       unconventionalSlugs: readonly { modelPath: string; name: string }[],
       knownSlugs: ReadonlySet<string>,
       droppedByError: readonly { modelPath: string; name: string }[],
+      shadowed: readonly { modelPath: string; name: string; by: string }[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
       try {
+         for (const { modelPath, name, by } of shadowed) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `"${modelPath}" is not served: "${by}" already holds the ` +
+                  `dashboard name "${name}", which is the URL and the \`# drill\` ` +
+                  `target. Fix: rename one of the files.`,
+               severity: "error",
+            });
+         }
          // First because it cannot throw, so these survive a truncation that
          // costs everything after them, and a dashboard that vanished with no
          // explanation is the worst thing on this surface to lose. A manifest
@@ -3161,7 +3438,7 @@ export class Package {
             });
          }
          for (const [modelPath, facts] of factsByPath) {
-            const manifest = this.dashboards.get(dashboardSlug(modelPath));
+            const manifest = this.manifestAt(modelPath);
             const findings = manifest
                ? lintDashboard(facts, manifest)
                : lintUndiscoveredDashboard(facts);
@@ -3294,6 +3571,14 @@ export class Package {
       return warnings;
    }
 
+   /** The manifest the file at `modelPath` produced, a dashboard's or a layout notebook's. */
+   private manifestAt(modelPath: string): DashboardManifest | undefined {
+      const dashboard = this.dashboards.get(dashboardSlug(modelPath));
+      return dashboard?.entryFile === modelPath
+         ? dashboard
+         : this.layoutNotebooks.get(modelPath);
+   }
+
    public listDashboards(): ApiDashboard[] {
       // Every dashboard is listed whatever the surface is; the surface limits
       // what its tiles may read.
@@ -3317,6 +3602,7 @@ export class Package {
          packageName: this.packageName,
          name: manifest.name,
          path: manifest.entryFile,
+         kind: manifest.kind,
          title: manifest.title,
          description: manifest.description,
          error: manifest.error,
@@ -3351,7 +3637,10 @@ export class Package {
       return await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
-               return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+               return (
+                  modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
+                  this.isServedNotebook(modelPath)
+               );
             })
             .map(async (modelPath) => {
                const model = this.models.get(modelPath);
@@ -3439,7 +3728,12 @@ export class Package {
       );
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+      } catch (error) {
+         // A missing manifest, or a package path that is not a directory,
+         // is "does not exist". Anything else, an EACCES on the package
+         // directory above all, is rethrown so it is reported as what it is.
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          logger.error(`Can't find ${packageConfigPath}`);
          throw new PackageNotFoundError(
             `Package manifest for ${packagePath} does not exist.`,

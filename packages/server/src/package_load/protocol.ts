@@ -79,6 +79,7 @@ import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
+import type { PackageRetrievalSettings } from "../service/package_retrieval";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -246,6 +247,8 @@ export interface LoadPackageResult {
        * still-parsing-but-outdated manifest is visible without failing a load.
        */
       manifestWarnings?: string[];
+      /** The manifest's `retrieval` block, validated, with prompt files read. */
+      retrieval?: PackageRetrievalSettings;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
@@ -292,6 +295,18 @@ export interface SerializedError {
    isCompilationError?: boolean;
    /** Set when the error originated as `PackageManifestError`. */
    isManifestError?: boolean;
+   /**
+    * A Node errno error's `code`, `syscall` and `path`, which `name` and
+    * `message` do not carry. Lets the receiving side recognize a refused
+    * filesystem access (see `filesystemAccessFailure`) by its fields.
+    */
+   errno?: SerializedErrno;
+}
+
+export interface SerializedErrno {
+   code: string;
+   syscall?: string;
+   path?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────

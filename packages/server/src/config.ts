@@ -15,6 +15,27 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import { defaultOpenAiBaseUrl } from "./providers/openai_compatible";
+import type {
+   EmbeddingSettings,
+   LlmSettings,
+   ProviderName,
+} from "./providers/types";
+import {
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   parseRetrievalConfig,
+   type RetrievalConfig,
+   type RetrievalEmbeddingConfig,
+   type RetrievalLlmConfig,
+} from "./retrieval_config";
+
+// The retrieval settings live in ./retrieval_config; these names have always
+// been importable from here.
+export {
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   parseRetrievalConfig,
+   type RetrievalConfig,
+};
 import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
@@ -102,6 +123,12 @@ export const PER_MODE_COLOR_KEYS = [
    "tile",
    "tileTitle",
    "mapColor",
+   "border",
+   "cardBorder",
+   "axis",
+   "gridline",
+   "chartText",
+   "value",
 ] as const;
 
 export type Package = {
@@ -125,6 +152,7 @@ export type Environment = {
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
+   retrieval?: RetrievalConfig;
    environments: Environment[];
 };
 
@@ -387,6 +415,53 @@ export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
 };
 
 /**
+ * How many rows the appender buffers before a partitioned storage build flushes
+ * them to the partition files (`partitioned_write_flush_threshold`,
+ * `PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD`). Default 8192 rows. `off` turns
+ * the whole partitioned-insert treatment off -- this threshold, the ordered
+ * insert and the single appender thread together -- and leaves DuckDB's own
+ * behaviour, which is the one the treatment exists to avoid; it is the escape
+ * hatch for a source that built fine before, at the cost of the sort.
+ *
+ * A `#@ persist partition=` build is DuckDB's partitioned COPY, and that operator
+ * buffers rows per partition in a column-data collection INSIDE the buffer
+ * manager -- so unlike the two DuckLake bounds above, `memory_limit` does see
+ * this term, and the failure reads `Out of Memory Error: failed to pin block`
+ * against the session's own limit rather than a container kill. Two things drive
+ * it. Every partition a thread meets costs it one vector per column up front, at
+ * first sight, before a single row of it is flushed; and nothing is flushed
+ * until the thread has appended this many rows across all its partitions. Per
+ * THREAD, so a parallel appender multiplies it.
+ *
+ * This bounds the second term only. The first -- one vector per column for every
+ * partition in flight -- is bounded by {@link orderByPartitionColumns}: the
+ * insert reads its SELECT ordered by the partition columns, sorted by DuckDB at
+ * the top of the INSERT, on one thread, because a sorted result is read in
+ * parallel and each reader then meets every partition again. Measured on 616k
+ * rows x 122 columns into 308 partitions at 768MB, from Postgres: interleaved
+ * rows fail at any threshold, ordered rows fail at DuckDB's default, ordered
+ * rows on one thread complete at this default in 9.5 s (four threads fail); from
+ * BigQuery the same shape fails at 54 s and completes in 36 s. Neither half is
+ * sufficient alone.
+ *
+ * Rows rather than bytes because that is the unit DuckDB exposes; the byte-based
+ * row-group bound governs the Parquet writer downstream of this buffer and does
+ * not reach it.
+ */
+export const DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
+
+export const getPartitionedWriteFlushThreshold = (): number | undefined => {
+   const raw = process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (raw === undefined || raw === "") {
+      return DEFAULT_PARTITIONED_WRITE_FLUSH_THRESHOLD;
+   }
+   if (raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return Number(raw);
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -464,6 +539,26 @@ export function assertDuckDBResourceConfig(): void {
             `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
+   const flushThreshold =
+      process.env.PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD?.trim();
+   if (
+      flushThreshold !== undefined &&
+      flushThreshold !== "" &&
+      flushThreshold.toLowerCase() !== "off" &&
+      !/^[1-9]\d{0,8}$/.test(flushThreshold)
+   ) {
+      // At most nine digits, on operational grounds: above a billion rows the
+      // bound is indistinguishable from `off`, so a larger value is a typo or a
+      // misunderstanding, and this is where it is cheapest to say so. (The
+      // rendering hazard is ours, not DuckDB's -- DuckDB takes a 13-digit
+      // count; JavaScript renders 1e21 and above in exponent form, which the
+      // SET then refuses -- but that is thirteen orders of magnitude away.)
+      throw new Error(
+         `Invalid value for PUBLISHER_PARTITIONED_WRITE_FLUSH_THRESHOLD: expected a ` +
+            `row count like "8192" (up to nine digits), or "off" to turn the ` +
+            `partitioned-insert bounds off, got "${flushThreshold}"`,
+      );
+   }
    const tempDirectory = getDuckDBTempDirectory();
    if (tempDirectory !== undefined) {
       try {
@@ -505,6 +600,11 @@ export interface EmbeddingConfig {
     * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
     */
    minSimilarity: number;
+   /** Which provider the settings came from; absent means openai-compatible. */
+   provider?: ProviderName;
+   /** Put before a search query / before indexed text. Default ''. */
+   queryPrefix?: string;
+   documentPrefix?: string;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
@@ -537,18 +637,33 @@ export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
  *
  * Throws on malformed companion values (bad URL, bad integer) so a typo
  * surfaces loudly in the log rather than silently degrading to lexical.
+ *
+ * `file` is `retrieval.embedding` from publisher.config.json. A key in the file
+ * wins over the matching `EMBEDDING_*` variable; the variable is the fallback.
+ * Covers the OpenAI-style providers only (`openai`, `openai-compatible`,
+ * `ollama`, or no provider named); see {@link getEmbeddingSettings} for the
+ * rest.
  */
-export const getEmbeddingConfig = (): EmbeddingConfig | null => {
-   const apiKey = process.env.EMBEDDING_API_KEY?.trim();
-   if (!apiKey) {
+export const getEmbeddingConfig = (
+   file?: RetrievalEmbeddingConfig,
+): EmbeddingConfig | null => {
+   const provider = file?.provider;
+   if (provider === "google" || provider === "vertex") return null;
+   const envKey = process.env.EMBEDDING_API_KEY?.trim();
+   // Ollama serves without a key; for every other provider no key means the
+   // feature is off, never an error.
+   if (!envKey && provider !== "ollama") {
       return null;
    }
+   const apiKey = envKey || "ollama";
 
    const rawBase = process.env.EMBEDDING_API_BASE;
-   const baseUrl = (rawBase?.trim() || DEFAULT_EMBEDDING_API_BASE).replace(
-      /\/+$/,
-      "",
-   );
+   const baseUrl = (
+      file?.baseUrl ||
+      rawBase?.trim() ||
+      (provider ? defaultOpenAiBaseUrl(provider) : undefined) ||
+      DEFAULT_EMBEDDING_API_BASE
+   ).replace(/\/+$/, "");
    try {
       new URL(baseUrl);
    } catch {
@@ -557,15 +672,32 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   const model = process.env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
+   const model =
+      file?.model ||
+      process.env.EMBEDDING_MODEL?.trim() ||
+      DEFAULT_EMBEDDING_MODEL;
 
-   const dimensions = parseIntEnv("EMBEDDING_DIMENSIONS");
+   const dimensions = file?.dimensions ?? parseIntEnv("EMBEDDING_DIMENSIONS");
    if (dimensions !== undefined && dimensions <= 0) {
       throw new Error(
          `EMBEDDING_DIMENSIONS must be a positive integer (got ${dimensions})`,
       );
    }
 
+   return {
+      apiKey,
+      model,
+      baseUrl,
+      dimensions,
+      minSimilarity: embeddingMinSimilarity(),
+      ...(provider ? { provider } : {}),
+      ...(file?.queryPrefix ? { queryPrefix: file.queryPrefix } : {}),
+      ...(file?.documentPrefix ? { documentPrefix: file.documentPrefix } : {}),
+   };
+};
+
+/** The cosine floor from `EMBEDDING_MIN_SIMILARITY`, validated. */
+function embeddingMinSimilarity(): number {
    const minSimilarity =
       parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
       DEFAULT_EMBEDDING_MIN_SIMILARITY;
@@ -579,9 +711,162 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
             `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
       );
    }
+   return minSimilarity;
+}
 
-   return { apiKey, model, baseUrl, dimensions, minSimilarity };
+/**
+ * The embedding provider settings in force, for every provider, or `null`
+ * when the feature is off. On iff the provider is named and has what it needs
+ * (a key in `EMBEDDING_API_KEY`, or the provider is Ollama or Vertex, which
+ * need none), or, with no provider named, `EMBEDDING_API_KEY` is set.
+ */
+export function getEmbeddingSettings(
+   file?: RetrievalEmbeddingConfig,
+): EmbeddingSettings | null {
+   const queryPrefix = file?.queryPrefix ?? "";
+   const documentPrefix = file?.documentPrefix ?? "";
+   const provider = file?.provider;
+   if (provider === "google" || provider === "vertex") {
+      const apiKey = process.env.EMBEDDING_API_KEY?.trim() || undefined;
+      if (provider === "google" && !apiKey) return null;
+      if (!file?.model) return null;
+      return {
+         provider,
+         model: file.model,
+         dimensions: file.dimensions,
+         baseUrl: file.baseUrl,
+         projectId: file.projectId,
+         location: file.location,
+         // Vertex authenticates with Application Default Credentials.
+         apiKey: provider === "google" ? apiKey : undefined,
+         minSimilarity: embeddingMinSimilarity(),
+         queryPrefix,
+         documentPrefix,
+      };
+   }
+   const config = getEmbeddingConfig(file);
+   if (!config) return null;
+   const keyless =
+      provider === "ollama" && !process.env.EMBEDDING_API_KEY?.trim();
+   return {
+      provider: config.provider ?? "openai-compatible",
+      model: config.model,
+      dimensions: config.dimensions,
+      baseUrl: config.baseUrl,
+      apiKey: keyless ? undefined : config.apiKey,
+      minSimilarity: config.minSimilarity,
+      queryPrefix,
+      documentPrefix,
+   };
+}
+
+/** A line for the startup log about the embedding settings. */
+export interface StartupNotice {
+   level: "info" | "warn";
+   message: string;
+}
+
+const hostOf = (url: string): string => {
+   try {
+      return new URL(url).host;
+   } catch {
+      return "<invalid URL>";
+   }
 };
+
+/**
+ * What the startup log should say about the embedding settings that would
+ * otherwise act silently:
+ *
+ * - a provider that needs a key (`openai`, `openai-compatible`, `google`) is
+ *   named in the file and `EMBEDDING_API_KEY` is unset, so semantic search is
+ *   off and `get_context` ranks lexically. getEmbeddingSettings returns null
+ *   for this on purpose (the key is never read from ambient variables), so
+ *   without this line an operator who named the provider sees nothing.
+ * - a file value overrides a different `EMBEDDING_*` variable. The file wins by
+ *   design, and a changed model or dimensions re-embeds every package.
+ *
+ * A base URL is shown as its host only: the URL can carry credentials.
+ */
+export function embeddingStartupNotices(
+   file?: RetrievalEmbeddingConfig,
+): StartupNotice[] {
+   if (!file) return [];
+   const notices: StartupNotice[] = [];
+   const key = process.env.EMBEDDING_API_KEY?.trim();
+   const provider = file.provider;
+   if (
+      !key &&
+      (provider === "openai" ||
+         provider === "openai-compatible" ||
+         provider === "google")
+   ) {
+      notices.push({
+         level: "warn",
+         message:
+            `retrieval.embedding names provider "${provider}" but EMBEDDING_API_KEY is not set, so semantic search is off and get_context ranks lexically. ` +
+            `Fix: set EMBEDDING_API_KEY in the server's environment.`,
+      });
+   }
+   const reembeds =
+      "Changing the model or its dimensions re-embeds every package.";
+   const envModel = process.env.EMBEDDING_MODEL?.trim();
+   if (file.model && envModel && envModel !== file.model) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.model "${file.model}" in publisher.config.json overrides EMBEDDING_MODEL "${envModel}". ${reembeds}`,
+      });
+   }
+   const envDimensions = process.env.EMBEDDING_DIMENSIONS?.trim();
+   if (
+      file.dimensions !== undefined &&
+      envDimensions &&
+      envDimensions !== String(file.dimensions)
+   ) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.dimensions ${file.dimensions} in publisher.config.json overrides EMBEDDING_DIMENSIONS ${envDimensions}. ${reembeds}`,
+      });
+   }
+   const envBase = process.env.EMBEDDING_API_BASE?.trim();
+   if (
+      file.baseUrl &&
+      envBase &&
+      envBase.replace(/\/+$/, "") !== file.baseUrl.replace(/\/+$/, "")
+   ) {
+      notices.push({
+         level: "info",
+         message: `retrieval.embedding.baseUrl (host "${hostOf(file.baseUrl)}") in publisher.config.json overrides EMBEDDING_API_BASE (host "${hostOf(envBase)}").`,
+      });
+   }
+   return notices;
+}
+
+/**
+ * The LLM settings in force, or `null` when every LLM feature is off. On iff
+ * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
+ * provider needs none (Ollama, Vertex). The key is an environment variable and
+ * never a file entry. An ambient `OPENAI_API_KEY`-style variable is not read,
+ * for the reason {@link getEmbeddingConfig} gives.
+ */
+export function getLlmSettings(file?: RetrievalLlmConfig): LlmSettings | null {
+   if (!file) return null;
+   const apiKey = process.env.LLM_API_KEY?.trim() || undefined;
+   const needsKey = file.provider !== "ollama" && file.provider !== "vertex";
+   if (needsKey && !apiKey) return null;
+   return {
+      provider: file.provider,
+      model: file.model,
+      baseUrl: file.baseUrl,
+      projectId: file.projectId,
+      location: file.location,
+      apiKey,
+      timeoutMs: file.timeoutMs,
+      concurrency: file.concurrency,
+      maxCallsPerSync: file.maxCallsPerSync,
+      maxCallsPerRequest: file.maxCallsPerRequest,
+   };
+}
 
 /**
  * Whether `search_database_schema` may send a connection's table and
@@ -1064,27 +1349,30 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
 
 /**
  * The `publisher.config.json` path that was looked for and not found, or null
- * whenever a config did resolve.
+ * whenever a config did resolve. `explicit` says the path came from `--config`.
  *
  * Exists so a caller running ONCE at boot can explain an empty environment list.
  * `getPublisherConfig` deliberately does not log this itself: it is called on
  * every config read, so a line there re-emits per request.
  *
- * Returns null when `--config` was given, whether or not that path exists.
- * A missing explicit path is already reported by `getPublisherConfig`, and
- * reporting it twice in two different shapes helps nobody.
+ * A missing `--config` path is returned too, flagged `explicit`, because a typo
+ * in the flag is the likelier way to boot empty. `getPublisherConfig` already
+ * logs that case at error, so a caller should report it without logging again.
  */
 export const getUnresolvedPublisherConfigPath = (
    serverRoot: string,
-): string | null => {
-   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
-   if (explicitPath && explicitPath.length > 0) {
-      return null;
-   }
+): { path: string; explicit: boolean } | null => {
    if (resolvePublisherConfigPath(serverRoot)) {
       return null;
    }
-   return path.join(serverRoot, PUBLISHER_CONFIG_NAME);
+   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
+   if (explicitPath && explicitPath.length > 0) {
+      return { path: explicitPath, explicit: true };
+   }
+   return {
+      path: path.join(serverRoot, PUBLISHER_CONFIG_NAME),
+      explicit: false,
+   };
 };
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
@@ -1199,12 +1487,56 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
+   const retrieval = parseRetrievalConfig(
+      processedConfig && typeof processedConfig === "object"
+         ? (processedConfig as { retrieval?: unknown }).retrieval
+         : undefined,
+   );
+
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
+      ...(retrieval ? { retrieval } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
+ * from publisher.config.json, or {@link DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES}.
+ * Read once at startup. Throws, with the fix, on an invalid value; a config
+ * file that cannot be read or parsed gives the default.
+ */
+export const getSemanticIndexMaxEntities = (serverRoot: string): number => {
+   try {
+      return (
+         getPublisherConfig(serverRoot).retrieval?.indexing?.maxEntities ??
+         DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES
+      );
+   } catch (error) {
+      // A file that cannot be read or parsed is reported where the config is
+      // actually used (the manifest read refuses to start and /status names the
+      // cause). This runs at module load, before /status exists, so throwing
+      // here would kill the process with no way to see why. An invalid
+      // `retrieval` value is a different error and still stops the server.
+      if (
+         error instanceof Error &&
+         error.message.startsWith("Failed to parse ")
+      ) {
+         return DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+      }
+      throw error;
+   }
+};
+
+/**
+ * The validated `retrieval` block of publisher.config.json, or undefined when
+ * the file has none. Read once at startup; throws, with the fix, on an
+ * invalid value.
+ */
+export const getRetrievalConfig = (
+   serverRoot: string,
+): RetrievalConfig | undefined => getPublisherConfig(serverRoot).retrieval;
 
 /**
  * Sanitize a raw theme value pulled from JSON. Returns a Theme on success

@@ -2,15 +2,32 @@
 // SPDX-License-Identifier: MIT
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
-import { IconButton, Tooltip } from "@mui/material";
+import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import {
+   MOTION_FAST,
+   reducedMotionSx,
+   visibleWithoutHoverSx,
+} from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { useNearViewport } from "../../hooks/useNearViewport";
 import { useQueryResult } from "../../hooks/useQueryResult";
-import type { GivenValue } from "../../hooks/givenValue";
+import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
-import { givensToRequest } from "../given/paramCodec";
+import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
-import { TileCard, TileHeading } from "./TileCard";
+import { TileFilterTag } from "./TileFilterTag";
+import { isForbidden, RESTRICTED_NOTICE, withPreamble } from "./textSource";
+import {
+   TileCard,
+   TileHeading,
+   type TileChrome,
+   type TileHeadingSlots,
+} from "./TileCard";
+
+const textSourceTile = (result: string) =>
+   dropValueUrlTags(promoteMeasureRowToKpis(result));
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -22,10 +39,14 @@ export interface DashboardTileProps {
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
+   /** Annotation lines placed above the tile's `run:`, which stack on the view's own. */
+   annotation?: string;
    /** `# label` on the view the tile names, when it has one. */
    label?: string;
    /** `# subtitle` on it: a second line under the heading. */
    subtitle?: string;
+   /** The heading's text as nodes, which replace `label` and `subtitle` where a surface edits them in place. */
+   heading?: TileHeadingSlots;
    /** `# borderless` on it: no card around the result. */
    borderless?: boolean;
    /**
@@ -35,6 +56,8 @@ export interface DashboardTileProps {
     * does.
     */
    givens: Map<string, GivenValue>;
+   /** Givens the host sets with no control, which may be lists; narrowed by `givenNames` like `givens`. */
+   hostGivens?: Readonly<Record<string, HostGivenValue>>;
    /** Declared type per given name, which decides how a value is encoded. */
    declaredTypes: ReadonlyMap<string, string | undefined>;
    /**
@@ -52,6 +75,18 @@ export interface DashboardTileProps {
     * the heading, on hover; absent, the heading has no button.
     */
    onExplore?: () => void;
+   /** `none` draws the result bare, its label a quiet caption above it. */
+   chrome?: TileChrome;
+   /** Labels of the page's filters this tile ignores, shown as a warning chip. */
+   ignoredFilters?: readonly string[];
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the tile's
+    * `run:` so the tile runs as the viewer's own text. Absent, the tile runs
+    * the model's view by expression as it always has.
+    */
+   preamble?: string;
+   /** The server marked this tile unreadable for the viewer: nothing is run. */
+   restricted?: boolean;
 }
 
 /**
@@ -85,39 +120,75 @@ export function DashboardTile({
    modelPath,
    queryName,
    tile,
+   annotation,
    label,
    subtitle,
+   heading,
    borderless,
    givens,
+   hostGivens,
    declaredTypes,
    givenNames,
    height,
    maxResultSize,
    drill,
    onExplore,
+   chrome = "card",
+   ignoredFilters,
+   preamble,
+   restricted,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
-   const state = useQueryResult({
-      environmentName,
-      packageName,
-      modelPath,
-      versionId,
-      queryName,
-      query: tile !== undefined ? `run: ${tile}` : undefined,
-      // Narrowed to the givens this tile references: see `givenNames`.
-      givens: givensToRequest(givens, declaredTypes, givenNames),
-   });
+   // A tile far below the fold waits to be scrolled near before it runs: its
+   // query is billed by the warehouse whether or not anyone ever sees it. The
+   // card holds its minimum height meanwhile, so the grid barely moves when it
+   // fills.
+   const [cardRef, nearViewport] = useNearViewport<HTMLDivElement>();
+   const state = useQueryResult(
+      {
+         environmentName,
+         packageName,
+         modelPath,
+         versionId,
+         queryName,
+         query:
+            tile !== undefined
+               ? withPreamble(
+                    preamble ?? "",
+                    `${annotation ? `${annotation}\n` : ""}run: ${tile}`,
+                 )
+               : undefined,
+         // Narrowed to the givens this tile references: see `givenNames`.
+         givens: withHostGivens(
+            givensToRequest(givens, declaredTypes, givenNames),
+            hostGivens,
+            givenNames,
+         ),
+      },
+      // Restricted tiles never run; the rest wait to come near the viewport.
+      { enabled: nearViewport && restricted !== true },
+   );
+   // A 403 is the viewer's access, which only text-source mode runs as them.
+   const noAccess =
+      restricted === true ||
+      (preamble !== undefined && state.isError && isForbidden(state.error));
 
    return (
       <TileCard
+         cardRef={cardRef}
          borderless={borderless}
+         chrome={chrome}
          sx={{
+            // A table is as wide as its tile body, whatever its columns need.
+            "& .malloy-render, & .malloy-table": { width: "100%" },
             // The heading's button shows on hover and keyboard focus, the way
             // a tile's chrome does everywhere else; always-on it competes with
             // the title on every card at once.
             "& .publisher-tile-explore": {
                opacity: 0,
-               transition: "opacity 120ms",
+               transition: `opacity ${MOTION_FAST}`,
+               ...reducedMotionSx,
+               ...visibleWithoutHoverSx,
             },
             "&:hover .publisher-tile-explore, & .publisher-tile-explore:focus-visible":
                { opacity: 1 },
@@ -125,8 +196,9 @@ export function DashboardTile({
       >
          {tile !== undefined && (
             <TileHeading
-               title={label ?? tileTitle(tile)}
-               subtitle={subtitle}
+               title={heading?.title ?? label ?? tileTitle(tile)}
+               subtitle={heading ? heading.subtitle : subtitle}
+               quiet={chrome === "none"}
                // The expression is what actually ran, so it stays reachable as
                // a tooltip rather than as the heading.
                tooltip={tile}
@@ -147,19 +219,38 @@ export function DashboardTile({
                }
             />
          )}
-         <ResultPanel
-            state={state}
-            context={tile ?? queryName ?? modelPath}
-            maxHeight={height}
-            maxResultSize={maxResultSize}
-            drill={drill}
-            // A composite tile that is one row of measures draws as KPI cards,
-            // the way Malloyyo splices the same tile into its grid, rather than
-            // as a one-row table. Composite only: the single-query form is one
-            // result the renderer lays out from the query's own tags, and its
-            // aggregates are already tiles.
-            transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
-         />
+         {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
+         {noAccess ? (
+            <Box sx={{ p: 2 }}>
+               <Typography variant="body2" role="status" color="text.secondary">
+                  {RESTRICTED_NOTICE}
+               </Typography>
+            </Box>
+         ) : (
+            <ResultPanel
+               fill
+               state={state}
+               context={tile ?? queryName ?? modelPath}
+               maxHeight={height}
+               maxResultSize={maxResultSize}
+               drill={drill}
+               // A composite tile that is one row of measures draws as KPI cards,
+               // the way Malloyyo splices the same tile into its grid, rather than
+               // as a one-row table. Composite only: the single-query form is one
+               // result the renderer lays out from the query's own tags, and its
+               // aggregates are already tiles.
+               transform={
+                  // A document held as text draws no value-to-URL or markup tags.
+                  preamble !== undefined
+                     ? tile !== undefined
+                        ? textSourceTile
+                        : dropValueUrlTags
+                     : tile !== undefined
+                       ? promoteMeasureRowToKpis
+                       : undefined
+               }
+            />
+         )}
       </TileCard>
    );
 }

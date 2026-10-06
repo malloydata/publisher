@@ -1,0 +1,9 @@
+## artifact { kind=notebook title="Clean" }
+source: a is duckdb.sql("select 1 as x")
+
+##|(markdown)
+Prose in a well-formed block.
+|##
+
+# bar_chart
+run: a -> { select: x }

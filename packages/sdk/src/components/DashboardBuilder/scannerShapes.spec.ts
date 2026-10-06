@@ -1,4 +1,5 @@
 // Copyright (c) Credible Data Inc.
+import { queryTile } from "./testing/fixtures";
 // SPDX-License-Identifier: MIT
 
 /**
@@ -137,7 +138,7 @@ source: regional is duckdb.sql("""
   view: by_region is { group_by: region }
 }`;
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "region", given: "REGION" }];
+         queryTile(d, 0).filters = [{ field: "region", given: "REGION" }];
       });
       expect(out).toContain(
          "view: by_region is { group_by: region where: region ~ $REGION }",
@@ -321,7 +322,7 @@ source: a is one extend {
   }
 }`;
       const before = await openDocument(source);
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "cat", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
@@ -346,11 +347,11 @@ source: a is one extend {
       const before = await openDocument(source);
       // Both where: lines are seen at depth 1: the literal's phantom brace
       // would otherwise push the second one to depth 2 and drop it.
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "cat", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "cat", given: "BRAND" }];
+         queryTile(d, 0).filters = [{ field: "cat", given: "BRAND" }];
       });
       expect(out).toContain(
          "    where: path ~ 'a{b'\n    aggregate: n is count()\n    where: cat ~ $BRAND",
@@ -369,11 +370,11 @@ source: a is one extend {
   }
 }`;
       const before = await openDocument(source);
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+         queryTile(d, 0).filters = [{ field: "category", given: "CATEGORY" }];
       });
       expect(out).toBe(source);
       expect(out.match(/where:/g)).toHaveLength(1);
@@ -389,11 +390,11 @@ source: a is one extend {
     where: category ~ $CATEGORY }
 }`;
       const before = await openDocument(source);
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+         queryTile(d, 0).filters = [{ field: "category", given: "CATEGORY" }];
       });
       expect(out).toBe(source);
       expect(out.match(/where:/g)).toHaveLength(1);
@@ -409,11 +410,11 @@ source: a is one extend {
   view: kpis is { aggregate: n is count(), where: cat ~ $CATEGORY }
 }`;
       const before = await openDocument(source);
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "cat", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "cat", given: "CATEGORY" }];
+         queryTile(d, 0).filters = [{ field: "cat", given: "CATEGORY" }];
       });
       expect(out).toBe(source);
       expect(out.match(/where:/g)).toHaveLength(1);
@@ -437,11 +438,11 @@ source: a is one extend {
   }
 }`;
       const before = await openDocument(source);
-      expect(before.tiles[0].filters).toEqual([
+      expect(queryTile(before, 0).filters).toEqual([
          { field: "cat", given: "CATEGORY" },
       ]);
       const out = await spliced(source, (d) => {
-         d.tiles[0].filters = [{ field: "cat", given: "BRAND" }];
+         queryTile(d, 0).filters = [{ field: "cat", given: "BRAND" }];
       });
       // The nest's own binding is untouched, not rewritten alongside the outer one.
       expect(out).toContain(
@@ -467,7 +468,7 @@ where: cat ~ $CATEGORY
   }
 }`;
       const doc = await openDocument(source);
-      expect(doc.tiles[0].filters).toBeUndefined();
+      expect(queryTile(doc, 0).filters).toBeUndefined();
       // An unrelated edit must leave the string exactly as written.
       const out = await spliced(source, (d) => {
          d.tiles[0].colspan = 4;

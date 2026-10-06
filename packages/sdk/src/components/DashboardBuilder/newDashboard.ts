@@ -1,6 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { annotationTextProblem } from "./annotationText";
+import { isBareName } from "../../utils/malloyText";
+
 /**
  * A new dashboard file, the way the builder would have written it: the
  * dashboard-declared-givens convention with no givens yet, one extension of
@@ -21,11 +24,35 @@ export function slugFor(title: string): string {
    return title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
+      .replace(/^-|-$/g, "")
       .slice(0, 80);
 }
 
-export function newDashboardSource({
+/** Why this dashboard cannot be written as a file, or undefined when it can. */
+export function newDashboardProblem({
+   title,
+   modelPath,
+   source,
+   view,
+}: NewDashboard): string | undefined {
+   for (const [what, name] of [
+      ["source", source],
+      ["view", view],
+   ] as const)
+      if (!isBareName(name))
+         return `The ${what} name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
+   if (/["\\\r\n]/.test(modelPath))
+      return `The model path ${JSON.stringify(modelPath)} cannot be written into an import.`;
+   return annotationTextProblem("title", title);
+}
+
+export function newDashboardSource(dashboard: NewDashboard): string {
+   const problem = newDashboardProblem(dashboard);
+   if (problem) throw new Error(problem);
+   return writeNewDashboard(dashboard);
+}
+
+function writeNewDashboard({
    title,
    modelPath,
    source,
@@ -33,7 +60,7 @@ export function newDashboardSource({
 }: NewDashboard): string {
    const extension = `${source}_tiles`;
    const tile = `${view}_tile`;
-   const quoted = `"${title.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+   const quoted = `"${title.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
    return [
       "##! experimental.givens",
       `## artifact { title=${quoted} tiles=["${extension} -> ${tile}"] } dashboard { columns=12 }`,

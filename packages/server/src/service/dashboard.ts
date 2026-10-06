@@ -31,7 +31,7 @@
  * an error.
  */
 
-import { isSourceDef } from "@malloydata/malloy";
+import { isJoined, isSourceDef } from "@malloydata/malloy";
 import type {
    ModelDef,
    NamedModelObject,
@@ -39,7 +39,17 @@ import type {
    TurtleDef,
 } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
-import { ownModelNotes } from "./annotations";
+import { ownModelNoteObjects } from "./annotations";
+import { referencedGivenNames } from "./authorize";
+import {
+   DASHBOARDS_DIR,
+   dashboardDescriptionNotes,
+   documentKind,
+   isDocumentModelPath,
+   isMarkdownNote,
+   parseMarkdownOpener,
+   type DocumentKind,
+} from "./notebook";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -62,7 +72,6 @@ import {
    tagNumeric,
    tagText,
    unwrapFilterLiteral,
-   UNSAFE_TO_PARSE,
    ENV_REFERENCE_DROPPED,
    ANNOTATION_TOO_LONG,
 } from "./motly";
@@ -77,8 +86,10 @@ export {
    unwrapFilterLiteral,
 };
 
-/** The package-relative directory a dashboard file must live in. */
-export const DASHBOARDS_DIR = "dashboards";
+export { DASHBOARDS_DIR };
+
+/** The widest grid the Console builder offers; matches `MAX_COLUMNS` in the SDK. */
+const MAX_BUILDER_COLUMNS = 24;
 
 /**
  * Suffixes Malloyyo treats as a dashboard's custom component. Publisher does
@@ -110,18 +121,47 @@ export type DashboardSuggestSpec = GivenSuggestSpec;
  */
 export type DashboardGivenSpec = MalloyGivenApi;
 
-/** One tile of a dashboard: what to run, and how to present it. */
-export interface DashboardTileSpec extends DashboardTileLayout {
+/** A tile that runs a query: what to run, and how to present it. */
+export interface DashboardQueryTileSpec extends DashboardTileLayout {
+   kind: "query";
    /** The run expression exactly as written in `tiles=[…]` (`"orders -> by_month"`). */
    query: string;
    /**
-    * Given names this tile references and the entry file can bind, or undefined
-    * when the tile expression is not one discovery can resolve (see
-    * {@link resolveTileGivens}). Running a tile with the dashboard's whole
-    * control row also works — an unreferenced given is ignored — so this list is
-    * for scoping: which tiles a changed control actually needs to re-run.
+    * Given names this tile's compiled query reads (gates included) and the
+    * entry file can bind, or undefined when discovery could not resolve the
+    * tile (see {@link resolveTileGivens}). Running a tile with the dashboard's
+    * whole control row also works — an unreferenced given is ignored — so this
+    * list scopes which tiles a changed control re-runs, and tells a reader
+    * which controls a tile ignores.
     */
    givenNames?: string[];
+   /**
+    * The caller may not read this tile's source. Set only by a compile of
+    * caller-submitted text; carries nothing else of the tile, so the answer
+    * discloses neither the gated view's layout tags nor the givens it reads.
+    */
+   restricted?: boolean;
+}
+
+/** A tile that shows markdown: its `##|(markdown) name` block, laid out by its own `tiles=[…]` entry. */
+export interface DashboardTextTileSpec {
+   kind: "text";
+   name: string;
+   /** The block's body; empty when the file has no block of that name. */
+   markdown: string;
+   colspan?: number;
+   break?: boolean;
+}
+
+export type DashboardTileSpec = DashboardQueryTileSpec | DashboardTextTileSpec;
+
+/** The tiles that run a query, for every reader that has no use for prose. */
+export function queryTiles(
+   tiles: readonly DashboardTileSpec[] | undefined,
+): DashboardQueryTileSpec[] {
+   return (tiles ?? []).filter(
+      (tile): tile is DashboardQueryTileSpec => tile.kind === "query",
+   );
 }
 
 /**
@@ -157,6 +197,8 @@ export interface DashboardTileLayout {
 export interface DashboardManifest {
    /** The filename basename — the slug, the `# drill` target, the URL segment. */
    name: string;
+   /** From the artifact tag's `kind`, the folder being only the default; a notebook lays out as one column. */
+   kind: DocumentKind;
    title: string;
    description?: string;
    /** The tagged query's name. Set for the single-query form only. */
@@ -238,7 +280,7 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
     * silently widen the suppression back to every query. */
    modelPath: string,
 ): T[] {
-   const couldBeATile = isDashboardModelPath(modelPath);
+   const couldBeATile = isDocumentModelPath(modelPath);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
@@ -307,9 +349,15 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "tiles",
    "givens",
    "autorun",
+   // Not read here: notebook_lint.ts judges `kind` on a model-level `## artifact`; this lint only stays quiet about it.
+   "kind",
+   // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
+   "dashboard_columns",
 ];
 const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
-   COMPOSITE_ARTIFACT_PROPERTIES.filter((property) => property !== "tiles");
+   COMPOSITE_ARTIFACT_PROPERTIES.filter(
+      (property) => property !== "tiles" && property !== "dashboard_columns",
+   );
 
 /**
  * Properties that reach the artifact tag by mistake, and what to write instead.
@@ -320,19 +368,43 @@ const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
  */
 const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
    dashboard_columns:
-      "Write the grid width as `# dashboard { columns=N }` beside the artifact tag.",
+      "A single query has no grid; a composite's width is `dashboard { columns=N }` beside its artifact tag.",
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
 };
 
+/** One entry of `tiles=[…]`: a run expression, or a named text block with its own layout. */
+type ArtifactTileEntry =
+   | { kind: "query"; expression: string }
+   | { kind: "text"; name: string; colspan?: number; break?: boolean };
+
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
 interface ArtifactTagData {
    title?: string;
-   tiles?: string[];
+   kind?: string;
+   tiles?: ArtifactTileEntry[];
    dashboardColumns?: number;
    givens?: Record<string, string>;
    autorun: boolean;
+}
+
+function readTileEntries(artifact: Tag): ArtifactTileEntry[] | undefined {
+   return artifact.array("tiles")?.flatMap((entry): ArtifactTileEntry[] => {
+      const text = tagText(entry);
+      if (text === undefined) return [];
+      if (tagText(entry, "kind") !== "text")
+         return [{ kind: "query", expression: text }];
+      const colspan = positiveInteger(tagNumeric(entry, "colspan"));
+      return [
+         {
+            kind: "text",
+            name: text,
+            ...(colspan !== undefined && { colspan }),
+            ...(entry.has("break") && { break: true }),
+         },
+      ];
+   });
 }
 
 function readArtifactTag(
@@ -347,10 +419,8 @@ function readArtifactTag(
 
    return {
       title: tagText(artifact, "title"),
-      tiles: artifact
-         .array("tiles")
-         ?.map((tile) => tagText(tile))
-         .filter((tile): tile is string => tile !== undefined),
+      kind: tagText(artifact, "kind"),
+      tiles: readTileEntries(artifact),
       // One spelling for both forms: the `# dashboard { columns=N }` render tag
       // sitting beside the artifact tag, which is also what the renderer reads
       // on a single query. Publisher lays out the composite grid itself, so on
@@ -362,12 +432,41 @@ function readArtifactTag(
       // null against a field the spec declares an integer. That put a value on
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
-      dashboardColumns: positiveInteger(
-         tagNumeric(tag.tag("dashboard"), "columns"),
-      ),
+      // `columns` wins whenever it is written, even when it is not a width.
+      dashboardColumns: tag.tag("dashboard")?.has("columns")
+         ? positiveInteger(tagNumeric(tag.tag("dashboard"), "columns"))
+         : artifact.array("tiles")
+           ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
+           : undefined,
       givens,
       autorun,
    };
+}
+
+/** The run expressions of a composite artifact tag's query tiles, read off the file's own `##` notes. */
+export function readDocumentTileExpressions(
+   notes: readonly string[],
+): string[] {
+   const tag = motlyTag(notes);
+   const composite = tag ? readArtifactTag(tag, () => undefined) : undefined;
+   return (composite?.tiles ?? []).flatMap((entry) =>
+      entry.kind === "text" ? [] : [entry.expression],
+   );
+}
+
+/** The `##|(markdown) name` blocks among a file's own model notes, in file order. */
+export function readTextBlocks(
+   notes: readonly string[],
+): { name: string; body: string }[] {
+   return notes.flatMap((note) => {
+      const newline = note.indexOf("\n");
+      const opener = parseMarkdownOpener(
+         newline === -1 ? note : note.slice(0, newline),
+      );
+      if (opener?.level !== 2 || !opener.name) return [];
+      const body = newline === -1 ? "" : note.slice(newline + 1);
+      return [{ name: opener.name, body: body.replace(/\r\n?/g, "\n") }];
+   });
 }
 
 /**
@@ -398,6 +497,11 @@ export interface DashboardModelFacts {
    modelPath: string;
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
+   /**
+    * The own notes that describe the dashboard, of every route; the doc-comment
+    * reader keeps the `"` ones. Absent means all of `modelAnnotations`.
+    */
+   descriptionNotes?: string[];
    /**
     * Every named query in the file, uncurated — `explores` curation is about
     * the discovery surface for agents, and a dashboard is a separate artifact.
@@ -439,6 +543,13 @@ export interface DashboardModelFacts {
     */
    viewGivens: Map<string, string[]>;
    /**
+    * What each tile's COMPILED query reads, keyed by normalized tile
+    * expression; preferred over {@link viewGivens} wherever present. Absent for
+    * a tile that did not compile, and entirely when the caller compiled
+    * nothing (a test, a sync reader). See `Model.getCompiledDashboardModelFacts`.
+    */
+   compiledTileGivens?: Map<string, CompiledTileGivens>;
+   /**
     * Annotation texts on each source view, keyed the way
     * {@link DashboardModelFacts.viewGivens} is. The per-tile layout tags live
     * here; a model-level named query's are in `queries[].annotations` already.
@@ -447,7 +558,10 @@ export interface DashboardModelFacts {
     * report values the reader drops, which a derived map no longer carries.
     */
    viewAnnotations: Map<string, string[]>;
-   /** Field names per source, for validating `suggest { source= dimension= }`. */
+   /**
+    * Field names per source, for validating `suggest { source= dimension= }`.
+    * Fields of a direct join appear as `join.field`.
+    */
    sourceFields: Map<string, Set<string>>;
    /**
     * Every `# drill` tag reachable in this file, one per tagged dimension. Drill
@@ -461,6 +575,18 @@ export interface DashboardModelFacts {
     * source's, narrowed to what this file can bind. See `suggestGivenLookup`.
     */
    suggestGivens: SuggestGivenLookup;
+}
+
+/** The givens one compiled tile query depends on. */
+export interface CompiledTileGivens {
+   /** Malloy's `givenUsage`: every given the query reads, joins and dimensions included. */
+   reads: string[];
+   /**
+    * Givens the run target's `#(authorize)`/`#(access_filter)` gates read.
+    * Kept apart from `reads` because an unimported gate given is accepted at
+    * query time, so the import lint must not name it.
+    */
+   gateReads: string[];
 }
 
 /** A `# drill { to=[…] given=… }` tag on a source dimension. */
@@ -590,6 +716,13 @@ export function readDashboardModelFacts(
       for (const field of obj.fields) {
          const fieldName = field.as || field.name;
          fieldNames.add(fieldName);
+         // One join level, as the SDK catalog lists it: `products.category` is a
+         // valid `suggest` dimension, `products.maker.name` is not.
+         if (isJoined(field)) {
+            for (const joined of field.fields) {
+               fieldNames.add(`${fieldName}.${joined.as || joined.name}`);
+            }
+         }
          if (field.type === "turtle") {
             const refs = new Set(sourceGivens);
             collectGivenRefs((field as TurtleDef).pipeline, refs);
@@ -618,11 +751,13 @@ export function readDashboardModelFacts(
       }
    }
 
+   const modelNotes = ownModelNoteObjects(modelDef);
    return {
       modelPath,
       // This file's own `##` only. An `## artifact` in a shared include
       // describes that include, not everything importing it.
-      modelAnnotations: ownModelNotes(modelDef),
+      modelAnnotations: modelNotes.map((note) => note.text),
+      descriptionNotes: dashboardDescriptionNotes(modelNotes),
       queries,
       givens,
       viewGivens,
@@ -704,25 +839,29 @@ function tagTextArray(
 }
 
 /**
- * The givens a composite tile references, or undefined when the tile expression
- * is not one we can resolve statically.
+ * The givens a composite tile reads, or undefined when discovery could not
+ * resolve the tile.
  *
- * Resolvable: Malloyyo's documented `source -> view` form, and a bare
- * model-level named query. Anything else (an inline refinement, a multi-stage
- * pipeline) leaves `givens` absent rather than guessing — a consumer that finds
- * it absent can fall back to sending the whole control row, which the server
- * accepts: a surfaced given a tile doesn't reference is simply ignored. The
- * per-tile list is precision, letting a viewer re-run only the tiles a changed
- * control affects.
+ * Its compiled query answers first (see {@link CompiledTileGivens}), which
+ * resolves any expression that compiles. Without one, the static walk covers
+ * Malloyyo's documented `source -> view` form and a bare model-level named
+ * query, and leaves anything else absent rather than guessing — a consumer
+ * that finds it absent falls back to sending the whole control row, which the
+ * server accepts: a surfaced given a tile doesn't reference is simply ignored.
  */
 function resolveTileGivens(
    tile: string,
    facts: DashboardModelFacts,
 ): string[] | undefined {
+   const reads = referencedTileGivens(tile, facts);
+   if (reads === undefined) return undefined;
+   const gateReads =
+      facts.compiledTileGivens?.get(normalizeTileExpression(tile))?.gateReads ??
+      [];
    // Narrowed to what the entry file can bind: a tile may reference a given
    // reachable only through an import chain, and sending that name back would
    // guarantee an "unknown given" error.
-   return referencedTileGivens(tile, facts)?.filter((name) =>
+   return Array.from(new Set([...reads, ...gateReads])).filter((name) =>
       facts.givens.has(name),
    );
 }
@@ -759,10 +898,17 @@ function referencedTileGivens(
    facts: DashboardModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
-   return (
+   const statically =
       facts.viewGivens.get(normalized) ??
-      facts.queries.find((query) => query.name === normalized)?.givens
-   );
+      facts.queries.find((query) => query.name === normalized)?.givens;
+   const compiled = facts.compiledTileGivens?.get(normalized)?.reads;
+   if (!compiled) return statically;
+   // Ordered as the static walk was, so the control row a tile feeds keeps its order.
+   const rank = (name: string) => {
+      const at = statically?.indexOf(name) ?? -1;
+      return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+   };
+   return [...compiled].sort((a, b) => rank(a) - rank(b));
 }
 
 /**
@@ -834,9 +980,13 @@ function givenSpec(
       // Do not read this as a note to widen later. The API `annotations`
       // narrowing is permanent: Credible's app consumes that field from another
       // repo, so widening reintroduces a live bug this repo cannot see.
-      annotations: declaration.annotations.filter((text) =>
-         /^##?\(/.test(text),
+      // `(markdown)` is a notebook cell's own prose, not helper text for the control.
+      annotations: declaration.annotations.filter(
+         (text) => /^##?\(/.test(text) && !isMarkdownNote(text),
       ),
+      ...(declaration.annotations.some((text) => /^#\(secure\)/.test(text)) && {
+         secure: true,
+      }),
       ...control,
    };
 }
@@ -874,6 +1024,10 @@ export function factsCarryArtifactTag(facts: DashboardModelFacts): boolean {
  */
 export function buildDashboardManifest(
    facts: DashboardModelFacts,
+   options?: {
+      /** Normalized tile expressions the caller may not read; they come back bare. */
+      restrictedTiles?: ReadonlySet<string>;
+   },
 ): DashboardManifest | undefined {
    const name = dashboardSlug(facts.modelPath);
    const base = {
@@ -886,34 +1040,58 @@ export function buildDashboardManifest(
    const composite = modelTag
       ? readArtifactTag(modelTag, declaredType)
       : undefined;
-   if (composite?.tiles?.length) {
-      const tiles = composite.tiles.map((query) => {
+   const kind = documentKind(facts.modelPath, composite?.kind);
+   // A notebook with no tiles yet is still a layout, so the editor can open it.
+   if (
+      composite?.tiles &&
+      (composite.tiles.length > 0 || kind === "notebook")
+   ) {
+      const blocks = readTextBlocks(facts.modelAnnotations);
+      const tiles = composite.tiles.map((entry): DashboardTileSpec => {
+         if (entry.kind === "text") {
+            return {
+               kind: "text",
+               name: entry.name,
+               markdown:
+                  blocks.find((block) => block.name === entry.name)?.body ?? "",
+               ...(entry.colspan !== undefined && { colspan: entry.colspan }),
+               ...(entry.break && { break: true }),
+            };
+         }
+         const query = entry.expression;
+         if (options?.restrictedTiles?.has(normalizeTileExpression(query))) {
+            return { kind: "query", query, restricted: true };
+         }
          const givenNames = resolveTileGivens(query, facts);
          const layout = resolveTileLayout(query, facts);
          return {
+            kind: "query",
             query,
             ...(givenNames ? { givenNames } : {}),
             ...layout,
          };
       });
+      const queries = queryTiles(tiles).filter((tile) => !tile.restricted);
       const doc = docCommentTitleAndDescription(
-         facts.modelAnnotations,
+         facts.descriptionNotes ?? facts.modelAnnotations,
          composite.title,
       );
       return {
          ...base,
+         kind,
          title: doc.title ?? name,
          description: doc.description,
          tiles,
-         dashboardColumns: composite.dashboardColumns,
+         dashboardColumns: kind === "notebook" ? 1 : composite.dashboardColumns,
          startingGivens: composite.givens,
          autorun: composite.autorun,
          // A composite's control row is the union across its tiles: each tile
          // runs with only the givens it references, but the row a viewer shows
          // is every given any tile can filter by.
          //
-         // A tile discovery cannot resolve statically (a refinement, a
-         // multi-stage pipeline) carries no `givenNames`, and taking the union
+         // A tile discovery cannot resolve (it neither compiles nor is a plain
+         // `source -> view` or named query the static walk reads) carries no
+         // `givenNames`, and taking the union
          // of the resolved ones alone would drop its givens from the row
          // entirely: no control, and the tile filtered at the given's default
          // with nothing said. That is the same silent filtering the source-level
@@ -926,10 +1104,16 @@ export function buildDashboardManifest(
          // `lintDashboard` walks `manifest.givens`, so a widened row also widens
          // the suggest lint. A composite with one unresolvable tile can emit a
          // suggest finding for a given no tile references.
+         // Text tiles read no givens, so they never widen the row.
          givens: buildGivenSpecs(
-            tiles.some((tile) => tile.givenNames === undefined)
+            queries.some((tile) => tile.givenNames === undefined)
                ? Array.from(facts.givens.keys())
-               : tiles.flatMap((tile) => tile.givenNames ?? []),
+               : // A given only a gate reads is the host's to inject, not a viewer control.
+                 queries.flatMap((tile) =>
+                    (referencedTileGivens(tile.query, facts) ?? []).filter(
+                       (name) => facts.givens.has(name),
+                    ),
+                 ),
             facts,
          ),
       };
@@ -945,6 +1129,7 @@ export function buildDashboardManifest(
       );
       return {
          ...base,
+         kind: "dashboard",
          title: doc.title ?? name,
          description: doc.description,
          query: query.name,
@@ -1088,8 +1273,7 @@ export function lintDashboard(
    // Every property `readArtifactTag` does not read, named. The reader looks up
    // sub-paths by name, so a misspelling or a property on the wrong form is not
    // an error there — it is simply never asked for, and the dashboard serves as
-   // if the author had not written it. `dashboard_columns`, which this grammar
-   // no longer has, is the case that made it worth enumerating.
+   // if the author had not written it.
    //
    // Top level only, and `givens` is opaque: its keys are the author's own given
    // names, so descending into it would warn about every control on the page.
@@ -1112,29 +1296,55 @@ export function lintDashboard(
       );
    }
 
-   // A tile entry is the run expression and NOTHING else. `readArtifactTag`
-   // reads each element with `tagText`, which takes its text and drops anything
-   // hung off it, so `tiles=[intro { kind=text }]` compiles, the package loads
-   // clean, and the entry silently becomes the tile `intro` — a run expression
-   // that does not resolve, reported as a query error with no hint that the tag
-   // was the problem. Measured against a running server.
-   //
-   // Worth a finding now rather than when tile kinds arrive: the shape parses
-   // today, so an author reading about them anywhere (Malloyyo's format, a
-   // proposal, another Publisher) can write one and be told nothing. Same
-   // failure as an `# artifact` on a view, which is silently a shared include
-   // and got its own finding for the same reason.
+   // A query entry is the run expression and nothing else: `readArtifactTag`
+   // takes its text and drops anything hung off it, so a property there is
+   // silently inert. A text entry reads only its layout.
+   const textBlocks = readTextBlocks(facts.modelAnnotations);
    for (const entry of artifactTag?.array("tiles") ?? []) {
-      const carried = Object.keys(entry.dict ?? {});
-      if (carried.length === 0) continue;
-      const named = carried.map((property) => `\`${property}\``).join(", ");
-      add(
-         `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` carries ${named}, ` +
-            `which Publisher does not read: a tile entry is the run expression ` +
-            `alone. Per-tile presentation goes on the view the tile names ` +
-            `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
-            `\`# borderless\`).`,
+      const kind = tagText(entry, "kind");
+      const label = tagText(entry) ?? "a tile";
+      const read = kind === "text" ? ["kind", "colspan", "break"] : [];
+      const carried = Object.keys(entry.dict ?? {}).filter(
+         (property) =>
+            !read.includes(property) &&
+            !(property === "kind" && kind === "query"),
       );
+      if (carried.length > 0) {
+         const named = carried.map((property) => `\`${property}\``).join(", ");
+         add(
+            kind === "text"
+               ? `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: a text tile's entry reads only \`colspan\` and \`break\`.`
+               : `\`${label}\` in \`tiles=[…]\` carries ${named}, ` +
+                    `which Publisher does not read: a tile entry is the run expression ` +
+                    `alone. Per-tile presentation goes on the view the tile names ` +
+                    `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
+                    `\`# borderless\`).`,
+         );
+      }
+      if (kind !== "text") continue;
+      if (!textBlocks.some((block) => block.name === label)) {
+         add(
+            `text tile \`${label}\` has no \`##|(markdown) ${label}\` block, so it shows nothing. ` +
+               `Fix: write that block, with the text on the lines below its opener and \`|##\` after.`,
+         );
+      }
+      if (
+         entry.has("colspan") &&
+         positiveInteger(tagNumeric(entry, "colspan")) === undefined
+      ) {
+         add(
+            `colspan on text tile \`${label}\` must be a positive integer. The tile spans one column.`,
+         );
+      }
+   }
+   const seenBlocks = new Set<string>();
+   for (const { name } of textBlocks) {
+      if (seenBlocks.has(name)) {
+         add(
+            `the \`##|(markdown) ${name}\` block is written twice, and only the first is shown. Fix: rename or delete the second.`,
+         );
+      }
+      seenBlocks.add(name);
    }
 
    // Per-tile layout, from the tag on the view a tile names rather than from the
@@ -1143,7 +1353,10 @@ export function lintDashboard(
    // the SDK default), so unlike the renderer there is no "colspan outside
    // columns mode" case to report — only a value the reader dropped, and one
    // wider than the grid, which renders clamped.
-   for (const { query: tile } of manifest.tiles ?? []) {
+   // A notebook is one column, so no span means anything on it.
+   for (const { query: tile } of manifest.kind === "notebook"
+      ? []
+      : queryTiles(manifest.tiles)) {
       const tag = motlyTag(tileAnnotations(tile, facts) ?? []);
       if (!tag?.has("colspan")) continue;
       const colspan = positiveInteger(tagNumeric(tag, "colspan"));
@@ -1181,7 +1394,8 @@ export function lintDashboard(
    // go through the same helper so they cannot disagree about a tag.
    const columnsTag = ownTag?.tag("dashboard");
    if (columnsTag?.has("columns")) {
-      if (positiveInteger(tagNumeric(columnsTag, "columns")) === undefined) {
+      const width = positiveInteger(tagNumeric(columnsTag, "columns"));
+      if (width === undefined) {
          // `tagText` returns undefined for exactly the bad-literal case this
          // guard exists for, and `JSON.stringify(undefined)` is the literal text
          // `undefined`, so the author was told the value was "undefined" rather
@@ -1193,16 +1407,31 @@ export function lintDashboard(
                `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
                `The grid falls back to the default.`,
          );
+      } else if (width > MAX_BUILDER_COLUMNS) {
+         add(
+            `# dashboard { columns=${width} } is wider than the builder offers (${MAX_BUILDER_COLUMNS}); the reader still renders it.`,
+         );
       }
    }
 
-   for (const { query: tile } of manifest.tiles ?? []) {
+   for (const { query: tile } of queryTiles(manifest.tiles)) {
       const parts = plainTileParts(tile);
       if (!parts) continue;
       const resolved =
          referencedTileGivens(tile, facts) !== undefined ||
          ("name" in parts &&
             facts.queries.some((query) => query.name === parts.name));
+      if (
+         !resolved &&
+         "name" in parts &&
+         textBlocks.some((block) => block.name === parts.name)
+      ) {
+         add(
+            `tile "${tile}" names the ##|(markdown) ${tile} block but has no kind=text, so it is read as a query. Fix: write ${tile} { kind=text }`,
+            "error",
+         );
+         continue;
+      }
       if (!resolved) {
          const detail =
             "source" in parts
@@ -1217,9 +1446,10 @@ export function lintDashboard(
       // file never imported itself, which leaves it with no control: the value
       // silently stays at its default. Bindability is per-file, so the fix is an
       // import in this file.
-      const unbindable = (referencedTileGivens(tile, facts) ?? []).filter(
-         (name) => !facts.givens.has(name),
-      );
+      // A compiled query can read one given twice.
+      const unbindable = Array.from(
+         new Set(referencedTileGivens(tile, facts) ?? []),
+      ).filter((name) => !facts.givens.has(name));
       for (const name of unbindable) {
          add(
             `tile "${tile}" filters by given "${name}", which this file does ` +
@@ -1357,16 +1587,13 @@ export function lintDashboard(
 /**
  * How a `motlyParseErrors` message should be introduced to an author.
  *
- * Three of the four messages are REFUSALS rather than syntax errors: the
- * annotation is well formed and was not parsed, by policy or by a guard. Saying
+ * Two of the three messages are REFUSALS rather than syntax errors: the
+ * annotation is well formed and was not parsed, by policy. Saying
  * "does not parse" for those sends the author hunting a syntax error in a line
  * that has none. Kept as one function because the set has grown twice and both
  * times a call site was left behind.
  */
 function describeParseFailure(message: string): string {
-   if (message === UNSAFE_TO_PARSE) {
-      return `was refused rather than parsed (${message}), which can be caused by something outside this file`;
-   }
    if (message === ENV_REFERENCE_DROPPED) {
       return `was dropped rather than parsed (${message}), so nothing on that line took effect`;
    }
@@ -1646,4 +1873,59 @@ export function lintSelfDrills(
       }
    }
    return Array.from(findings.values());
+}
+
+/**
+ * What each tile's COMPILED query reads, keyed by normalized tile expression.
+ * A tile that does not compile is left out and keeps the static answer; one in
+ * `skip` is never compiled, so a caller who may not read it gets no diagnostic.
+ * `onPrepared` sees each compiled tile, for a caller that gates on it.
+ */
+export async function compileTileGivens(
+   tiles: readonly string[],
+   materializer: {
+      loadQuery(text: string): { getPreparedQuery(): Promise<unknown> };
+   },
+   fallbackRegistry: ModelDef["givens"] | undefined,
+   gatesOf: (sourceName: string) => readonly string[] | undefined,
+   skip?: ReadonlySet<string>,
+   onPrepared?: (tile: string, prepared: unknown) => Promise<void>,
+   onCompileError?: (tile: string, error: unknown) => void,
+): Promise<Map<string, CompiledTileGivens>> {
+   const compiled = new Map<string, CompiledTileGivens>();
+   for (const tile of tiles) {
+      const key = normalizeTileExpression(tile);
+      if (compiled.has(key) || skip?.has(key)) continue;
+      let prepared: {
+         _query?: { givenUsage?: { id: string }[]; structRef?: unknown };
+         _modelDef?: ModelDef;
+      };
+      try {
+         prepared = (await materializer
+            .loadQuery(`run: ${tile}`)
+            .getPreparedQuery()) as typeof prepared;
+      } catch (error) {
+         onCompileError?.(tile, error);
+         continue;
+      }
+      await onPrepared?.(tile, prepared);
+      const usage = prepared._query?.givenUsage;
+      if (!usage) continue;
+      const registry = prepared._modelDef?.givens ?? fallbackRegistry ?? {};
+      const reads = usage
+         .map((given) => registry[given.id]?.name)
+         .filter((name): name is string => name !== undefined);
+      const target = prepared._query?.structRef;
+      const sourceName =
+         typeof target === "string"
+            ? target
+            : (target as { as?: string; name?: string } | undefined)?.as ||
+              (target as { name?: string } | undefined)?.name;
+      const gateReads = new Set<string>();
+      for (const expr of sourceName ? (gatesOf(sourceName) ?? []) : []) {
+         for (const name of referencedGivenNames(expr)) gateReads.add(name);
+      }
+      compiled.set(key, { reads, gateReads: Array.from(gateReads) });
+   }
+   return compiled;
 }

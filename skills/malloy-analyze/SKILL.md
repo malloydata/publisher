@@ -184,7 +184,7 @@ view: analysis_summary is {
 
 Document insights as view descriptions: `#(doc) Top 10% of customers drive 62% of revenue.`
 
-Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps.
+Present to user: top 3-5 insights, supporting views, open questions, and recommended next steps (unless your host's instructions say it shows follow-up suggestions of its own, which then carry them).
 
 **Ready to formalize?** Hand off to the modeling skill's "Starting from Analysis" workflow (`skill:malloy-model`).
 
@@ -232,32 +232,32 @@ For complete chart reference including scatter_chart, shape_map, sparklines, and
 | `# hidden` | Internal/helper fields |
 | `# duration=seconds` | Time durations |
 
-# NOTEBOOKS (.malloynb)
+# NOTEBOOKS (.malloy)
 
-Cells delimited by `>>>markdown` or `>>>malloy`. **Never use `>>>malloysql`.**
+A notebook is `notebooks/<slug>.malloy` with `## artifact { kind=notebook title="..." }`. The format to author is a one-column layout of tiles: `tiles=[…]` in the tag lists prose blocks (`intro { kind=text }`, body in a `##|(markdown) intro` ... `|##` block) and `"source -> view"` queries, and `skill:malloy-notebooks` has the full format. The example below is the older cell form, which Publisher still reads: prose is `##(markdown) text` or a `##|(markdown)` ... `|##` block, and each `run:` is a query cell.
 
-```
->>>markdown
+```malloy
+## artifact { kind=notebook title="Sales analysis" }
+import "../order_analysis.malloy"
+
+##|(markdown)
 # Sales Analysis
+|##
 
->>>malloy
-import "order_analysis.malloy"
-
->>>malloy
 run: order_analysis -> summary
 ```
 
-**Compile errors in `.malloynb` are NOT shown in the linter**: only visible on cell execution.
+**A `.malloy` notebook compiles as a model**, so the linter and `/compile` report its errors before you save. An existing `.malloynb` is not covered: its errors show only when a cell runs. Never write a new `.malloynb`.
 
-A notebook is also the home for a polished, narrated report: alternate `>>>markdown` cells (the story) with `>>>malloy` cells (the views), and let the malloy cells carry the chart tags. For the full cell-shape and report-authoring conventions, see `skill:malloy-notebooks`.
+A notebook is also the home for a polished, narrated report: alternate prose (the story) with queries (the views), and let each view carry its chart tags. For the full format and report-authoring conventions, see `skill:malloy-notebooks`.
 
 ### Interactive Filters
 
 **Notebooks do NOT define filters themselves.** When you import a model, the model's runtime parameters are **inherited and displayed automatically**: the publisher renders the controls, parses caller parameters, and applies them server-side. You don't redeclare them in the consumer. If the analysis needs a knob the model doesn't expose, the right move is to add it to the source itself, not to wedge filtering into the consumer.
 
-**Declare that knob as a `given:`.** `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+**Declare that knob as a `given:`.** `#(filter)` is deprecated. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. See `skill:malloy-model` § Parameterizing sources with `given:`.
 
-The notebook-level `##(filters)` annotation and the dimension-level `#(filter) {"type": "..."}` JSON-blob form are **unsupported legacy syntax**, don't use them. The only supported form is `#(filter) name=... dimension=... type=...` declared above the source.
+The notebook-level `##(filters)` annotation and the dimension-level `#(filter) {"type": "..."}` JSON-blob form are **unsupported legacy syntax**, don't use them.
 
 ### View Refinement
 

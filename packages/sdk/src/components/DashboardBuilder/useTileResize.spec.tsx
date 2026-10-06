@@ -51,14 +51,13 @@ const pointer = (clientX: number, left = 0) => {
 const mount = () => {
    const commit = mock((_index: number, _span: number) => {});
    const onStart = mock((_index: number) => {});
-   const view = renderHook(() =>
-      useTileResize({ tiles, columns: COLUMNS, onStart, commit }),
-   );
    const grid = document.createElement("div");
    grid.getBoundingClientRect = () =>
       ({ left: 0, width: GRID_WIDTH, top: 0, height: 400 }) as DOMRect;
-   (view.result.current.gridBox as { current: HTMLDivElement | null }).current =
-      grid;
+   const gridBox = { current: grid as HTMLDivElement | null };
+   const view = renderHook(() =>
+      useTileResize({ tiles, columns: COLUMNS, gridBox, onStart, commit }),
+   );
    return { view, commit, onStart };
 };
 
@@ -103,12 +102,38 @@ describe("useTileResize", () => {
       expect(view.result.current.resize?.span).toBe(COLUMNS);
    });
 
+   it("writes nothing for a press that does not change the width", () => {
+      const { view, commit } = mount();
+      act(() => view.result.current.startResize(pointer(600), 1));
+      act(() => view.result.current.endResize(pointer(600)));
+      expect(commit).not.toHaveBeenCalled();
+      expect(view.result.current.resize).toBeUndefined();
+   });
+
+   it("puts the width back when the gesture is cancelled", () => {
+      const { view, commit } = mount();
+      act(() => view.result.current.startResize(pointer(600), 0));
+      act(() =>
+         view.result.current.onResize(pointer(8 * TRACK + 7 * GRID_GAP_PX)),
+      );
+      expect(view.result.current.resize?.span).toBe(8);
+      act(() =>
+         view.result.current.endResize({
+            ...pointer(0),
+            type: "pointercancel",
+         } as PointerEvent<HTMLDivElement>),
+      );
+      expect(commit).not.toHaveBeenCalled();
+      expect(view.result.current.resize).toBeUndefined();
+   });
+
    it("does nothing when the grid has not been measured", () => {
       const commit = mock(() => {});
       const view = renderHook(() =>
          useTileResize({
             tiles,
             columns: COLUMNS,
+            gridBox: { current: null },
             onStart: () => {},
             commit,
          }),

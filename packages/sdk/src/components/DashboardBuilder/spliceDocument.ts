@@ -1,17 +1,39 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { annotationTextProblem } from "./annotationText";
+import {
+   chartLineText,
+   isChartPick,
+   mentionsChartTag,
+   parseChartLine,
+   type ChartPick,
+} from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
    DashboardSource,
    DashboardTile,
+   DocumentKind,
+   QueryTile,
+   TextTile,
 } from "./document";
+import { isQueryTile, isTextTile } from "./document";
 import type { LocalGiven } from "./document";
-import { artifactLine } from "./malloyText";
+import {
+   artifactLine,
+   artifactTag,
+   type ArtifactTag,
+   descriptionNotes,
+   isIdentifier,
+   isBareName,
+   isStrictName,
+   malloyPath,
+} from "../../utils/malloyText";
 import {
    parseMalloy,
    parseRefused,
+   readTileList,
    translate,
    type ParsedMalloy,
    type Span,
@@ -20,6 +42,11 @@ import {
    type TreeView,
 } from "./malloyTree";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import {
+   spliceFailed,
+   type SpliceFailure,
+   type SpliceResult,
+} from "./spliceResult";
 
 /**
  * The syntax errors Malloy's own parser reports for `text`, as a multiset of
@@ -64,8 +91,8 @@ export async function syntaxErrors(text: string): Promise<string[]> {
  * ADDED or REMOVED: a new `view:` inside the extension of the source it reads
  * (or a new extension, when the file imports that source by name), a removed
  * one deleted with its `#` tags. Those moves are the one place the file cannot
- * say who owns the comment beside a declaration, so the builder shows the diff
- * before a structural save and the `//` comments are left where they were.
+ * say who owns the comment beside a declaration, so the `//` comments are left
+ * where they were and the author can read the change back with View change.
  *
  * A given is different from a tile in exactly the way that matters there: the
  * `#` tags above its declaration are its control contract and have no other
@@ -73,16 +100,7 @@ export async function syntaxErrors(text: string): Promise<string[]> {
  * in the same block is left where it is.
  */
 
-export interface SpliceFailure {
-   ok: false;
-   reason: string;
-}
-
-export type SpliceResult = { ok: true; source: string } | SpliceFailure;
-
-/** Narrow to the failure arm; see {@link readFailed} for why a guard. */
-export const spliceFailed = (result: SpliceResult): result is SpliceFailure =>
-   result.ok === false;
+export { spliceFailed, type SpliceFailure, type SpliceResult };
 
 /**
  * A stable serialisation for comparing documents.
@@ -106,6 +124,11 @@ function canonical(value: unknown): string {
       return node;
    };
    return JSON.stringify(walk(value));
+}
+
+/** A description without blank lines at either end, each of which would write a bare `##"`. */
+function trimDescription(text: string): string {
+   return text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd();
 }
 
 /** A byte-range replacement. Applied last-first so earlier offsets stay valid. */
@@ -137,8 +160,14 @@ function applyEdits(source: string, edits: Edit[]): string {
    return out;
 }
 
+/** The chart a tile's `chart` asks the writer to put on its wrapper; `default` and `custom` ask for no line. */
+const writableChart = (
+   chart: QueryTile["chart"],
+): ChartPick | "none" | undefined =>
+   chart === "none" || isChartPick(chart) ? chart : undefined;
+
 /** The `#` tags a tile's presentation implies, in the order they are written. */
-function tagsFor(tile: DashboardTile): string[] {
+function tagsFor(tile: QueryTile, withChart = true): string[] {
    const tags: string[] = [];
    if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
    if (tile.break) tags.push("# break");
@@ -146,6 +175,8 @@ function tagsFor(tile: DashboardTile): string[] {
    if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
+   const chart = withChart ? writableChart(tile.chart) : undefined;
+   if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
    return tags;
 }
 
@@ -190,10 +221,8 @@ const MODELLED_GIVEN_TAG_KEYS: ReadonlySet<string> = new Set([
    "range_max",
 ]);
 
-const isSameDocumentExceptTiles = (
-   a: DashboardDocument,
-   b: DashboardDocument,
-) => canonical(a.imports) === canonical(b.imports);
+const kindOf = (document: DashboardDocument): DocumentKind =>
+   document.kind ?? "dashboard";
 
 /**
  * A given's tag line, composed from its control contract. One line, in the
@@ -211,10 +240,10 @@ function givenTagLine(given: LocalGiven): string | undefined {
          given.suggest.source !== undefined
             ? `source=${given.suggest.source}`
             : given.suggest.query !== undefined
-              ? `query=${given.suggest.query}`
+              ? `query=${quoted(given.suggest.query)}`
               : undefined;
       parts.push(
-         `suggest { ${by ? `${by} ` : ""}dimension=${given.suggest.dimension} }`,
+         `suggest { ${by ? `${by} ` : ""}dimension=${quoted(given.suggest.dimension)} }`,
       );
    }
    if (given.rangeMin !== undefined) parts.push(`range_min=${given.rangeMin}`);
@@ -274,7 +303,9 @@ const quoted = (text: string) =>
  * rewrite declarations?" wants THIS key.
  */
 export const tileFileKey = (t: DashboardTile) =>
-   canonical([t.name, t.source, t.declaration]);
+   isTextTile(t)
+      ? canonical(["text", t.name])
+      : canonical([t.name, t.source, t.declaration]);
 const tileKey = tileFileKey;
 
 /** The tile list as identities, IN ORDER. Differs under a reorder. */
@@ -303,6 +334,10 @@ interface SpliceContext extends TileMembership {
    current: DashboardDocument;
    next: DashboardDocument;
    edits: Edit[];
+   /** The file's package path, when known. */
+   modelPath?: string;
+   /** A kind switch writes `kind=` whichever way it goes; see {@link SpliceOptions.explicitKind}. */
+   explicitKind?: boolean;
 }
 
 /**
@@ -312,12 +347,19 @@ interface SpliceContext extends TileMembership {
 function checkShape(
    current: DashboardDocument,
    next: DashboardDocument,
+   changeKind: boolean,
 ): SpliceFailure | TileMembership {
+   if (kindOf(current) !== kindOf(next) && !changeKind) {
+      return {
+         ok: false,
+         reason:
+            "The document's kind is not changed by an ordinary edit; switch it with the explicit kind change.",
+      };
+   }
    // Tiles ADDED and REMOVED, by identity. A removed tile's declaration goes,
    // with its `#` tags; a `//` comment above it stays, because the file cannot
    // say whether it belonged to the tile, the row or the page, and a comment
-   // left behind is a smaller wrong than one destroyed — and the builder shows
-   // this diff before it saves. An added tile is a `view:` in the extension of
+   // left behind is a smaller wrong than one destroyed. An added tile is a `view:` in the extension of
    // the source it reads, or a new extension when the file has none yet.
    //
    // REORDERING is neither: a tile's position is the `tiles=[…]` array on the
@@ -330,7 +372,7 @@ function checkShape(
    const reordered =
       membershipChanged || tileIdentity(current) !== tileIdentity(next);
    for (const tile of addedTiles) {
-      if (tile.declaration.kind !== "reference") {
+      if (isQueryTile(tile) && tile.declaration.kind !== "reference") {
          return {
             ok: false,
             reason:
@@ -341,12 +383,11 @@ function checkShape(
       }
    }
    // Sources may only be ADDED, and only for a tile being added on them — the
-   // builder never renames or removes an extension, and never edits imports,
-   // so a new extension's base has to be a source the file already imports by
-   // name (or already extends).
+   // builder never renames or removes an extension, so a new extension's base
+   // has to be a source the file imports by name (or already extends).
    const currentSources = new Map(current.sources.map((s) => [s.name, s]));
    const importedByName = new Set(
-      current.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+      next.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
    );
    for (const source of current.sources) importedByName.add(source.base);
    const newSources = next.sources.filter((s) => !currentSources.has(s.name));
@@ -360,7 +401,7 @@ function checkShape(
       }
    }
    for (const source of newSources) {
-      if (!addedTiles.some((t) => t.source === source.name)) {
+      if (!addedTiles.some((t) => isQueryTile(t) && t.source === source.name)) {
          return {
             ok: false,
             reason: `A new source \`${source.name}\` needs a tile on it.`,
@@ -371,16 +412,9 @@ function checkShape(
             ok: false,
             reason:
                `\`${source.base}\` is not imported by name in this file, so a ` +
-               `tile cannot be put on it. The builder does not add imports: ` +
-               `import { ${source.base} } from the model first.`,
+               `tile cannot be put on it. Add it as a source first.`,
          };
       }
-   }
-   if (!isSameDocumentExceptTiles(current, next)) {
-      return {
-         ok: false,
-         reason: "The dashboard's imports cannot be changed here.",
-      };
    }
    return {
       currentKeys,
@@ -393,86 +427,285 @@ function checkShape(
    };
 }
 
-function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
-   const { lines, wholeLine, next, reordered, currentKeys, nextKeys, edits } =
-      ctx;
-   // A reorder is one rewritten array on the `## artifact` line. Each entry is
-   // re-emitted AS IT WAS WRITTEN rather than rebuilt from `source` and `name`,
-   // so a file that spells a tile `overview->kpis` keeps its spelling and the
-   // diff is the reordering and nothing else.
-   if (reordered) {
-      const artifactAt = artifactLine(lines);
-      if (artifactAt < 0) {
-         return {
-            ok: false,
-            reason: "Could not find the `## artifact` tag to reorder.",
-         };
+/** A text entry's width and row break, which the list entry carries because the block has no tags. */
+const textEntryChanged = (was: TextTile, now: TextTile) =>
+   was.colspan !== now.colspan || Boolean(was.break) !== Boolean(now.break);
+
+/** `text` with every quoted string blanked to `x`s of the same length, so a scan for syntax cannot land inside one. */
+function maskStrings(text: string): string {
+   let out = "";
+   for (let i = 0; i < text.length; i++) {
+      if (text[i] !== '"') {
+         out += text[i];
+         continue;
       }
-      const written = [...lines[artifactAt].matchAll(/"([^"]+)"/g)].map(
-         (m) => m[1],
-      );
-      const byKey = new Map<string, string>();
-      for (const entry of written) {
-         const parts = entry.split("->").map((part) => part.trim());
-         if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, entry);
-      }
-      // An existing tile keeps its spelling; a new one is written canonically.
-      const nextEntries = next.tiles.map(
-         (tile) =>
-            byKey.get(`${tile.source}->${tile.name}`) ??
-            (nextKeys.has(tileKey(tile)) && !currentKeys.has(tileKey(tile))
-               ? `${tile.source} -> ${tile.name}`
-               : undefined),
-      );
-      if (nextEntries.some((entry) => entry === undefined)) {
-         return {
-            ok: false,
-            reason:
-               "A tile in the new order is not one the `## artifact` tag names.",
-         };
-      }
-      const list = `tiles=[${nextEntries.map((e) => `"${e}"`).join(", ")}]`;
-      // The `## artifact` tag must stay on ONE line or the package fails to
-      // compile, so the array is replaced in place rather than reformatted.
-      const rewritten = lines[artifactAt].replace(
-         /tiles\s*=\s*\[[\s\S]*?\]/,
-         list,
-      );
-      if (rewritten !== lines[artifactAt])
-         edits.push({ ...wholeLine(artifactAt), text: `${rewritten}\n` });
+      const end = endOfString(text, i);
+      out += "x".repeat(Math.min(end, text.length - 1) - i + 1);
+      i = end;
    }
+   return out;
+}
+
+/** A `name { kind=text … }` entry with its `colspan` and `break` set as `tile` has them, every other property as written. */
+function textEntry(tile: TextTile, written?: string): string {
+   if (written === undefined)
+      return `${tile.name} { kind=text${
+         tile.colspan === undefined ? "" : ` colspan=${tile.colspan}`
+      }${tile.break ? " break" : ""} }`;
+   const masked = maskStrings(written);
+   const open = masked.indexOf("{");
+   const close = masked.lastIndexOf("}");
+   let inner = written.slice(open + 1, close);
+   let maskedInner = masked.slice(open + 1, close);
+   const drop = (re: RegExp) => {
+      const hit = re.exec(maskedInner);
+      if (!hit) return;
+      inner =
+         inner.slice(0, hit.index) + inner.slice(hit.index + hit[0].length);
+      maskedInner =
+         maskedInner.slice(0, hit.index) +
+         maskedInner.slice(hit.index + hit[0].length);
+   };
+   drop(/\s*\bcolspan\s*=\s*[^\s}]+/);
+   drop(/\s*\bbreak\b(?!\s*=)/);
+   const props = [
+      inner.trim(),
+      tile.colspan === undefined ? "" : `colspan=${tile.colspan}`,
+      tile.break ? "break" : "",
+   ].filter(Boolean);
+   return `${written.slice(0, open)}{ ${props.join(" ")} }${written.slice(close + 1)}`;
+}
+
+function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
+   const {
+      lines,
+      wholeLine,
+      current,
+      next,
+      reordered,
+      currentKeys,
+      nextKeys,
+      edits,
+   } = ctx;
+   const wasText = new Map(
+      current.tiles.filter(isTextTile).map((tile) => [tile.name, tile]),
+   );
+   const resized = next.tiles.filter(isTextTile).some((tile) => {
+      const was = wasText.get(tile.name);
+      return was !== undefined && textEntryChanged(was, tile);
+   });
+   // A reorder, and a text tile's width, are one rewritten array on the
+   // `## artifact` line. Each entry is re-emitted AS IT WAS WRITTEN rather than
+   // rebuilt from `source` and `name`, so a file that spells a tile
+   // `overview->kpis` keeps its spelling and the diff is the change and nothing else.
+   if (!reordered && !resized) return undefined;
+   const tag = artifactTag(lines);
+   if (!tag) {
+      return {
+         ok: false,
+         reason: "Could not find the `## artifact` tag to reorder.",
+      };
+   }
+   const line = tag.text;
+   const list = readTileList(line);
+   if (!list) {
+      return {
+         ok: false,
+         reason: "Could not read the `tiles=[…]` list to rewrite it.",
+      };
+   }
+   if (nextKeys.size === 0 && currentKeys.size > 0) {
+      return {
+         ok: false,
+         reason:
+            "A dashboard with no tiles is not served, so the last tile cannot be removed. Add another tile first.",
+      };
+   }
+   const byKey = new Map<string, string>();
+   for (const { text } of list.entries) {
+      const quoted = /^"((?:[^"\\]|\\.)+)"$/.exec(text);
+      if (quoted) {
+         const parts = quoted[1].split("->").map((part) => part.trim());
+         if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, text);
+         continue;
+      }
+      const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
+      if (name !== undefined) byKey.set(`text.${name}`, text);
+   }
+   // An existing tile keeps its spelling; a new one is written canonically.
+   const nextEntries = next.tiles.map((tile) => {
+      const isNew = !currentKeys.has(tileKey(tile));
+      if (isTextTile(tile)) {
+         const written = byKey.get(`text.${tile.name}`);
+         return written !== undefined
+            ? wasText.has(tile.name) &&
+              !textEntryChanged(wasText.get(tile.name), tile)
+               ? written
+               : textEntry(tile, written)
+            : isNew
+              ? textEntry(tile)
+              : undefined;
+      }
+      return (
+         byKey.get(`${tile.source}->${tile.name}`) ??
+         (isNew ? `"${tile.source} -> ${tile.name}"` : undefined)
+      );
+   });
+   if (nextEntries.some((entry) => entry === undefined)) {
+      return {
+         ok: false,
+         reason:
+            "A tile in the new order is not one the `## artifact` tag names.",
+      };
+   }
+   // A `## artifact` line must stay on ONE line or the package fails to
+   // compile, so the array is replaced in place rather than reformatted; a
+   // `##|` block keeps whatever line layout its array was written in.
+   const keyAt = line.slice(0, list.open).search(/tiles\s*=\s*$/);
+   const rewritten = `${line.slice(0, keyAt)}tiles=[${arrayBody(line, list, nextEntries)}]${line.slice(list.close + 1)}`;
+   if (rewritten !== line)
+      edits.push({ ...tagExtent(wholeLine, tag), text: `${rewritten}\n` });
    return undefined;
+}
+
+/** The whole lines a tag's text occupies; a block's closer is not part of its text. */
+function tagExtent(
+   wholeLine: (line: number) => { start: number; end: number },
+   tag: ArtifactTag,
+) {
+   return {
+      start: wholeLine(tag.from).start,
+      end: wholeLine(tag.block ? tag.to - 1 : tag.from).end,
+   };
+}
+
+/** The text between a list's brackets for `entries`, spaced as the list was: a multi-line list keeps its lead, separator and tail. */
+function arrayBody(
+   line: string,
+   list: NonNullable<ReturnType<typeof readTileList>>,
+   entries: string[],
+): string {
+   const first = list.entries[0];
+   const last = list.entries[list.entries.length - 1];
+   if (!first || !/\n/.test(line.slice(list.open, list.close)))
+      return entries.join(", ");
+   const lead = line.slice(list.open + 1, first.span.start);
+   const tail = line.slice(last.span.end, list.close);
+   const indent = lead.slice(lead.lastIndexOf("\n"));
+   const separator =
+      list.entries.length > 1
+         ? line.slice(first.span.end, list.entries[1].span.start)
+         : `,${indent.startsWith("\n") ? indent : " "}`;
+   return `${lead}${entries.join(separator)}${tail}`;
+}
+
+/**
+ * `line` without one property of the artifact tag's own braces: spelled with
+ * any spacing round the `=`, and never matched inside a quoted string or a
+ * nested block.
+ */
+function removeArtifactProperty(line: string, key: string): string {
+   let depth = 0;
+   let groups = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+         i = endOfString(line, i);
+      } else if (c === "{" || c === "[") {
+         if (depth++ === 0) groups++;
+      } else if (c === "}" || c === "]") {
+         depth--;
+      } else if (
+         groups === 1 &&
+         depth === 1 &&
+         line.startsWith(key, i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const eq = /^\s*=\s*/.exec(line.slice(i + key.length));
+         if (!eq) continue;
+         const valueAt = i + key.length + eq[0].length;
+         const valueEnd =
+            line[valueAt] === '"'
+               ? endOfString(line, valueAt) + 1
+               : valueAt +
+                 (/^[^\s}]*/.exec(line.slice(valueAt))?.[0].length ?? 0);
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(valueEnd);
+      }
+   }
+   return line;
+}
+
+/** `line` without its `dashboard { … }` block: outside the artifact braces and never inside a string. */
+function removeDashboardBlock(line: string): string {
+   let depth = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') i = endOfString(line, i);
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") depth--;
+      else if (
+         depth === 0 &&
+         line.startsWith("dashboard", i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const open = /^dashboard\s*\{/.exec(line.slice(i));
+         if (!open) continue;
+         let inner = 1;
+         let j = i + open[0].length;
+         for (; j < line.length && inner > 0; j++) {
+            if (line[j] === '"') j = endOfString(line, j);
+            else if (line[j] === "{") inner++;
+            else if (line[j] === "}") inner--;
+         }
+         const from = i - (/\s*$/.exec(line.slice(0, i))?.[0].length ?? 0);
+         return line.slice(0, from) + line.slice(j);
+      }
+   }
+   return line;
+}
+
+/** The index of the quote closing the string that opens at `open`. */
+function endOfString(line: string, open: number): number {
+   for (let i = open + 1; i < line.length; i++) {
+      if (line[i] === "\\") i++;
+      else if (line[i] === '"') return i;
+   }
+   return line.length;
 }
 
 function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, current, next, edits } = ctx;
    // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
-   // properties on the one-line `## artifact { … }` tag; the grid width is the
-   // `dashboard { columns=N }` beside it; the description is the run of `##"`
-   // lines above. Each is patched in place on its own line, so the tag stays
-   // on one line — the package fails to compile otherwise — and a property
+   // properties on the `## artifact { … }` tag (one line, or a `##|` block);
+   // the grid width is the `dashboard { columns=N }` beside it; the description is the run of `##"`
+   // lines above. Each is patched in place, so a one-line tag stays one line
+   // — the package fails to compile otherwise — and a property
    // the file spells its own way keeps that spelling when it did not change.
    if (
+      kindOf(current) !== kindOf(next) ||
       current.title !== next.title ||
       current.autorun !== next.autorun ||
       current.columns !== next.columns ||
       canonical(current.startingGivens) !== canonical(next.startingGivens)
    ) {
-      const artifactAt = artifactLine(lines);
-      if (artifactAt < 0) {
+      const tag = artifactTag(lines);
+      if (!tag) {
          return {
             ok: false,
             reason:
                "Could not find the `## artifact` tag to change the page's settings.",
          };
       }
-      // Whatever the reorder wrote to this line is the text to patch further.
+      const extent = tagExtent(wholeLine, tag);
+      // Whatever the reorder wrote to this tag is the text to patch further.
       const already = edits.find(
-         (edit) =>
-            edit.start === wholeLine(artifactAt).start &&
-            edit.end === wholeLine(artifactAt).end,
+         (edit) => edit.start === extent.start && edit.end === extent.end,
       );
-      let line = already ? already.text.replace(/\n$/, "") : lines[artifactAt];
+      let line = already ? already.text.replace(/\n$/, "") : tag.text;
+      // Depth-aware, since a text tile's own `kind=text` sits inside the tag.
+      if (kindOf(current) !== kindOf(next))
+         line = removeArtifactProperty(line, "kind");
       // The artifact tag's braces: everything up to the matching `}`.
       const open = line.indexOf("artifact");
       const braceOpen = line.indexOf("{", open);
@@ -492,14 +725,37 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          };
       }
       let inner = line.slice(braceOpen + 1, braceClose);
+      // A block puts each property on a line of its own, as its array is.
+      const lineBreak = tag.block
+         ? `\n${/\n([ \t]+)\S/.exec(inner)?.[1] ?? "  "}`
+         : " ";
+      const append = (property: string) =>
+         tag.block
+            ? `${inner.trimEnd()}${lineBreak}${property}\n`
+            : `${inner.trimEnd()} ${property} `;
       const setProperty = (key: string, value: string | undefined) => {
          const re = new RegExp(
-            `\\s*\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
+            `${tag.block ? "[ \\t]*" : "\\s*"}\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
          );
-         if (value === undefined) inner = inner.replace(re, "");
-         else if (re.test(inner)) inner = inner.replace(re, ` ${key}=${value}`);
-         else inner = `${inner.replace(/\s+$/, "")} ${key}=${value} `;
+         if (value === undefined) {
+            const own = new RegExp(`\n${re.source}[ \\t]*(?=\n)`);
+            inner = inner.replace(tag.block && own.test(inner) ? own : re, "");
+         } else if (re.test(inner))
+            inner = inner.replace(
+               re,
+               (hit) =>
+                  `${tag.block ? hit.slice(0, hit.length - hit.trimStart().length) : " "}${key}=${value}`,
+            );
+         else inner = append(`${key}=${value}`);
       };
+      if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
+         inner = append("kind=notebook");
+      // A tag with no kind takes its folder's, and the server's compile of text takes none: a switch that leaves it off lets the two disagree.
+      else if (
+         kindOf(current) !== kindOf(next) &&
+         (ctx.explicitKind || !ctx.modelPath?.startsWith("dashboards/"))
+      )
+         inner = append("kind=dashboard");
       if (current.title !== next.title)
          setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
@@ -516,40 +772,56 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          // string's text — `CATEGORY="Jeans"` reads as `Jeans`, which is
          // what the document holds and what is written back here.
          if (entries.length > 0)
-            inner = `${inner.replace(/\s+$/, "")} givens { ${entries
-               .map(([k, v]) => `${k}=${quoted(v)}`)
-               .join(" ")} }`;
+            inner = append(
+               `givens { ${entries.map(([k, v]) => `${k}=${quoted(v)}`).join(" ")} }`,
+            );
       }
-      inner = inner.replace(/\s{2,}/g, " ");
-      line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
+      if (tag.block) {
+         line = `${line.slice(0, braceOpen + 1)}${inner}${line.slice(braceClose)}`;
+      } else {
+         inner = inner.replace(/\s{2,}/g, " ");
+         line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
+      }
       if (current.columns !== next.columns) {
-         line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
+         // The deprecated alias would otherwise sit beside the new width and conflict with it.
+         line = removeArtifactProperty(line, "dashboard_columns");
+         line = removeDashboardBlock(line);
          if (next.columns !== undefined)
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
       }
       if (already) already.text = `${line}\n`;
-      else edits.push({ ...wholeLine(artifactAt), text: `${line}\n` });
+      else edits.push({ ...extent, text: `${line}\n` });
    }
    if (current.description !== next.description) {
-      // The run of `##"` lines, wherever it is; a new one goes above the tag.
-      const docLines = lines
-         .map((l, i) => (l.trim().startsWith('##"') ? i : -1))
-         .filter((i) => i >= 0);
-      const text = (next.description ?? "")
+      // Written above the tag, where the server reads it. A description read
+      // from below (the legacy spot) moves there, and the lines it came from go.
+      const { read, blankAbove, below, belowBlock, inBlock } =
+         descriptionNotes(lines);
+      if (inBlock || (next.description === undefined && belowBlock)) {
+         return {
+            ok: false,
+            reason:
+               "The description is written in a `##|\"` block, which the builder cannot edit in place. Change it in the file's text.",
+         };
+      }
+      const text = trimDescription(next.description ?? "")
          .split("\n")
          .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
          .join("\n");
-      if (docLines.length > 0) {
-         const first = docLines[0];
-         const last = docLines[docLines.length - 1];
+      const above = read.length > 0 && read[0] < artifactLine(lines);
+      // Clearing it must not let the server fall back to notes left below the tag.
+      const clearing = next.description === undefined;
+      const removed = above
+         ? [...read.slice(1), ...(clearing ? below : [])]
+         : [...read, ...blankAbove];
+      for (const at of removed) edits.push({ ...wholeLine(at), text: "" });
+      if (above) {
          edits.push({
-            start: wholeLine(first).start,
-            end: wholeLine(last).end,
+            ...wholeLine(read[0]),
             text: next.description === undefined ? "" : `${text}\n`,
          });
       } else if (next.description !== undefined) {
-         const artifactAt = artifactLine(lines);
-         const at = wholeLine(artifactAt).start;
+         const at = wholeLine(artifactLine(lines)).start;
          edits.push({ start: at, end: at, text: `${text}\n` });
       }
    }
@@ -585,7 +857,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
       // removed declaration is the exception and takes every tag with it: a
       // `#` line left behind does not lapse, it attaches to whatever is
       // declared next, so an orphaned `#(secure)` would silently move.
-      const { tags } = blockAbove(parsed, lines, at.line);
+      const { tags, prose } = blockAbove(parsed, lines, at.line);
       const owned =
          want === undefined
             ? tags
@@ -593,9 +865,14 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
                  const key = tagKey(tag.text);
                  return key !== undefined && MODELLED_GIVEN_TAG_KEYS.has(key);
               });
-      for (const tag of owned) {
-         edits.push({ ...wholeLine(tag.line), text: "" });
-         removedLines.add(tag.line);
+      // Prose leaves with a removed declaration for the same reason.
+      const ownedLines = [
+         ...owned.map((tag) => tag.line),
+         ...(want === undefined ? prose : []),
+      ];
+      for (const line of ownedLines) {
+         edits.push({ ...wholeLine(line), text: "" });
+         removedLines.add(line);
       }
       // A declaration can run past its first line -- `NAME :: string is` with
       // its default below it is ordinary Malloy -- so the lines to take come
@@ -611,7 +888,7 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
          for (let l = at.line; l <= lastLine; l++) removedLines.add(l);
          // A declaration set off by blank lines takes one of them with it, or
          // the two separators meet and the file gains an empty line per edit.
-         const first = Math.min(at.line, ...tags.map((tag) => tag.line));
+         const first = Math.min(at.line, ...ownedLines);
          const above = at.blockHeader ?? first;
          const belowIsBlank = (lines[lastLine + 1] ?? "x").trim() === "";
          const aboveIsBlank = above === 0 || lines[above - 1].trim() === "";
@@ -721,6 +998,100 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
    return undefined;
 }
 
+/** `import { a, b } from "../model.malloy"`, the one-line spelling the builder writes. */
+const importStatement = (names: string[], from: string) =>
+   `import { ${names.join(", ")} } from ${quoted(from)}`;
+
+/**
+ * IMPORTS. Only a `{ names }` import is the builder's to edit: a name is added
+ * to the statement for its file (or a new statement follows the last import),
+ * a name taken off rewrites it, and the last name takes the statement. A bare
+ * `import "…"` brings in a whole file's declarations and is never touched, and
+ * a name a source or tile still reads cannot go.
+ */
+function planImports(ctx: SpliceContext): SpliceFailure | undefined {
+   const { parsed, current, next, edits, wholeLine } = ctx;
+   const bare = (document: DashboardDocument) =>
+      canonical(
+         document.imports
+            .flatMap((i) => (i.kind === "all" ? [i.from] : []))
+            .sort(),
+      );
+   if (bare(current) !== bare(next)) {
+      return {
+         ok: false,
+         reason: "A whole-file `import` cannot be changed here.",
+      };
+   }
+   if (canonical(current.imports) === canonical(next.imports)) return undefined;
+
+   const wanted = next.imports.flatMap((i) =>
+      i.kind === "names" ? [{ ...i, claimed: false }] : [],
+   );
+   const inUse = new Set([
+      ...next.sources.map((s) => s.base),
+      ...next.tiles.filter(isQueryTile).map((t) => t.source),
+   ]);
+   const written = parsed.imports.map((statement, index) => ({
+      statement,
+      entry: current.imports[index],
+   }));
+   for (const { statement, entry } of written) {
+      if (!entry || entry.kind !== "names") continue;
+      const keep = wanted.find((w) => !w.claimed && w.from === entry.from);
+      if (keep) keep.claimed = true;
+      const names = keep?.names ?? [];
+      const dropped = entry.names.filter((n) => !names.includes(n));
+      const stuck = dropped.find((n) => inUse.has(n));
+      if (stuck !== undefined) {
+         return {
+            ok: false,
+            reason: `\`${stuck}\` is still read by a tile, so its import cannot be removed.`,
+         };
+      }
+      if (canonical(names) === canonical(entry.names)) continue;
+      const cut =
+         names.length === 0
+            ? statementCut(parsed, statement.statement)
+            : statement.statement;
+      const lost = parsed.commentIn(cut);
+      if (lost) {
+         return {
+            ok: false,
+            reason:
+               `Changing this import would also remove the comment inside it ` +
+               `(\`${parsed.text.slice(lost.start, lost.end).trim()}\`), so ` +
+               `nothing was written. Delete it in the file first.`,
+         };
+      }
+      edits.push({
+         ...cut,
+         text: names.length === 0 ? "" : importStatement(names, entry.from),
+      });
+   }
+
+   const added = wanted.filter((w) => !w.claimed);
+   if (added.length > 0) {
+      const last = parsed.imports.at(-1);
+      if (!last) {
+         return {
+            ok: false,
+            reason:
+               "This file has no `import` to put a source beside. Import its first source in the file.",
+         };
+      }
+      const at = wholeLine(lineOf(parsed, last.statement.end - 1)).end;
+      edits.push({
+         start: at,
+         end: at,
+         text: added
+            .map((w) => `${importStatement(w.names, w.from)}\n`)
+            .join(""),
+      });
+   }
+   return undefined;
+}
+
 function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, indentOf, current, next, edits, parsed } = ctx;
    // DRILLS. A drill is one `# drill` tag on a dimension THIS FILE declares —
@@ -785,7 +1156,7 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    // runs to its closing brace; a reference is one line. An inherited tile has
    // nothing here to remove — its entry left the artifact list above.
    for (const tile of removedTiles) {
-      if (tile.declaration.kind === "inherited") continue;
+      if (isTextTile(tile) || tile.declaration.kind === "inherited") continue;
       const view = viewOf(ctx, tile);
       if (!view) {
          return {
@@ -858,19 +1229,20 @@ function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    // ADDED TILES: a `view:` with its tags, inside the extension of the source
    // the tile reads — before that extension's closing brace — or in a new
    // extension after the last one, when the file has none for that source.
-   const byExtension = new Map<string, DashboardTile[]>();
+   const byExtension = new Map<string, QueryTile[]>();
    for (const tile of addedTiles) {
+      if (isTextTile(tile)) continue;
       const list = byExtension.get(tile.source) ?? [];
       list.push(tile);
       byExtension.set(tile.source, list);
    }
-   const declarationOf = (tile: DashboardTile, indent: string) => {
+   const declarationOf = (tile: QueryTile, indent: string) => {
       const from =
          tile.declaration.kind === "reference"
             ? tile.declaration.from
             : tile.name;
       const bindings = (tile.filters ?? [])
-         .map((f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`)
+         .map((f) => `where: ${malloyPath(f.field)} ${f.op ?? "~"} $${f.given}`)
          .join(", ");
       return [
          ...tagsFor(tile).map((tag) => `${indent}${tag}`),
@@ -971,9 +1343,13 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 
    for (const tile of next.tiles) {
       const was = currentByKey.get(tileKey(tile));
-      // Written whole above, tags and all.
-      if (was === undefined) continue;
-      if (canonical(was) === canonical(tile)) continue;
+      // Written whole above, tags and all; a text tile has no declaration to retag.
+      if (was === undefined || isTextTile(tile) || isTextTile(was)) continue;
+      if (
+         canonical(withoutDefaultChart(was)) ===
+         canonical(withoutDefaultChart(tile))
+      )
+         continue;
 
       // Declared in the model, not here, so there is nothing in this file to
       // patch -- saying so beats writing a tag that would land on the wrong
@@ -1003,15 +1379,55 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 
       const { tags } = blockAbove(parsed, lines, declLine);
       const indent = indentOf(declLine);
-      const wanted = tagsFor(tile);
+      const wanted = tagsFor(tile, false);
       const wantedByKey = new Map(
          wanted.map((text) => [tagKey(text) ?? text, text]),
       );
       const seen = new Set<string>();
 
+      // Only a changed chart touches a chart line, so a bare `# bar_chart` survives every other edit.
+      const wantChart = writableChart(tile.chart);
+      const chartChanged = chartOf(was) !== chartOf(tile);
+      if (chartChanged) {
+         const blockers = tags.filter((tag) => mentionsChartTag(tag.text));
+         const ours = tags.filter((tag) => parseChartLine(tag.text));
+         const stuck =
+            was.chart === "custom"
+               ? tags.filter(
+                    (tag) =>
+                       parseChartLine(tag.text) || mentionsChartTag(tag.text),
+                 )
+               : blockers.length > 0
+                 ? blockers
+                 : ours.length > 1
+                   ? ours
+                   : [];
+         if (stuck.length > 0) {
+            return {
+               ok: false,
+               reason:
+                  `\`${tile.source} -> ${tile.name}\` has a chart line the builder does not ` +
+                  `model (${stuck.map((tag) => tag.text).join(" and ")}), so its chart ` +
+                  `cannot be changed here.`,
+            };
+         }
+      }
+      let chartPlaced = false;
+
       // Existing tag lines are patched or removed IN PLACE, so anything else in
       // the block — a comment explaining the tile — keeps its position.
       for (const tag of tags) {
+         if (chartChanged && parseChartLine(tag.text)) {
+            if (wantChart === undefined)
+               edits.push({ ...wholeLine(tag.line), text: "" });
+            else if (tag.text !== chartLineText(wantChart, tile.chartCarried))
+               edits.push({
+                  ...wholeLine(tag.line),
+                  text: `${indent}${chartLineText(wantChart, tile.chartCarried)}\n`,
+               });
+            chartPlaced = true;
+            continue;
+         }
          const key = tagKey(tag.text);
          // Not a property this document models: not ours to touch.
          if (key === undefined || !MODELLED_TAG_KEYS.has(key)) continue;
@@ -1029,6 +1445,8 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // New tags go immediately above the declaration, which is where a reader
       // looks for them and where `blockAbove` will find them again.
       const added = wanted.filter((text) => !seen.has(tagKey(text) ?? text));
+      if (chartChanged && wantChart !== undefined && !chartPlaced)
+         added.push(chartLineText(wantChart, tile.chartCarried));
       if (added.length > 0) {
          const at = starts[declLine];
          edits.push({
@@ -1071,12 +1489,293 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
    return undefined;
 }
 
+/** A tile's chart as the writer compares it: no line (absent or `default`) is one state. */
+const chartOf = (tile: QueryTile) =>
+   tile.chart === "default" ? undefined : tile.chart;
+
+/** The tile as the writer compares it: "default" is no line, and `chartLines` and `chartCarried` are not part of what is asked for. */
+const withoutDefaultChart = (tile: QueryTile): QueryTile => {
+   const { chartLines: _lines, chartCarried: _carried, ...rest } = tile;
+   if (rest.chart !== "default") return rest;
+   const { chart: _chart, ...bare } = rest;
+   return bare;
+};
+
+/** A matched tile with no `chart` stated is unchanged, so only an explicit "default" removes a line. */
+function keepUnstatedCharts(
+   current: DashboardDocument,
+   next: DashboardDocument,
+): DashboardDocument {
+   const was = new Map(current.tiles.map((t) => [tileKey(t), t]));
+   return {
+      ...next,
+      tiles: next.tiles.map((tile) => {
+         const before = was.get(tileKey(tile));
+         return isQueryTile(tile) &&
+            tile.chart === undefined &&
+            before &&
+            isQueryTile(before) &&
+            before.chart !== undefined
+            ? { ...tile, chart: before.chart }
+            : tile;
+      }),
+   };
+}
+
+/** Why a text tile's markdown cannot be written into a block, or undefined when it can: the writer's refusals, for an editor to show live. */
+export function markdownProblem(markdown: string): string | undefined {
+   if (markdown.includes("\r"))
+      return "Text uses plain line breaks; a carriage return cannot be written.";
+   if (/^\|##/m.test(markdown))
+      return "A line starting with `|##` would close the text early. Indent that line or reword it.";
+   return undefined;
+}
+
+/** Why `tile` cannot be written, or undefined; only what changed from `before` is judged, so an existing odd value does not block unrelated edits. */
+function textTileProblem(
+   tile: TextTile,
+   before: TextTile | undefined,
+   seen: Set<string>,
+): string | undefined {
+   if (seen.has(tile.name))
+      return `Two text tiles are named \`${tile.name}\`, so they could not be told apart.`;
+   seen.add(tile.name);
+   if (before === undefined && !isIdentifier(tile.name))
+      return `The text tile name ${JSON.stringify(tile.name)} must be a bare word.`;
+   if (before === undefined || tile.markdown !== before.markdown) {
+      const problem = markdownProblem(tile.markdown);
+      if (problem) return problem;
+   }
+   if (
+      tile.colspan !== undefined &&
+      tile.colspan !== before?.colspan &&
+      !(Number.isInteger(tile.colspan) && tile.colspan >= 1)
+   )
+      return "A text tile's width is a whole number of columns, 1 or more.";
+   return undefined;
+}
+
+/** The block a text tile's prose is written in. */
+const textBlockText = (tile: TextTile) =>
+   `##|(markdown) ${tile.name}\n${tile.markdown === "" ? "" : `${tile.markdown}\n`}|##\n`;
+
+function planTextBlocks(ctx: SpliceContext): SpliceFailure | undefined {
+   const { sourceText, lines, wholeLine, current, next, parsed, edits } = ctx;
+   // TEXT TILES: the `##|(markdown) name` block is the tile's body, so adding
+   // one writes a block, editing one replaces its block, and removing one takes
+   // the block out; the `tiles=[…]` entry was already handled with the order.
+   const wasText = new Map(
+      current.tiles.filter(isTextTile).map((tile) => [tile.name, tile]),
+   );
+   const nowText = next.tiles.filter(isTextTile);
+   const blockOf = (name: string) =>
+      parsed.textBlocks.find((block) => block.name === name);
+   const nowNames = new Set(nowText.map((tile) => tile.name));
+
+   for (const name of wasText.keys()) {
+      const block = nowNames.has(name) ? undefined : blockOf(name);
+      if (!block) continue;
+      const last = lineOf(parsed, block.span.end - 1);
+      edits.push({ ...block.span, text: "" });
+      const after = wholeLine(last + 1);
+      const blankBefore =
+         block.line === 0 || lines[block.line - 1].trim() === "";
+      // The blank line after goes too when one already precedes, or two separators meet.
+      if (
+         after.end > after.start &&
+         lines[last + 1].trim() === "" &&
+         blankBefore
+      )
+         edits.push({ ...after, text: "" });
+      // A last block takes the blank line that set it off.
+      else if (
+         block.line > 0 &&
+         blankBefore &&
+         sourceText.slice(block.span.end).trim() === ""
+      )
+         edits.push({ ...wholeLine(block.line - 1), text: "" });
+   }
+
+   const fresh: string[] = [];
+   for (const tile of nowText) {
+      const was = wasText.get(tile.name);
+      const block = blockOf(tile.name);
+      if (was === undefined) {
+         if (block) {
+            return {
+               ok: false,
+               reason: `A block named \`${tile.name}\` is already in this file, so a new text tile cannot take that name.`,
+            };
+         }
+         fresh.push(textBlockText(tile));
+      } else if (was.markdown !== tile.markdown) {
+         if (block) edits.push({ ...block.span, text: textBlockText(tile) });
+         else fresh.push(textBlockText(tile));
+      }
+   }
+   if (fresh.length > 0) {
+      // Prose blocks group together ahead of the `<source>_tiles` extension, in tile order.
+      const kept = parsed.textBlocks.filter(
+         (block) => block.name === undefined || nowNames.has(block.name),
+      );
+      const lastKept = kept[kept.length - 1];
+      const extension = parsed.sources.find((s) => s.name.endsWith("_tiles"));
+      if (lastKept) {
+         const at = lastKept.span.end;
+         const after = sourceText.slice(at);
+         edits.push({
+            start: at,
+            end: at,
+            text: `\n${fresh.join("\n")}${after === "" || after.startsWith("\n") ? "" : "\n"}`,
+         });
+         return undefined;
+      }
+      if (extension) {
+         const at = ctx.starts[parsed.blockStart(extension.line)];
+         const blankBefore =
+            at === 0 || sourceText.slice(0, at).endsWith("\n\n");
+         edits.push({
+            start: at,
+            end: at,
+            text: `${blankBefore ? "" : "\n"}${fresh.join("\n")}\n`,
+         });
+         return undefined;
+      }
+      const at = sourceText.length;
+      const lead =
+         sourceText === "" || sourceText.endsWith("\n\n")
+            ? ""
+            : sourceText.endsWith("\n")
+              ? "\n"
+              : "\n\n";
+      edits.push({ start: at, end: at, text: lead + fresh.join("\n") });
+   }
+   return undefined;
+}
+
+/** A name the writer emits unquoted, or why it cannot be written. */
+const nameProblem = (name: string, bare = isBareName) =>
+   bare(name)
+      ? undefined
+      : `The name ${JSON.stringify(name)} cannot be written as a Malloy name.`;
+
+/** Why `next` holds a chart, name or annotation text the writer must not emit; only what changed is judged, so an existing odd string does not block unrelated edits. */
+function unwritable(
+   current: DashboardDocument,
+   next: DashboardDocument,
+): string | undefined {
+   const was = new Map(current.tiles.map((t) => [tileKey(t), t]));
+   if (
+      kindOf(next) === "notebook" &&
+      next.columns !== undefined &&
+      (kindOf(current) !== "notebook" || next.columns !== current.columns)
+   )
+      return "A notebook is one column, so its width is not written. Clear the width when switching a dashboard to a notebook.";
+   const textNames = new Set<string>();
+   for (const tile of next.tiles) {
+      const before = was.get(tileKey(tile));
+      if (isTextTile(tile)) {
+         const problem = textTileProblem(
+            tile,
+            before && isTextTile(before) ? before : undefined,
+            textNames,
+         );
+         if (problem) return problem;
+         continue;
+      }
+      const prior = before && isQueryTile(before) ? before : undefined;
+      if (before && !prior) continue;
+      const chart = tile.chart;
+      if (
+         chart !== undefined &&
+         chart !== "default" &&
+         chart !== "none" &&
+         !isChartPick(chart) &&
+         !(chart === "custom" && prior?.chart === "custom")
+      )
+         return `"${String(chart)}" is not a chart this editor writes.`;
+      const filtersBefore = new Set(prior?.filters?.map((f) => f.field));
+      for (const f of tile.filters ?? []) {
+         if (!filtersBefore.has(f.field) && /[\r\n]/.test(f.field))
+            return "A filter field is one line.";
+      }
+      if (before === undefined) {
+         const names = [tile.name, tile.source];
+         if (tile.declaration.kind === "reference")
+            names.push(tile.declaration.from);
+         for (const name of names) {
+            const problem = nameProblem(name);
+            if (problem) return problem;
+         }
+      }
+      for (const key of ["label", "subtitle"] as const) {
+         const text = tile[key];
+         if (text === undefined || text === prior?.[key]) continue;
+         const problem = annotationTextProblem(`tile ${key}`, text);
+         if (problem) return problem;
+      }
+   }
+   const knownSources = new Set(current.sources.map((s) => s.name));
+   for (const source of next.sources) {
+      if (knownSources.has(source.name)) continue;
+      for (const name of [source.name, source.base]) {
+         const problem = nameProblem(name);
+         if (problem) return problem;
+      }
+   }
+   if (next.description !== current.description) {
+      for (const line of (next.description ?? "").split(/\r?\n/)) {
+         const problem = annotationTextProblem("description line", line);
+         if (problem) return problem;
+      }
+   }
+   if (next.title !== current.title) {
+      const problem = annotationTextProblem("title", next.title);
+      if (problem) return problem;
+   }
+   const givens = new Map((current.localGivens ?? []).map((g) => [g.name, g]));
+   for (const given of next.localGivens ?? []) {
+      const was = givens.get(given.name);
+      if (was === undefined) {
+         const problem = nameProblem(given.name, isStrictName);
+         if (problem) return problem;
+      }
+      const source = given.suggest?.source;
+      if (source !== undefined && source !== was?.suggest?.source) {
+         const problem = nameProblem(source);
+         if (problem) return `The suggest source is not a name. ${problem}`;
+      }
+      for (const key of ["query", "dimension"] as const) {
+         const text = given.suggest?.[key];
+         if (text === undefined || text === was?.suggest?.[key]) continue;
+         const problem = annotationTextProblem(`suggest ${key}`, text);
+         if (problem) return problem;
+      }
+      for (const key of ["label", "description"] as const) {
+         const text = given[key];
+         if (text === undefined || text === givens.get(given.name)?.[key])
+            continue;
+         const problem = annotationTextProblem(`given ${key}`, text);
+         if (problem) return problem;
+      }
+   }
+   for (const [name, value] of Object.entries(next.startingGivens ?? {})) {
+      if (value === current.startingGivens?.[name]) continue;
+      const problem = annotationTextProblem(
+         `starting value for ${name}`,
+         value,
+      );
+      if (problem) return problem;
+   }
+   return undefined;
+}
+
 /** The 0-based line an offset falls on. */
 const lineOf = (parsed: ParsedMalloy, offset: number): number =>
    parsed.lineStarts.findLastIndex((at) => at <= offset);
 
 /** The parsed declaration a tile names, if this file declares it. */
-function viewOf(ctx: SpliceContext, tile: DashboardTile): TreeView | undefined {
+function viewOf(ctx: SpliceContext, tile: QueryTile): TreeView | undefined {
    return ctx.parsed.sources
       .find((source) => source.name === tile.source)
       ?.views.find((view) => view.name === tile.name);
@@ -1115,7 +1814,7 @@ function collisionRefusal(tileName: string, given: string): SpliceFailure {
 }
 
 const bindingText = (f: { field: string; given: string; op?: string }) =>
-   `where: ${f.field} ${f.op ?? "~"} $${f.given}`;
+   `where: ${malloyPath(f.field)} ${f.op ?? "~"} $${f.given}`;
 
 /**
  * THE RULE the three removal paths obey: a comment goes only with a
@@ -1125,8 +1824,7 @@ const bindingText = (f: { field: string; given: string; op?: string }) =>
  * is nobody's to strand either. Both refuse, and say which comment.
  *
  * Removing a TILE is the other case, and the one exception: the declaration
- * itself is what was asked for, so its own comments go with it, and the builder
- * shows that diff before a structural save.
+ * itself is what was asked for, so its own comments go with it.
  */
 function commentRefusal(
    tileName: string,
@@ -1227,7 +1925,7 @@ function statementCut(parsed: ParsedMalloy, span: Span): Span {
  */
 function planStageFilters(
    ctx: SpliceContext,
-   tile: DashboardTile,
+   tile: QueryTile,
    stage: TreeStage,
 ): SpliceFailure | undefined {
    const { parsed, edits } = ctx;
@@ -1318,7 +2016,7 @@ function planStageFilters(
  */
 function planReferenceFilters(
    ctx: SpliceContext,
-   tile: DashboardTile,
+   tile: QueryTile,
    view: TreeView,
 ): SpliceFailure | undefined {
    if (view.body.kind !== "reference") return undefined;
@@ -1369,11 +2067,39 @@ function planReferenceFilters(
    return planStageFilters(ctx, tile, refinement);
 }
 
+export interface SpliceOptions {
+   /** Lets `requested.kind` differ from the file's: the one edit that switches a dashboard to a notebook or back. */
+   changeKind?: boolean;
+   /** The file's path within the package; a dashboard under `notebooks/` is tagged `kind=dashboard` rather than left untagged. */
+   modelPath?: string;
+   /** Write `kind=dashboard` too, whatever the folder: for a document held as text, which the server reads by its tags and not by a folder. */
+   explicitKind?: boolean;
+}
+
 export async function spliceDashboardDocument(
    sourceText: string,
-   next: DashboardDocument,
+   requested: DashboardDocument,
+   options: SpliceOptions = {},
 ): Promise<SpliceResult> {
-   const before = await readDashboardDocument(sourceText);
+   // The planners split and join on `\n`, so a wholly CRLF file is edited as LF and written back as CRLF.
+   const crlf = sourceText.includes("\r\n") && !/(?<!\r)\n/.test(sourceText);
+   if (!crlf) return spliceLines(sourceText, requested, options);
+   const result = await spliceLines(
+      sourceText.replace(/\r\n/g, "\n"),
+      requested,
+      options,
+   );
+   return spliceFailed(result)
+      ? result
+      : { ...result, source: result.source.replace(/\n/g, "\r\n") };
+}
+
+async function spliceLines(
+   sourceText: string,
+   requested: DashboardDocument,
+   options: SpliceOptions,
+): Promise<SpliceResult> {
+   const before = await readDashboardDocument(sourceText, options.modelPath);
    if (readFailed(before)) {
       return {
          ok: false,
@@ -1381,8 +2107,11 @@ export async function spliceDashboardDocument(
       };
    }
    const current = before.document;
-   const shape = checkShape(current, next);
+   const next = keepUnstatedCharts(current, requested);
+   const shape = checkShape(current, next, options.changeKind === true);
    if ("reason" in shape) return shape;
+   const problem = unwritable(current, next);
+   if (problem) return { ok: false, reason: problem };
 
    const parse = await parseMalloy(sourceText);
    if (parseRefused(parse))
@@ -1411,6 +2140,10 @@ export async function spliceDashboardDocument(
       current,
       next,
       edits,
+      ...(options.modelPath !== undefined
+         ? { modelPath: options.modelPath }
+         : {}),
+      ...(options.explicitKind ? { explicitKind: true } : {}),
    };
 
    // Each concern plans its own edits against the file as it stands; the
@@ -1419,11 +2152,13 @@ export async function spliceDashboardDocument(
    for (const plan of [
       planOrder,
       planSettings,
+      planImports,
       planGivens,
       planDrills,
       planRemovedTiles,
       planAddedTiles,
       planTilePresentation,
+      planTextBlocks,
    ]) {
       const failure = plan(ctx);
       if (failure) return failure;
@@ -1437,14 +2172,19 @@ export async function spliceDashboardDocument(
    // normalises its shape asks for no change, gets no edits, and would be told
    // its save did not produce what it asked for.
    const comparable = (document: DashboardDocument): DashboardDocument => {
-      const { drills, localGivens, ...rest } = document;
+      const { drills, localGivens, kind, description, ...rest } = document;
       const tiles = document.tiles.map((tile) => {
-         if (tile.filters?.length) return tile;
+         if (isTextTile(tile)) return tile;
+         if (tile.filters?.length) return withoutDefaultChart(tile);
          const { filters: _filters, ...tileRest } = tile;
-         return tileRest as DashboardTile;
+         return withoutDefaultChart(tileRest as QueryTile);
       });
       return {
          ...rest,
+         ...(description === undefined
+            ? {}
+            : { description: trimDescription(description) }),
+         ...(kind === "notebook" ? { kind } : {}),
          tiles,
          ...(drills?.length
             ? {
@@ -1505,7 +2245,7 @@ export async function spliceDashboardDocument(
    // The second gate. Read back what was actually written and compare it
    // against what was asked for. Comments survived because they were never
    // rewritten; correctness is established here rather than assumed.
-   const after = await readDashboardDocument(spliced);
+   const after = await readDashboardDocument(spliced, options.modelPath);
    if (readFailed(after)) {
       return {
          ok: false,

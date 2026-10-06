@@ -9,7 +9,7 @@ import extract from "extract-zip";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import simpleGit, { type SimpleGitProgressEvent } from "simple-git";
+import { simpleGit, type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
@@ -29,6 +29,7 @@ import {
    BadRequestError,
    EnvironmentNotFoundError,
    FrozenConfigError,
+   messageWithFilesystemCause,
    PackageNotFoundError,
    PublisherConfigError,
 } from "../errors";
@@ -47,7 +48,10 @@ import {
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
+import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
+import type { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
@@ -449,6 +453,23 @@ export class EnvironmentStore {
     * missing rather than never asked for. Surfaced on `getStatus`.
     */
    private failedEnvironments = new Map<string, string>();
+   /**
+    * Why this server booted empty, when it did because no config was found
+    * (or the --config path was missing). Set by logUnconfiguredNotice, so it
+    * carries that method's gate: an environment the database held but could
+    * not load does not set it. Reported on getStatus as `emptyReason` only
+    * while no environment exists, so it disappears once one is created at
+    * runtime. It is a startup snapshot, which is why its text says so: a
+    * config written later is not read until a restart.
+    */
+   private unconfiguredNotice: string | null = null;
+   /**
+    * Why initialization failed, when it did. The server stays up and
+    * not-ready (operationalState stays "initializing"), so without this the
+    * reason is on stderr only and /status reads as a server still starting.
+    * Reported on getStatus as `initError`.
+    */
+   private initError: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
@@ -462,6 +483,11 @@ export class EnvironmentStore {
    // process-wide. Set once at server start via setMemoryGovernor;
    // new Environments pick it up at construction.
    private memoryGovernor: PackageMemoryGovernor | null = null;
+   // Called for every package that enters any Environment's package map.
+   // Set once at server start; new Environments pick it up at creation.
+   private packageLoadedHook:
+      | ((environmentName: string, pkg: Package) => void)
+      | null = null;
 
    /**
     * Set of environment names that should be loaded "in place" — i.e. the
@@ -526,6 +552,29 @@ export class EnvironmentStore {
       for (const env of this.environments.values()) {
          env.setMemoryGovernor(governor);
       }
+   }
+
+   /**
+    * Attach (or detach with `null`) a callback run for every package that
+    * enters an Environment's package map: at boot, on add, on install and on
+    * reload. It must only schedule work, because a restart fires it for
+    * every package at once. Remembered, so Environments created after this
+    * call also use it.
+    */
+   public setPackageLoadedHook(
+      hook: ((environmentName: string, pkg: Package) => void) | null,
+   ): void {
+      this.packageLoadedHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachPackageLoadedHook(env);
+      }
+   }
+
+   private attachPackageLoadedHook(env: Environment): void {
+      const hook = this.packageLoadedHook;
+      env.setPackageLoadedHook(
+         hook ? (pkg) => hook(env.getEnvironmentName(), pkg) : null,
+      );
    }
 
    /**
@@ -759,6 +808,7 @@ export class EnvironmentStore {
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
+                        this.attachPackageLoadedHook(environmentInstance);
                         // Re-establish serve routing when a package loads, from
                         // its latest successful materialization — so serving
                         // survives a restart, not only a fresh build. The full
@@ -827,6 +877,8 @@ export class EnvironmentStore {
          this.emitReadinessLine();
       } catch (error) {
          markNotReady();
+         // Redacted because initialization errors can carry connection strings.
+         this.initError = redactPgSecrets(messageWithFilesystemCause(error));
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
@@ -879,15 +931,23 @@ export class EnvironmentStore {
       if (declaredEnvironments > 0) {
          return;
       }
-      const checkedPath = getUnresolvedPublisherConfigPath(this.serverRootPath);
-      if (!checkedPath) {
+      const checked = getUnresolvedPublisherConfigPath(this.serverRootPath);
+      if (!checked) {
          return;
       }
-      logger.info(
-         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checkedPath}. ` +
-            `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
-            `Environments can also be created at runtime through the API.`,
-      );
+      if (checked.explicit) {
+         // getPublisherConfig already logged this at error, so only /status
+         // needs the sentence.
+         this.unconfiguredNotice =
+            `Serving with no environments: the --config path ${checked.path} was not found when the server started. ` +
+            `Fix the path and restart. Environments can also be created at runtime through the API.`;
+         return;
+      }
+      this.unconfiguredNotice =
+         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checked.path} when the server started. ` +
+         `Create one there (in Docker, mount it at that path) and restart, or pass --config <path>. ` +
+         `Environments can also be created at runtime through the API.`;
+      logger.info(this.unconfiguredNotice);
    }
 
    /**
@@ -1450,6 +1510,9 @@ export class EnvironmentStore {
          initialized: boolean;
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
+         version: string;
+         emptyReason?: string;
+         initError?: string;
          loadErrors?: LoadError[];
       } = {
          timestamp: Date.now(),
@@ -1457,6 +1520,7 @@ export class EnvironmentStore {
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState,
+         version: SERVER_VERSION,
       };
 
       const environments = await this.listEnvironments(true);
@@ -1540,8 +1604,25 @@ export class EnvironmentStore {
       if (loadErrors.length > 0) {
          status.loadErrors = loadErrors;
       }
+      // "serving" with an empty environments list reads as healthy. This is
+      // the one place a caller polling /status learns the server found no
+      // config, rather than having been configured with nothing.
+      if (this.unconfiguredNotice && status.environments.length === 0) {
+         status.emptyReason = this.unconfiguredNotice;
+      }
+      if (this.initError) {
+         status.initError = this.initError;
+      }
 
       return status;
+   }
+
+   /**
+    * The environment currently held in memory under `name`, or undefined.
+    * Never loads, so it cannot bring back an environment that was removed.
+    */
+   public peekEnvironment(name: string): Environment | undefined {
+      return this.environments.get(name);
    }
 
    public async getEnvironment(
@@ -1663,11 +1744,6 @@ export class EnvironmentStore {
          );
          absoluteEnvironmentPath = loaded.path;
          mountErrors = loaded.mountErrors;
-         if (absoluteEnvironmentPath.endsWith(".zip")) {
-            absoluteEnvironmentPath = await this.unzipEnvironment(
-               absoluteEnvironmentPath,
-            );
-         }
       } else {
          absoluteEnvironmentPath = await this.scaffoldEnvironment(environment);
       }
@@ -1678,6 +1754,7 @@ export class EnvironmentStore {
          environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
+      this.attachPackageLoadedHook(newEnvironment);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
@@ -1714,10 +1791,6 @@ export class EnvironmentStore {
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
       assertSafeEnvironmentPath(absoluteEnvironmentPath);
-      const startedAt = Date.now();
-      logger.info(
-         `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
-      );
       // The archive extracts to a sibling directory named for it. Resolve the
       // target and check it lexically against the archive's directory, in
       // the one shape CodeQL's js/path-injection query accepts as a barrier
@@ -1733,11 +1806,28 @@ export class EnvironmentStore {
             `Refusing to unzip "${absoluteEnvironmentPath}": target escapes its directory`,
          );
       }
-      await fs.promises.rm(unzippedEnvironmentPath, {
+      await this.extractZipInto(
+         absoluteEnvironmentPath,
+         unzippedEnvironmentPath,
+      );
+      return unzippedEnvironmentPath;
+   }
+
+   /**
+    * Extract `archivePath` into `targetDir`, replacing whatever is there.
+    *
+    * `targetDir` is removed first, so it must be a directory the server owns.
+    * Never pass a path derived from an operator-supplied location: a sibling of
+    * an operator's zip is the operator's directory, not ours.
+    */
+   private async extractZipInto(archivePath: string, targetDir: string) {
+      const startedAt = Date.now();
+      logger.info(`Detected zip file at "${archivePath}". Unzipping...`);
+      await fs.promises.rm(targetDir, {
          recursive: true,
          force: true,
       });
-      await fs.promises.mkdir(unzippedEnvironmentPath, { recursive: true });
+      await fs.promises.mkdir(targetDir, { recursive: true });
 
       // Stream-extract via yauzl (wrapped by extract-zip). Each entry's
       // inflate and write are dispatched to the libuv thread pool, so the
@@ -1747,22 +1837,40 @@ export class EnvironmentStore {
       // hundred-MB packages to fail Kubernetes liveness probes mid-extract.
       let entryCount = 0;
       let totalUncompressedBytes = 0;
-      await extract(absoluteEnvironmentPath, {
-         dir: path.resolve(unzippedEnvironmentPath),
-         onEntry: (entry) => {
-            entryCount += 1;
-            totalUncompressedBytes += entry.uncompressedSize ?? 0;
-         },
-      });
+      try {
+         await extract(archivePath, {
+            dir: path.resolve(targetDir),
+            onEntry: (entry) => {
+               // extract-zip 2.0.1 never validates a symlink entry's target, so a
+               // crafted archive can write outside `dir` (CVE-2026-19693,
+               // CVE-2026-56876, no upstream fix). Throwing here cancels the extract.
+               if (
+                  ((entry.externalFileAttributes >>> 16) & 0o170000) ===
+                  0o120000
+               ) {
+                  throw new BadRequestError(
+                     `Refusing to unzip "${archivePath}": entry "${entry.fileName}" is a symbolic link`,
+                  );
+               }
+               entryCount += 1;
+               totalUncompressedBytes += entry.uncompressedSize ?? 0;
+            },
+         });
+      } catch (error) {
+         // Leave no partial extract behind for a later load to pick up.
+         await fs.promises.rm(targetDir, {
+            recursive: true,
+            force: true,
+         });
+         throw error;
+      }
 
       const mib = (totalUncompressedBytes / (1024 * 1024)).toFixed(1);
       logger.info(
-         `Unzipped "${absoluteEnvironmentPath}" -> "${unzippedEnvironmentPath}" ` +
+         `Unzipped "${archivePath}" -> "${targetDir}" ` +
             `(${entryCount} entries, ${mib} MiB uncompressed) in ` +
             `${formatDuration(Date.now() - startedAt)}`,
       );
-
-      return unzippedEnvironmentPath;
    }
 
    public async updateEnvironment(environment: ApiEnvironment) {
@@ -1969,9 +2077,7 @@ export class EnvironmentStore {
          `Failed to download or mount location "${location}"`,
          this.extractErrorDataFromError(error),
       );
-      const message = redactPgSecrets(
-         error instanceof Error ? error.message : String(error),
-      );
+      const message = redactPgSecrets(messageWithFilesystemCause(error));
       for (const packageName of packageNames) {
          mountErrors.set(packageName, message);
       }
@@ -2092,6 +2198,9 @@ export class EnvironmentStore {
                   absoluteTargetPath,
                   packageDir,
                );
+               const isLocalArchive =
+                  this.isLocalPath(_package.location) &&
+                  _package.location.endsWith(".zip");
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
@@ -2116,7 +2225,11 @@ export class EnvironmentStore {
                   }
                } else {
                   // For non-GitHub locations, use package name
-                  if (this.isLocalPath(_package.location)) {
+                  if (isLocalArchive) {
+                     // The mount above extracted the archive into the
+                     // download dir; the location itself is the .zip file.
+                     sourcePath = tempDownloadPath;
+                  } else if (this.isLocalPath(_package.location)) {
                      // Same resolution rule as `downloadOrMountLocation`.
                      // Without this step the existing-source check below
                      // falls through for any relative location, and the
@@ -2146,9 +2259,12 @@ export class EnvironmentStore {
                   // recursive mode could in principle traverse into a
                   // symlinked source dir and damage it. We lstat first and
                   // call `unlink` for symlinks, `rm` for real directories.
+                  // An archive has no source tree to link to, and the download
+                  // dir it was extracted into is removed after this loop.
                   const isInPlace =
                      this.inPlaceEnvs.has(environmentName) &&
-                     this.isLocalPath(_package.location);
+                     this.isLocalPath(_package.location) &&
+                     !isLocalArchive;
                   if (isInPlace) {
                      await clearMountTarget(absolutePackagePath);
                      const absoluteSourcePath = path.resolve(sourcePath);
@@ -2198,6 +2314,13 @@ export class EnvironmentStore {
                      ) {
                         logger.warn(
                            `Watch mode: package "${packageDir}" has remote location "${_package.location}" — falling back to copy. Source-edit live reload won't work for this package; clone the source locally and use a local-dir location to enable it.`,
+                        );
+                     } else if (
+                        this.inPlaceEnvs.has(environmentName) &&
+                        isLocalArchive
+                     ) {
+                        logger.warn(
+                           `Watch mode: package "${packageDir}" is an archive "${_package.location}" — extracted and copied. Source-edit live reload won't work for this package; use an unpacked local-dir location to enable it.`,
                         );
                      }
                      // Copy the specific directory. Clear any stale mount target
@@ -2293,6 +2416,7 @@ export class EnvironmentStore {
             );
             throw new PackageNotFoundError(
                `Failed to download GCS directory: ${location}`,
+               { cause: error },
             );
          }
       }
@@ -2316,6 +2440,7 @@ export class EnvironmentStore {
             );
             throw new PackageNotFoundError(
                `Failed to clone GitHub repository: ${location}`,
+               { cause: error },
             );
          }
       }
@@ -2341,6 +2466,7 @@ export class EnvironmentStore {
             );
             throw new PackageNotFoundError(
                `Failed to download S3 directory: ${location}`,
+               { cause: error },
             );
          }
       }
@@ -2367,6 +2493,7 @@ export class EnvironmentStore {
             );
             throw new PackageNotFoundError(
                `Failed to mount local directory: ${packagePath}`,
+               { cause: error },
             );
          }
       }
@@ -2387,12 +2514,23 @@ export class EnvironmentStore {
       // legitimately be a relative path that resolves outside the
       // server root; only the target is asserted.
       assertSafeEnvironmentPath(absoluteTargetPath);
-      if (environmentPath.endsWith(".zip")) {
-         environmentPath = await this.unzipEnvironment(environmentPath);
-      }
-      const environmentDirExists =
-         (await fs.promises.stat(environmentPath))?.isDirectory() ?? false;
-      if (environmentDirExists) {
+      const notFound = () =>
+         new PackageNotFoundError(
+            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
+         );
+      const source = await fs.promises.stat(environmentPath).catch((error) => {
+         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            throw notFound();
+         }
+         throw error;
+      });
+      if (environmentPath.endsWith(".zip") && source.isFile()) {
+         // Extract straight into the target, which the server owns. The
+         // location only has to be readable: nothing is written beside the
+         // archive, so a read-only package mount works and a directory that
+         // happens to share the archive's name is left alone.
+         await this.extractZipInto(environmentPath, absoluteTargetPath);
+      } else if (source.isDirectory()) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,
             force: true,
@@ -2402,9 +2540,7 @@ export class EnvironmentStore {
             recursive: true,
          });
       } else {
-         throw new PackageNotFoundError(
-            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
-         );
+         throw notFound();
       }
    }
 
@@ -2415,6 +2551,7 @@ export class EnvironmentStore {
       isCompressedFile: boolean,
    ) {
       assertSafeEnvironmentPath(absoluteDirPath);
+      assertGoogleCredentialsIsNotADirectory();
       const trimmedPath = gcsPath.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");

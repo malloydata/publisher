@@ -183,12 +183,34 @@ class ExitCodes(unittest.TestCase):
             [sys.executable, str(self.SCRIPT), *args],
             capture_output=True, text=True, timeout=120)
 
+    def test_a_missing_truth_environment_exits_3_not_1(self):
+        # Nothing was checked, so it must not read as a drifted golden.
+        (self.tmp / "set.json").write_text('{"truthPackage": "x"}')
+        p = self.run_it("--set", str(self.tmp),
+                        "--publisher", "http://127.0.0.1:9")
+        self.assertEqual(p.returncode, 3, p.stderr[-400:])
+        self.assertIn("No truth-server environment", p.stderr)
+
+    def test_no_truth_section_exits_3_not_a_guessed_port(self):
+        # An eval.toml with no [truth] names no truth server. A guessed port
+        # would fail every case to connect and exit 1, "a golden drifted".
+        (self.tmp / "set.json").write_text('{"truthPackage": "x"}')
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "question": "?",
+             "golden": {"kind": "scalar", "status": "verified", "value": {"n": 1},
+                        "canonicalQuery": "run: t -> { aggregate: n }"}}) + "\n")
+        (self.tmp / "eval.toml").write_text('[model]\nenvironment = "e"\n')
+        p = self.run_it("--set", str(self.tmp))
+        self.assertEqual(p.returncode, 3, p.stdout[-400:] + p.stderr[-400:])
+        self.assertIn("no --publisher given", p.stdout + p.stderr)
+
     def test_a_crash_exits_3_not_1(self):
         # set.json present, cases.jsonl absent: the read that used to raise
         # FileNotFoundError straight through Python's default exit status.
         (self.tmp / "set.json").write_text('{"truthPackage": "x"}')
         p = self.run_it("--set", str(self.tmp),
-                        "--publisher", "http://127.0.0.1:9")
+                        "--publisher", "http://127.0.0.1:9",
+                        "--environment", "truth")
         self.assertEqual(p.returncode, 3, p.stderr[-400:])
         self.assertIn("could not run", p.stderr)
         self.assertIn("says NOTHING about the goldens", p.stderr)
@@ -1183,6 +1205,7 @@ class VerifyQuotedFigures(unittest.TestCase):
                  unittest.mock.patch.object(sys, "argv", [
                      "verify_goldens.py", "--set", str(sd),
                      "--publisher", "http://127.0.0.1:9",
+                     "--environment", "truth",
                      "--verify-figures", "--figure-model", "opus"]), \
                  unittest.mock.patch("builtins.print"):
                 try:

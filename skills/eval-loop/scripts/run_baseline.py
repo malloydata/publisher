@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run an eval arm headlessly and write a conformant ledger. Stdlib only.
 
-  python run_baseline.py --set evals/ecommerce --out results/2026-08-30-sonnet \
-      --model sonnet --label sonnet-baseline \
-      --environment samples --package ecommerce
+  python run_baseline.py --set <set-dir> --model sonnet --label sonnet-baseline
+  # servers, names and the run directory come from the set's eval.toml;
+  # eval.py run takes the same flags
 
 Each case gets one fresh `claude -p` answerer holding the Publisher MCP tools and
 nothing else, then one fresh judge that sees the golden and the answer but never
@@ -177,6 +177,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -191,6 +192,7 @@ from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 import verify_definitions  # noqa: E402
+import check_findable  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -840,11 +842,37 @@ def wait_alive(a: argparse.Namespace, tries: int = 3, pause: float = 10.0) -> bo
     return False
 
 
-# Only `indexing` is worth a retry. The other lexical reasons are settled
-# states -- a provider cool-down, a package over the entity cap, a hard error
-# -- and waiting on them burns the clock to arrive at the same answer. That
-# rule is the server's own, stated in `get_context`'s tool description.
-RETRY_REASON = "indexing"
+# When an embedding provider is configured, `get_context` never answers
+# lexically. While the index builds it returns a normal result with
+# `retrieval: "indexing"`, empty `sources` and `retrieval_progress`; that is
+# the only state worth waiting on. After a failure it returns
+# `retrieval: "error"` with a `retrieval_reason`, and retrying that burns the
+# clock to arrive at the same answer. With no provider the `retrieval` field is
+# absent. That rule is the server's own, stated in `get_context`'s tool
+# description.
+RETRY_MODE = "indexing"
+
+# What to do about each `retrieval_reason` an error result can carry.
+ERROR_ADVICE = {
+    "too-many-entities": ("the package has more entities than the index will "
+                          "embed. Raise retrieval.indexing.maxEntities in the "
+                          "Publisher config and restart it"),
+    "cooldown": ("the embedding provider failed and the package is waiting "
+                 "out a cool-down (about 60 seconds). Wait, then re-run"),
+    "provider-error": ("the embedding provider rejected the request (often a "
+                       "bad EMBEDDING_API_KEY or EMBEDDING_MODEL). Fix the "
+                       "provider settings and re-run"),
+    "unavailable": ("semantic search cannot serve this package. Read the "
+                    "Publisher log for the cause, fix it and re-run"),
+}
+
+
+def retrieval_error_message(reason: str | None) -> str:
+    """The stop message for a `retrieval: "error"` result."""
+    advice = ERROR_ADVICE.get(reason or "",
+                              "read the Publisher log for the cause")
+    return (f"retrieval_reason {reason or 'not given'!r}: {advice}. "
+            f"Waiting does not change it")
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
@@ -921,7 +949,7 @@ def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
-    """One cheap `get_context`, reduced to (mode, reason).
+    """One cheap `get_context`, reduced to (mode, detail).
 
     `retrieval` ABSENT means no embedding provider is configured, which the
     tool pins deliberately: absent, never defaulted, so a caller cannot read a
@@ -939,14 +967,27 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
 
 
 def retrieval_of(payload: Any) -> tuple[str | None, str | None]:
-    """(mode, reason) out of a `get_context` payload, however it was fetched.
+    """(mode, detail) out of a `get_context` payload, however it was fetched.
+
+    Mode is `retrieval` as the server sent it: "semantic", "indexing",
+    "error", or None when the field is absent (no embedding provider).
+    Detail depends on the mode: for "indexing" the progress as
+    "embedded/total"; for "error" the `retrieval_reason`; otherwise None.
 
     Split from `retrieval_probe` so a payload that arrived through the CLI
-    reads the same two fields by the same rule as one fetched over raw HTTP.
+    reads the same fields by the same rule as one fetched over raw HTTP.
     """
     if not isinstance(payload, dict):
         return None, "get_context returned no object"
-    return payload.get("retrieval"), payload.get("retrieval_reason")
+    mode = payload.get("retrieval")
+    if mode == "indexing":
+        prog = payload.get("retrieval_progress")
+        if isinstance(prog, dict):
+            return mode, f"{prog.get('embedded', '?')}/{prog.get('total', '?')}"
+        return mode, None
+    if mode == "error":
+        return mode, payload.get("retrieval_reason")
+    return mode, None
 
 
 def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
@@ -954,33 +995,33 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                          confirmations: int = 2) -> tuple[bool, str]:
     """Hold the arm until retrieval answers the way it will for the whole run.
 
-    A restart leaves the semantic index COLD even when its rows survived. The
-    sync memo is per-process and in memory, so the first `get_context` after a
-    boot kicks a sync it deliberately never awaits and answers lexically --
-    `embedding_index.ts` says so: "cold starts answer lexically". A call that
-    lands while a sync moves the generation is marked lexical for the same
-    reason. So the first few calls of a run are lexical whatever the database
-    holds, and nothing in the transcript says the arm was measured across the
-    changeover: it reads as a run that mixed two retrievers, with the mixture
-    depending on how fast the answerer got going.
+    A restart leaves the semantic index COLD even when its rows survived.
+    While an embedding provider is configured, the server does not answer
+    lexically in the meantime: a call returns `retrieval: "indexing"` with no
+    sources and a progress count, and works once the sync finishes. A run that
+    starts answering during that window would see empty results for its first
+    cases and real ones after, and nothing in the transcript says the arm was
+    measured across the changeover.
 
     That is a measurement defect rather than a slow start, which is why it is
     a gate and not a warning. Four runs came back inconclusive to it.
 
-    `confirmations` consecutive semantic reads, not one, because a sync
-    completing can bump the generation and the call that straddles it is marked
-    lexical (`embedding_index.ts`, the generation re-check). One semantic read
-    says a call WAS semantic; two in a row say the next one will be. The run is
-    the expensive thing here, so a second probe is cheap insurance.
+    `confirmations` consecutive semantic reads, not one: a sync completing can
+    move the generation under a call that straddles it. One semantic read says
+    a call WAS semantic; two in a row say the next one will be. The run is the
+    expensive thing here, so a second probe is cheap insurance.
+
+    An `error` result stops the gate at once with the `retrieval_reason` and
+    what to do about it; it is never retried.
 
     Returns (ready, what it found). Ready is also TRUE for a server with no
     embedding provider: lexical for every call is a consistent run and a
-    legitimate thing to measure -- what must not happen is half of each.
+    legitimate thing to measure.
     """
     last, seen = "no probe completed", 0
     for i in range(tries):
         try:
-            mode, reason = retrieval_probe(a)
+            mode, detail = retrieval_probe(a)
         except AuthRequired:
             # Not a warming index and not a flaky server: waiting cannot change
             # it, and every remaining try would spend 10s to be refused again.
@@ -1002,10 +1043,14 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                 last = f"semantic {seen}/{confirmations}"
                 continue          # no pause between confirmations
             seen = 0
-            if reason and reason != RETRY_REASON:
-                return False, (f"retrieval is lexical for {reason!r}, which "
-                               f"waiting does not change")
-            last = f"lexical ({reason or 'no reason given'})"
+            if mode == "error":
+                return False, retrieval_error_message(detail)
+            if mode != RETRY_MODE:
+                return False, (f"unrecognised retrieval value {mode!r} "
+                               f"({detail or 'no detail'}); this runner "
+                               f"expects semantic, indexing or error")
+            last = (f"indexing ({detail} entities embedded)" if detail
+                    else "indexing")
         if i < tries - 1:
             time.sleep(pause)
     return False, f"still not ready after {tries} probes: {last}"
@@ -1096,8 +1141,8 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
     `serve.py --warm-retrieval` does not supersede this, so both stay. That
     reads the SERVER's `embeddingIndex.status`, which says the index is built;
     this probes what the answerer will actually observe, and a call that lands
-    while a sync bumps the generation comes back lexical against a `ready`
-    index.
+    while a sync moves the generation can still come back `indexing` against
+    a `ready` index.
 
     Returns the line for `run.json`. An opt-out reads differently from a gate
     that passed, which is the whole point of recording it -- and so does a gate
@@ -1117,15 +1162,19 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
         return "not run (no answering phase)"
     if a.no_retrieval_gate:
         note = "skipped by --no-retrieval-gate"
-        print(f"  ! {note}: the first calls after a restart answer lexically "
-              f"by design, so this arm may measure two retrievers and report "
-              f"one number")
+        print(f"  ! {note}: the first calls after a restart return "
+              f"`retrieval: indexing` with no sources, so this arm may "
+              f"measure empty results as well as real ones")
         return note
     # The reachability probe already made this exact call through the CLI,
     # which is the only client here that carries credentials. Reading its reply
     # is a real confirmation and costs nothing; making a second one over raw
     # HTTP cannot be authenticated at all.
     probed = getattr(a, "probe_payload", None)
+    if probed is not None and retrieval_of(probed)[0] == "error":
+        raise SystemExit(
+            f"retrieval is in error, so no case could be answered "
+            f"semantically.\n  {retrieval_error_message(retrieval_of(probed)[1])}")
     if probed is not None and retrieval_of(probed)[0] == "semantic":
         note = ("ready: semantic, from the hosted reachability probe "
                 "(1 confirmation, not 2: the second probe cannot be "
@@ -1407,7 +1456,9 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 
     `semantic` or `lexical` when every ranking call agreed, `mixed` when they
     did not (the embedding path fell over partway, which is exactly the case a
-    reader must not average across), and `unreported` when nothing in the run
+    reader must not average across), `unavailable` when ANY call was answered
+    `indexing` or `error` (the server could not rank at all, so that call has
+    no result to score and reads as a miss), and `unreported` when nothing in the run
     ranked at all: usually no embedding provider configured, which is the
     silent degradation eval-mvp's standing gate exists to catch, and which
     `retrieval_probe` settles before the arm starts by always passing a
@@ -1417,13 +1468,17 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
     semantic 100 / lexical 0 / unreported 43 as `mixed`, and told it not to
     report the discoverability findings it had just paid for.
     """
-    tally = {"semantic": 0, "lexical": 0, "unreported": 0}
+    tally = {"semantic": 0, "lexical": 0, "indexing": 0, "error": 0,
+             "unreported": 0}
     for att in attempts:
         for c in att.get("calls") or []:
             if c.get("tool") != "get_context":
                 continue
             mode = c.get("retrieval_mode")
-            tally[mode if mode in ("semantic", "lexical") else "unreported"] += 1
+            tally[mode if mode in ("semantic", "lexical", "indexing", "error")
+                  else "unreported"] += 1
+    if tally["indexing"] or tally["error"]:
+        return "unavailable", tally
     seen = [k for k in ("semantic", "lexical") if tally[k]]
     if not seen:
         return "unreported", tally
@@ -1563,7 +1618,6 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   max_turns: int | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
-                  publisher: str, environment: str,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
@@ -1681,8 +1735,15 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     lines += cascade_lines(cascade)
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
+              f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
               f" unreported {tally['unreported']})"]
-    if retrieval_mode != "semantic":
+    if retrieval_mode == "unavailable":
+        lines += ["                ! some searches were answered `indexing` or "
+                  "`error`, so they returned nothing to score and count as "
+                  "misses. This run does not measure retrieval; wait for the "
+                  "index to be ready and re-run. flip_table.py refuses a pair "
+                  "with an arm like this."]
+    elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
                   "across that reads as a model change; flip_table.py refuses "
@@ -1743,33 +1804,69 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   f"check_coverage.py --set {set_dir} --model <package-dir> "
                   f"--out coverage.json"]
 
-    pkg_name = f"eval-{out.name}"
-    pkg_dir = f"/tmp/{pkg_name}"
+    # The register command and the two URLs are printed by the builder, the
+    # one place that knows the package's path and which server it goes on.
+    # A copy here drifted: it skipped diagnose, built into /tmp and named the
+    # model server, which the answerer can read, for a package holding the key.
     lines += ["", "DEEP DIVE",
               "  A run directory is JSONL, which is a record, not a report.",
-              "  build_run_package.py turns it into a servable Malloy package:",
-              "  a model over the run's CSVs, eval_run.malloynb for the",
-              "  aggregate tables, and an in-package HTML app for the case",
-              "  matrix and its per-case drawer. Register it and open it:",
+              "  Diagnose the failures, then build the report: a Malloy",
+              "  package with notebooks/eval_run.malloy for the aggregate",
+              "  tables and an HTML app for the case matrix. The builder",
+              "  refuses a run with no diagnosis, then registers the report",
+              "  on the truth server and prints both of its URLs:",
               "",
-              f"    python3 skills/eval-loop/scripts/build_run_package.py \\",
-              f"      --run {out} --set {set_dir} --out {pkg_dir}",
+              f"    python3 skills/eval-loop/scripts/eval.py diagnose "
+              f"--set {set_dir} --run {out}",
+              f"    python3 skills/eval-loop/scripts/eval.py package "
+              f"--set {set_dir} --run {out}",
               "",
-              f"    curl -sS -X POST {publisher}/api/v0/environments/"
-              f"{environment}/packages \\",
-              "      -H 'content-type: application/json' \\",
-              f"      -d '{{\"name\":\"{pkg_name}\","
-              f"\"location\":\"{pkg_dir}\"}}'",
-              "",
-              f"    {publisher}/environments/{environment}/packages/"
-              f"{pkg_name}/",
-              "",
-              "  The POST needs no restart, and lands the package in the",
-              f"  environment this run used ({environment}); move it to another",
-              "  if you would rather the package listing stay untouched.",
               f"  Raw events: {out}/events.jsonl ({events_n} events)",
               "=" * 64]
     return lines
+
+
+def expected_entity_lint(cases: list[dict[str, Any]],
+                         declared: dict[str, set[str]] | None,
+                         model_src: str) -> tuple[list[str] | None, list[str]]:
+    """The expectedEntities ids the served model does not have, and what to print.
+
+    Checked against the COMPILED model when it can be read
+    (`check_findable.declared_findings`). A source exposes every column of its
+    table without declaring it, and a joined field is named by its path, so a
+    search of the model text misses both: on the storefront tour it reported
+    `retail_price`, `signup_date` and `customers.customer_id`, which all exist.
+    The text search is kept only for when the compiled model cannot be read,
+    and says it may be wrong. None when there is nothing to lint against.
+    """
+    if declared:
+        findings = check_findable.declared_findings(cases, declared)
+        stale = sorted({f.split(": ", 1)[0] for f in findings})
+        if not findings:
+            return stale, []
+        return stale, ([f"  ! {len(stale)} expected entit"
+                        f"{'y' if len(stale) == 1 else 'ies'} the served model "
+                        f"does not declare -- a stale set, not a retrieval "
+                        f"miss; fix expectedEntities:"]
+                       + [f"      {f}" for f in findings[:8]]
+                       + (["      ..."] if len(findings) > 8 else []))
+    if not model_src:
+        return None, []
+    names = {e.split(":")[-1] for c in cases
+             for e in ((c.get("expectedEntities") or {}).get("required") or [])
+             + [x for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf") or []
+                for x in grp]}
+    stale = sorted(n for n in names
+                   if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
+                                          + r"(?![A-Za-z0-9_])", model_src))
+    if not stale:
+        return stale, []
+    return stale, [f"  ! {len(stale)} expected entity name(s) appear nowhere in "
+                   f"the model text: {', '.join(stale[:8])}"
+                   f"{' ...' if len(stale) > 8 else ''}. The compiled model "
+                   f"could not be read, so a column the model exposes without "
+                   f"declaring it is listed too; check each before editing "
+                   f"expectedEntities"]
 
 
 def golden_check_note(golden_check: str, stale: list[str],
@@ -2118,6 +2215,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # retrieval score never counts it as a search that
                         # found nothing.
                         calls.append({**info, "error": text[:300],
+                                      "retrieval_mode":
+                                          (payload or {}).get("retrieval"),
                                       "rankedSummary": None})
                         continue
                     # The host may have spilled the body to a file. Read it
@@ -2135,10 +2234,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
-                    # it: "semantic", "lexical" when the embedding path is down,
-                    # and absent on a server with no provider at all. Local
-                    # retrieval degrades to lexical SILENTLY without an
-                    # embedding key, which reads as a model regression when two
+                    # it: "semantic", "indexing" or "error" when a provider is
+                    # configured, and absent on a server with no provider (lexical).
+                    # Local retrieval is lexical without an embedding key, which reads as a model regression when two
                     # runs are compared across it, so a run that cannot say
                     # which retriever it used cannot anchor a comparison.
                     calls.append({**info, "error": text[:300] if failed else None,
@@ -2785,10 +2883,52 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_config(a: argparse.Namespace) -> config.Config:
+    """Fill every unset server, name and path from the set's eval.toml.
+
+    A platform run is the exception for the environment and package: there
+    they name a hosted organization and workspace, which a local config file
+    does not describe, so they are never taken from it.
+    """
+    cfg = config.load(a.set_dir)
+    if a.target == "platform":
+        if not (a.environment and a.package):
+            raise SystemExit(
+                "--target platform needs --environment (the hosted "
+                "organization) and --package (the workspace). They are never "
+                "read from eval.toml, which describes a local server.")
+        a.mcp_url = a.mcp_url or LOCAL_MCP_URL   # refused below, by name
+    else:
+        a.environment = cfg.need(a.environment, "model", "environment",
+                                 "--environment")
+        a.package = cfg.need(a.package, "model", "package", "--package")
+        a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+        a.model_repo = a.model_repo or cfg.get("model", "repo")
+    a.publisher = a.publisher or cfg.model_publisher()
+    a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
+    a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    if a.out is None:
+        runs = cfg.workdir() / "runs"
+        a.label = a.label or next_run_label(runs / "_", cfg.set_name, a.phase)
+        a.out = runs / a.label
+        print(f"run directory: {a.out}")
+    outer = config.enclosing_package(a.out)
+    if outer:
+        raise SystemExit(
+            f"Invalid --out {a.out}: it is inside the Malloy package {outer}. "
+            f"The run writes a model.malloy snapshot there, which puts that "
+            f"package into loadErrors. Fix: pass an --out outside any package, "
+            f"or omit it for {cfg.workdir() / 'runs'}")
+    return cfg
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="the run directory. Default: <workdir>/runs/<label>, "
+                         "outside the repository (config.py says why)")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--judge-model", default="sonnet")
     ap.add_argument("--label", default=None)
@@ -2825,13 +2965,15 @@ def main(argv: list[str] | None = None) -> int:
                          "call answers from whatever the workspace serves at "
                          "the time, whatever run.json says it measured; "
                          "--target-version fills it in when @version is absent")
-    ap.add_argument("--environment", default="samples",
-                    help="local: the Publisher environment. "
-                         "platform: the hosted ORGANIZATION")
-    ap.add_argument("--package", default="ecommerce",
-                    help="local: the served package. "
-                         "platform: the hosted WORKSPACE")
-    ap.add_argument("--mcp-url", default=LOCAL_MCP_URL,
+    ap.add_argument("--environment", default=None,
+                    help="local: the Publisher environment, default [model] "
+                         "environment in eval.toml. "
+                         "platform: the hosted ORGANIZATION, always passed")
+    ap.add_argument("--package", default=None,
+                    help="local: the served package, default [model] package "
+                         "in eval.toml, else set.json targetPackage. "
+                         "platform: the hosted WORKSPACE, always passed")
+    ap.add_argument("--mcp-url", default=None,
                     help="where the answerer's MCP tools live, which is what "
                          "separates the three ways to run: a LOCAL Publisher "
                          f"({LOCAL_MCP_URL}); the hosted engine through an "
@@ -2839,10 +2981,13 @@ def main(argv: list[str] | None = None) -> int:
                          "the extension prints, no OAuth because it holds the "
                          "credential); or the hosted engine directly (its "
                          "https endpoint, needing a cached OAuth login). The "
-                         "last two are both --target platform")
-    ap.add_argument("--publisher", default="http://localhost:4811",
+                         "last two are both --target platform. Default: "
+                         "from [model] mcp_port in eval.toml, else "
+                         f"{LOCAL_MCP_URL}")
+    ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
-                         "final query so the judge sees rows rather than prose")
+                         "final query so the judge sees rows rather than prose. "
+                         "Default: from [model] port in eval.toml")
     ap.add_argument("--model-path", default=None,
                     help="model within the package; defaults to set.json targetModelPath")
     ap.add_argument("--model-repo", default=None, type=pathlib.Path,
@@ -2886,12 +3031,14 @@ def main(argv: list[str] | None = None) -> int:
                          "differs from --environment. A truth package is "
                          "usually served on its own server, which the answerer "
                          "has no route to, and that server names its "
-                         "environments independently")
+                         "environments independently. Default: [truth] "
+                         "environment in the set's eval.toml")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
-                         "pre-run golden check. Defaults to --publisher on a "
-                         "local target; on a platform target the check is "
-                         "skipped unless this is given")
+                         "pre-run golden check. Default: the [truth] server in "
+                         "the set's eval.toml; with no [truth] section, "
+                         "--publisher on a local target, and on a platform "
+                         "target the check is skipped unless this is given")
     ap.add_argument("--skip-golden-check", action="store_true",
                     help="start even if goldens do not re-derive. The run is "
                          "then measuring against numbers nobody can reproduce, "
@@ -2899,9 +3046,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-retrieval-gate", action="store_true",
                     help="answer cases without waiting for the semantic index "
                          "to warm. The gate exists because a restart leaves it "
-                         "cold and the first calls answer lexically by design, "
-                         "so an arm started immediately measures two "
-                         "retrievers and reports one number. run.json records "
+                         "cold and the first calls return `retrieval: indexing` "
+                         "with no sources, so an arm started immediately "
+                         "measures empty results as well as real ones. run.json records "
                          "that you opted out, which is a different fact from a "
                          "gate that passed")
     ap.add_argument("--definitions", default=None,
@@ -2940,6 +3087,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="reuse the saved answers but score them again, for a "
                          "judge or rubric change. Implies --rebuild")
     a = ap.parse_args(argv)
+    cfg = resolve_config(a)
     imply_flags(a)
     # Resolved once here rather than per attempt: the answerer's granted tool
     # list is part of what a run measured, so it must not vary within a run.
@@ -3244,27 +3392,20 @@ def main(argv: list[str] | None = None) -> int:
                    "the served model could not be located")
             print(f"  ! not re-executing predictions: {why}")
 
-    # Lint the set's expected entities against the model text when there is
-    # one: a name that appears nowhere in the served source is a stale set,
-    # not a retrieval miss, and both VideoAmp platform runs carried five of
-    # them (the set was written against a later package) which read as misses
-    # until someone checked by hand. No model text on a platform target, so
-    # the lint is skipped there and the report has to say so.
-    stale: list[str] = []
-    if model_src:
-        names = {e.split(":")[-1] for c in cases
-                 for g in (c.get("expectedEntities") or {}).get("required", [])
-                 for e in [g]} | {e.split(":")[-1] for c in cases
-                                  for grp in (c.get("expectedEntities") or {}).get("requiredAnyOf", [])
-                                  for e in grp}
-        stale = sorted(n for n in names
-                       if n and not re.search(r"(?<![A-Za-z0-9_])" + re.escape(n)
-                                              + r"(?![A-Za-z0-9_])", model_src))
-        if stale:
-            print(f"  ! {len(stale)} expected entity name(s) appear nowhere in the "
-                  f"served model: {', '.join(stale[:8])}{' ...' if len(stale) > 8 else ''}"
-                  f" -- a stale set, not a retrieval miss; fix expectedEntities")
-    elif a.target == "platform":
+    # Lint the set's expected entities before a dollar is spent: an id the
+    # model does not declare is a stale set, not a retrieval miss, and both
+    # VideoAmp platform runs carried five of them (the set was written against
+    # a later package) which read as misses until someone checked by hand.
+    declared = None
+    if a.target != "platform" and a.publisher:
+        declared, warning = check_findable.current_entities(
+            a.publisher, a.environment, a.package)
+        if warning:
+            print(f"  ! expected entities: {warning}")
+    stale, lint = expected_entity_lint(cases, declared, model_src)
+    for line in lint:
+        print(line)
+    if stale is None and a.target == "platform":
         print("  ! expected entities not linted against the model (platform target "
               "serves no model text)")
 
@@ -3296,7 +3437,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"is what this run is for: their answers are what keys get "
                   f"derived from.")
 
-    golden_check = golden_check_note(golden_check, stale, bool(model_src))
+    golden_check = golden_check_note(golden_check, stale or [],
+                                     stale is not None)
 
     retrieval_gate = run_retrieval_gate(a)
 
@@ -3385,6 +3527,7 @@ def main(argv: list[str] | None = None) -> int:
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],
         mcpUrl=a.mcp_url, publisher=a.publisher,
+        evalConfig=cfg.summary(),
         predictionsReExecuted=reexec,
         goldenCheck=golden_check,
         # The names themselves, not only a count: each one depresses recall on
@@ -3392,7 +3535,7 @@ def main(argv: list[str] | None = None) -> int:
         # way to tell a stale set from a model that really is missing them.
         # `null` when there was no model text to lint against, which is a
         # different fact from an empty list.
-        staleEntityNames=(stale if model_src else None),
+        staleEntityNames=stale,
     ), indent=2))
 
     if a.rebuild:
@@ -3682,7 +3825,7 @@ def main(argv: list[str] | None = None) -> int:
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
-            publisher=a.publisher, environment=a.environment):
+):
         print(line)
 
     # Recorded, not only printed. The next command is usually diagnose, and a

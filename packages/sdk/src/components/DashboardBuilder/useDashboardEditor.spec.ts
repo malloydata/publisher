@@ -5,6 +5,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { openDocument } from "./testing/fixtures";
 import { useDashboardEditor } from "./useDashboardEditor";
+import { queryTile } from "./testing/fixtures";
+import { tileKey } from "./document";
 
 const SOURCE = `## artifact { title="Probe" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -36,14 +38,16 @@ describe("useDashboardEditor: editing", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].label = "Categories";
+            queryTile(d, 0).label = "Categories";
          });
       });
 
-      expect(view.result.current.document.tiles[0].label).toBe("Categories");
+      expect(queryTile(view.result.current.document, 0).label).toBe(
+         "Categories",
+      );
       // The history entry it replaced is untouched, which is what makes undo a
       // move rather than a reconstruction.
-      expect(before.tiles[0].label).toBe("By category");
+      expect(queryTile(before, 0).label).toBe("By category");
    });
 
    it("is dirty only once something actually changed", async () => {
@@ -64,7 +68,7 @@ describe("useDashboardEditor: editing", () => {
       const view = await editor();
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].label = "By category";
+            queryTile(d, 0).label = "By category";
          });
       });
       expect(view.result.current.canUndo).toBe(false);
@@ -145,7 +149,7 @@ describe("useDashboardEditor: saving", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].label = "Categories";
+            queryTile(d, 0).label = "Categories";
          });
       });
       await act(async () => {
@@ -169,7 +173,7 @@ describe("useDashboardEditor: saving", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].label = "One";
+            queryTile(d, 0).label = "One";
          });
       });
       await act(async () => {
@@ -177,7 +181,7 @@ describe("useDashboardEditor: saving", () => {
       });
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[1].label = "Two";
+            queryTile(d, 1).label = "Two";
          });
       });
       await act(async () => {
@@ -209,7 +213,7 @@ describe("useDashboardEditor: saving", () => {
       });
 
       expect(called).toBe(false);
-      expect(view.result.current.error).toContain("imports");
+      expect(view.result.current.error).toContain("whole-file");
       // Still there, still dirty. The reader can undo or try something else.
       expect(view.result.current.document.imports).toHaveLength(2);
       expect(view.result.current.dirty).toBe(true);
@@ -255,8 +259,7 @@ describe("useDashboardEditor: saving", () => {
 });
 
 /**
- * `structural` decides whether the builder shows the author a diff before it
- * saves, so it has to mean what the WRITER means by a changed tile — not what
+ * `structural` is what a save reports as structural, so it has to mean what the WRITER means by a changed tile — not what
  * the grid means.
  */
 describe("useDashboardEditor: structural", () => {
@@ -264,7 +267,7 @@ describe("useDashboardEditor: structural", () => {
       const view = await editor();
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].label = "Categories";
+            queryTile(d, 0).label = "Categories";
             d.tiles[0].colspan = 4;
          });
       });
@@ -301,11 +304,11 @@ describe("useDashboardEditor: structural", () => {
       const before = view.result.current.document.tiles[0];
       act(() => {
          view.result.current.update((d) => {
-            d.tiles[0].declaration = { kind: "inline" };
+            queryTile(d, 0).declaration = { kind: "inline" };
          });
       });
       const after = view.result.current.document.tiles[0];
-      expect([after.source, after.name]).toEqual([before.source, before.name]);
+      expect(tileKey(after)).toBe(tileKey(before));
       expect(view.result.current.structural).toBe(true);
    });
 });

@@ -12,6 +12,7 @@ import {
    type MalloyGiven,
    type MalloyGivenApi,
 } from "./given";
+import { routeOfNote } from "./notebook";
 import {
    motlyTag,
    quoteFilterLiterals,
@@ -201,24 +202,20 @@ describe("readGivenControlSpec", () => {
       });
    });
 
-   it("never parses an annotation that could declare __proto__", () => {
-      // The tag parser's property bag is a plain object, so a `__proto__`
-      // property assigns through Object.prototype. `# __proto__ { a=b }` pollutes
-      // and then throws RangeError; `# __proto__=x` pollutes silently with an
-      // empty log. Catching the throw is not enough on its own, since one shape
-      // does not throw and the other has already done the damage by the time it
-      // does, so the guard snapshots Object.prototype and deletes whatever the
-      // parse added, which measurably restores both the prototype and later
-      // parses.
+   it("reads a prototype-named key without writing onto a shared object", () => {
+      // Before Malloy 0.0.434 the tag parser stored properties in a plain
+      // object, so a key named `__proto__` assigned through Object.prototype.
+      // `# __proto__ { a=b }` polluted and then threw RangeError, `# __proto__=x`
+      // polluted silently, and once Object.prototype was polluted every later
+      // parse threw, for every package on the worker. 0.0.434 fixed the parser,
+      // and Publisher's own snapshot-and-undo guard was removed. This test now
+      // checks the parser: nothing is written anywhere, and a real control key
+      // beside the hostile one survives.
       //
-      // The blast radius is the whole process, not the offending model: once
-      // Object.prototype is polluted every later parse throws, so one tenant's
-      // tag would take out tag parsing for every package on a shared worker.
-      // Watch every object the parser can reach, not just Object.prototype, and
-      // diff the names rather than looking for two we happen to expect. Watching
-      // one object is what let `constructor { k=v }` write onto the global
-      // `Object` unseen, and hardcoding key names is the same error one level
-      // down.
+      // Watch every object the parser could reach, not just Object.prototype,
+      // and diff the names rather than looking for two we happen to expect.
+      // Watching one object is what once let `constructor { k=v }` write onto
+      // the global `Object` unseen.
       const targets: object[] = [Object.prototype];
       for (const key of Object.getOwnPropertyNames(Object.prototype)) {
          const descriptor = Object.getOwnPropertyDescriptor(
@@ -246,42 +243,33 @@ describe("readGivenControlSpec", () => {
       // before anything runs is a tautology. The checks inside the loop are the
       // ones that mean something.
 
-      for (const hostile of [
-         `# __proto__ { a=b }`,
-         `# label="ok" __proto__=x`,
-         `# label="ok" givens { __proto__=x }`,
-         `# label="ok" suggest { __proto__=q }`,
-         `# artifact { __proto__ { a=b } }`,
-         `# label="Region" __proto__=x`,
+      for (const [hostile, expected] of [
+         [`# __proto__ { a=b }`, {}],
+         [`# label="ok" __proto__=x`, { label: "ok" }],
+         [`# label="ok" givens { __proto__=x }`, { label: "ok" }],
+         [`# label="ok" suggest { __proto__=q }`, { label: "ok" }],
+         [`# artifact { __proto__ { a=b } }`, {}],
+         [`# label="Region" __proto__=x`, { label: "Region" }],
          // These spell the same property with NO literal `__proto__` anywhere in
          // the text, because MOTLY decodes escapes inside a backtick-quoted
-         // identifier. The first version of this guard was a substring denylist
-         // and these defeated it, which is why the guard now observes the effect
-         // on Object.prototype rather than trying to recognise the input.
-         "# `__prot\\o__` { a=b }",
-         '# label="ok" `__prot\\o__`=x',
-         "# suggest { `__prot\\o__` { a=b } }",
-         "# `\\u005f\\u005fproto__` { a=b }",
+         // identifier. A substring denylist would miss them.
+         ["# `__prot\\o__` { a=b }", {}],
+         ['# label="ok" `__prot\\o__`=x', { label: "ok" }],
+         ["# suggest { `__prot\\o__` { a=b } }", {}],
+         ["# `\\u005f\\u005fproto__` { a=b }", {}],
          // The prototype CHAIN, not just Object.prototype: `constructor` resolves
-         // to the global `Object` and `toString` to the built-in method object,
-         // and writes there accumulate for the life of the process.
-         // EVERY fixture carries a real control key on purpose. `# toString=x` alone
-         // yields `{}` whether or not the guard runs, so asserting `{}` on it
-         // would prove nothing; with a `label` present, the guard is the only
-         // reason the result is empty rather than `{label: "ok"}`.
-         `# label="ok" constructor { tenant_key="payload" }`,
-         `# label="ok" toString=x`,
-         `# label="ok" valueOf { a=b }`,
-         `# label="ok" hasOwnProperty=y`,
-      ]) {
-         expect(() => readGivenControlSpec([hostile])).not.toThrow();
-         expect(readGivenControlSpec([hostile])).toEqual({});
+         // to the global `Object` and `toString` to the built-in method object.
+         [`# label="ok" constructor { tenant_key="payload" }`, { label: "ok" }],
+         [`# label="ok" toString=x`, { label: "ok" }],
+         [`# label="ok" valueOf { a=b }`, { label: "ok" }],
+         [`# label="ok" hasOwnProperty=y`, { label: "ok" }],
+      ] as Array<[string, Record<string, unknown>]>) {
+         expect(readGivenControlSpec([hostile])).toEqual(expected);
          expect(polluted()).toBe(false);
       }
 
-      // A target that appears AFTER module load must be watched too. A cached
-      // target list goes stale the moment anything extends Object.prototype, and
-      // a library that does so would create an unwatched write target.
+      // A key that names something added to Object.prototype at runtime, as a
+      // data property. The object it points at must not take the write.
       Object.defineProperty(Object.prototype, "zzLateTarget", {
          value: { marker: true },
          configurable: true,
@@ -305,11 +293,7 @@ describe("readGivenControlSpec", () => {
             .zzLateTarget;
       }
 
-      // ...and the same target defined as an ACCESSOR rather than a data
-      // property. Reading descriptors and skipping the accessor branch left a
-      // getter-returned object unwatched, and the guard reported it clean.
-      // `__proto__` is itself an accessor on Object.prototype, so this shape is
-      // not exotic.
+      // The same, defined as an accessor that returns a shared object.
       const shared: Record<string, unknown> = { legit: 1 };
       Object.defineProperty(Object.prototype, "zzAccessorTarget", {
          get: () => shared,
@@ -320,7 +304,7 @@ describe("readGivenControlSpec", () => {
          const sharedBefore = Object.getOwnPropertyNames(shared);
          expect(
             readGivenControlSpec([`# label="ok" zzAccessorTarget { k="v" }`]),
-         ).toEqual({});
+         ).toEqual({ label: "ok" });
          expect(
             Object.getOwnPropertyNames(shared).filter(
                (k) => !sharedBefore.includes(k),
@@ -331,12 +315,9 @@ describe("readGivenControlSpec", () => {
             .zzAccessorTarget;
       }
 
-      // An accessor that cannot be probed safely, or that hands back a different
-      // object each read, is not watchable at all. Both shapes leaked on the
-      // version that simply called the getter once: a throwing getter was dropped
-      // from the watch set and its object then took the write, and an unstable one
-      // left the parser writing into an object the guard never saw. Refusing is
-      // the only honest answer, so both must come back empty.
+      // Accessors that throw, or return a fresh object on each read. The old
+      // guard refused every annotation while one of these existed; the parser
+      // should simply not read them.
       for (const [name, get] of [
          [
             "zzThrows",
@@ -354,7 +335,7 @@ describe("readGivenControlSpec", () => {
          try {
             expect(
                readGivenControlSpec([`# label="ok" ${name} { k="v" }`]),
-            ).toEqual({});
+            ).toEqual({ label: "ok" });
          } finally {
             delete (Object.prototype as unknown as Record<string, unknown>)[
                name
@@ -362,10 +343,7 @@ describe("readGivenControlSpec", () => {
          }
       }
 
-      // `__proto__` is skipped rather than refused, because it is always an
-      // accessor and refusing it would refuse everything. That is only sound for
-      // the engine's own getter: redefined to return some other object, it let a
-      // write land there with the annotation reported clean.
+      // `__proto__` itself redefined to return some other object.
       const original = Object.getOwnPropertyDescriptor(
          Object.prototype,
          "__proto__",
@@ -380,7 +358,7 @@ describe("readGivenControlSpec", () => {
          const decoyBefore = Object.getOwnPropertyNames(decoy);
          expect(
             readGivenControlSpec([`# label="ok" __proto__ { k="v" }`]),
-         ).toEqual({});
+         ).toEqual({ label: "ok" });
          expect(
             Object.getOwnPropertyNames(decoy).filter(
                (k) => !decoyBefore.includes(k),
@@ -868,6 +846,48 @@ describe("suggestGivenLookup", () => {
       );
       expect(givens[0].suggest?.givenNames).toEqual(["REGION"]);
       expect(givens[1].suggest?.givenNames).toBeUndefined();
+   });
+});
+
+describe("malloyGivenToApi: annotations", () => {
+   // The route is Malloy's own parse of the note, not a label the spec picks.
+   const note = (text: string) => ({ route: routeOfNote(text), text });
+   const givenWith = (notes: { route?: string; text: string }[]) =>
+      ({
+         name: "REGION",
+         type: { type: "filter expression", filterType: "string" },
+         annotations: { forRoute: () => notes },
+      }) as unknown as MalloyGiven;
+
+   it("flags #(secure) and nothing that merely resembles it", () => {
+      expect(malloyGivenToApi(givenWith([note("#(secure)\n")])).secure).toBe(
+         true,
+      );
+      expect(
+         malloyGivenToApi(givenWith([note("#(secure_ish) x\n")])).secure,
+      ).toBeUndefined();
+      expect(malloyGivenToApi(givenWith([])).secure).toBeUndefined();
+   });
+
+   it("carries app-route notes, and drops reserved ones and the given's own (markdown) prose", () => {
+      const api = malloyGivenToApi(
+         givenWith([
+            note("#(description) Which region\n"),
+            note('# label="Region"\n'),
+            note("#(markdown) The region filter.\n"),
+            note("#[markdown] In brackets.\n"),
+            note("#(doc) Survives\n"),
+            note("#(markdown_help) Near miss\n"),
+            note("#(Markdown) Near miss, cased\n"),
+         ]),
+      );
+      expect(api.annotations).toEqual([
+         "#(description) Which region\n",
+         "#(doc) Survives\n",
+         "#(markdown_help) Near miss\n",
+         "#(Markdown) Near miss, cased\n",
+      ]);
+      expect(api.label).toBe("Region");
    });
 });
 

@@ -5,8 +5,17 @@ import type {
    GivenValue,
    LogMessage,
    Model as MalloyModel,
+   ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
+import { compileDocument, type CompiledDocument } from "./compile_document";
+import {
+   claimsToBeANotebook,
+   isNotebookModelPath,
+   notebookReaderProblem,
+} from "./notebook";
+import { isDashboardModelPath } from "./dashboard";
+import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -25,6 +34,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    CompileRefusedError,
+   RenderTagRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -33,7 +43,9 @@ import {
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
+   UnparseableTextError,
    WriteRolledBackError,
+   WriteVerifyError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -42,7 +54,10 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { assertNoRestrictedConstructs } from "./compile_restriction";
+import {
+   assertNoRenderTags,
+   assertNoRestrictedConstructs,
+} from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -181,12 +196,13 @@ let compileRefusalsCounter: Counter | null = null;
 /**
  * Append-scope compile refusals, by reason.
  *
- * Both reasons answer 4xx or 5xx on the same endpoint, so without the label a
+ * The reasons answer 4xx or 5xx on the same endpoint, so without the label a
  * dependency outage and a caller sending forbidden text are one indistinguishable
  * spike -- and the one that needs paging looks like the one that does not.
  * `restricted_construct` is the caller's text; `base_model_load_failed` is the
  * named model failing to load, which includes the schema-fetch case that answers
- * 503.
+ * 503. `render_tag` is a document carrying a URL-producing render tag or markup
+ * in a label, also the caller's text but a different fix than a data root.
  */
 function getCompileRefusalsCounter(): Counter {
    if (compileRefusalsCounter) return compileRefusalsCounter;
@@ -207,6 +223,7 @@ function getCompileRefusalsCounter(): Counter {
 export function resetAdmissionTelemetryForTesting(): void {
    queryAdmissionRejectionsCounter = null;
    packageAdmissionRejectionsCounter = null;
+   compileRefusalsCounter = null;
 }
 
 /**
@@ -248,6 +265,19 @@ export type CompileScope = (typeof COMPILE_SCOPES)[number];
  *  problems from every file share one array. */
 export type TaggedLogMessage = LogMessage & { model?: string };
 
+/** The package-relative model path of a file inside the package, `/`-separated on every platform; undefined outside it. */
+export function packageRelativeModelPath(
+   packagePath: string,
+   filePath: string,
+   pathModule: Pick<typeof path, "relative" | "isAbsolute" | "sep"> = path,
+): string | undefined {
+   const rel = pathModule.relative(packagePath, filePath);
+   if (rel === "" || rel.startsWith("..") || pathModule.isAbsolute(rel)) {
+      return undefined;
+   }
+   return rel.split(pathModule.sep).join("/");
+}
+
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
    gate: () => Promise<void>,
@@ -267,6 +297,9 @@ async function denyHiddenAsNotQueryable(
       throw error;
    }
 }
+
+/** Cap on runtime add failures kept per environment for /status. */
+const MAX_RECORDED_ADD_FAILURES = 100;
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
@@ -298,6 +331,8 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /** Runtime add failures recorded in {@link mountErrors}, oldest first. */
+   private recordedAddFailures: string[] = [];
    /**
     * Why a SERVING package's most recent reload failed to compile, keyed by
     * package name.
@@ -376,6 +411,9 @@ export class Environment {
    // EnvironmentStore.setMemoryGovernor at server start so we keep the
    // governor as the single owner of the back-pressure boolean.
    private memoryGovernor: PackageMemoryGovernor | null = null;
+   // Called with each package the moment it enters `this.packages`. Set by
+   // EnvironmentStore (see setPackageLoadedHook); null means nobody listens.
+   private packageLoadedHook: ((pkg: Package) => void) | null = null;
 
    /** Absolute path on disk where this environment's package files live. */
    public getEnvironmentPath(): string {
@@ -424,7 +462,7 @@ export class Environment {
          );
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
-         throw new Error(`Failed to update environment README`);
+         throw new Error(`Failed to update environment README`, { cause: err });
       }
    }
 
@@ -571,7 +609,11 @@ export class Environment {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-   ): Promise<{ problems: TaggedLogMessage[]; sql?: string }> {
+   ): Promise<{
+      problems: TaggedLogMessage[];
+      sql?: string;
+      document?: CompiledDocument;
+   }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
       if (!COMPILE_SCOPES.includes(scope)) {
@@ -690,6 +732,19 @@ export class Environment {
             fullSource = modelContent
                ? `${modelContent}\n${source}`
                : (source ?? "");
+            // Checked again where the compiler reads it: a saved model ending in an open block note re-lexes the caller's prose.
+            // Both checks are load-bearing: this in-context form accepts text the stand-alone check above refuses.
+            if (source !== undefined && modelContent) {
+               try {
+                  assertNoCallerAuthorizeAnnotation(
+                     source,
+                     `${modelContent}\n`,
+                  );
+               } catch (err) {
+                  recordAuthorizeGuardRejection("compile_source");
+                  throw err;
+               }
+            }
             callerRegion = {
                kind: "span",
                url: virtualUri,
@@ -751,37 +806,46 @@ export class Environment {
                hasExactGateModel = true;
             }
          }
-         if (gateModel && hasExactGateModel && source !== undefined) {
-            // Only the authorize gate (the *who* axis) applies to /compile.
-            // The query boundary (`explores`/`queryableSources`, the *what*
-            // axis) deliberately does NOT: compile is the authoring loop
-            // (validate -> save -> reload), and gating it made a curated
-            // package un-authorable — a QA session (HANDOFF CR-5) had every
-            // per-file compile 404 with "Query target is not queryable" the
-            // moment `queryableSources: "declared"` was set. The boundary is
-            // discovery curation, not access control (the skills say so
-            // outright); the accepted trade is that /compile can reveal a
-            // non-exported source's schema (and, with includeSql, SQL) —
-            // sources whose confidentiality matters are gated by
-            // `#(authorize)`, which still applies here in full.
-            await denyHiddenAsNotQueryable(
-               () => {
-                  gateModel.assertQueryBoundaryEarly(
-                     undefined,
-                     undefined,
-                     source,
-                  );
-               },
-               () =>
-                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                     // File and package scope compile the whole file (or, at
-                     // package scope with a source, the whole replacement) —
-                     // a locked name that is not the statement Malloy runs
-                     // must not refuse it, and its joins are author joins.
-                     wholeFile: scope !== "append",
-                  }),
-            );
-         }
+         // A document is gated cell by cell and tile by tile below, so one
+         // restricted cell does not refuse the cells the caller may read.
+         const documentCandidate =
+            scope === "append" &&
+            source !== undefined &&
+            claimsToBeANotebook(source);
+         const runEarlyGate = async (): Promise<void> => {
+            if (gateModel && hasExactGateModel && source !== undefined) {
+               // Only the authorize gate (the *who* axis) applies to /compile.
+               // The query boundary (`explores`/`queryableSources`, the *what*
+               // axis) deliberately does NOT: compile is the authoring loop
+               // (validate -> save -> reload), and gating it made a curated
+               // package un-authorable — a QA session (HANDOFF CR-5) had every
+               // per-file compile 404 with "Query target is not queryable" the
+               // moment `queryableSources: "declared"` was set. The boundary is
+               // discovery curation, not access control (the skills say so
+               // outright); the accepted trade is that /compile can reveal a
+               // non-exported source's schema (and, with includeSql, SQL) —
+               // sources whose confidentiality matters are gated by
+               // `#(authorize)`, which still applies here in full.
+               await denyHiddenAsNotQueryable(
+                  () => {
+                     gateModel.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        source,
+                     );
+                  },
+                  () =>
+                     gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                        // File and package scope compile the whole file (or, at
+                        // package scope with a source, the whole replacement) —
+                        // a locked name that is not the statement Malloy runs
+                        // must not refuse it, and its joins are author joins.
+                        wholeFile: scope !== "append",
+                     }),
+               );
+            }
+         };
+         if (!documentCandidate) await runEarlyGate();
 
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
@@ -811,10 +875,10 @@ export class Environment {
                let model: string | undefined;
                if (url && url.startsWith("file:")) {
                   try {
-                     const rel = path.relative(packagePath, fileURLToPath(url));
-                     if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-                        model = rel;
-                     }
+                     model = packageRelativeModelPath(
+                        packagePath,
+                        fileURLToPath(url),
+                     );
                   } catch {
                      // Not a resolvable file URL — leave the tag off.
                   }
@@ -954,6 +1018,18 @@ export class Environment {
                      compiled.modelPath,
                   );
                }
+               const readerProblem =
+                  compiled.modelDef && compiled.modelSourceText !== undefined
+                     ? notebookReaderProblem(
+                          compiled.modelPath,
+                          compiled.modelSourceText,
+                          compiled.modelDef as ModelDef,
+                          pathToFileURL(
+                             path.join(packagePath, compiled.modelPath),
+                          ).toString(),
+                       )
+                     : undefined;
+               if (readerProblem) collect([readerProblem], compiled.modelPath);
                if (compiled.compilationError) {
                   const compilerProblems =
                      compiled.compilationError.malloyProblems;
@@ -973,6 +1049,33 @@ export class Environment {
                         compiled.modelPath,
                      );
                   }
+               }
+               // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               const lintText = !(
+                  isNotebookModelPath(compiled.modelPath) ||
+                  isDashboardModelPath(compiled.modelPath)
+               )
+                  ? undefined
+                  : (compiled.modelSourceText ??
+                    (compiled.modelPath === modelName && source !== undefined
+                       ? source
+                       : await fs.promises
+                            .readFile(
+                               path.join(packagePath, compiled.modelPath),
+                               "utf8",
+                            )
+                            .catch(() => undefined)));
+               if (lintText !== undefined) {
+                  collect(
+                     notebookLintProblems(
+                        compiled.modelPath,
+                        lintText,
+                        pathToFileURL(
+                           path.join(packagePath, compiled.modelPath),
+                        ).toString(),
+                     ),
+                     compiled.modelPath,
+                  );
                }
             }
             if (
@@ -994,6 +1097,48 @@ export class Environment {
             }
             return { problems };
          }
+
+         // The model the append-scope fragment is judged against, loaded once for the gate and for a document.
+         let appendBase: ReturnType<Runtime["loadModel"]> | undefined;
+
+         // Counted here rather than inside the gate so every reason shares one instrument and one label set; only a refusal is counted, since anything else the gate rethrows is an infrastructure failure.
+         const countRefusal = (error: unknown): void => {
+            // An unparseable tile is a compile problem for the document, not a refusal.
+            if (
+               error instanceof CompileRefusedError &&
+               !(error instanceof UnparseableTextError)
+            ) {
+               getCompileRefusalsCounter().add(1, {
+                  environment: this.environmentName,
+                  reason:
+                     error instanceof RenderTagRefusedError
+                        ? "render_tag"
+                        : "restricted_construct",
+               });
+            }
+         };
+         const refuseConstructs = async (
+            baseModel: MalloyModel,
+            text: string,
+            renderTags: boolean,
+         ): Promise<void> => {
+            try {
+               await assertNoRestrictedConstructs(runtime, baseModel, text, {
+                  renderTags,
+               });
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
+         const refuseRenderTags = (text: string): void => {
+            try {
+               assertNoRenderTags(text);
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
 
          // Containment for caller-submitted fragments. Scope "append" is the
          // one scope whose text is a FRAGMENT checked against a curated model
@@ -1024,9 +1169,8 @@ export class Environment {
             // error carries no evidence either way.
             let baseModel: MalloyModel;
             try {
-               baseModel = await runtime
-                  .loadModel(pathToFileURL(modelPath))
-                  .getModel();
+               appendBase = runtime.loadModel(pathToFileURL(modelPath));
+               baseModel = await appendBase.getModel();
             } catch (error) {
                // Three different failures arrive here and they are not one
                // answer. Refusing uniformly would tell a caller their text was
@@ -1079,38 +1223,116 @@ export class Environment {
                      `"${modelName}" could not be loaded to check it against.`,
                );
             }
-            try {
-               // The fragment ALONE, against the compiled base model. The
-               // concatenation the real compile runs cannot be passed here:
-               // `extendModel` judges text as an extension of a model that
-               // already holds those declarations, so feeding it the model's
-               // own text yields `Cannot redefine` for every source in the file
-               // and aborts before the appended fragment is ever classified --
-               // which is a bypass rather than a stricter check.
-               //
-               // What closes the continuation hole instead is the gate refusing
-               // when it could not parse what it was given (see
-               // assertNoRestrictedConstructs). A continuation fragment is a
-               // syntax error on its own, and that is now a refusal rather than
-               // silence read as approval.
-               await assertNoRestrictedConstructs(
-                  runtime,
-                  baseModel,
-                  source ?? "",
-               );
-            } catch (error) {
-               // Counted here rather than inside the gate so both reasons share
-               // one instrument and one label set. Only the refusal is counted:
-               // anything else the gate rethrows is an infrastructure failure it
-               // deliberately does not convert into a caller-facing verdict.
-               if (error instanceof CompileRefusedError) {
-                  getCompileRefusalsCounter().add(1, {
-                     environment: this.environmentName,
-                     reason: "restricted_construct",
-                  });
-               }
-               throw error;
+            // The fragment ALONE, against the compiled base model. The
+            // concatenation the real compile runs cannot be passed here:
+            // `extendModel` judges text as an extension of a model that
+            // already holds those declarations, so feeding it the model's
+            // own text yields `Cannot redefine` for every source in the file
+            // and aborts before the appended fragment is ever classified --
+            // which is a bypass rather than a stricter check.
+            //
+            // What closes the continuation hole instead is the gate refusing
+            // when it could not parse what it was given (see
+            // assertNoRestrictedConstructs). A continuation fragment is a
+            // syntax error on its own, and that is now a refusal rather than
+            // silence read as approval.
+            // A document's whole-text gate runs on the text that compiles, after the per-cell access phase.
+            if (!documentCandidate) {
+               await refuseConstructs(baseModel, source ?? "", false);
             }
+         }
+
+         if (documentCandidate && source !== undefined) {
+            const gate = gateModel;
+            const exact = hasExactGateModel;
+            const base = appendBase;
+            if (!base) throw new Error("append base model was not loaded");
+            const baseModel = await base.getModel();
+            // Syntactic and cheap, so it runs ahead of the cell reader; the compile-based gate runs once access is settled.
+            refuseRenderTags(source);
+            const result = await compileDocument({
+               base,
+               source,
+               modelName,
+               gates: {
+                  text: (text) =>
+                     gate && exact
+                        ? denyHiddenAsNotQueryable(
+                             () => {
+                                gate.assertQueryBoundaryEarly(
+                                   undefined,
+                                   undefined,
+                                   text,
+                                );
+                             },
+                             () =>
+                                gate.assertAuthorizedForText(
+                                   text,
+                                   givens ?? {},
+                                ),
+                          )
+                        : Promise.resolve(),
+                  compiled: (runnable) =>
+                     gate
+                        ? denyHiddenAsNotQueryable(
+                             () => gate.assertCompiledTargetQueryable(runnable),
+                             () =>
+                                exact
+                                   ? gate.assertAuthorizedForRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     )
+                                   : gate.assertAuthorizedFromCompiledRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     ),
+                          )
+                        : Promise.resolve(),
+                  constructs: (text) => refuseConstructs(baseModel, text, true),
+                  document: (text) => refuseConstructs(baseModel, text, false),
+                  nameVisible: (query, definitions) => {
+                     gate?.assertTextNameVisible(query, definitions);
+                  },
+                  boundaryCompiled: async (
+                     runnable,
+                     compiledSource,
+                     query,
+                     definitions,
+                  ) => {
+                     gate?.assertQueryBoundaryCompiled(
+                        compiledSource,
+                        query,
+                        definitions,
+                     );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
+                        runnable,
+                     );
+                  },
+                  boundary: async (query, definitions) => {
+                     gate?.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        query,
+                        definitions,
+                     );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
+                     );
+                  },
+               },
+            });
+            if (result) {
+               return {
+                  problems: result.problems.map((problem) => ({
+                     ...problem,
+                  })) as TaggedLogMessage[],
+                  ...(result.document && { document: result.document }),
+               };
+            }
+            // Not a readable document after all, so the ordinary compile runs and the whole text is judged as one.
+            await refuseConstructs(baseModel, source, false);
+            await runEarlyGate();
          }
 
          // Attempt to compile
@@ -1229,11 +1451,40 @@ export class Environment {
             }
 
             // If successful, return any non-fatal warnings
-            return { problems: tagProblems(model.problems), sql };
+            const readerProblem = notebookReaderProblem(
+               modelName,
+               fullSource,
+               model._modelDef,
+               virtualUri,
+            );
+            // Its positions are in the concatenated file at "append", so the lint is for a whole file only.
+            const lintProblems =
+               scope === "append"
+                  ? []
+                  : notebookLintProblems(modelName, fullSource, virtualUri);
+            return {
+               problems: tagProblems([
+                  ...model.problems,
+                  ...(readerProblem ? [readerProblem] : []),
+                  ...lintProblems,
+               ]),
+               sql,
+            };
          } catch (error) {
             // If parsing/compilation fails, return the errors
             if (error instanceof MalloyError) {
-               return { problems: tagProblems(error.problems) };
+               return {
+                  problems: tagProblems([
+                     ...error.problems,
+                     ...(scope === "append"
+                        ? []
+                        : notebookLintProblems(
+                             modelName,
+                             fullSource,
+                             virtualUri,
+                          )),
+                  ]),
+               };
             }
             // If it's a system error (e.g. file not found), throw it up
             throw error;
@@ -1713,7 +1964,8 @@ export class Environment {
     * for, and neither is visible to the caller that lost.
     *
     * `check` refuses by throwing, and runs against the file's current text
-    * (undefined when there is none) — so two saves racing on one file cannot
+    * (undefined when there is none) and the package as loaded before the
+    * write (undefined when it is not) — so two saves racing on one file cannot
     * both pass their precondition. `verify` runs against the reloaded package
     * and likewise refuses by throwing; a refusal puts the previous text back
     * (or removes the file, when it is new), reloads again, and raises
@@ -1727,7 +1979,7 @@ export class Environment {
       packageName: string,
       modelPath: string,
       source: string,
-      check: (current: string | undefined) => void,
+      check: (current: string | undefined, loaded: Package | undefined) => void,
       verify: (reloaded: Package) => Promise<T>,
    ): Promise<{ previous: string | undefined; verified: T }> {
       assertSafePackageName(packageName);
@@ -1739,7 +1991,7 @@ export class Environment {
             modelPath,
          );
          const previous = await this._readModelFileLocked(target);
-         check(previous);
+         check(previous, this.packages.get(packageName));
          await this._writeModelFileLocked(target, source);
          try {
             // The locked form, because this whole callback already holds the
@@ -1761,9 +2013,14 @@ export class Environment {
                modelPath,
                error,
             });
+            // Only a refusal worded for the caller is echoed; anything else can carry a server path.
+            const reason =
+               error instanceof WriteVerifyError ? error.message : undefined;
             throw new WriteRolledBackError(
-               `The package did not reload with the new \`${modelPath}\`, so ` +
-                  `the previous text was put back and nothing changed.`,
+               `The package did not reload with the new \`${modelPath}\`` +
+                  `${reason ? ` (${reason})` : ""}, so the previous text was ` +
+                  `put back and nothing changed.`,
+               { cause: error },
             );
          }
       });
@@ -1828,6 +2085,33 @@ export class Environment {
     */
    public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
       this.memoryGovernor = governor;
+   }
+
+   /**
+    * Attach (or detach with `null`) a callback run each time a package
+    * enters this environment's package map: at boot, on add, on install, and
+    * on reload. The callback must only schedule work; see
+    * {@link notifyPackageLoaded}.
+    */
+   public setPackageLoadedHook(hook: ((pkg: Package) => void) | null): void {
+      this.packageLoadedHook = hook;
+   }
+
+   /**
+    * Tell the hook a package is now served. Called straight after each
+    * `this.packages.set`. A throwing hook is logged and swallowed: an
+    * observer of the load must never fail it.
+    */
+   private notifyPackageLoaded(pkg: Package): void {
+      try {
+         this.packageLoadedHook?.(pkg);
+      } catch (error) {
+         logger.warn("Package-loaded hook failed", {
+            environmentName: this.environmentName,
+            packageName: pkg.getPackageName(),
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 
    /**
@@ -1971,6 +2255,15 @@ export class Environment {
       );
    }
 
+   /**
+    * The package instance currently being served under `name`, or undefined.
+    * Never loads from disk, so a caller can ask "is this still served?"
+    * without bringing back a package that was unloaded or deleted.
+    */
+   public peekPackage(name: string): Package | undefined {
+      return this.packages.get(name);
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
@@ -2050,6 +2343,7 @@ export class Environment {
             );
          }
          this.packages.set(packageName, _package);
+         this.notifyPackageLoaded(_package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // It loaded, so any earlier failure is stale. A package that failed at
          // boot can be fixed on disk and reloaded without a restart.
@@ -2142,6 +2436,7 @@ export class Environment {
          );
          this.attachDestinationServeConfig(addedPackage);
          this.packages.set(packageName, addedPackage);
+         this.notifyPackageLoaded(addedPackage);
       } catch (error) {
          logger.error("Error adding package", { error });
          this.deletePackageStatus(packageName);
@@ -2341,6 +2636,7 @@ export class Environment {
          await this.rebindServeBindingsFromLocalStore(newPackage);
 
          this.packages.set(packageName, newPackage);
+         this.notifyPackageLoaded(newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // Publishing a fixed package clears the boot failure it replaces.
          this.clearPackageLoadFailure(packageName);
@@ -2850,7 +3146,7 @@ export class Environment {
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`);
+         throw new Error(`Failed to update package manifest`, { cause: error });
       }
    }
 
@@ -3046,14 +3342,43 @@ export class Environment {
       this.mountErrors.set(packageName, message);
    }
 
+   /**
+    * Record a runtime add that failed before the package could serve, so
+    * /status reports it the way it reports a configured package whose location
+    * never mounted. Skipped while the name has any status: a failed re-install
+    * rolls back to the previous tree, which is not a failed package. Cleared
+    * like every other load failure, by a later successful add or install of
+    * the name, or by deleting it.
+    *
+    * Names are the caller's, so the record is bounded: past
+    * MAX_RECORDED_ADD_FAILURES the oldest recorded add failure is dropped.
+    * Boot-time mount errors are not subject to the cap.
+    */
+   public recordPackageAddFailure(packageName: string, message: string): void {
+      if (this.packageStatuses.has(packageName)) return;
+      if (!this.mountErrors.has(packageName)) {
+         this.recordedAddFailures.push(packageName);
+         while (this.recordedAddFailures.length > MAX_RECORDED_ADD_FAILURES) {
+            const evicted = this.recordedAddFailures.shift();
+            if (evicted !== undefined) this.mountErrors.delete(evicted);
+         }
+      }
+      this.mountErrors.set(packageName, message);
+   }
+
    /** Forget any recorded failure for a package, whatever its cause. */
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      const recorded = this.recordedAddFailures.indexOf(packageName);
+      if (recorded !== -1) this.recordedAddFailures.splice(recorded, 1);
       this.staleCompileErrors.delete(packageName);
    }
 
-   /** Packages configured for this environment that did not load, and why. */
+   /**
+    * Packages configured for, or added to, this environment that did not load,
+    * and why.
+    */
    public getFailedPackages(): ReadonlyMap<string, string> {
       if (this.mountErrors.size === 0) return this.failedPackages;
       // Mount errors last, so the specific cause overwrites the generic

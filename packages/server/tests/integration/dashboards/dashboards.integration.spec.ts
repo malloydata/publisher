@@ -294,9 +294,13 @@ describe("Dashboard discovery (E2E)", () => {
       // Each tile carries the givens it actually references, so a viewer can
       // re-run only the tiles a changed control affects.
       expect(manifest.tiles).toEqual([
-         { query: "orders -> by_brand", givenNames: ["BRAND"] },
-         { query: "orders -> by_region", givenNames: ["REGION"] },
-         { query: "orders -> totals", givenNames: [] },
+         { kind: "query", query: "orders -> by_brand", givenNames: ["BRAND"] },
+         {
+            kind: "query",
+            query: "orders -> by_region",
+            givenNames: ["REGION"],
+         },
+         { kind: "query", query: "orders -> totals", givenNames: [] },
       ]);
       // The control row is the union across tiles.
       expect(manifest.givens?.map((s) => s.name)).toEqual(["BRAND", "REGION"]);
@@ -312,18 +316,21 @@ describe("Dashboard discovery (E2E)", () => {
       expect(manifest).toMatchObject({ dashboardColumns: 12 });
       expect(manifest.tiles).toEqual([
          {
+            kind: "query",
             query: "tiles -> order_tile",
             givenNames: ["BRAND"],
             label: "Orders",
             colspan: 6,
          },
          {
+            kind: "query",
             query: "tiles -> revenue_tile",
             givenNames: ["BRAND"],
             label: "Revenue",
             colspan: 6,
          },
          {
+            kind: "query",
             query: "tiles -> brand_tile",
             givenNames: ["BRAND"],
             label: "By brand",
@@ -331,6 +338,7 @@ describe("Dashboard discovery (E2E)", () => {
             break: true,
          },
          {
+            kind: "query",
             query: "tiles -> region_tile",
             givenNames: ["BRAND"],
             label: "By region",
@@ -1003,12 +1011,10 @@ describe("Dashboard discovery (E2E)", () => {
                "# dashboard { columns=… } must be a positive integer",
             ),
          );
-         // The other half of the one-spelling change, and the reason the
-         // enumeration lint exists: nothing reads `dashboard_columns` any more,
-         // so without this the grid silently falls back to the default width.
+         // The enumeration lint: a property nothing reads would otherwise fall back silently.
          expect(messages).toContainEqual(
             expect.stringContaining(
-               "`dashboard_columns` in the artifact tag does nothing in Publisher",
+               "`tile_columns` in the artifact tag does nothing in Publisher",
             ),
          );
          expect(messages).toContainEqual(

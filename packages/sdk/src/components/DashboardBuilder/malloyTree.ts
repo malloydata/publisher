@@ -20,6 +20,13 @@
  * minifiers leave alone.
  */
 
+import {
+   blockSpans,
+   markdownLines,
+   textBlockOpener,
+} from "../../utils/malloyText";
+import { loadMalloy } from "./loadMalloy";
+
 /** A half-open range of UTF-16 offsets into the source text. */
 export interface Span {
    start: number;
@@ -149,6 +156,17 @@ export interface TreeImport extends Positioned {
    statement: Span;
 }
 
+/** A floating `##|(markdown) [name]` … `|##` block, which a dashboard reads as a text tile's body. */
+export interface TreeTextBlock extends Positioned {
+   /** Absent when the opener has no name, or more than one word after the route. */
+   name?: string;
+   route: "markdown" | "text";
+   /** Text on the opener line (unless it is only the name), then the body lines; no trailing newline. */
+   body: string;
+   /** From the opener's line start through the closer's newline: the whole-line extent a writer replaces or removes. */
+   span: Span;
+}
+
 export interface ParsedMalloy {
    text: string;
    /** 0-based line -> offset of its first character. */
@@ -156,6 +174,8 @@ export interface ParsedMalloy {
    imports: TreeImport[];
    sources: TreeSource[];
    givens: TreeGiven[];
+   /** The closed floating `(markdown)` / `(text)` blocks, in file order. */
+   textBlocks: TreeTextBlock[];
    /** The comment token on `line`, if the line ends with one. */
    trailingComment(line: number): Span | undefined;
    /**
@@ -172,6 +192,8 @@ export interface ParsedMalloy {
     * middle of a `/* … *\/`, whose text is prose however it begins.
     */
    commentLine(line: number): boolean;
+   /** Whether `line` is part of a `#(markdown)` line or a `#|(markdown)` block, which are prose, not tags. */
+   proseLine(line: number): boolean;
    /**
     * The `#`/comment block immediately above `line`, stopping at a blank line —
     * the unit that travels with a declaration when it moves.
@@ -194,14 +216,14 @@ export const parseRefused = (r: ParseResult): r is ParseRefusal =>
 /* Node identity                                                       */
 /* ------------------------------------------------------------------ */
 
-interface TokenStream {
+export interface TokenStream {
    tokenSource?: {
       vocabulary?: { getSymbolicName(type: number): string | undefined };
    };
    getTokens?(): Array<{ type: number; startIndex: number; stopIndex: number }>;
 }
 
-type Ctx = Record<string, unknown> & {
+export type Ctx = Record<string, unknown> & {
    ruleIndex?: number;
    childCount?: number;
    getChild(i: number): Ctx;
@@ -215,7 +237,7 @@ const has = (c: unknown, ...accessors: string[]): boolean =>
    );
 
 /** A rule context we can take a range from; terminals and empties are not. */
-const isRule = (c: Ctx | undefined): boolean =>
+export const isRule = (c: Ctx | undefined): boolean =>
    c !== undefined && c.ruleIndex !== undefined && (c.childCount ?? 0) > 0;
 
 const IS = {
@@ -279,7 +301,7 @@ function lineStartsOf(text: string): number[] {
 
 /* ------------------------------------------------------------------ */
 
-class Reader {
+export class Reader {
    private readonly map: Int32Array;
    readonly lineStarts: number[];
    /**
@@ -289,6 +311,10 @@ class Reader {
     * makes the writer rewrite a line inside a comment.
     */
    commentLines: ReadonlySet<number> = new Set();
+   /** `(markdown)` annotation lines, whose body can start with `#` without being a tag. */
+   proseLines: ReadonlySet<number> = new Set();
+   /** The `#|` blocks with a closer, as [opener line, closer line]; a comment's lines open none. */
+   blocks: [number, number][] = [];
 
    constructor(readonly text: string) {
       this.map = codePointMap(text);
@@ -470,7 +496,7 @@ function readTags(
    const first = r.line(statement.start);
    const last = r.line(declStart);
    for (let i = first; i < last; i++) {
-      if (r.commentLines.has(i)) continue;
+      if (r.commentLines.has(i) || r.proseLines.has(i)) continue;
       const text: string = r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
@@ -523,6 +549,8 @@ function readViewBody(r: Reader, vExpr: Ctx): TreeViewBody {
             return { kind: "unsupported", why: "a chained refinement" };
          base = inner[0];
       }
+      if (base && IS.segParen(base))
+         return { kind: "unsupported", why: "a parenthesized expression" };
       if (!base || !IS.segField(base))
          return {
             kind: "unsupported",
@@ -776,6 +804,13 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
    // and a source is read through it.
    const comments = commentIndex(r, tokenStream);
    r.commentLines = comments.lines;
+   const textLines = text.split("\n");
+   const inComment = (line: number) => comments.lines.has(line);
+   r.proseLines = markdownLines(textLines, inComment);
+   // A `##|` block is a floating note, never part of a declaration's tags.
+   r.blocks = blockSpans(textLines, inComment).filter(
+      ([from]) => !textLines[from].trimStart().startsWith("##"),
+   );
    const sources = readSources(r, root);
 
    // The shape assertion, on real content rather than on the API's presence:
@@ -797,9 +832,11 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          imports: readImports(r, root),
          sources,
          givens: readGivens(r, root),
+         textBlocks: readTextBlocks(r, tokenStream),
          trailingComment: (line) => comments.trailing.get(line),
          comments: comments.all,
          commentLine: (line) => comments.lines.has(line),
+         proseLine: (line) => r.proseLines.has(line),
          commentIn: (span) =>
             comments.all.find(
                (at) => at.start >= span.start && at.start < span.end,
@@ -813,6 +850,8 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
 export interface MalloyProblem {
    code?: string;
    message?: string;
+   /** 0-based. */
+   at?: { range?: { start?: { line?: number } } };
 }
 
 /** One parse of one file, stopped at the parse step. */
@@ -838,7 +877,7 @@ export async function translate(
    // Imported dynamically, never statically: `builder-entry.ts` installs the
    // `process.env` shim the parser's dependencies read at module scope, and a
    // static import would be evaluated before that shim runs.
-   const { MalloyTranslator } = await import("@malloydata/malloy");
+   const { MalloyTranslator } = await loadMalloy();
    const translator = new MalloyTranslator(url, null, {
       urls: { [url]: text },
    }) as unknown as {
@@ -866,7 +905,7 @@ export async function translate(
  * that follows code is a trailing comment, and anything appended to that line
  * has to go before it.
  */
-function commentIndex(
+export function commentIndex(
    r: Reader,
    tokenStream: TokenStream,
 ): { trailing: Map<number, Span>; lines: Set<number>; all: Span[] } {
@@ -939,11 +978,19 @@ function blockStart(
    commentLines: Set<number>,
    line: number,
 ): number {
-   let start = line;
-   for (let i = line - 1; i >= 0; i--) {
-      const text = r.text
+   const lineText = (i: number) =>
+      r.text
          .slice(r.lineStarts[i], r.lineStarts[i + 1] ?? r.text.length)
          .trim();
+   let start = line;
+   for (let i = line - 1; i >= 0; i--) {
+      const text = lineText(i);
+      // A `#|` block's body lines are not `#` lines, so its closer pulls in the whole block.
+      const block = r.blocks.find(([, to]) => to === i);
+      if (block) {
+         start = i = block[0];
+         continue;
+      }
       // A blank line is the boundary -- unless it is inside a block comment,
       // where it is the author's paragraph break rather than their separator.
       if (text === "" && !commentLines.has(i)) break;
@@ -951,4 +998,133 @@ function blockStart(
       else break;
    }
    return start;
+}
+
+/* ------------------------------------------------------------------ */
+/* Text tiles                                                          */
+/* ------------------------------------------------------------------ */
+
+/** The closed `##|(markdown)` / `##|(text)` blocks, read from the lexer's own tokens so a `|##` in a string or comment never closes one. */
+function readTextBlocks(r: Reader, stream: TokenStream): TreeTextBlock[] {
+   const tokens = stream.getTokens?.() ?? [];
+   const vocabulary = stream.tokenSource?.vocabulary;
+   const symbolOf = (token: { type: number }) =>
+      vocabulary?.getSymbolicName(token.type);
+   const tokenText = (token: { startIndex: number; stopIndex: number }) =>
+      r.text.slice(
+         r.utf16(token.startIndex) ?? 0,
+         r.utf16(token.stopIndex + 1) ?? r.text.length,
+      );
+   const blocks: TreeTextBlock[] = [];
+   for (let i = 0; i < tokens.length; i++) {
+      if (symbolOf(tokens[i]) !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
+      const opener = textBlockOpener(
+         tokenText(tokens[i]).replace(/\r?\n$/, ""),
+      );
+      if (!opener) continue;
+      const lines: string[] = [];
+      let j = i + 1;
+      for (; symbolOf(tokens[j] ?? tokens[i]) === "BLOCK_ANNOTATION_TEXT"; j++)
+         lines.push(tokenText(tokens[j]));
+      const closer = tokens[j];
+      if (!closer || symbolOf(closer) !== "BLOCK_ANNOTATION_END") continue;
+      const first = r.line(r.utf16(tokens[i].startIndex) ?? 0);
+      const end = r.utf16(closer.stopIndex + 1) ?? r.text.length;
+      const onOpener =
+         opener.name === undefined && opener.rest ? [`${opener.rest}\n`] : [];
+      blocks.push({
+         ...(opener.name === undefined ? {} : { name: opener.name }),
+         route: opener.route,
+         body: [...onOpener, ...lines]
+            .join("")
+            .replace(/\r\n?/g, "\n")
+            .replace(/\n$/, ""),
+         span: { start: r.lineStarts[first], end },
+         line: first,
+      });
+      i = j;
+   }
+   return blocks;
+}
+
+/** One `tiles=[…]` entry, exactly as written, with where it sits in the line. */
+export interface TileEntry {
+   text: string;
+   span: Span;
+}
+
+export interface TileList {
+   /** Offsets of `[` and the matching `]` in the line. */
+   open: number;
+   close: number;
+   entries: TileEntry[];
+}
+
+/** The index of the quote closing the string that opens at `open`. */
+function stringEnd(line: string, open: number): number {
+   for (let i = open + 1; i < line.length; i++) {
+      if (line[i] === "\\") i++;
+      else if (line[i] === '"') return i;
+   }
+   return line.length;
+}
+
+/**
+ * The `tiles=[…]` list of a one-line `## artifact { … }` tag, as written: quoted run expressions
+ * and `name { kind=text … }` entries alike. Undefined when the tag has no list or it never closes.
+ * Strings and nested braces are skipped, so a title containing `tiles=[` or a `]` is not the list.
+ */
+export function readTileList(line: string): TileList | undefined {
+   let depth = 0;
+   let groups = 0;
+   for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') i = stringEnd(line, i);
+      else if (c === "{" || c === "[") {
+         if (depth++ === 0) groups++;
+      } else if (c === "}" || c === "]") depth--;
+      else if (
+         groups === 1 &&
+         depth === 1 &&
+         line.startsWith("tiles", i) &&
+         !/[A-Za-z0-9_]/.test(line[i - 1] ?? " ")
+      ) {
+         const key = /^tiles\s*=\s*\[/.exec(line.slice(i));
+         if (key) return scanTileList(line, i + key[0].length - 1);
+      }
+   }
+   return undefined;
+}
+
+function scanTileList(line: string, open: number): TileList | undefined {
+   const entries: TileEntry[] = [];
+   let depth = 0;
+   let from = open + 1;
+   const push = (to: number) => {
+      const text = line.slice(from, to);
+      const lead = text.length - text.trimStart().length;
+      const trimmed = text.trim();
+      if (trimmed !== "")
+         entries.push({
+            text: trimmed,
+            span: { start: from + lead, end: from + lead + trimmed.length },
+         });
+   };
+   for (let i = open + 1; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') i = stringEnd(line, i);
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}") depth--;
+      else if (c === "]") {
+         if (depth === 0) {
+            push(i);
+            return { open, close: i, entries };
+         }
+         depth--;
+      } else if (c === "," && depth === 0) {
+         push(i);
+         from = i + 1;
+      }
+   }
+   return undefined;
 }

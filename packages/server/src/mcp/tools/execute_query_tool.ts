@@ -3,7 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
@@ -43,14 +43,10 @@ const executeQueryShape = {
    // environmentName is required; other fields mirror SDK expectations
    environmentName: z
       .string()
-      .describe(
-         "Environment name. Call get_context with no arguments to list the available environments.",
-      ),
+      .describe("Environment name, as list_packages returns it."),
    packageName: z
       .string()
-      .describe(
-         "Package containing the model. Call get_context with just environmentName to list its packages.",
-      ),
+      .describe("Package containing the model, as list_packages returns it."),
    modelPath: z.string().describe("Path to the .malloy model file"),
    query: z
       .string()

@@ -1,0 +1,2 @@
+## artifact { title="Unparsed" tiles: ["a -> v"] }
+source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }

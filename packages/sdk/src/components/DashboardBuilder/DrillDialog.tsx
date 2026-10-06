@@ -120,7 +120,7 @@ export function DrillDialog({
       <AppDialog
          open={open}
          onClose={onClose}
-         title="Clickable cells"
+         title="Drill"
          description="A cell in a column that groups by one of these dimensions becomes a link. Clicking it writes the value into a control — here, or on the dashboard it opens."
          actions={
             <>
@@ -232,7 +232,7 @@ export function DrillDialog({
                      <TextField
                         select
                         size="small"
-                        label="Sets the control"
+                        label="Sets the filter"
                         value={row.given}
                         disabled={row.to.length === 0}
                         inputProps={{

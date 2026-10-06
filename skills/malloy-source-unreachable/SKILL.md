@@ -21,6 +21,8 @@ Most packages publish a curated surface, so a source being absent or refused is 
 
 A 403 names a source, so it tells you the source exists. A plain 404 tells you nothing at all. That asymmetry is deliberate: a source that is both hidden AND gated answers a plain **404**, so you can never use a 403, or the wording of a 404, to discover that a hidden gated name is real.
 
+**One 404 is not about the source at all.** If a query that joins an exported source in its own text answers `Query target is not queryable`, check the joined source's givens. A source that reads a given with no default, which `index.malloy` does not import, is refused that way when joined. Queried directly, the same source answers a 400 that names the cause. Run the joining query through `compile_model`: the problem then reads "references given NAME ... which is not surfaced in this model". The fix belongs in the model, not the query, so report it to the model's author: `index.malloy` has to import that given, either by importing its declaring file whole or by naming the given in a selective import.
+
 ## Addressing the surface, which is the most common 404
 
 A query names a model file. When a package curates its surface, only files on that surface are valid entry points, **even for a source that file declares itself**:
@@ -39,7 +41,7 @@ Same source, same package. `orders.malloy` is off the surface, so it is not an e
 The query route is not the only one held to the surface. On a curated package, a source or file off it also shows up as a 404 here:
 
 - **Reading a model.** `GET .../models/{path}` answers 404 for a file off the surface, with the same words as the query route. The file still exists and still compiles; read `index.malloy` instead. A model that is on the surface lists only the names it publishes, not everything it imports.
-- **A dashboard tile.** A tile, a single-query dashboard's query, or a filter `suggest` over a hidden source answers 404. The dashboard itself is still listed. The package load warns once per tile, for example `Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.` It is in the `warnings` on the package's own response, `GET .../packages/{pkg}`.
+- **A dashboard tile.** A tile, or a filter `suggest` over a hidden source answers 404. The dashboard itself is still listed. The package load warns once per tile, for example `Tile orders_staging -> by_flag on dashboard overview reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.` It is in the `warnings` on the package's own response, `GET .../packages/{pkg}`.
 - **A notebook cell.** A cell over a hidden source answers 404, even when the notebook imports its file. A source an earlier cell derives from a published one still works.
 
 The fix is the same in each case: add the source to the `export { ... }` in `index.malloy`, or use what is already published.
@@ -56,7 +58,7 @@ Work down this list. The first three are far more common than the last.
 ## What curation does not do
 
 - **It does not hide fields.** A published source may `join` an unpublished one, and a query grouping by a joined field returns that field's values normally. Hiding a source removes it as a landing point; it does not redact columns a published source pulls in.
-- **It does not gate `/compile`.** `compile_model` is exempt, because compile is the authoring loop. A hidden source can still be compile-checked, and that is intended. The exception is a hidden source that is also gated, which answers 404 at compile too.
+- **It does not gate `/compile`.** `compile_model` is exempt, because compile is the authoring loop. A hidden source can still be compile-checked, and that is intended. The exceptions are a hidden source that is also gated, which answers 404 at compile too, and a document (text with a model-level `## artifact` tag): its tiles and cells are held to the surface, so one over a source off it comes back as a `query-not-queryable` problem rather than compiling.
 - **It is not access control.** Curation answers "what is queryable by name", not "who may query it". Identity is `#(authorize)` and `#(access_filter)`. A source is not protected by being hidden.
 
 ## Reaching an unpublished source from your own model

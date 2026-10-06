@@ -4,7 +4,11 @@
 import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { BadRequestError, FrozenConfigError } from "../errors";
+import {
+   BadRequestError,
+   FrozenConfigError,
+   internalErrorToHttpError,
+} from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
@@ -107,8 +111,8 @@ export class PackageController {
    }
 
    /**
-    * The package's semantic-index state, or undefined when the server has no
-    * embedding provider (nothing to describe) or the state could not be read.
+    * The package's semantic-index state (`lexical` when the server has no
+    * embedding provider), or undefined when the state could not be read.
     *
     * Never fails the request: this is a reporting field on a resource whose
     * primary job is package metadata, so a storage handle that is not ready
@@ -209,21 +213,41 @@ export class PackageController {
       //     so we validate after the fact and `unloadPackage` (evict from
       //     memory, keep the files) rather than delete it.
       let result;
-      if (body.location) {
-         const bodyLocation = body.location;
-         result = await environment.installPackage(
-            packageName,
-            (stagingPath) =>
-               this.downloadInto(
-                  environmentName,
-                  packageName,
-                  bodyLocation,
-                  stagingPath,
-               ),
-            (pkg) => formatPublishRejections(pkg),
-         );
-      } else {
-         result = await environment.addPackage(packageName);
+      try {
+         if (body.location) {
+            const bodyLocation = body.location;
+            result = await environment.installPackage(
+               packageName,
+               (stagingPath) =>
+                  this.downloadInto(
+                     environmentName,
+                     packageName,
+                     bodyLocation,
+                     stagingPath,
+                  ),
+               (pkg) => formatPublishRejections(pkg),
+            );
+         } else {
+            result = await environment.addPackage(packageName);
+         }
+      } catch (error) {
+         // A failure on the server's side (5xx: a mount the server cannot
+         // write, an unreachable bucket) is also an operator's problem, and
+         // the caller that saw the response may be an orchestrator that never
+         // shows it to one. Record it where /status reports load failures,
+         // with the same message the response carries, so /status never says
+         // more than the caller was told. A rejection of the package's own
+         // content (4xx) is answered with its reason and is not recorded.
+         const answered = internalErrorToHttpError(error as Error, {
+            log: false,
+         });
+         if (answered.status >= 500) {
+            environment.recordPackageAddFailure(
+               packageName,
+               answered.json.message,
+            );
+         }
+         throw error;
       }
 
       // `addPackage`/`installPackage` are typed `Package | undefined`; a missing

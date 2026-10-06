@@ -1,16 +1,18 @@
 # Eval-run package
 
 A finished run as a Malloy package you can open: the semantic model in
-`eval_run.malloy`, a notebook in `eval_run.malloynb`, an HTML data app in
+`eval_run.malloy`, a notebook in `notebooks/eval_run.malloy`, an HTML data app in
 `public/`, and CSV under `data/` written by `../../scripts/build_run_package.py`.
 
 ```bash
-python skills/eval-loop/scripts/build_run_package.py \
-  --run results/2026-08-30-sonnet \
-  --run results/2026-08-30-opus \
-  --set evals/ecommerce \
-  --out target/eval-run
+python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
+# an A/B: name each run
+python3 skills/eval-loop/scripts/build_run_package.py --set <set-dir> \
+  --run <workdir>/runs/sonnet-01 --run <workdir>/runs/opus-01
 ```
+
+The package's own README (written by the builder) holds the exact `curl`
+that registers it, and on which server.
 
 Two `--run` flags build both arms into one package, which is what makes an A/B a
 `group_by` rather than a diff of two reports.
@@ -32,10 +34,11 @@ product, found on data we control and understand.
 
 Both, and the split is not stylistic.
 
-**`eval_run.malloynb`** holds the analytical tables: pass rate, cost, effort,
+**`notebooks/eval_run.malloy`** holds the analytical tables: pass rate, cost, effort,
 where the failures are, retrieval, the backlog. Publisher renders it natively, so
 these are Malloy reading the model directly with no JavaScript in between and
-nothing to drift.
+nothing to drift. It is written as `run:` cells, a form Publisher still reads and
+converts to the notebook tile layout if someone saves it in the Console.
 
 **`public/index.html`** leads with the score and where every question landed,
 then the diagnosis backlog (failures grouped by shared cause), an effort strip
@@ -118,10 +121,15 @@ hole -- that exact bug is why the tables are cross-checked rather than trusted.
 
 ## Serving it
 
+`eval.py package` registers this package on the set's truth server, and
+writes the `curl` that does it into the README.md it builds, for serving it
+again later. The
+rest of this section is for serving it on a Publisher of its own.
+
 ```bash
 publisher --server_root <parent-of-package> --mcp_port 4049
 # app      http://localhost:4000/environments/evals/packages/eval-run/index.html
-# notebook http://localhost:4000/evals/eval-run/eval_run.malloynb
+# notebook http://localhost:4000/evals/eval-run/notebooks/eval_run
 ```
 
 The two URLs are different on purpose and neither is guessable. `public/` is
@@ -138,13 +146,14 @@ file:
 
 ```bash
 curl -s .../api/v0/environments/<env>/packages/<pkg>/models      # compiles the model
-curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists .malloynb
+curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists the notebook
 ```
 
 `models` returns a 424 with the full compiler error when the Malloy is broken,
 which is the fastest way to see a compile failure. Notebooks are listed by
-`notebooks` and are **not** in `models`; asking for one under `models` returns
-`404 "<file> is a notebook"`. A notebook fetched from `notebooks/<file>` reports
+`notebooks` and are **not** in the `models` list. A `.malloy` notebook still compiles
+as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
+legacy `.malloynb` returns `404 "<file> is a notebook"` there. A notebook fetched from `notebooks/<file>` reports
 its cells' compiled schemas under `modelInfo`, but only the cells it treats as
 anonymous queries -- do not read a low count there as cells failing to compile. To
 verify every cell, run each named query through `execute_query`.

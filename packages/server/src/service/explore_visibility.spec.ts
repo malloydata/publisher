@@ -35,7 +35,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { NotQueryableError } from "../errors";
+import { AccessDeniedError, NotQueryableError } from "../errors";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -264,6 +264,144 @@ export { customers }`,
          // The derived entry always resolves, so it can never be an invalid
          // explores entry -- getInvalidExplores has nothing to report.
          expect(pkg.getInvalidExplores()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("lists the hidden files only when asked, marked isHidden: true", async () => {
+      writeManifest(); // the root index.malloy is the surface
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const byPath = (models: { path?: string; isHidden?: boolean }[]) =>
+            Object.fromEntries(models.map((m) => [m.path, m.isHidden]));
+
+         expect(byPath(await pkg.listModels())).toEqual({
+            "index.malloy": false,
+         });
+         expect(
+            byPath(
+               await pkg.listModels({ includeHiddenFilesAndSources: true }),
+            ),
+         ).toEqual({ "base.malloy": true, "index.malloy": false });
+
+         // Listing it does not open it: without the option on the query too,
+         // the query route still refuses it.
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults(
+                  "base_source",
+                  undefined,
+                  "run: base_source -> { select: * }",
+               ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("runs a hidden file and a hidden source with includeHiddenFilesAndSources, and keeps the #(authorize) lock", async () => {
+      writeManifest(); // the root index.malloy is the surface
+      writeLayeredModels();
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")
+source: open_src is duckdb.sql("select 1 as id")`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const run = (
+            file: string,
+            query: string,
+            includeHiddenFilesAndSources: boolean,
+         ) =>
+            pkg
+               .getModel(file)!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  query,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  "full",
+                  false,
+                  includeHiddenFilesAndSources,
+               );
+
+         // A hidden file, and a source index.malloy doesn't export, both run.
+         const hiddenFile = await run(
+            "base.malloy",
+            "run: base_source -> { select: * }",
+            true,
+         );
+         expect(hiddenFile.result.data).toBeDefined();
+         const hiddenSource = await run(
+            "index.malloy",
+            "run: helper -> { select: * }",
+            true,
+         );
+         expect(hiddenSource.result.data).toBeDefined();
+         // Without the option, the same hidden source is refused.
+         await expect(
+            run("index.malloy", "run: helper -> { select: * }", false),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         // A caller's own join to that hidden source runs too.
+         const joinHelper = `source: x is customers extend {
+  join_one: h is helper on id = h.id
+}
+run: x -> { group_by: h.id }`;
+         const joined = await run("index.malloy", joinHelper, true);
+         expect(joined.result.data).toBeDefined();
+         await expect(
+            run("index.malloy", joinHelper, false),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         // The option lifts curation, never the lock, and the refusal stays
+         // the lock's 403 however the text reaches it: directly, through an
+         // alias, or through a caller join.
+         for (const query of [
+            "run: locked -> { select: * }",
+            `source: x is locked extend {}
+run: x -> { select: * }`,
+            `source: y is open_src extend {
+  join_one: l is locked on id = l.id
+}
+run: y -> { group_by: l.id }`,
+         ]) {
+            await expect(
+               run("locked.malloy", query, true),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("marks every file isHidden: false in a package with no surface", async () => {
+      writeManifest();
+      writeLayeredModels("surface.malloy"); // not index.malloy: no surface
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const includeHiddenFilesAndSources of [false, true]) {
+            const models = await pkg.listModels({
+               includeHiddenFilesAndSources,
+            });
+            expect(models.map((m) => [m.path, m.isHidden]).sort()).toEqual([
+               ["base.malloy", false],
+               ["surface.malloy", false],
+            ]);
+         }
       } finally {
          await duckdb.close();
       }
@@ -690,6 +828,46 @@ export { pub2, pub3 }`,
          writeManifest({ explores: ["base.malloy"] });
          await pkg.reloadAllModels({});
          expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("does not count a served notebook or dashboard among the models a broken surface refuses", async () => {
+      writeManifest({});
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is duckdb.sql("select 1 as id")\nexport { orders }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "notebooks/nb.malloy"),
+         `## artifact { kind=notebook }\nsource: nb is duckdb.sql("select 1 as id")\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards/d.malloy"),
+         `## artifact { tiles=["dq -> v"] }\nsource: dq is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "orders.malloy"\nexport { orders }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "orders.malloy"\nexport { ordrs }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.isServedNotebook("notebooks/nb.malloy")).toBe(true);
+         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+            "dashboards/d.malloy",
+         ]);
+         expect(pkg.brokenSurfaceWarnings()[0].message).toContain(
+            "including the 1 that compiled",
+         );
       } finally {
          await duckdb.close();
       }

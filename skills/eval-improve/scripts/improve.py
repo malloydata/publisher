@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Spawn one modeling agent per diagnosed cluster to edit the model. Stdlib only.
 
-  python improve.py --run results/2026-08-30-sonnet --set evals/ecommerce \
-      --model-dir ../malloy-samples/ecommerce --watch-mode
+  python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
+  # the model directory comes from [model] repo in the set's eval.toml
 
 One agent per `owner: model` cluster, each holding `skill:eval-improve`, each
 producing at most one smallest edit with probe receipts. Appends one `candidate`
@@ -61,6 +61,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 from agent_harness import default_manifest, manifest_skills, skills_roots, spawn_agent  # noqa: E402
+import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -317,38 +318,41 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--model-dir", required=True, type=pathlib.Path)
+    ap.add_argument("--model-dir", type=pathlib.Path, default=None,
+                    help="the model's git checkout. Default: [model] repo in "
+                         "eval.toml")
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
-                    help="Publisher SERVER_ROOT; only needed without watch mode")
+                    help="Publisher SERVER_ROOT; only needed without watch "
+                         "mode. Each accepted edit is rsynced onto the copy "
+                         "this root serves and reloaded. Default: the one "
+                         "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
                          "live and the helper only reloads")
     ap.add_argument("--model", default="opus", help="the modeling agent")
-    ap.add_argument("--environment", default="samples")
-    ap.add_argument("--package", default="ecommerce")
-    ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
-    # No default. It WAS http://localhost:4811 -- which `run_baseline.py` uses
-    # as the default `--publisher`, the server holding the model under test --
-    # so the help text below stated the invariant and the default beside it
-    # broke it. `verify_goldens.py` removed the same default from its own
-    # `--publisher` for the same reason and both callers kept it. Unset now
-    # means the value check does not happen, the verifier exits 3, and the
-    # acceptance gate blocks with "did not run" rather than passing an audit
-    # that re-derived goldens from the model they are meant to check.
+    ap.add_argument("--environment", default=None)
+    ap.add_argument("--package", default=None)
+    ap.add_argument("--mcp-url", default=None)
+    # No built-in port: a fixed default once named the server holding the
+    # model under test, which cannot verify its own goldens. The fallback is
+    # the [truth] section of the set's eval.toml. With neither, the value
+    # check does not happen, the verifier exits 3, and the acceptance gate
+    # blocks with "did not run".
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the TRUTH package, for the "
                          "golden re-derivation after an edit. The model under "
                          "test cannot verify its own goldens, which is the "
-                         "whole point of the second server. Without it the "
-                         "value check does not run and the acceptance check "
-                         "blocks")
+                         "whole point of the second server. Default: the "
+                         "[truth] server in the set's eval.toml. With neither, "
+                         "the value check does not run and the acceptance "
+                         "check blocks")
     ap.add_argument("--truth-environment", default=None,
                     help="the environment name on the TRUTH server, when it "
                          "differs from --environment. That server is separate "
-                         "and names its environments independently; without "
-                         "this the audit 404s on every case and the "
-                         "acceptance check blocks every cluster. Same flag, "
-                         "same reason, as run_baseline.py")
+                         "and names its environments independently; the wrong "
+                         "name 404s every case and the acceptance check blocks "
+                         "every cluster. Default: [truth] environment in the "
+                         "set's eval.toml. Same flag as run_baseline.py")
     ap.add_argument("--definitions", type=pathlib.Path, default=None,
                     help="a definition ledger (verify_definitions.py). Passed to "
                          "the golden audit so a set with no truth package can "
@@ -382,6 +386,17 @@ def main(argv: list[str] | None = None) -> int:
                          "the edit ladder assumes -- malloy-gotchas-modeling "
                          "above all -- is NOT loaded")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.model_dir = cfg.need(a.model_dir, "model", "repo", "--model-dir")
+    a.environment = cfg.need(a.environment, "model", "environment",
+                             "--environment")
+    a.package = cfg.need(a.package, "model", "package", "--package")
+    a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+    a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
+    a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    if not a.server_root and not a.watch_mode and cfg.server_root("model").exists():
+        a.server_root = cfg.server_root("model")
     a.roots = skills_roots(a.skills_root)
     repo = a.roots[0].parent if a.skills_root else SKILLS_ROOT.parent
     if not a.manifest:

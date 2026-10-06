@@ -5,7 +5,7 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { CatalogField } from "./catalog";
 import { controlsOf, type BuilderControl, type MappingRow } from "./controls";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import type { DashboardDocument, LocalGiven, QueryTile } from "./document";
 import { openDocument } from "./testing/fixtures";
 import { useFilterForm } from "./useFilterForm";
 
@@ -26,7 +26,7 @@ const FIELDS: CatalogField[] = [
    { name: "amount", kind: "dimension", type: "number_type" },
    { name: "created_at", kind: "dimension", type: "date_type" },
 ];
-const fieldsFor = (tile: DashboardTile) =>
+const fieldsFor = (tile: QueryTile) =>
    tile.source === "a" ? FIELDS : undefined;
 
 const form = async (
@@ -89,6 +89,28 @@ describe("useFilterForm: a new control", () => {
       act(() => view.result.current.setAll(false));
       act(() => view.result.current.setRow(1, { include: true }));
       expect(view.result.current.included).toBe(1);
+   });
+
+   it("shows no problem on a form nobody has edited, yet still holds Apply", async () => {
+      const { view } = await form(await openDocument(SOURCE));
+      expect(view.result.current.canApply).toBe(false);
+      expect(view.result.current.commonProblem).toBeUndefined();
+      expect(
+         view.result.current.rowProblems.every((p) => p === undefined),
+      ).toBe(true);
+      act(() => view.result.current.pickField("nope"));
+      expect(view.result.current.commonProblem).toContain("Not a field of");
+      expect(view.result.current.rowProblems.some((p) => p !== undefined)).toBe(
+         true,
+      );
+   });
+
+   it("shows a problem once a row or the kind is edited", async () => {
+      const { view } = await form(await openDocument(SOURCE));
+      act(() => view.result.current.setRow(0, { include: true }));
+      expect(view.result.current.commonProblem).toBe(
+         "Pick the field this filter compares.",
+      );
    });
 
    it("declares the control it applies, suggesting over the ticked tile's source", async () => {

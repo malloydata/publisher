@@ -29,11 +29,11 @@
     "dayjs": "^1.11.19",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-router-dom": "^7.9.1",
     "react-grid-layout": "^1.5.1",
     "react-resizable": "^3.0.5",
+    "react-router-dom": "^7.9.1",
     "recharts": "^3.0.2",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@types/react": "^19.1.7",
@@ -42,5 +42,9 @@
     "@vitejs/plugin-react": "^4.7.0",
     "typescript": "^5.8.2",
     "vite": "^6.3.6"
+  },
+  "resolutions": {
+    "seroval": "^1.6.3",
+    "seroval-plugins": "^1.6.3"
   }
 }

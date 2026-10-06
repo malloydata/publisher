@@ -264,23 +264,30 @@ class RetrievalGate(unittest.TestCase):
             return rb.wait_retrieval_ready(a, **kw)
 
     def test_a_cold_index_is_waited_out(self):
-        ready, said = self.gate([("lexical", "indexing"),
-                                 ("lexical", "indexing"),
+        # indexing, indexing, then two semantic reads: proceeds, and it
+        # slept between the indexing probes (pause is patched to a no-op, so
+        # count probes through the iterator instead).
+        ready, said = self.gate([("indexing", "3/10"), ("indexing", "9/10"),
                                  ("semantic", None), ("semantic", None)])
         self.assertTrue(ready)
         self.assertIn("semantic retrieval ready", said)
+        self.assertIn("4 total", said)
+
+    def test_indexing_that_never_settles_times_out_with_progress(self):
+        ready, said = self.gate([("indexing", "3/10")] * 3, tries=3)
+        self.assertFalse(ready)
+        self.assertIn("still not ready after 3 probes", said)
+        self.assertIn("3/10", said)
 
     def test_one_semantic_read_is_not_enough(self):
-        # A sync completing can bump the generation, and the call that
-        # straddles it is marked lexical. One read says a call WAS semantic;
-        # two in a row say the next one will be.
         ready, _ = self.gate([("semantic", None)], tries=1)
         self.assertFalse(ready)
 
-    def test_a_lexical_read_resets_the_confirmations(self):
-        ready, said = self.gate([("semantic", None), ("lexical", "indexing"),
+    def test_an_indexing_read_resets_the_confirmations(self):
+        ready, said = self.gate([("semantic", None), ("indexing", "9/10"),
                                  ("semantic", None), ("semantic", None)])
         self.assertTrue(ready)
+        self.assertIn("4 total", said)
 
     def test_no_embedding_provider_is_ready_not_a_wait(self):
         # `retrieval` is absent, never defaulted, when nothing can embed. That
@@ -290,14 +297,32 @@ class RetrievalGate(unittest.TestCase):
         self.assertTrue(ready)
         self.assertIn("no embedding provider", said)
 
-    def test_a_settled_lexical_reason_is_refused_not_retried(self):
-        # The server's own rule: only `indexing` is worth a retry. A cool-down
-        # or an over-cap package will not become semantic by waiting.
-        for reason in ("cooldown", "too-many-entities", "error"):
+    def test_an_error_result_is_refused_not_retried(self):
+        # Each reason names itself and its remedy, and the second reply in the
+        # script is never read: a retry would raise StopIteration.
+        remedy = {"too-many-entities": "retrieval.indexing.maxEntities",
+                  "cooldown": "Wait, then re-run",
+                  "provider-error": "provider settings",
+                  "unavailable": "Publisher log"}
+        for reason, text in remedy.items():
             with self.subTest(reason=reason):
-                ready, said = self.gate([("lexical", reason)])
+                ready, said = self.gate([("error", reason)])
                 self.assertFalse(ready)
-                self.assertIn(reason, said)
+                self.assertIn(f"retrieval_reason '{reason}'", said)
+                self.assertIn(text, said)
+
+    def test_an_error_after_indexing_stops_there(self):
+        ready, said = self.gate([("indexing", "1/10"),
+                                 ("error", "too-many-entities")])
+        self.assertFalse(ready)
+        self.assertIn("maxEntities", said)
+
+    def test_an_unknown_retrieval_value_is_refused(self):
+        # An old server that still answered "lexical" with a provider
+        # configured is not the contract this gate reads.
+        ready, said = self.gate([("lexical", "indexing")])
+        self.assertFalse(ready)
+        self.assertIn("unrecognised retrieval value 'lexical'", said)
 
     def test_a_probe_that_never_succeeds_fails_the_gate(self):
         ready, said = self.gate([ValueError("boom")] * 3, tries=3)
@@ -397,13 +422,44 @@ class TheRetrievalGateIsWired(unittest.TestCase):
         self.assertIn("ready:", note)
         self.assertIn("1 confirmation", note)
 
-    def test_a_lexical_probe_reply_still_waits(self):
-        # One lexical read is exactly the cold-start case the gate exists for.
+    def test_an_indexing_probe_reply_still_waits(self):
+        # One indexing read is exactly the cold-start case the gate exists for.
         with mock.patch.object(rb, "wait_retrieval_ready",
                                lambda _a: (True, "semantic retrieval ready")):
-            note = rb.run_retrieval_gate(
-                self.ns(probe_payload={"retrieval": "lexical"}))
+            note = rb.run_retrieval_gate(self.ns(probe_payload={
+                "retrieval": "indexing",
+                "retrieval_progress": {"embedded": 1, "total": 9}}))
         self.assertNotIn("1 confirmation", note)
+
+    def test_an_error_probe_reply_stops_without_probing_again(self):
+        def boom(_a):
+            raise AssertionError("retried an error result")
+        with mock.patch.object(rb, "wait_retrieval_ready", boom):
+            with self.assertRaises(SystemExit) as cm:
+                rb.run_retrieval_gate(self.ns(probe_payload={
+                    "retrieval": "error",
+                    "retrieval_reason": "too-many-entities"}))
+        self.assertIn("retrieval.indexing.maxEntities", str(cm.exception))
+
+
+class RetrievalOf(unittest.TestCase):
+    """`retrieval_of` reads the three states and the absent field."""
+
+    def test_indexing_carries_its_progress(self):
+        self.assertEqual(rb.retrieval_of({
+            "retrieval": "indexing", "sources": [],
+            "retrieval_progress": {"embedded": 4, "total": 10}}),
+            ("indexing", "4/10"))
+
+    def test_error_carries_its_reason(self):
+        self.assertEqual(rb.retrieval_of(
+            {"retrieval": "error", "retrieval_reason": "cooldown"}),
+            ("error", "cooldown"))
+
+    def test_semantic_and_absent(self):
+        self.assertEqual(rb.retrieval_of({"retrieval": "semantic"}),
+                         ("semantic", None))
+        self.assertEqual(rb.retrieval_of({"sources": []}), (None, None))
 
 
 class AuthIsNotAColdIndex(unittest.TestCase):

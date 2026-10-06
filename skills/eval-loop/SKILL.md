@@ -1,14 +1,16 @@
 ---
 name: eval-loop
-description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files under the model package''s evals/ directory; checkpoints are git commits of the model repo. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
+description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
 ---
 
 # The Evaluation Loop
 
 You conduct this loop. There is no batch orchestrator to start, no eval API,
-and no eval MCP tools. The ledger is plain files in the model package's git
-repository (`reference/ledger-schema.md` in `skill:eval-answer` defines every
-file and event). Scoring is an LLM judge you spawn per case. There is no
+and no eval MCP tools. The ledger is plain files: the set in the model
+package's git repository, and each run in the set's workdir
+(`reference/ledger-schema.md` in `skill:eval-answer` defines every file and
+event). `scripts/eval.py` runs each step from the set's `eval.toml`;
+`reference/running-a-run.md` has the commands. Scoring is an LLM judge you spawn per case. There is no
 scripted scorer, and there will not be one: a script that can pass a wrong
 answer is worse than none. The scripts under `scripts/` run the loop -- they
 answer, re-execute, spawn the judge, compare runs, and write the ledger -- but
@@ -30,12 +32,13 @@ undone.
 
 ## Where the rest of this lives
 
-This file is the procedure. Five things it used to carry inline are files beside
+This file is the procedure. The things it used to carry inline are files beside
 it now, because each is needed at one moment rather than every run, and loading
 all of them for every run is how a skill stops being read.
 
 | When | Read |
 |---|---|
+| the set does not exist yet, or has never run | `reference/setting-up-a-set.md` |
 | about to run one | `reference/running-a-run.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
@@ -107,7 +110,7 @@ Older mode names still work as aliases for how far one run walks:
 
 | Alias | Steps |
 |---|---|
-| `measure` | scrape/run + eval |
+| `measure` | scrape/run + eval (`eval.py package` then needs `--without-diagnosis`) |
 | `triage` | plus diagnose |
 | `improve` | plus improve + acceptance check + checkpoint on accept |
 
@@ -305,7 +308,8 @@ the run measure something other than what it names:
    before deciding how much of this you need.
 
    **Look for a set and for prior runs before you author either.** A minute of
-   `find . -name cases.jsonl`, a glance at `evals/*/runs/` and at your host's
+   `find . -name cases.jsonl`, a glance at the set's workdir (`<workdir>/runs/`,
+   `~/.malloy-eval/<set>-<hash>/runs/` unless `eval.toml` moves it) and at your host's
    own transcripts for this repo. Two sessions fourteen minutes apart built the
    same 29-case answer key from scratch, because the first had committed
    nothing before it was deleted and the second had no way to know it existed.
@@ -324,16 +328,27 @@ the run measure something other than what it names:
 
    **Commit the set before you spend money on an arm**, and keep durable
    outputs in the repository. A findings document in `~/Downloads` is gone the
-   first time somebody tidies up; the set, the run directory and the write-up
-   belong in git beside the model.
+   first time somebody tidies up; the set and the write-up belong in git
+   beside the model.
+
+   **Runs go in the set's workdir, never inside the model package.** A run
+   directory holds a `model.malloy` snapshot, and a built report is a Malloy
+   package; inside the package under test, either puts that package into
+   `loadErrors`. The default workdir, `~/.malloy-eval/<set>-<hash>/`, is outside git,
+   which suits a measure-only run. A run that will improve and checkpoint needs
+   its ledger kept: set `[paths] workdir` in `eval.toml` to a directory in the
+   model's repository but outside the package, and gitignore its `servers/`
+   and `packages/`, which are a server's database and rebuilt reports.
 
 2. The server must be up. Where your host offers retrieval tracing, turn it on
    and confirm a trace lookup answers, so a call's ranked results can be
    recovered afterwards.
 
-   **Open-source Publisher has none.** `PUBLISHER_MCP_TRACE=retrieval` is set by
-   `serve.py` and read by nothing: the trace store was written and never merged,
-   so there is no trace tool and `traceId` is null on every local attempt. This
+   **Open-source Publisher has no trace lookup.** `PUBLISHER_MCP_TRACE=retrieval`
+   is set by `serve.py` and makes Publisher write one "Retrieval trace" line per
+   ranked call to its log (stage counts and timings, not the ranked results).
+   Nothing reads that line yet: there is no trace store and no trace tool, so
+   `traceId` is null on every local attempt. This
    does not block a scored run, because attribution never depended on it:
    `rankedSummary` is copied onto the `tool_call` event at capture, precisely so
    the evidence survives without a store. So do not refuse a local run for want
@@ -347,6 +362,7 @@ the run measure something other than what it names:
    environment or no-result attempts means stop the run.
 
 4. Load the set: scrape/import as above, or reuse an existing `evals/<set>/`.
+   `eval.py check --set <set>` names every gap in it before anything starts.
    Never keep two live copies of one set; the set directory in the model repo
    is the single source of truth, versioned by `datasetVersion` in
    `set.json`.
@@ -367,7 +383,7 @@ the run measure something other than what it names:
    `reference/golden-side-door.md`. Both are expected in the wild; both
    are the golden side door below, not improve, and not a sixth step.
 
-6. Create `runs/<runId>/run.json` with the attribution pins
+6. `eval.py run` creates `<workdir>/runs/<runId>/run.json` with the attribution pins
    (`reference/ledger-schema.md`): mode, dataset version, **the target and the
    version it served** (a local target pins a commit, so commit or stash first;
    answering from a dirty tree pins nothing), server version, judge version and
@@ -465,7 +481,8 @@ accepts, so a bad improve direction can be rolled back. It is not a report,
 and it is not a remote publish.
 
 1. Commit the model files AND the set's ledger in one commit; put the label
-   and the closed issue ids in the message.
+   and the closed issue ids in the message. The run's ledger is in that commit
+   only when the workdir is in the repository (Before you start, item 1).
 2. Append the `checkpoint` event (`action: created`, label, `modelGitSha`
    from the commit you just made, issueIds). The event line itself rides in
    the next commit; append-only logs trail by one commit and that is fine.

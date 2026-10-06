@@ -2,41 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { planRun } from "./runPlan";
 import { RawNotebook } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useModelGivens } from "../../hooks/useModelGivens";
+import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
+import { DashboardProse, DashboardView } from "../Dashboard/DashboardView";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToParams, givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
-
-/**
- * How long a changed parameter has to stay changed before the notebook runs.
- *
- * Aborting the superseded run is not enough on its own: an abort cancels the
- * HTTP request, but the cells already dispatched have reached the server and go
- * on compiling and running against the customer's warehouse, and their answers
- * are then thrown away. So autorun on a text control put one wave of doomed
- * queries on that warehouse per keystroke. `origin/main` bounded the load by
- * refusing to start a second run at all, which dropped the newest values;
- * waiting for the value to settle bounds it without making that trade.
- */
-const GIVEN_SETTLE_MS = 400;
 
 /**
  * The server's own explanation of why a cell would not run.
@@ -107,8 +97,73 @@ interface NotebookProps {
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
+/** The raw notebook, one cache entry per URI however many components ask. */
+function useNotebookQuery(resourceUri: string) {
+   const { apiClients } = useServer();
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      modelPath: notebookPath,
+   } = parseResourceUri(resourceUri);
+   return useQueryWithApiError<RawNotebook>({
+      queryKey: [resourceUri],
+      queryFn: async () => {
+         const response = await apiClients.notebooks.getNotebook(
+            environmentName,
+            packageName,
+            notebookPath,
+            versionId,
+         );
+         return response.data;
+      },
+   });
+}
+
 // Requires PackageProvider
-export default function Notebook({
+export default function Notebook(props: NotebookProps) {
+   const { data: notebook } = useNotebookQuery(props.resourceUri);
+   // A notebook written as a tile layout renders as a one-column dashboard.
+   if (notebook?.dashboard) {
+      const { environmentName, packageName, versionId, modelPath } =
+         parseResourceUri(props.resourceUri);
+      const { title, description } = notebook.dashboard;
+      return (
+         <CleanNotebookContainer>
+            <CleanNotebookSection>
+               {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
+               {(title || description) && (
+                  <Box sx={{ mb: 2 }}>
+                     <DashboardProse
+                        // A notebook's text tiles have no card; its description matches them.
+                        chrome="none"
+                        title={title ?? ""}
+                        {...(description ? { description } : {})}
+                     />
+                  </Box>
+               )}
+               <DashboardView
+                  manifest={notebook.dashboard}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  documentName={modelPath}
+                  givens={props.givens}
+                  onGivensChange={props.onGivensChange}
+                  onNavigate={props.onDrillNavigate}
+                  maxResultSize={props.maxResultSize}
+                  chrome="none"
+                  // A cell notebook's control panel, not a dashboard's bar.
+                  controlsLayout="panel"
+               />
+            </CleanNotebookSection>
+         </CleanNotebookContainer>
+      );
+   }
+   return <CellNotebook {...props} />;
+}
+
+function CellNotebook({
    resourceUri,
    maxResultSize = 0,
    givens,
@@ -130,18 +185,7 @@ export default function Notebook({
       isSuccess,
       isError,
       error,
-   } = useQueryWithApiError<RawNotebook>({
-      queryKey: [resourceUri],
-      queryFn: async () => {
-         const response = await apiClients.notebooks.getNotebook(
-            environmentName,
-            packageName,
-            notebookPath,
-            versionId,
-         );
-         return response.data;
-      },
-   });
+   } = useNotebookQuery(resourceUri);
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -303,8 +347,8 @@ export default function Notebook({
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
-               // Markdown cells don't need execution
-               if (rawCell.type === "markdown") continue;
+               // Prose and definitions have nothing to run.
+               if (!cellRuns(rawCell)) continue;
 
                // Capture cell index for closure
                const cellIndex = i;
@@ -507,6 +551,14 @@ export default function Notebook({
       executeCells,
    ]);
 
+   const shownCells =
+      enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
+   // A served notebook can open with definition cells; a .malloynb keeps the icon on its first cell.
+   const copyLinkIndex =
+      notebook?.format === "malloy"
+         ? shownCells.findIndex((cell) => cell.type === "markdown")
+         : 0;
+
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
@@ -516,19 +568,16 @@ export default function Notebook({
 
                {/* Loading State */}
                {!isSuccess && !isError && (
-                  <Loading text={"Fetching Notebook..."} />
+                  <Loading text={LOADING_COPY.opening("notebook")} />
                )}
 
                {/* Notebook Cells */}
                {isSuccess &&
-                  (enhancedCells.length > 0
-                     ? enhancedCells
-                     : notebook?.notebookCells || []
-                  ).map((cell, index) => (
+                  shownCells.map((cell, index) => (
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
                         key={index}
-                        index={index}
+                        showCopyLink={index === copyLinkIndex}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}

@@ -2,21 +2,31 @@
 
 _Design and planning doc. The dashboard builder is the SDK component that opens a
 `dashboards/*.malloy` file, lets a person arrange and filter it visually, and
-writes the file back; the notebook (§7, planned) is the same idea for a linear
-document, on a Malloyyo-style format rather than `.malloynb`. This document
+writes the file back; the notebook (§7, format decided 2026-09-29) is the
+same idea for a linear document, a `notebooks/*.malloy` file rather than
+`.malloynb`. This document
 records what was learned building the first,
 measures it against the state of the art in dashboard builders, records the
-decision to defer any change to the Malloy renderer or the Malloyyo format, and
+decision to defer any change to the Malloy renderer or the Malloyyo format (and
+the two items lifted from it on 2026-09-29, §4), and
 lays out the steps for each remaining gap. It is the reference for scoping the
 next releases; the grammar and runtime of dashboards themselves are in
 [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) and
 [dashboards.md](dashboards.md)._
+
+_Status, 2026-10-02: the cell editor this plan describes (§7, "The builder that
+follows" and its steps 4 and 5) is superseded. A notebook now opens in the same
+builder as a one-column layout of text and query tiles, and a cell-format file
+converts to that layout on open. The sections are kept as the record of what was
+decided then._
 
 Status as of 2026-09-15: the builder is wired into the Console (PR #1158,
 branch `sdk/dashboard-document`) at `…/dashboards/<slug>/edit`, edits real
 package dashboards, saves into the browser's document storage, and exports the
 file. Every item in §5 that needs no API, renderer or format change has
 shipped; the rest is deferred by decision, with the reason recorded beside it.
+On 2026-09-29 the notebook format was decided (§7); the server reader and
+renderer have shipped, and so has the builder.
 
 ## 1. What the research established
 
@@ -57,8 +67,8 @@ model-level `where:` of the same name: binding is per declaration, not per name.
 So the convention became: the dashboard declares its own givens and binds them
 per tile with `+ { where: field ~ $GIVEN }` refinements. The builder adds and
 removes filters by editing that one file and never edits imports or model files.
-A shared `givens.malloy` remains for controls the data app and notebooks share;
-a dashboard can import and bind those, but the builder cannot change them. A
+A given the model reads stays in the model and is imported by name; a dashboard
+can bind it, but the builder cannot change it. A
 plain `date` or `number` given binds with `>=` (`~` does not compile against a
 `date`).
 
@@ -80,28 +90,28 @@ one by inventing structure it does not report.
 
 ## 2. Where the builder stands
 
-| Capability                 | Today                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Open an existing dashboard | Any composite `## artifact { tiles=[…] }` file the reader can fully represent. Refused with a reason and a line otherwise.                                                                                                                                                                                                                   |
-| Save                       | Splices the file; the round-trip gate refuses a write it cannot read back. Comments and unmodelled Malloy survive. A save that adds or removes a tile shows the diff first. Into the package when the server takes writes (compile-first, atomic, reloaded in place, refused if the file changed since opening); into the browser otherwise. |
-| Create                     | "Add dashboard" on the package page: a model, a source, the first tile's view and a title; the file the builder would write, written into the package and opened in the builder.                                                                                                                                                             |
-| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drag the right edge for width, drop into the empty end of a row to move up.                                                                                                                                                                                               |
-| Row structure              | `# break` is treated as positional: a move keeps the rows' shape; a drop into a gap is the one move that changes it.                                                                                                                                                                                                                         |
-| Sizing aids                | Column guides and a width badge while dragging; width presets (full, ½, ⅓, ¼) on the tile's menu, and the arrow keys to nudge the selected tile's width.                                                                                                                                                                                     |
-| Tile presentation          | Title and subtitle from the tile's own menu. Inherited tiles (declared on the model) are movable but not restyled.                                                                                                                                                                                                                           |
-| Add or remove a tile       | Added from the package catalog (source → view, correct by construction); removed from the tile's menu. Both preview the file's diff before saving.                                                                                                                                                                                           |
-| Filters                    | Declared in the dashboard and bound per tile from one place, the strip under the header, with a tiles-to-update mapping, per-tile comparison and a field picker.                                                                                                                                                                             |
-| Filters from the model     | Bindable and removable from the dashboard; not editable, since the declaration is the model's.                                                                                                                                                                                                                                               |
-| Clickable cells            | A `# drill` on any dimension the dashboard's own extension declares: destinations (this dashboard, the package's others) and the control a click sets, from the tile menu.                                                                                                                                                                   |
-| Edit bar                   | One bar in both modes, at the same place and height: the state on the left (nothing while reading, an "Editing" chip while editing), the switch on the right (Edit becomes Done). Between them, grouped by what they do: add a tile and page settings; undo, redo and save; then the way out.                                                |
-| Page settings              | Title, markdown description, grid width, run-as-controls-change (`autorun`) and starting values, from the edit bar.                                                                                                                                                                                                                          |
-| Live view                  | Tiles run the document's bindings on the dashboard's own extension, so an edit is visible before it is saved; the control row follows the document.                                                                                                                                                                                          |
-| Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                                                                                                                                                                                              |
-| Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                                  |
-| Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                                                                                                                                   |
-| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                                |
-| Notebooks                  | `.malloynb` is deprecated: viewed read-only (`Notebook`), never written, and gone from the bundled examples. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                                                                                                                                               |
-| Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (Add dashboard, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy`.                                                                                                                                                                |
+| Capability                 | Today                                                                                                                                                                                                                                                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open an existing dashboard | Any composite `## artifact { tiles=[…] }` file the reader can fully represent. Refused with a reason and a line otherwise.                                                                                                                                                                                                          |
+| Save                       | Splices the file; the round-trip gate refuses a write it cannot read back. Comments and unmodelled Malloy survive. Save writes at once and the builder stays open. Into the package when the server takes writes (compile-first, atomic, reloaded in place, refused if the file changed since opening); into the browser otherwise. |
+| Create                     | "New" on the package page (Dashboard or Notebook): a model, a source, the first view and a title; the file the builder would write, written into the package and opened in the builder.                                                                                                                                             |
+| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drop into the empty end of a row to move up.                                                                                                                                                                                                                     |
+| Row structure              | `# break` is treated as positional: a move keeps the rows' shape; a drop into a gap is the one move that changes it.                                                                                                                                                                                                                |
+| Sizing aids                | Drag a tile's right edge to set its width, snapping to whole columns with column guides during the drag; the edge is keyboard-operable too, and the arrow keys nudge the selected tile's width.                                                                                                                                     |
+| Tile presentation          | Title and subtitle edited where they are shown (click, with a pencil after the text). Inherited tiles (declared on the model) are movable but not restyled.                                                                                                                                                                         |
+| Add or remove a tile       | Added from the package catalog (source → view, correct by construction); removed with Delete on the tile's ⋯ menu. Both are undoable until saved.                                                                                                                                                                                   |
+| Filters                    | Declared in the dashboard and bound per tile from one place, the strip under the header, with a tiles-to-update mapping, per-tile comparison and a field picker.                                                                                                                                                                    |
+| Filters from the model     | Bindable and removable from the dashboard; not editable, since the declaration is the model's.                                                                                                                                                                                                                                      |
+| Drill-through              | A `# drill` on any dimension the dashboard's own extension declares: destinations (this dashboard, the package's others) and the control a click sets, from the tile menu.                                                                                                                                                          |
+| Edit bar                   | The page title with + Tile, undo, redo and Save on the same line. The way in and out is the Console header's, beside the breadcrumbs (Edit becomes View, which asks about unsaved edits); the builder draws no exit.                                                                                                                |
+| Page settings              | Title and markdown description edited in place; starting values in the filter window. No settings panel: a file's own grid width and `autorun` are kept and apply, but are not set here.                                                                                                                                            |
+| Live view                  | Tiles run the document's bindings on the dashboard's own extension, so an edit is visible before it is saved; the control row follows the document.                                                                                                                                                                                 |
+| Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                                                                                                                                                                                     |
+| Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                         |
+| Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says. "Explore from here" is left to a host that passes `onExplore`.                                                                                                                                      |
+| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                       |
+| Notebooks                  | `.malloynb` is deprecated: viewed read-only (`Notebook`), never written, and gone from the bundled examples. The authored notebook is a `notebooks/*.malloy` file whose format was decided 2026-09-29 (§7); the reader, renderer and builder have shipped.                                                                          |
+| Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (New, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy` (and `notebooks/<slug>.malloy`).                                                                                                                                 |
 
 ## 3. Gaps against the state of the art
 
@@ -113,9 +123,8 @@ offer today.
 
 Rows reaching parity leave the table: a gap list that carries what is no longer
 missing stops being a list of what to do next. Verified and removed 2026-09-15,
-each against the code and the test that holds it: **sizing aids** (width presets
-on the tile's menu, the arrow-key nudge, column guides while dragging or
-resizing), **add / remove a tile** (from the package catalog, both through the
+each against the code and the test that holds it: **sizing aids** (the tile's right edge,
+dragged or stepped with the arrow keys, column guides while dragging), **add / remove a tile** (from the package catalog, both through the
 diff), **filter declaration** (a control declared on the dashboard, written to
 the file), **filter-to-tile binding** (per-tile field and comparison, including
 untick), and **observability** (the `DashboardEvent` union and the Console's
@@ -136,10 +145,10 @@ layout that rewrites every tile at once, which was built and dropped by decision
 | Drill                    | Overlay of the rows behind a value, further drill, explore from here                         | Dimension drill to a dashboard or self; rows behind any grouped value; explore from a tile; no measure drill | Runtime                   |
 | Chart types              | Twenty or so, with a configuration escape hatch                                              | Twelve, from the view's own tag; the builder does not choose one                                             | Renderer                  |
 | Vis options              | Series colours, reference and trend lines, value labels, axis ranges, conditional formatting | None                                                                                                         | Renderer                  |
-| Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values, `autorun`, grid width; all editable in the builder                      | Runtime                   |
-| Editing model            | Explicit edit mode, explicit save, typically no undo                                         | Explicit save, undo/redo, diff before a structural save                                                      | Ahead                     |
+| Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values editable in the builder; `autorun` and grid width read from the file     | Runtime                   |
+| Editing model            | Explicit edit mode, explicit save, typically no undo                                         | Explicit save, undo/redo; Save keeps the builder open                                                        | Ahead                     |
 | What editing does        | Rewrites a database record; a code form, where one exists, is converted                      | Splices the authored file; comments survive                                                                  | Ahead                     |
-| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(access_filter)` apply to every tile with no wiring                               | Ahead                     |
+| Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(access_filter)` apply to every tile with no wiring                           | Ahead                     |
 | Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; browser storage today; the package-file provider needs a write API                  | Platform                  |
 | Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | The file itself, saved into the package                                                                      | Platform                  |
 
@@ -159,9 +168,9 @@ Decided 2026-09-13 and reaffirmed since: **the builder makes no change to
 Why:
 
 - Every grammar extension widens G6 unless the grammar has one home. The shared
-  grammar package with Malloyyo is decided but not started, and the conversation
-  with its maintainers is not happening yet. An extension shipped first in
-  Publisher is a third dialect.
+  grammar package with Malloyyo is decided but not started, and apart from the
+  two items lifted below, the conversation with its maintainers is not
+  happening yet. An extension shipped first in Publisher is a third dialect.
 - Renderer asks (chart types, sorting, conditional formatting, reference lines,
   KPI comparison) are upstream work with its own cadence. Both projects tried and
   cut a JavaScript escape hatch for bespoke charts, so a second charting layer in
@@ -182,6 +191,15 @@ What that parks, explicitly (and what it does **not** block; see §5):
    legend) that no tag reads, so it clips in any narrower tile.
 4. **Query authoring for a tile.** Whether the add-tile flow reuses
    `ModelExplorer` or a lighter picker is undecided.
+
+**Lifted for two items on 2026-09-29** (Kyle): the notebook artifact (§7) and
+dashboard text tiles (the `kind=text` half of item 2). Neither creates a third
+dialect: a notebook's prose is on the `"` doc-string route Malloy already has,
+and a text tile is a `##|(text)` block, a route of its own, so neither needs a
+grammar extension. Text tiles are format decided, not rendered yet. The
+spelling is agreed with the Malloyyo
+project (its side notes a P0 sign-off as pending). Items 1, 3 and 4, and tabs,
+stay parked.
 
 ## 5. What could be done with no Malloy, renderer or Malloyyo change
 
@@ -230,7 +248,7 @@ the reader to find.
    A control's starting value is edited where the control is, in the filter
    window, rather than in this popover — the same place its binding and
    comparison are set, so one control is one dialog.
-5. **Drill authoring.** "Clickable cells" on a tile's menu (`DrillDialog`): every dimension the
+5. **Drill authoring.** "Drill" on a tile's menu (`DrillDialog`): every dimension the
    tile's source declares in this file, with its destinations and the control a
    click sets. The builder writes the `# drill` tag, never the dimension — a
    dimension no view groups by is a dead drill, and views are the author's. This
@@ -249,8 +267,9 @@ the reader to find.
 8. **Export.** Dropped 2026-09-15: the file goes into the package, so handing
    a copy back had no audience left. CSV and PNG per tile are not started, and
    a file export can come back with them if it is asked for.
-9. **Sizing aids.** Width presets, the arrow-key nudge and the column guides
-   shipped; run-on-load is `autorun`. The one-click "set every tile to one
+9. **Sizing aids.** A tile's width is set at its right edge — dragged, or focused
+   and stepped with the arrow keys — with column guides while dragging (the menu's
+   width presets were dropped 2026-10 for the edge); run-on-load is `autorun`. The one-click "set every tile to one
    width" was built and then **dropped 2026-09-15** (Kyle): with four presets a
    click away on the tile that needs them, a bar button that rewrote every tile
    at once earned neither its space nor its undo entry. **Deferred** with the
@@ -271,9 +290,12 @@ change lands in the right place.
   `tileKey` for the grid, the drag and the history.
 - `malloyTree.ts` — the one reading of a file the reader and writer share, taken
   from Malloy's own parse tree and token stream: declarations under a source,
-  `given:` in both spellings, the artifact line, a tile expression's steps, and
-  the comment index every guard asks before it deletes a range. It refuses
+  `given:` in both spellings, and the comment index every guard asks before it
+  deletes a range. It refuses
   rather than guessing when the tree is not the shape it was written against.
+- `malloyText.ts` — the small grammars that are not Malloy's: the artifact
+  line, a tile expression's steps, and the description notes and block spans
+  the reader and writer share.
 - `readDocument.ts` — the tree for structure, spans for content; refuses with a
   reason and a line.
 - `spliceDocument.ts` — `checkShape` (what comes and goes, and whether that is
@@ -281,8 +303,8 @@ change lands in the right place.
   removed tiles, added tiles, tile presentation), then the round-trip gate.
 - `controls.ts` — pure edits to the document for filters; `useFilterForm.ts`
   holds the filter window's state and every derivation, MUI-free.
-- `layout.ts` — what a reorder does to the rows; `useTileResize.ts` and
-  `useTileReorder.ts` — one gesture each, previewing and committing once;
+- `layout.ts` — what a reorder does to the rows; `useTileReorder.ts` — the
+  drag, previewing and committing once;
   `TileFrame.tsx` — what is drawn around a tile; `FilterStrip.tsx`.
 - `useDashboardEditor.ts` — whole-document history and save; `useDraft.ts` —
   edit a copy, commit on close.
@@ -313,7 +335,7 @@ line per event under `[publisher.dashboard]`, `warn` on a refusal or a failed
 query. A deployment that wants metrics forwards from there; nothing server-side
 was added, by the no-API-change rule.
 
-## 7. The notebook: a Malloyyo format, not `.malloynb`
+## 7. The notebook: a `.malloy` format, not `.malloynb`
 
 A dashboard is a grid; a notebook is a line — prose and queries in author order,
 read top to bottom, results rendered as tables or charts, under the same
@@ -330,42 +352,178 @@ decision of 2026-09-13, reaffirmed 2026-09-15, is **not** to build on it:
   that is not going away. The viewer leaves when the authored format below can
   carry those readers, and not before; removing it earlier would strand every
   package that has a `.malloynb` in it today. Its authoring side upstream has
-  had maintenance commits only since April 2026, Malloyyo has no notebook format
-  at all, and the Workbook editor's private JSON was retired (PR #1146) rather
-  than become a third one.
-- **The authored notebook is a Malloyyo-style format**: a Malloy file, in the
+  had maintenance commits only since April 2026, and the Workbook editor's private
+  JSON was retired (PR #1146) rather than become a third one.
+- **The authored notebook is a `.malloy` format**: a Malloy file, in the
   family the dashboard already belongs to, whose cells are the file's own
   statements and annotations in order. It is git-native and agent-authorable,
   compiles as one model so every cell shares the file's definitions, is visible
   to the MCP surface like any model, and — because a cell is a contiguous block
   of Malloy — is read and written by the same splice discipline as a dashboard.
 
-**The shape.** A `notebooks/<slug>.malloy` file tagged as a notebook artifact.
-Its cells, in file order:
+**The format (decided 2026-09-29, Kyle; prose spelling revised on review).** A
+notebook is a `notebooks/<slug>.malloy` file. Its prose is an annotation on the
+`(markdown)` route, and the number of `#` says what the prose belongs to.
+**Floating** markdown is its own cell: `##|(markdown)` … `|##` (the body starts
+on the next line and the closer sits at the opener's column) or
+`##(markdown) text`, and adjacent lines merge. **Attached** markdown,
+`#|(markdown)` … `|#` or `#(markdown) text`, belongs to the statement below it
+(`run:`, `source:`, `query:`, `given:`, `type:`) and renders with that cell: on a
+`run:` it is a markdown header above the result, and above the `#"` caption when
+both are present. Malloy accepts an annotation between any two statements, so
+the format needs no change to the language. The fixtures in
+`packages/server/tests/fixtures/notebooks-malloyyo/` hold the examples below,
+adapted to an `orders` model, and
+`packages/server/src/service/notebook_format.spec.ts` pins the compiler behavior
+the format rests on: where each note lands, what an import contributes, how
+tiles parse, and which malformed spellings compile. A Malloy upgrade that
+changes it fails CI.
 
-- **Markdown cells**: a markdown block written as an annotation. This is the one
-  new grammar element and it is the same one a dashboard's text tile needs (G2),
-  so it is proposed once and serves both surfaces. Two spellings to decide in
-  the grammar venue: a standalone block (`##" …` lines already carry model-level
-  markdown; a block form that can sit _between_ statements rather than only at
-  the top), or prose attached to the statement below it as its doc string, with
-  a standalone form only for prose that leads nothing.
-- **Query cells**: a `run:` statement. A chart is a render tag on it
-  (`# bar_chart`), not a third kind of cell; `# label` titles it.
-- **Definition cells**: `import`, `source:`, `view:`, `given:` — shown as code
-  or folded, at the author's choice, and read by every cell below them.
-- **Parameters**: givens declared in the file and bound with `where: … $GIVEN`,
+```malloy
+##! experimental.givens
+## artifact { kind=notebook title="Revenue review" }
+import "../models/sales.malloy"
+
+##|(markdown)
+# Where revenue came from
+Prose in **markdown**, any length.
+|##
+
+# label="Region" control=select suggest { source=sales dimension=region }
+given: REGION :: filter<string> is f''
+
+##(markdown) A single line of prose is a cell too.
+
+#(markdown) ### Revenue by month
+#" Caption: a doc string on the run, shown below the header and above the result.
+# bar_chart
+# label="Revenue by month"
+run: sales -> by_month + { where: region ~ $REGION }
+```
+
+A dashboard text tile is a named `(markdown)` block: the name is one bare word on
+its opener, and `tiles=` references it. The format is decided; Publisher does not
+render text tiles yet, so the lint says an entry is left out of the page:
+
+```malloy
+## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "overview -> kpis"] } dashboard { columns=12 }
+##|(markdown) intro
+## How to read this page
+|##
+```
+
+- **Identity.** The `## artifact` tag's `kind=` decides, not the folder:
+  `kind=notebook` is a notebook and `kind=dashboard` a dashboard. A file in the
+  other kind's folder still works, and lint notes the mismatch
+  (`notebook-other-folder`); under `notebooks/` a missing or non-notebook `kind`
+  is a finding. A dashboard file with only a query-level `# artifact` is also a
+  dashboard, of that one query. An untagged file is a shared include.
+- **Cells**, in file order, from the file's own notes only, never imported
+  ones. Each floating `(markdown)` note after the artifact tag is a markdown
+  cell, except that contiguous `##(markdown)` lines (no blank line or other line
+  between them) form one cell, joined with `\n`; a `##|(markdown)` block is
+  always its own cell. Each `run:` together with its contiguous `#` tag block is
+  a query cell; attached `(markdown)` in that block is a header above the result
+  and above the `#"` caption, a `#"` directly above the run is its caption, a
+  chart is a render tag on it (`# bar_chart`), and `# label` titles it. Attached
+  markdown is not a cell of its own, and one above an `import` or `export`, which
+  take no annotations, is an error (`notebook-markdown-attached-nowhere`); write
+  `##|(markdown)` there. Each
+  other statement (`import`, `source:`, `query:`, `given:`, `export`, `type:`)
+  is a definition cell of its own, one cell per statement, shown as code or
+  folded and read by every cell below it. Cell index is a wire contract, so
+  statements are never merged into a run. The
+  **header** is not a cell, and in a notebook it holds only `##!` flags, `//`
+  comments and unnamed `"` notes above `## artifact`. A statement above the
+  tag (import, source, given, query, run) is an error finding, and so is a `# tag`
+  (`notebook-tag-above-artifact`) or a `(markdown)` note
+  (`notebook-markdown-above-artifact`) above it. A dashboard may still put
+  statements above its tag.
+- **Description**: the file's unnamed `"` notes above the artifact tag, for
+  both notebooks and dashboards. A dashboard with none above its tag still reads
+  the ones below it, as it did before, and the lint asks for them to move above.
+  With no `title=`, the description's first non-empty line is the title and the
+  rest is the description.
+- **Text tiles.** `##|(markdown) name` … `|##` is a dashboard text tile. The name
+  is the sole token after `(markdown)` on the opener, a bare word
+  (`[A-Za-z_][A-Za-z0-9_]*`), and more than that on the opener is an error
+  (`notebook-markdown-opener-text`). Planned for the follow-up that renders text
+  tiles: the reader strips that opener and the body is the tile's markdown. Today
+  the block is left out of the page. A name on a notebook block means nothing and
+  is a warning; an unnamed block on a dashboard, or one that no `tiles` entry
+  references, is a finding. The parentheses are required: `##| markdown` reads
+  its prose as ordinary tags, and `##|markdown` and `##|(markdown)name` (no space)
+  are dropped by Malloy as `malformed-route` (verified on 0.0.432), and the lint
+  says how to spell them. Earlier spellings are still read: `##"` and `##|"` after
+  the tag are markdown cells, and `##|(text) name` is a text tile, with no lint
+  finding.
+- **Kinds.** `kind=dashboard` at model scope is the explicit default for a file
+  under `dashboards/`, and a tile entry may carry `kind=query`. `kind=notebook`
+  under `dashboards/` is a notebook served from there, with a
+  `notebook-other-folder` note.
+- **Grid width.** `dashboard { columns=N }` beside the artifact tag is canonical.
+  `dashboard_columns=N` inside the tag is a deprecated alias, read when the
+  canonical tag is absent and reported as a warn. When both are present and
+  disagree it is an error naming both values, and `columns` wins.
+- **Parameters** are givens declared in the file and bound with `~ $GIVEN`,
   exactly the dashboard convention of §1, so the reader's parameter row and a
   builder's filter window carry over unchanged.
-- **Settings**: `title`, `autorun`, starting values on the artifact tag, as the
-  dashboard has them.
+- **Settings** reuse the dashboard artifact keys and their readers: `title`,
+  `givens {…}`, `autorun=false`.
 
-What this shares with a dashboard is deliberate: one grammar extension (the
-markdown block), one convention for parameters, one reader/writer discipline,
-one storage seam, one event seam. What differs is the layout engine — a
-notebook has none; file order is the layout, so reordering a cell moves a
-block — and the reading mode, which is why the two remain distinct surfaces
-rather than a notebook being a one-column dashboard.
+**Authoring rules.** Five, and the lint below holds a file to them:
+
+1. The header is `##!` flags, `//` comments and unnamed `"` notes (the
+   description), then
+   `## artifact { kind=notebook … }`. Nothing else goes above the tag.
+2. Prose is `##(markdown)` or `##|(markdown)` … `|##`, with the body on the next
+   line and the closer at the opener's column. No body line starts with `|##`.
+   A `## Heading` line is model tags, not prose;
+   the lint flags one whose text starts with a letter and has a second word
+   and no `=` or `{`, and does not flag a single word or a line starting with
+   a digit.
+   (Generators leave a blank line after a closer as style; the compiler does not
+   require it.)
+3. No statement and no `##` line between a run's tags and its `run:`. A blank
+   line or a `//` comment between them is fine. A `//` or `/* */` comment
+   directly above a cell, outside the statement, is not shown and warns
+   (`notebook-comment-not-shown`). A `#"` or `# tag` above a `given:`
+   attaches to the given, not to the next run.
+4. `given:` uses `NAME :: filter<T> is f''`, bound with `~`, declared before
+   first use. This is identical to the dashboard skill, and the compiler, not
+   the lint, enforces it.
+5. Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.
+
+Rule 5 has a compiler reason: a `#(markdown)` or `#"` belongs to the statement
+below it, and at the end of a file there is none, so Malloy refuses the `#"` as
+`orphaned-object-annotation` and the lint reports the `#(markdown)`.
+
+**What the format guarantees.** The load-time lint, which follows this
+decision, reports each of these with a fix-it: `##| markdown` or `##|markdown`
+("did you mean `##|(markdown)`"); a missing `##!` flag, printing the exact line to add;
+a `|##` body line, and trailing text on a closer; a tag separated from its
+`run:`; an unknown `kind`; a statement or tag above `## artifact`; a
+`(markdown)` block with more than a name on its opener, with a name in a notebook,
+unnamed on a dashboard, or that no tile references, and `#(markdown)` with no
+statement to take it; a multi-word `## ` heading line; a `//`
+or `/* */` comment directly above a cell (`notebook-comment-not-shown`); a
+notebook artifact tag with no `kind` (`notebook-kind-missing`); an
+`## artifact { … }` that does not parse; a route glued to its word
+(`##|(markdown)name`); and a grid width given two ways.
+
+**What authors lose.** `.malloy` has no VS Code notebook UI the way `.malloynb`
+does. The Console notebook builder and the agent replace it.
+
+**Existing `.malloynb` files** stay read-only and viewable. Each is converted
+per file, on demand; there is no bulk migration.
+
+What this shares with a dashboard is deliberate: one prose element (the `"`
+route, a text tile in a grid and a cell in a notebook), one convention for
+parameters, one reader/writer discipline, one storage seam, one event seam.
+What differs is the layout engine — a notebook has none; file order is the
+layout, so reordering a cell moves a block — and the reading mode, which is why
+the two remain distinct surfaces rather than a notebook being a one-column
+dashboard.
 
 **Against the state of the art.** Measured against the leading notebook
 products — the Jupyter lineage and the hosted analytics notebooks built on it —
@@ -378,7 +536,9 @@ graph (the file is the dependency: a later cell reads an earlier definition
 because it compiles after it), or scheduling and publishing, which are the same
 Platform class as for dashboards.
 
-**The builder that follows.** Once the format is agreed, the notebook builder
+_Superseded 2026-10-02: there is no separate cell editor; see the status line at the top._
+
+**The builder that follows.** With the format decided, the notebook builder
 is the dashboard builder's core with a linear surface: `useDashboardEditor`
 generalised to a `useDocumentEditor<T>` (history, dirty, save with a refusal
 reason); the writer's `Edit`/`applyEdits` primitives, `DiffDialog`,
@@ -395,19 +555,31 @@ parameter values. Every notebook in the repository opens and writes back
 unchanged, as the dashboard suite already proves for dashboards.
 
 **Decisions this records.** `.malloynb` read-only, never extended (2026-09-13).
-The narrative surface is delivered by the Malloyyo family — the markdown block
-of G2 — and not by a `.malloynb` editor; a grid with prose is a dashboard with
-text tiles, a linear document is a notebook, and both stand on the same block.
-[choosing-a-surface.md](choosing-a-surface.md) is revised when the format
-lands, so that "notebook" there means this one.
+The narrative surface is a `.malloy` notebook and not a
+`.malloynb` editor; a grid with prose is a dashboard with text tiles, a linear
+document is a notebook, and both stand on the same block. On 2026-09-29 (Kyle):
+the format above, with no grammar extension; text tiles as `##|(markdown) name`
+blocks referenced by a `kind=text` tile entry; the description as the notes above
+the artifact tag, for both surfaces; and `.malloynb` files converted per file, on
+demand. The prose spelling was revised on review. It was first written on Malloy's
+`"` doc-string route (`##"`, `##|"`, `##|(text)`), and moved to `(markdown)` for two
+reasons: `##` reads as file-level, so prose that belongs to one statement needs a
+`#` spelling of its own, and a comment would never reach the compiled model, where
+the reader and every other consumer of it look. Earlier spellings are still read,
+so a file written to the first draft keeps its prose.
+[choosing-a-surface.md](choosing-a-surface.md) is
+revised when the reader ships, so that "notebook" there means this one.
 
-**Steps.** (1) Propose the markdown block and the notebook artifact kind with
-G1–G3 and G6 as one grammar package proposal (§8). (2) Generalise the editor
+_Superseded 2026-10-02 for steps 4 and 5 (the cell editor)._
+
+**Steps.** (1) Done 2026-09-29: the format is decided, text tile included; G1,
+tabs, G3 and G6 remain for the grammar package proposal (§8). (2) Generalize the editor
 core and the host flow out of the dashboard builder (no behaviour change; the
 dashboard specs are the guard) — the one step that needs no agreement and can
-start now. (3) When the grammar lands: the notebook reader and splice writer,
-with the repository round-trip suite over every notebook; the Console's
-notebook page rendering the new format beside the `.malloynb` viewer. (4)
+start now. (3) The notebook reader and load-time lint on the server, against
+the fixtures above; the splice writer, with the repository round-trip suite
+over every notebook; the Console's notebook page rendering the new format
+beside the `.malloynb` viewer. (4)
 Cells: add, remove, reorder, markdown in place. (5) The query cell's editor
 with diagnostics and Run, the explorer hand-off, chart choice. (6) Parameters,
 settings, storage, export, events. Each step ships behind the dashboard
@@ -418,7 +590,8 @@ host, one browser spec on the page.
 
 Each step names the extension, who has to agree, and the Publisher work that
 follows. The venue for every grammar item is the shared grammar package with
-Malloyyo; the proposals go there together, since they interact.
+Malloyyo. The notebook artifact and `kind=text` are decided (§7) and need no
+proposal; the rest go together, since they interact.
 
 ### G1 · Positional layout and tile heights
 
@@ -436,21 +609,23 @@ a repositioned tile is one edit on the `## artifact` line.
 
 ### G2 · Markdown blocks, tile kinds, tabs — and the notebook artifact
 
-_Extension:_ a markdown block as an annotation that can sit between statements
-(the one element §7's notebook and a dashboard's text tile both need), `kind=`
-on a tile entry with `text` first (`tiles=[intro { kind=text }, kpis]`), a
-notebook artifact kind whose cells are the file's statements in order, and tabs
-as a grouping over tiles. The one decision is the markdown block's spelling: a
-standalone block form of the existing `##"` doc string, or prose attached to the
-statement below it with a standalone form for prose that leads nothing. _Who
-agrees:_ Malloyyo, same venue. _Renderer:_ none for text; a `button` or `image`
-kind is Publisher UI. _Steps:_ (1) decide the block's spelling; (2) propose the
-block, `kind=text`, the notebook artifact and `tab=` together; (3) Publisher
-renders markdown blocks through the same path as the page description, in a
-grid as a text tile and in a notebook as a cell; (4) the dashboard builder gets
-an "Add text" action and tab management, and the notebook builder of §7 follows;
+_Extension:_ a markdown block that can sit between statements (the one element
+§7's notebook and a dashboard's text tile both need), `kind=` on a tile entry
+with `text` first (`tiles=[intro { kind=text }, kpis]`), a notebook artifact
+kind whose cells are the file's statements in order, and tabs as a grouping over
+tiles. The block's spelling is decided (2026-09-29): a notebook's prose is a
+`##(markdown)` or `##|(markdown)` annotation, and a text tile is a named
+`##|(markdown) name` … `|##` block that a tile references by name, so neither is
+a grammar extension. Text tiles are format decided, not rendered yet. `kind=text`
+and the notebook artifact are decided (§7) and need no agreement; tabs go with G1.
+_Who agrees:_ Malloyyo, same venue, for tabs. _Renderer:_ none for text; a `button` or `image`
+kind is Publisher UI. _Steps:_ (1) decide the block's spelling (decided
+2026-09-29); (2) propose `tab=` with G1; (3) Publisher renders markdown blocks through the
+same path as the page description, in a grid as a text tile and in a notebook
+as a cell; (4) the dashboard builder gets an "Add text" action and tab
+management, and the notebook builder of §7 follows;
 (5) revise [choosing-a-surface.md](choosing-a-surface.md) so "notebook" means
-the Malloyyo-style one and `.malloynb` is the import.
+the `.malloy` one and `.malloynb` is the import.
 
 ### G3 · Layout on the tile entry, not the view
 
@@ -460,6 +635,10 @@ backward compatible. _Who agrees:_ Malloyyo. _Steps:_ (1) propose alongside G1;
 (2) Publisher's manifest merges entry over view; (3) the builder writes layout on
 the entry for tiles whose view it does not own, which makes inherited tiles
 resizable and lets one view sit at two widths on two pages.
+Planned for text tiles first, in the follow-up that renders them: `colspan` and
+`break` read off a `kind=text` entry, since a block has no view to tag. Nothing
+reads them yet, and the entry is left out of the page. For query tiles,
+entry-level layout stays as proposed here.
 
 ### G6 · One grammar
 
@@ -480,10 +659,14 @@ settings popover gain the controls, which the writer already knows how to emit.
 
 ### The server write path
 
-Shipped 2026-09-15 (§5.2), scoped to dashboard files. What remains here is
-its generalisation, if ever wanted: a `DocumentStorage` provider over the
-endpoint for hosts other than the Console, and writes to other kinds of file,
-which would each need their own compile-first rule and a look at the security
+Shipped 2026-09-15 (§5.2), scoped to dashboard files, and widened to
+`notebooks/<slug>.malloy` for the notebook editor. Notebooks share the route
+because the same compile-first rule holds, the path is confined to the top of
+`notebooks/`, and a notebook must carry an `## artifact` tag (an untagged file
+there is a shared include, refused with 400). What remains here is its
+generalisation, if ever wanted: a `DocumentStorage` provider over the endpoint
+for hosts other than the Console, and writes to other kinds of file, which
+would each need their own compile-first rule and a look at the security
 posture.
 
 ### Renderer asks (`@malloydata/render`)
@@ -509,13 +692,16 @@ splice approach no longer needs one.
 
 1. Land PR #1158; keep the round-trip suite green over every dashboard in the
    repository. _Done except the merge._
-2. Open the grammar conversation with Malloyyo with G1, G2 (markdown blocks,
-   text tiles, the notebook artifact), G3 and G6 as one proposal, with the
-   control-tag names alongside.
+2. Open the grammar conversation with G1, tabs, G3 and G6 as one proposal, with
+   the control-tag names alongside. The notebook artifact and `kind=text` are
+   decided (§7) and do not wait on it.
 3. The control tags and settings that ride on the `Given` schema (§8), now
    that API changes are in scope again — the write path (§5.2) has landed.
-4. The notebook (§7): the shared editor core can be generalised now with no
-   agreement needed; the format goes into the grammar proposal of step 2; the
-   builder follows the grammar.
+4. The notebook (§7): the format is decided (2026-09-29), and nothing in it
+   waits on the grammar. The server reader and lint come first, against the
+   fixtures, then the renderer and the builder; the shared editor core can be
+   generalized alongside.
 5. Renderer and parser issues upstream, when there is appetite to file them.
-6. When the grammar lands: placement, text tiles, tabs, entry-level layout (§8).
+6. When the grammar lands: placement, tabs, entry-level layout for query tiles
+   (§8). Text tiles, with `colspan` and `break` on their entry, do not wait
+   for it.

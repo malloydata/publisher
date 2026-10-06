@@ -73,7 +73,8 @@ EVENTS: dict[str, dict[str, set[str]]] = {
     "tool_call": {
         "required": _CASE | {"tool"},
         # `retrieval_mode` is get_context's own `retrieval` field: "semantic",
-        # "lexical", or absent. Absent means the call did not RANK -- an
+        # "indexing" or "error" when a provider is configured (an old server
+        # may also send "lexical"), or absent. Absent means the call did not RANK -- an
         # enumeration or a targeted lookup -- or that the server has no
         # embedding provider at all, so it is not on its own evidence of
         # either. Which retriever answered decides whether two runs are
@@ -170,6 +171,9 @@ RUN_RECOMMENDED = {"judgeModel", "judgeVersion", "datasetVersion", "modelSha",
                    "skillsVersion", "answererManifest"}
 RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "modelGitSha", "modelDir", "mcpUrl", "publisher", "predictionsReExecuted",
+                # The eval.toml the servers and names were read from, and what
+                # it said, so a run shows where its settings came from.
+                "evalConfig",
                 "serverVersion", "diagnoserModel", "improverModel",
                 "rubricSha",
                 # The prompt the judge was SHOWN, hashed. `rubricSha` covers
