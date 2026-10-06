@@ -1900,7 +1900,7 @@ paths:
         before anything compiles, for a field, view or query alike, because other
         viewers run it; plain `append` text without the tag, and a model file,
         keep the tags they define themselves. The same refusal covers an annotation that
-        reads `@env.`, one the tag parser rejects or that exceeds 8,192 characters,
+        reads `@env.` (in a `##` note too), one the tag parser rejects or that exceeds 8,192 characters,
         text that frees a column (`except:`, `rename:`) and declares one of the same name
         in the same extend chain, and one with over 1,000 annotations or 64 KB of them.
         This removes the author-written paths only: the renderer's other

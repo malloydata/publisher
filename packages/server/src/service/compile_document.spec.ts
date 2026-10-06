@@ -552,6 +552,38 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       });
    });
 
+   describe("a control's suggest query", () => {
+      beforeEach(async () => {
+         await install({ "model.malloy": MODEL });
+      });
+
+      it("cannot be written by a document: a given, and so its suggest, is refused in document text", async () => {
+         const error = await compile(
+            `## artifact { tiles=["open_src -> v"] }\n#(control) suggest { query=anything }\ngiven: PICK :: string\n`,
+            { ROLE: "analyst" },
+         ).then(
+            () => undefined,
+            (caught: unknown) => caught,
+         );
+         expect(error).toBeInstanceOf(CompileRefusedError);
+      });
+   });
+
+   describe("a tag that follows code on its line", () => {
+      beforeEach(async () => {
+         await install({ "model.malloy": MODEL });
+      });
+
+      it("makes the text a document, as it is when the file is saved", async () => {
+         const { document } = await compile(
+            `run: open_src -> { aggregate: c } ## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,
+            { ROLE: "analyst" },
+         );
+         expect(document?.kind).toBe("dashboard");
+         expect(document?.manifest?.tiles).toHaveLength(1);
+      });
+   });
+
    describe("a tile over a name the viewer cannot confirm", () => {
       beforeEach(async () => {
          await install(
@@ -560,6 +592,10 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 given:
   ROLE :: string
 source: customers is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+source: helper is duckdb.sql("select 1 as id") extend {
   measure: c is count()
   view: v is { aggregate: c }
 }
@@ -575,12 +611,16 @@ export { customers }
          );
       });
 
-      const refusal = async (tile: string, givens?: Record<string, string>) => {
+      const refusal = async (
+         tile: string,
+         givens?: Record<string, string>,
+         definitions = "",
+      ) => {
          try {
             await env.compileSource(
                "pkg",
                "index.malloy",
-               `## artifact { tiles=["${tile}"] }\n`,
+               `## artifact { tiles=["${tile}"] }\n${definitions}`,
                false,
                givens,
             );
@@ -597,6 +637,50 @@ export { customers }
          expect(await refusal("locked_hidden -> v", { ROLE: "analyst" })).toBe(
             missing,
          );
+      });
+
+      describe("a definition whose base is not one the caller can see", () => {
+         const GENERIC = "Query target is not queryable.";
+         const bases = ["nosuch", "helper", "locked_hidden"];
+         for (const base of bases) {
+            for (const used of [false, true]) {
+               for (const givens of [undefined, { ROLE: "analyst" }]) {
+                  it(`reads the same for ${base}, ${used ? "used" : "unused"}, ${givens ? "with" : "without"} the admitting role`, async () => {
+                     expect(
+                        await refusal(
+                           used ? "d -> v" : "customers -> v",
+                           givens,
+                           `source: d is ${base} extend {}\n`,
+                        ),
+                     ).toBe(GENERIC);
+                  });
+               }
+            }
+         }
+
+         it("still compiles a definition over a source the caller can see", async () => {
+            const { document, problems } = await env.compileSource(
+               "pkg",
+               "index.malloy",
+               `## artifact { tiles=["d -> v"] }\nsource: d is customers extend {}\n`,
+            );
+            expect(problems).toEqual([]);
+            expect(document).toBeDefined();
+         });
+
+         it("gives a locked source reached through a definition the generic sentence, not one naming it", async () => {
+            const hidden = await refusal(
+               "d -> v",
+               undefined,
+               "source: d is locked_hidden\n",
+            );
+            const plain = await refusal(
+               "d -> v",
+               undefined,
+               "source: d is helper\n",
+            );
+            expect(hidden).toBe(plain);
+         });
       });
 
       it("reports a missing view on a source the viewer can read, as a tile problem", async () => {

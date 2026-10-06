@@ -544,6 +544,18 @@ source: published is duckdb.sql("select 1 as id") extend {
                grp('  # label="<img src=x>" x=@env.X'),
                "@env.",
             ],
+            "an @env. value in the ## artifact tag": [
+               `## artifact { kind=dashboard title=@env.HOME tiles=["base_source -> v"] }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
+            "an @env. value in a tile string": [
+               `## artifact { tiles=["base_source -> { aggregate: c } @env.X"] }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
+            "an @env. value in a sibling ## dashboard tag": [
+               `## dashboard { columns=@env.HOME }\nrun: base_source -> { aggregate: c }`,
+               "@env.",
+            ],
             "an unclosed tag the renderer may read differently": [
                grp("  # image {"),
                "does not parse",
@@ -707,6 +719,29 @@ source: published is duckdb.sql("select 1 as id") extend {
             "append",
          );
          expect(errors).toEqual([]);
+      });
+
+      describe("a document whose tag follows code on its line", () => {
+         const LEAK_FIELD = `source: s is base_source extend {\n  dimension:\n  # image\n  pic is concat('${LEAK}', 'x')\n}\nrun: s -> { group_by: pic }\n`;
+
+         it("is read as a document, so a render tag in it is refused", async () => {
+            const error = await refusalFor(
+               `run: base_source -> { group_by: id } ## artifact { kind=notebook }\n${LEAK_FIELD}`,
+               "append",
+            );
+            expect(error.message).toContain(RENDER);
+         });
+
+         it("is not read as a document when the ## sits in a string", async () => {
+            const outcome = await compile(
+               `run: base_source -> { group_by: x is '## artifact { kind=notebook }' }\n${LEAK_FIELD}`,
+               "append",
+            ).then(
+               () => undefined,
+               (caught: unknown) => caught,
+            );
+            expect(outcome).not.toBeInstanceOf(CompileRefusedError);
+         });
       });
 
       describe("plain append text, which is the caller's own compile", () => {

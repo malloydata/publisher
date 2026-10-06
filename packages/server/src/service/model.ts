@@ -654,6 +654,9 @@ export function bindingsAllowDegradeToLive(
 const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
    Object.freeze([]);
 
+/** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
+const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -2441,7 +2444,7 @@ export class Model {
                // convert HERE, on the base actually gated — a hidden one is a
                // 404, not a 403 naming it.
                if (error instanceof AccessDeniedError) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -2855,19 +2858,49 @@ export class Model {
    }
 
    /**
-    * Throws the generic 404 for `query` when it names a source the caller may
-    * not be told about, in a model where that 404 is the only answer: a hidden
-    * source and an absent one then read the same, so a tile's compile problem
-    * is never what confirms a name. An ungated model explains a hidden source
-    * already, so there the compile problem is shown. A no-op when the boundary
-    * is inert.
+    * The boundary's refusal for a gated name reached through an alias or a join,
+    * which the caller did not write. In a gated model its words are the generic
+    * sentence, since `No queryable source "<name>".` beside `Query target is not
+    * queryable.` would confirm the name is a real, locked source.
+    */
+   private refuseGatedNameAsBoundary(name: string): void {
+      try {
+         this.assertQueryBoundaryEarly(name, undefined, undefined);
+      } catch (error) {
+         if (
+            error instanceof NotQueryableError &&
+            !(error instanceof OffSurfaceError) &&
+            this.hasAnyAuthorizeNote()
+         ) {
+            throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
+         }
+         throw error;
+      }
+   }
+
+   /**
+    * Throws the generic 404 for `query` (with the document's `definitions`
+    * ahead of it) when a run target, or the base chain of a source the text
+    * declares, is not queryable, in a model where that 404 is the only answer:
+    * a hidden source, a hidden gated one and an absent one then read the same,
+    * so neither a compile problem nor a document that comes back confirms a
+    * name. An ungated model explains a hidden source already, so there the
+    * compile problem is shown. A no-op when the boundary is inert.
     */
    public assertTextNameVisible(query: string, definitions: string): void {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
       if (!this.hasAnyAuthorizeNote()) return;
-      if (this.queryTextSourcesQueryable(`${definitions}\n${query}`)) return;
-      throw new NotQueryableError("Query target is not queryable.");
+      const text = `${definitions}\n${query}`;
+      const queryable = (name: string): boolean =>
+         this.isCuratedSource(name) || this.derivesFromCurated(name, text);
+      if (
+         extractRunTargetSourceNames(text).every(queryable) &&
+         [...buildDerivationBaseMap(text).keys()].every(queryable)
+      ) {
+         return;
+      }
+      throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
    }
 
    /**
@@ -2953,7 +2986,7 @@ export class Model {
                   error instanceof AccessDeniedError &&
                   !includeHiddenFilesAndSources
                ) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -4125,7 +4158,7 @@ export class Model {
                error instanceof AccessDeniedError &&
                !includeHiddenFilesAndSources
             ) {
-               this.assertQueryBoundaryEarly(source, undefined, undefined);
+               this.refuseGatedNameAsBoundary(source);
             }
             throw error;
          }

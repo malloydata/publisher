@@ -310,6 +310,22 @@ export async function compileDocument(input: {
    }
    if (boundaryProblems.length > 0) return { problems: boundaryProblems };
 
+   // A definition's base is a name the caller names too: a gated model answers every one it cannot confirm with the same 404, before any compile problem could tell them apart.
+   const readable = [
+      ...code
+         .filter((cell) => cell.kind === "query" && !restrictedCells.has(cell))
+         .map((cell) => cell.text),
+      ...tileExpressions
+         .filter((expression) => {
+            const key = normalizeTileExpression(expression);
+            return !restrictedTiles.has(key) && !unparsedTiles.has(key);
+         })
+         .map((expression) => `run: ${expression}`),
+   ];
+   for (const query of readable.length > 0 ? readable : [""]) {
+      gates.nameVisible(query, definitions);
+   }
+
    // Phase 2: compile what the caller may read, as an extension of the base so
    // the base's own `run:` statements and `##` notes never join the document.
    const compiledText = blankSpans(source, [...restrictedCells]);

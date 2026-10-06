@@ -259,6 +259,50 @@ function findArtifactLineOutsideBlocks(
       }
       if (artifactLine.test(trimmed)) return trimmed;
    }
+   return lexedArtifactNote(source, lines, artifactLine);
+}
+
+/**
+ * The tag when it follows code on its line (`run: x -> v ## artifact { … }`),
+ * which the lexer reads as a note and a line test cannot see: this is what
+ * keeps "is this a document" the same here as where the file is compiled. Only
+ * text with a `##` that is not at a line's start is lexed.
+ */
+function lexedArtifactNote(
+   source: string,
+   lines: readonly string[],
+   artifactLine: LineTest,
+): string | undefined {
+   if (!lines.some((line) => /\S.*##/.test(line) && !/^\s*##/.test(line))) {
+      return undefined;
+   }
+   const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
+      urls: { [NOTEBOOK_PARSE_URL]: source },
+   });
+   const parse = translator.parseStep.step(translator).parse;
+   const stream = parse?.tokenStream as unknown as TokenStreamShape | undefined;
+   const tokens = stream?.getTokens?.() ?? [];
+   const name = (type: number) =>
+      stream?.tokenSource?.vocabulary?.getSymbolicName(type);
+   const text = (i: number) =>
+      source.slice(tokens[i].startIndex, tokens[i].stopIndex + 1);
+   for (let i = 0; i < tokens.length; i++) {
+      const kind = name(tokens[i].type);
+      if (kind === "DOC_ANNOTATION" && artifactLine.test(text(i))) {
+         return text(i).trim();
+      }
+      if (kind !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
+      let body = "";
+      let j = i;
+      while (name(tokens[j].type) !== "BLOCK_ANNOTATION_END") {
+         body += text(j);
+         if (++j >= tokens.length || name(tokens[j].type) === "EOF") {
+            return undefined;
+         }
+      }
+      if (artifactLine.test(body)) return body;
+      i = j;
+   }
    return undefined;
 }
 

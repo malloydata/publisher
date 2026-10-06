@@ -10,16 +10,21 @@ import { artifactTag, splitSourceLines } from "./malloyText";
 // One case table for this reader and the server's; `artifact_tag_parity.spec.ts` there reads the same file.
 const FIXTURE = path.join(import.meta.dir, "testing/artifactTagParity.json");
 const { cases } = JSON.parse(fs.readFileSync(FIXTURE, "utf8")) as {
-   cases: { name: string; source: string; tag: string[] | null }[];
+   cases: {
+      name: string;
+      source: string;
+      tag: string[] | null;
+      sdk?: string[] | null;
+   }[];
 };
 
 describe("artifactTag agrees with the server and the lexer", () => {
-   for (const { name, source, tag } of cases)
+   for (const { name, source, tag, sdk } of cases)
       it(name, () => {
          const found = artifactTag(splitSourceLines(source));
          expect(
             found ? found.text.split("\n").map((l) => l.trim()) : null,
-         ).toEqual(tag);
+         ).toEqual(sdk === undefined ? tag : sdk);
       });
 });
 

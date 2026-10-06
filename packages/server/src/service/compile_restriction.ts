@@ -112,6 +112,8 @@ interface Block {
 interface FragmentScan {
    /** Every single-hash annotation, a `#|` block's body included, as the lexer captured it. */
    annotations: string[];
+   /** Every `##` note and `##|` block, which the tag parser reads for a document's own tags. */
+   notes: string[];
    blocks: Block[];
 }
 
@@ -136,7 +138,7 @@ function scanFragment(source: string): FragmentScan {
       urls: { [url]: source },
    });
    const parsed = translator.parseStep.step(translator).parse;
-   const scan: FragmentScan = { annotations: [], blocks: [] };
+   const scan: FragmentScan = { annotations: [], notes: [], blocks: [] };
    if (!parsed) return scan;
    // Symbolic names, not numeric types or parse-tree class names, so a Malloy upgrade or a minified build cannot silently blind the scan.
    const vocabulary = (
@@ -167,16 +169,23 @@ function scanFragment(source: string): FragmentScan {
    let lastName: string | undefined;
    let mode: "except" | "declare" | "rename" | undefined;
    let text$: string | undefined;
+   let blockIsNote = false;
    const closeBlock = () => {
-      if (text$ !== undefined) scan.annotations.push(text$);
+      if (text$ !== undefined) {
+         (blockIsNote ? scan.notes : scan.annotations).push(text$);
+      }
       text$ = undefined;
    };
    const current = () => stack[stack.length - 1]?.block ?? loose;
    for (let i = 0; i < tokens.length; i++) {
       const { name, text } = tokens[i];
-      if (name === "BLOCK_ANNOTATION_BEGIN") {
+      if (
+         name === "BLOCK_ANNOTATION_BEGIN" ||
+         name === "DOC_BLOCK_ANNOTATION_BEGIN"
+      ) {
          closeBlock();
          text$ = text;
+         blockIsNote = name === "DOC_BLOCK_ANNOTATION_BEGIN";
          continue;
       }
       if (name === "BLOCK_ANNOTATION_TEXT") {
@@ -188,6 +197,10 @@ function scanFragment(source: string): FragmentScan {
          continue;
       }
       closeBlock();
+      if (name === "DOC_ANNOTATION") {
+         scan.notes.push(text);
+         continue;
+      }
       if (name === "ANNOTATION") {
          // `##` notes describe the model and are never drawn; a block's closer is not content.
          if (/^#(?!#)/.test(text)) scan.annotations.push(text);
@@ -313,13 +326,15 @@ export function renderTagRefusal(source: string): string | undefined {
    ) {
       return TOO_MANY;
    }
+   // A `##` note is a document's own tag; the parser drops one that reads `@env.`, which would hide it rather than refuse it.
+   for (const note of scan.notes) {
+      if (onMotlyRoute(note) && hasEnvReference(note)) return ENV_REFUSAL;
+   }
    for (const text of scan.annotations) {
       // `#(docs)`, `#"` and the other routes are prose or another namespace, not render tags.
       if (!onMotlyRoute(text)) continue;
       // The parser hydrates `@env.` from the server's environment; reading it, or neutralizing it, would hide the tag it sits beside.
-      if (hasEnvReference(text)) {
-         return "an annotation reads the server's environment (`@env.`), which a fragment may not do";
-      }
+      if (hasEnvReference(text)) return ENV_REFUSAL;
       // The same rescue the renderer's own readers use, so a bare `f'…'` filter literal is not stricter here than there.
       const parsed = parseMotly([text]);
       // A tag the parser rejects is one the renderer may still read differently, so it fails closed.
@@ -348,6 +363,9 @@ export function renderTagRefusal(source: string): string | undefined {
    }
    return undefined;
 }
+
+const ENV_REFUSAL =
+   "an annotation reads the server's environment (`@env.`), which a document may not do";
 
 const TOO_MANY = `the submitted document carries more annotations than one may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
 
