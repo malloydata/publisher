@@ -884,13 +884,44 @@ export class Package {
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
          }
-         const model = Model.fromSerialized(
-            packageName,
-            packagePath,
-            malloyConfig,
-            sm,
-            buildManifest ? { buildManifest } : undefined,
-         );
+         let model: Model;
+         try {
+            model = Model.fromSerialized(
+               packageName,
+               packagePath,
+               malloyConfig,
+               sm,
+               buildManifest ? { buildManifest } : undefined,
+            );
+         } catch (hydrateErr) {
+            // A load and a reload fail on this, as they always have. A compile
+            // keeps going: one model that will not hydrate costs that model's
+            // findings, not every other file's.
+            if (!ctx.compile) throw hydrateErr;
+            logger.warn("Model hydration failed during compile", {
+               packageName,
+               modelPath: sm.modelPath,
+               error: errMessage(hydrateErr),
+            });
+            renderTagWarnings.push({
+               model: sm.modelPath,
+               message:
+                  `The load-time checks could not read this model ` +
+                  `(${errMessage(hydrateErr)}), so its render-tag findings ` +
+                  `are unknown rather than clean.`,
+               severity: "warn",
+            });
+            models.set(
+               sm.modelPath,
+               placeholder(
+                  sm,
+                  hydrateErr instanceof Error
+                     ? hydrateErr
+                     : new Error(String(hydrateErr)),
+               ),
+            );
+            continue;
+         }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
          try {
             warnings = await model.validateRenderTags();
@@ -911,6 +942,15 @@ export class Package {
                   error: err.message,
                },
             );
+            if (ctx.compile) {
+               renderTagWarnings.push({
+                  model: sm.modelPath,
+                  message:
+                     `The render-tag check did not finish for this model, so ` +
+                     `its render-tag findings are unknown rather than clean.`,
+                  severity: "warn",
+               });
+            }
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
          }
@@ -991,7 +1031,30 @@ export class Package {
          models,
          malloyConfig,
       );
-      await pkg.discoverDashboards({ dryRun: true });
+      try {
+         await pkg.discoverDashboards({ dryRun: true });
+      } catch (err) {
+         // Discovery is meant never to throw, but a fault in it must not
+         // reject the whole compile, and a missing list reads exactly like a
+         // clean package. Say the findings are unknown instead.
+         logger.warn("Dashboard lint failed during compile", {
+            packageName,
+            error: errMessage(err),
+         });
+         return {
+            renderTagWarnings,
+            dashboardWarnings: [
+               {
+                  message:
+                     "The dashboard checks did not run, so their findings " +
+                     "are unknown rather than clean. Reload the package to " +
+                     'see them. The cause is in the server log under "Dashboard ' +
+                     'lint failed during compile".',
+                  severity: "warn",
+               },
+            ],
+         };
+      }
       return { renderTagWarnings, dashboardWarnings: pkg.dashboardWarnings };
    }
 
