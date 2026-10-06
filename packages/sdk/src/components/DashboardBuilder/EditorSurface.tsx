@@ -249,6 +249,32 @@ export function EditorSurface({
       },
    });
 
+   // A text-held document has no `import`, so only what its run model lists resolves for it.
+   const runSources = useMemo(
+      () =>
+         textSource
+            ? (catalog?.sources ?? [])
+                 .filter((s) =>
+                    (s.visibleIn ?? s.exporters ?? [s.modelPath]).includes(
+                       runModelPath,
+                    ),
+                 )
+                 .map((s) => s.name)
+            : undefined,
+      [catalog, textSource, runModelPath],
+   );
+   const offered = useMemo(
+      () =>
+         catalog && runSources
+            ? {
+                 sources: catalog.sources.filter((s) =>
+                    runSources.includes(s.name),
+                 ),
+              }
+            : catalog,
+      [catalog, runSources],
+   );
+
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
    // Only a package write can make the package serve it; a copy in the host's store does not.
@@ -445,7 +471,7 @@ export function EditorSurface({
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
             {...(opened.conversion ? { conversion: opened.conversion } : {})}
-            {...(catalog ? { catalog } : {})}
+            {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
             controls={
@@ -459,7 +485,9 @@ export function EditorSurface({
             {...(saveLabel ? { saveLabel } : {})}
             {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
-            {...(textSource ? { explicitKind: true } : {})}
+            {...(textSource
+               ? { explicitKind: true, visibleSources: runSources }
+               : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

@@ -27,16 +27,19 @@ import { SourceViewPicker } from "./SourceViewPicker";
  * a tile that does not resolve — which is why saving needs no compile step
  * beyond the reader's own round-trip.
  *
- * Every source the package publishes is offered. A tile's view is declared in
- * an extension of its model source, so a source the file cannot see yet is
- * imported by name when the tile is added (`withSource`); one the file already
- * reaches, by name or through a whole-file import of its model, is left alone.
+ * Every source a model of the package exports is offered. A tile's view is
+ * declared in an extension of its model source, so a source the file cannot see
+ * yet is imported by name when the tile is added (`withSource`); one the file
+ * already reaches, by name or through a whole-file import of an exporter, is
+ * left alone.
  */
 export interface NewTile {
    /** The model source the view lives on. */
    base: string;
-   /** The model that declares it, for the import a source the file cannot see yet needs. */
+   /** The model that exports it, for the import a source the file cannot see yet needs. */
    modelPath: string;
+   /** Every model that exports it; absent when only `modelPath` does. */
+   exporters?: string[];
    /** The view, as the catalog names it. */
    view: string;
    label?: string;
@@ -103,9 +106,10 @@ export function AddTileDialog({
          (name) =>
             `"${name}" is not a plain Malloy name, so a tile cannot be written for it.`,
       )[0];
-   const picked = sources
-      .find((source) => source.name === base)
-      ?.views.find((candidate) => candidate.name === view);
+   const pickedSource = sources.find((source) => source.name === base);
+   const picked = pickedSource?.views.find(
+      (candidate) => candidate.name === view,
+   );
 
    return (
       <AppDialog
@@ -126,9 +130,10 @@ export function AddTileDialog({
                         ? onAddText()
                         : onAdd({
                              base,
-                             modelPath:
-                                sources.find((s) => s.name === base)
-                                   ?.modelPath ?? "",
+                             modelPath: pickedSource?.modelPath ?? "",
+                             ...(pickedSource?.exporters
+                                ? { exporters: pickedSource.exporters }
+                                : {}),
                              view,
                              ...(label.trim() ? { label: label.trim() } : {}),
                              ...(chart !== "default"
