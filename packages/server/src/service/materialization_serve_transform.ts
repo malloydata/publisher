@@ -809,7 +809,34 @@ export function liftDerivedSources(
 function derivedFrom(def: DerivedSourceDef | undefined): string | undefined {
    if (typeof def?.extends === "string") return def.extends;
    if (def?.type !== "query_source") return undefined;
-   return structRefSourceId(def.query?.structRef);
+   return (
+      structRefSourceId(def.query?.structRef) ??
+      inlineExtendBase(def.query?.structRef)
+   );
+}
+
+/**
+ * The source an inline parenthesized extension is built on, for a declaration
+ * of the form `h is (base extend { … }) -> { … }`. The compiler embeds the
+ * parenthesized source as the `structRef` itself: a definition with `extends`
+ * and its own join fields but no `sourceID`, since nothing names it. Its text
+ * is part of the declaration's, so it is carried with the declaration; what
+ * the lift needs from it is what it reads — its base, and its joins (see
+ * {@link inlineExtendJoins}).
+ */
+function inlineExtendBase(structRef: unknown): string | undefined {
+   if (structRef === null || typeof structRef !== "object") return undefined;
+   if (structRefSourceId(structRef) !== undefined) return undefined;
+   const ext = (structRef as { extends?: unknown }).extends;
+   return typeof ext === "string" ? ext : undefined;
+}
+
+/** The join fields an inline parenthesized extension declares (see {@link inlineExtendBase}). */
+function inlineExtendJoins(structRef: unknown): unknown[] {
+   if (inlineExtendBase(structRef) === undefined) return [];
+   return ((structRef as { fields?: unknown[] }).fields ?? []).filter(
+      (f) => typeof (f as { join?: unknown }).join === "string",
+   );
 }
 
 /**
@@ -858,9 +885,13 @@ function liftQueryDerivedSource(
       const name = ctx.sourceNameById.get(sourceID);
       if (!name || !available.has(name)) return undefined;
    }
-   const declaredJoins = (def.fields ?? []).filter(
-      (f) => typeof (f as { join?: unknown }).join === "string",
-   );
+   const declaredJoins = [
+      ...(def.fields ?? []).filter(
+         (f) => typeof (f as { join?: unknown }).join === "string",
+      ),
+      // A join the inline parenthesized base declares is read by the same text.
+      ...inlineExtendJoins(def.query?.structRef),
+   ];
    for (const join of declaredJoins) {
       const sourceID = (join as { sourceID?: unknown }).sourceID;
       const name =
@@ -1019,6 +1050,14 @@ export function buildServeShapeModelForBindings(
     * extend, which is what makes them resolve.
     */
    derived: DerivedSourceLift[] = [],
+   /**
+    * The `##!` flags of the author files whose declarations `derived` carries,
+    * verbatim. A lift is the author's text, and text written under
+    * `access_modifiers` (an `include { public: … }` wrapper) or any other
+    * experiment compiles only under the same flag; without them one such lift
+    * fails the shape and every lift with it.
+    */
+   documentFlags: string[] = [],
 ): {
    modelText: string;
 } {
@@ -1044,10 +1083,11 @@ export function buildServeShapeModelForBindings(
    const enabled = ["virtual_source"];
    if (rollupGroups.length) enabled.push("composite_sources");
    if (givens.length) enabled.push("givens");
-   const flags =
+   const ownFlags =
       enabled.length === 1
          ? "##! experimental.virtual_source"
          : `##! experimental { ${enabled.join(" ")} }`;
+   const flags = [...documentFlags, ownFlags].join("\n");
    // Before the sources, because a source's re-emitted `where:` reads them.
    const givenBlock = givens.length
       ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
@@ -1192,6 +1232,14 @@ export function buildChainedStorageBuildModel(params: {
    destinationName: string;
    derived?: DerivedSourceLift[];
    documentFlags?: string[];
+   /**
+    * The author model's given surface, declared on this model as the serve
+    * shape declares it. A carried intermediate's text is the author's verbatim,
+    * and a dimension on it that reads `$REGION` compiles only if `REGION` is
+    * declared — whether or not the downstream reads that dimension. The build
+    * binds no given; the declarations are what lets the text compile.
+    */
+   givens?: ServeShapeGiven[];
 }): string {
    // A rollup is never an upstream — nothing can reference one, its name being
    // synthesized and absent from every model file — so one arriving here means a
@@ -1218,13 +1266,20 @@ export function buildChainedStorageBuildModel(params: {
    // The author's flags first, this model's own last: Malloy accumulates `##!`
    // lines, so repeating a flag the author also enabled is harmless, and the
    // two this model always needs are stated once wherever the author's stand.
+   const givens = params.givens ?? [];
    const flags = [
       ...(params.documentFlags ?? []),
-      "##! experimental { persistence virtual_source }",
+      givens.length
+         ? "##! experimental { persistence virtual_source givens }"
+         : "##! experimental { persistence virtual_source }",
    ].join("\n");
+   const givenBlock = givens.length
+      ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
+      : "";
    const derived = (params.derived ?? []).map(derivedSourceFragment).join("\n");
    return (
       `${flags}\n` +
+      givenBlock +
       `${upstreamFragments}\n` +
       (derived ? `${derived}\n` : "") +
       `#@ persist storage=${params.destinationName}\n` +
@@ -1254,6 +1309,14 @@ export interface ReachedSources {
    rawLeaves: string[];
    /** The non-persisted sources that reach them (`daily_regional`). */
    rawVia: string[];
+   /**
+    * Every named source the walk passed through or stopped at, the root
+    * excluded: the downstream's dependency closure, which is exactly the set
+    * of sources a build over its stored parents needs declared — and no
+    * other. A model declares more than one chain, and a source off this
+    * one's path is not this build's concern, however it lifts.
+    */
+   visited: string[];
 }
 
 /**
@@ -1302,6 +1365,7 @@ export function reachedPersistedSources(
    const persisted = new Map<string, { name: string; sourceID: string }>();
    const rawLeaves = new Set<string>();
    const rawVia = new Set<string>();
+   const visited = new Set<string>();
    const seen = new Set<unknown>();
    const defName = (def: DerivedSourceDef): string | undefined => {
       const id = (def as { sourceID?: unknown }).sourceID;
@@ -1372,6 +1436,7 @@ export function reachedPersistedSources(
       }
       if (seen.has(def)) return;
       seen.add(def);
+      if (!root && sourceName !== undefined) visited.add(sourceName);
       // The root is the source being built: it is persisted by definition, and
       // the question is what IT reaches, so only its descendants can stop the walk.
       const sourceID = (def as { sourceID?: unknown }).sourceID;
@@ -1414,6 +1479,7 @@ export function reachedPersistedSources(
       raw: rawLeaves.size > 0,
       rawLeaves: [...rawLeaves],
       rawVia: [...rawVia],
+      visited: [...visited],
    };
 }
 
@@ -1470,6 +1536,28 @@ function pipelineReferences(pipeline: unknown): unknown[] {
  * The `##!` lines of an author file — the document flags its declarations
  * compile under. Order is kept and blank lines are dropped.
  */
+/**
+ * The `##!` flags of every author file a set of lifts carries declarations
+ * from, deduplicated in first-seen order — what a model that carries their
+ * text must enable to compile it.
+ */
+export function documentFlagsForLifts(
+   lifts: readonly { sourceName: string }[],
+   ctx: {
+      contents: Record<string, { location?: { url?: string } } | undefined>;
+      fileText: (url: string) => string | undefined;
+   },
+): string[] {
+   const files = new Set<string>();
+   for (const lift of lifts) {
+      const url = ctx.contents[lift.sourceName]?.location?.url;
+      if (url) files.add(url);
+   }
+   return [...files]
+      .flatMap((url) => documentFlagLines(ctx.fileText(url) ?? ""))
+      .filter((line, i, all) => all.indexOf(line) === i);
+}
+
 export function documentFlagLines(text: string): string[] {
    // Block comments first, so a `##!` quoted inside one is not a flag.
    return text
@@ -1790,11 +1878,18 @@ export function extractRefinements(
       if (typeof f.code !== "string" || f.code.length === 0) continue; // raw column
       if (f.expressionType === "scalar") {
          out.push({ kind: "dimension", name: f.name, code: f.code });
-      } else if (f.expressionType === "aggregate") {
+      } else if (
+         f.expressionType === "aggregate" ||
+         // `all(…)` / `exclude(…)` over a measure: a measure like any other
+         // on the relation it is declared over, which a virtual base is. A
+         // view on the same source commonly reads one, and a view is carried
+         // verbatim — leaving the measure off makes that view fail to compile.
+         f.expressionType === "ungrouped_aggregate"
+      ) {
          out.push({ kind: "measure", name: f.name, code: f.code });
       }
-      // analytic / calculation / ungrouped-aggregate and non-atomic fields
-      // (joins, turtles have no `code`) are skipped → those queries fall back.
+      // analytic / calculation and non-atomic fields (joins, turtles have no
+      // `code`) are skipped → those queries fall back.
    }
    return out;
 }

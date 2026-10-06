@@ -16,6 +16,7 @@ import {
    MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    MaterializationMode,
    recordAutoLoadOutcome,
@@ -107,13 +108,14 @@ import {
    buildChainedStorageBuildModel,
    buildVirtualMap,
    deriveServeBindings,
-   documentFlagLines,
    groupAliasesByName,
    liftDerivedSources,
    missingPersistedTables,
    reachedPersistedSources,
    type ServeBinding,
    type SourceLocation,
+   type ServeShapeGiven,
+   documentFlagsForLifts,
 } from "./materialization_serve_transform";
 
 /**
@@ -534,6 +536,28 @@ function declaredStorage(persistSource: PersistSource): string | undefined {
  * quietly building unpartitioned would turn a broken `partition=` into a table
  * whose layout silently differs from what the author declared.
  */
+/**
+ * The author model's given surface, for the chained build's transient model.
+ * `Model.givens` has collapsed inheritance through imports, so this is the
+ * surface the author's own files compile against. A given whose type cannot
+ * be rendered is dropped rather than guessed: text that reads it then fails
+ * to compile and the build reports a shape it could not carry, where a
+ * guessed type would compile a predicate that silently coerces.
+ */
+function chainedBuildGivens(persistSource: PersistSource): ServeShapeGiven[] {
+   const out: ServeShapeGiven[] = [];
+   for (const given of persistSource._model?.givens?.values() ?? []) {
+      const api = malloyGivenToApi(given as unknown as MalloyGiven);
+      if (!api.name || !api.type) continue;
+      out.push({
+         name: api.name,
+         type: api.type,
+         defaultText: typeof api.default === "string" ? api.default : undefined,
+      });
+   }
+   return out;
+}
+
 function partitionColumnsForBuild(persistSource: PersistSource): string[] {
    const resolved = resolvePartitionColumns(
       persistSource,
@@ -4119,25 +4143,23 @@ export class MaterializationService {
       // them: by design it inherits `#@ persist` and reads the parent's table,
       // so here it is the parent's rebound virtual source plus the refinements
       // the extension adds.
+      // Only the sources on this downstream's path. The lift offers every
+      // derivable source in the model; one off the path is another chain's
+      // business, and a lift of it that does not compile would fail this
+      // build over a source it never reads.
+      const onPath = new Set(reached.visited);
       const derived = liftDerivedSources({
          contents: lift.contents,
          sourceNameById: lift.sourceNameById,
          shapeSourceNames: present,
          liftText: lift.liftText,
          carryPersistExtensions: true,
-      });
+      }).filter((d) => onPath.has(d.sourceName));
       // The `##!` flags of every file whose declarations this model carries.
-      const flagFiles = new Set<string>();
-      for (const name of [
-         persistSource.name,
-         ...derived.map((d) => d.sourceName),
-      ]) {
-         const url = lift.contents[name]?.location?.url;
-         if (url) flagFiles.add(url);
-      }
-      const documentFlags = [...flagFiles]
-         .flatMap((url) => documentFlagLines(lift.fileText(url) ?? ""))
-         .filter((line, i, all) => all.indexOf(line) === i);
+      const documentFlags = documentFlagsForLifts(
+         [{ sourceName: persistSource.name }, ...derived],
+         lift,
+      );
       const transientModel = buildChainedStorageBuildModel({
          upstreams,
          downstreamName: persistSource.name,
@@ -4145,6 +4167,7 @@ export class MaterializationService {
          destinationName,
          derived,
          documentFlags,
+         givens: chainedBuildGivens(persistSource),
       });
       try {
          return await buildDownstreamIntoStorage({

@@ -89,6 +89,7 @@ import {
    type SourceLocation,
    serveShapeDiagnostics,
    withholdUnreproducibleCallerScopedJoins,
+   documentFlagsForLifts,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -6825,6 +6826,7 @@ export class Model {
          rollupGroups,
          this.serveShapeGivens(),
          derived,
+         documentFlagsForLifts(derived, this.authorModelLift()),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -6882,6 +6884,7 @@ export class Model {
       contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
       sourceNameById: Map<string, string>;
       liftText: (location: SourceLocation) => string | undefined;
+      fileText: (url: string) => string | undefined;
    } {
       return authorModelLiftContext(this.modelDef, (url) => {
          try {
