@@ -4683,7 +4683,12 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         // A package compile hydrates every model on every call, for a package
+         // that already logged these warnings when it loaded.
+         skipAuthorizeWarningLog?: boolean;
+      },
    ): Model {
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
@@ -4700,7 +4705,9 @@ export class Model {
       // `SerializedModel.authorizeWarnings`'s doc) — the worker has no
       // logger, so they ride over the wire as strings for this thread, which
       // does, to log once per model hydration.
-      for (const warning of data.authorizeWarnings ?? []) {
+      for (const warning of options?.skipAuthorizeWarningLog
+         ? []
+         : (data.authorizeWarnings ?? [])) {
          logger.warn(warning, { packageName, modelPath: data.modelPath });
       }
 

@@ -891,7 +891,10 @@ export class Package {
                packagePath,
                malloyConfig,
                sm,
-               buildManifest ? { buildManifest } : undefined,
+               {
+                  buildManifest,
+                  skipAuthorizeWarningLog: ctx.compile,
+               },
             );
          } catch (hydrateErr) {
             // A load and a reload fail on this, as they always have. A compile
