@@ -35,31 +35,32 @@ const DEFINITION = `source: a is orders extend {
   view: by_cat is by_category
 }`;
 
+const compiled = (givenNames: string[]) => ({
+   data: {
+      status: "success",
+      problems: [],
+      document: {
+         kind: "dashboard",
+         manifest: {
+            name: "ops",
+            title: "Ops",
+            tiles: [
+               { kind: "query", query: "a -> by_cat", givenNames },
+               { kind: "query", query: "gated -> total", restricted: true },
+            ],
+            givens: [],
+         },
+         cells: [{ type: "code", kind: "definition", text: DEFINITION }],
+      },
+   },
+});
 const compileModelSource = mock(
    async (
       _env: string,
       _pkg: string,
       _path: string,
-      _body: { source?: string; scope?: string },
-   ) => ({
-      data: {
-         status: "success",
-         problems: [],
-         document: {
-            kind: "dashboard",
-            manifest: {
-               path: "ops",
-               title: "Ops",
-               tiles: [
-                  { kind: "query", query: "a -> by_cat", givenNames: [] },
-                  { kind: "query", query: "gated -> total", restricted: true },
-               ],
-               givens: [],
-            },
-            cells: [{ type: "code", kind: "definition", text: DEFINITION }],
-         },
-      },
-   }),
+      _body: { source?: string; scope?: string; givens?: object },
+   ) => compiled([]),
 );
 const executeQueryModel = mock(
    (
@@ -112,14 +113,19 @@ class FakeStorage implements DocumentStorage {
    async moveDocument(): Promise<void> {}
 }
 
-const mount = (storage: DocumentStorage) =>
+const mount = (
+   storage: DocumentStorage,
+   textSource: { modelPath: string; givens?: Record<string, string> } = {
+      modelPath: "models/orders.malloy",
+   },
+) =>
    render(
       <DocumentStorageProvider documentStorage={storage}>
          <DashboardEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="ops"
-            textSource={{ modelPath: "models/orders.malloy" }}
+            textSource={textSource}
          />
       </DocumentStorageProvider>,
       { wrapper: serverWrapper },
@@ -148,6 +154,40 @@ describe("DashboardEditor in text-source mode", () => {
       expect(modelPath).toBe("models/orders.malloy");
       expect(body).toEqual({ source: DOCUMENT, scope: "append" });
       expect(getModel).not.toHaveBeenCalled();
+   });
+
+   it("sends the host's givens with the compile, so a gated source it can read is not marked restricted", async () => {
+      mount(documentStore(), {
+         modelPath: "models/orders.malloy",
+         givens: { TENANTS: "acme" },
+      });
+
+      await waitFor(() => expect(compileModelSource).toHaveBeenCalled());
+      expect(compileModelSource.mock.calls[0][3]).toEqual({
+         source: DOCUMENT,
+         scope: "append",
+         givens: { TENANTS: "acme" },
+      });
+   });
+
+   it("sends the same givens with a tile that reads one, and with nothing else", async () => {
+      compileModelSource.mockImplementation(async () => compiled(["TENANTS"]));
+      try {
+         mount(documentStore(), {
+            modelPath: "models/orders.malloy",
+            givens: { TENANTS: "acme", UNRELATED: "x" },
+         });
+
+         await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+         expect(executeQueryModel.mock.calls[0][3]).toMatchObject({
+            givens: { TENANTS: "acme" },
+         });
+         expect(
+            JSON.stringify(executeQueryModel.mock.calls[0][3]),
+         ).not.toContain("UNRELATED");
+      } finally {
+         compileModelSource.mockImplementation(async () => compiled([]));
+      }
    });
 
    it("runs a tile as the document's definitions followed by one run:, with no import, flag or given", async () => {

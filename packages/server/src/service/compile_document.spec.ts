@@ -8,7 +8,11 @@ import os from "os";
 import path from "path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Runtime } from "@malloydata/malloy";
-import { AccessDeniedError, CompileRefusedError } from "../errors";
+import {
+   AccessDeniedError,
+   CompileRefusedError,
+   NotQueryableError,
+} from "../errors";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -185,6 +189,14 @@ run: open_src -> { aggregate: c }
          expect(tiles[1].label).toBe("Gated total");
       });
 
+      it("serves a manifest with no path: the host runs the text on the model it compiled against", async () => {
+         const manifest = manifestOf(
+            await compile(DOC_TILES, { ROLE: "analyst" }),
+         );
+         expect(manifest).not.toHaveProperty("path");
+         expect(manifest.name).toBe("model");
+      });
+
       it("a non-member gets the gated tile bare and the rest compiled", async () => {
          const result = await compile(DOC_TILES, { ROLE: "nobody" });
          const { problems } = result;
@@ -235,6 +247,33 @@ run: open_src -> { aggregate: c }
                `## artifact { kind=notebook }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+   });
+
+   describe("a tile over a source with a row-level gate", () => {
+      beforeEach(async () => {
+         await install({
+            "model.malloy": `##! experimental.givens
+given:
+  TENANTS :: string[]
+#(access_filter) tenant in $TENANTS
+source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+`,
+         });
+      });
+
+      const tile = `## artifact { tiles=["secured -> v"] }\n`;
+
+      it("is restricted when the request does not carry the gate's given, as every viewer of a host that never sends it", async () => {
+         expect(tilesOf(await compile(tile))[0].restricted).toBe(true);
+      });
+
+      it("is not restricted when the request carries it", async () => {
+         const tiles = tilesOf(await compile(tile, { TENANTS: ["acme"] }));
+         expect(tiles[0].restricted).toBeUndefined();
       });
    });
 
@@ -351,12 +390,31 @@ run: open_src -> { aggregate: c }
             "tile-does-not-compile",
          ]);
          expect(result.problems[0].message).toContain("open_src -> {");
+         expect(result.problems[0].message).toContain("Fix:");
          expect(tilesOf(result).map((t) => t.query)).toEqual([
             "open_src -> {",
             "open_src -> v",
          ]);
          expect(tilesOf(result)[1].givenNames).toEqual(["REGION"]);
          expect(await refusals()).toBe(0);
+      });
+
+      it("reports a tile that parses but names a view or a source that does not exist", async () => {
+         for (const tile of ["open_src -> no_such_view", "nosuch -> v"]) {
+            const result = await compile(tiles(tile, "open_src -> v"), {
+               ROLE: "analyst",
+            });
+            expect(result.problems.map((p) => p.code)).toEqual([
+               "tile-does-not-compile",
+            ]);
+            expect(result.problems[0].severity).toBe("error");
+            expect(result.problems[0].message).toContain(tile);
+            expect(result.problems[0].message).toContain("Fix:");
+            expect(tilesOf(result).map((t) => t.query)).toEqual([
+               tile,
+               "open_src -> v",
+            ]);
+         }
       });
 
       it("counts a tile refused for a construct, with the same reason as the whole-text gate", async () => {
@@ -494,6 +552,63 @@ run: open_src -> { aggregate: c }
       });
    });
 
+   describe("a tile over a name the viewer cannot confirm", () => {
+      beforeEach(async () => {
+         await install(
+            {
+               "index.malloy": `##! experimental.givens
+given:
+  ROLE :: string
+source: customers is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+#(authorize) 'analyst' = $ROLE
+source: locked_hidden is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+export { customers }
+`,
+            },
+            { explores: ["index.malloy"] },
+         );
+      });
+
+      const refusal = async (tile: string, givens?: Record<string, string>) => {
+         try {
+            await env.compileSource(
+               "pkg",
+               "index.malloy",
+               `## artifact { tiles=["${tile}"] }\n`,
+               false,
+               givens,
+            );
+         } catch (error) {
+            if (error instanceof NotQueryableError) return error.message;
+            throw error;
+         }
+         throw new Error("expected a refusal");
+      };
+
+      it("gives a missing source and a hidden gated one the same refusal", async () => {
+         const missing = await refusal("nosuch -> v");
+         expect(await refusal("locked_hidden -> v")).toBe(missing);
+         expect(await refusal("locked_hidden -> v", { ROLE: "analyst" })).toBe(
+            missing,
+         );
+      });
+
+      it("reports a missing view on a source the viewer can read, as a tile problem", async () => {
+         const { problems } = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { tiles=["customers -> no_such_view"] }\n`,
+         );
+         expect(problems.map((p) => p.code)).toEqual(["tile-does-not-compile"]);
+      });
+   });
+
    describe("query boundary", () => {
       beforeEach(async () => {
          await install(
@@ -544,6 +659,48 @@ export { customers }
          ]);
       });
 
+      it("refuses a tile or cell whose own definition joins a hidden source, so a compile that passes also runs", async () => {
+         const definition = `source: j is customers extend { join_one: st is helper on id = st.id }\n`;
+         const tile = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { tiles=["j -> {group_by: st.id; aggregate: n is count()}"] }\n${definition}`,
+         );
+         expect(tile.document).toBeUndefined();
+         expect(tile.problems.map((p) => p.code)).toEqual([
+            "query-not-queryable",
+         ]);
+         const cell = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { kind=notebook }\n${definition}run: j -> { group_by: st.id }\n`,
+         );
+         expect(cell.document).toBeUndefined();
+         expect(cell.problems.map((p) => p.code)).toEqual([
+            "query-not-queryable",
+         ]);
+      });
+
+      it("refuses an inline join to a hidden source in the tile itself", async () => {
+         const { document, problems } = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { tiles=["customers extend { join_one: st is helper on id = st.id } -> { group_by: st.id }"] }\n`,
+         );
+         expect(document).toBeUndefined();
+         expect(problems.map((p) => p.code)).toEqual(["query-not-queryable"]);
+      });
+
+      it("admits a definition that joins an exported source", async () => {
+         const result = await env.compileSource(
+            "pkg",
+            "index.malloy",
+            `## artifact { tiles=["j -> {group_by: o.id; aggregate: n is count()}"] }\nsource: j is customers extend { join_one: o is customers on id = o.id }\n`,
+         );
+         expect(result.problems).toEqual([]);
+         expect(tilesOf(result)).toHaveLength(1);
+      });
+
       it("admits a document whose tiles read the surface", async () => {
          const result = await env.compileSource(
             "pkg",
@@ -588,8 +745,9 @@ source: t is duckdb.sql("select 1 as a") extend {
             gates: {
                text: async () => {},
                constructs: async () => {},
-               boundary: () => {},
-               boundaryCompiled: () => {},
+               nameVisible: () => {},
+               boundary: async () => {},
+               boundaryCompiled: async () => {},
                compiled: async (runnable) => {
                   const prepared = (await runnable.getPreparedQuery()) as {
                      _query?: { structRef?: unknown };

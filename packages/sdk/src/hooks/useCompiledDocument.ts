@@ -11,6 +11,8 @@ export interface CompiledDocumentSpec {
    /** The model the text is compiled on top of: what it may name is what this model offers the viewer. */
    modelPath: string;
    source: string;
+   /** The values the host sets for the givens a source's gate reads; a gate sent none of its givens denies, so every tile would come back `restricted`. */
+   givens?: Record<string, string>;
 }
 
 /**
@@ -33,6 +35,7 @@ export function useCompiledDocument(
          spec.packageName,
          spec.modelPath,
          spec.source,
+         spec.givens ?? null,
       ],
       queryFn: async () => {
          const result = (
@@ -40,7 +43,13 @@ export function useCompiledDocument(
                spec.environmentName,
                spec.packageName,
                spec.modelPath,
-               { source: spec.source, scope: "append" },
+               {
+                  source: spec.source,
+                  scope: "append",
+                  ...(spec.givens && Object.keys(spec.givens).length > 0
+                     ? { givens: spec.givens }
+                     : {}),
+               },
             )
          ).data;
          return { document: result.document, result };

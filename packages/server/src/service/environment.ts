@@ -1197,6 +1197,7 @@ export class Environment {
                   runtime,
                   baseModel,
                   source ?? "",
+                  { renderTags: documentCandidate },
                );
             } catch (error) {
                // Counted here rather than inside the gate so both reasons share
@@ -1263,6 +1264,7 @@ export class Environment {
                            runtime,
                            baseModel,
                            text,
+                           { renderTags: true },
                         );
                      } catch (error) {
                         // An unparseable tile is a compile problem for the document, not a refusal.
@@ -1278,19 +1280,34 @@ export class Environment {
                         throw error;
                      }
                   },
-                  boundaryCompiled: (compiledSource, query, definitions) => {
+                  nameVisible: (query, definitions) => {
+                     gate?.assertTextNameVisible(query, definitions);
+                  },
+                  boundaryCompiled: async (
+                     runnable,
+                     compiledSource,
+                     query,
+                     definitions,
+                  ) => {
                      gate?.assertQueryBoundaryCompiled(
                         compiledSource,
                         query,
                         definitions,
                      );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
+                        runnable,
+                     );
                   },
-                  boundary: (query, definitions) => {
+                  boundary: async (query, definitions) => {
                      gate?.assertQueryBoundaryEarly(
                         undefined,
                         undefined,
                         query,
                         definitions,
+                     );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
                      );
                   },
                },

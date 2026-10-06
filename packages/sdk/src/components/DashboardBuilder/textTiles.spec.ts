@@ -59,7 +59,11 @@ const text = (document: DashboardDocument, name: string): TextTile => {
 async function writes(
    source: string,
    edit: (document: DashboardDocument) => void,
-   options?: { changeKind?: boolean; modelPath?: string },
+   options?: {
+      changeKind?: boolean;
+      modelPath?: string;
+      explicitKind?: boolean;
+   },
 ): Promise<{ out: string; document: DashboardDocument }> {
    const next = structuredClone(await openDocument(source));
    edit(next);
@@ -663,6 +667,33 @@ describe("spliceDashboardDocument: switching kind", () => {
          { changeKind: true },
       );
       expect(out).toContain("kind=dashboard");
+   });
+
+   it("writes the kind both ways in text mode, even under dashboards/, so the compile and the saved file agree", async () => {
+      const options = {
+         changeKind: true,
+         modelPath: "dashboards/n.malloy",
+         explicitKind: true,
+      };
+      const asDashboard = await writes(
+         NOTEBOOK,
+         (d) => {
+            d.kind = "dashboard";
+         },
+         options,
+      );
+      expect(asDashboard.out).toContain("kind=dashboard");
+      expect(asDashboard.out).not.toContain("kind=notebook");
+      const back = await writes(
+         asDashboard.out,
+         (d) => {
+            d.kind = "notebook";
+            delete d.columns;
+         },
+         options,
+      );
+      expect(back.out).toContain("kind=notebook");
+      expect(back.out).not.toContain("kind=dashboard");
    });
 
    it("leaves a dashboard under dashboards/ untagged", async () => {

@@ -298,8 +298,9 @@ function offendingTag(tag: Tag): string | undefined {
 }
 
 /**
- * The refusal for a fragment that writes a render tag turning a value into a URL or markup, reads
+ * The refusal for a document's text that writes a render tag turning a value into a URL or markup, reads
  * the server's environment from an annotation, or re-points a model field by excepting and redeclaring a column.
+ * Applied to document text only (see `assertNoRestrictedConstructs`).
  */
 export function renderTagRefusal(source: string): string | undefined {
    // Counted before parsing, so an oversized body costs a scan and not a parse.
@@ -328,9 +329,9 @@ export function renderTagRefusal(source: string): string | undefined {
       const found = offendingTag(parsed.tag);
       if (found) {
          return (
-            `the submitted text writes ${found}, ` +
+            `the submitted document writes ${found}, ` +
             `which the viewer's browser would load or draw as markup. Fix: define the field in the ` +
-            `model file itself, where a modeler owns what it links to.`
+            `model file itself, where a modeler owns what it links to, and check that edit at scope "file".`
          );
       }
    }
@@ -340,7 +341,7 @@ export function renderTagRefusal(source: string): string | undefined {
       const shadowed = [...block.declared].find((name) => freed.has(name));
       if (shadowed !== undefined) {
          return (
-            `the submitted text frees \`${shadowed}\` (except: or rename:) and then declares it, which would re-point every ` +
+            `the submitted document frees \`${shadowed}\` (except: or rename:) and then declares it, which would re-point every ` +
             `model field derived from it, tags included. Fix: give the new field another name.`
          );
       }
@@ -348,7 +349,7 @@ export function renderTagRefusal(source: string): string | undefined {
    return undefined;
 }
 
-const TOO_MANY = `the submitted text carries more annotations than a fragment may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
+const TOO_MANY = `the submitted document carries more annotations than one may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
 
 /**
  * Compile `source` against `model` in restricted mode and throw if it uses a
@@ -393,8 +394,14 @@ export async function assertNoRestrictedConstructs(
    // convention a later caller can break silently.
    model: Model,
    source: string,
+   /**
+    * `renderTags`: the text is a document, which other viewers run, so the
+    * render-tag checks apply. A plain fragment is the caller's own compile and
+    * keeps the tags it could always write.
+    */
+   { renderTags }: { renderTags: boolean },
 ): Promise<void> {
-   const refusal = renderTagRefusal(source);
+   const refusal = renderTags ? renderTagRefusal(source) : undefined;
    if (refusal) {
       throw new CompileRefusedError(
          `This Malloy cannot be compiled at scope "append", which validates a ` +
@@ -444,14 +451,19 @@ export async function assertNoRestrictedConstructs(
       // walked and the constructs in it WERE classified, so the absence of a
       // rejection there is real evidence and the diagnostic belongs to the
       // caller-facing compile rather than to this gate.
-      if (problems.some(isParseFailure)) {
+      const parseFailures = problems.filter(isParseFailure);
+      if (parseFailures.length > 0) {
+         const detail = parseFailures
+            .map((problem) => problem.message)
+            .join("; ");
          throw new UnparseableTextError(
             `This Malloy cannot be compiled at scope "append": the submitted ` +
-               `text could not be parsed on its own, so it cannot be checked ` +
+               `text could not be parsed on its own (${detail}), so it cannot be checked ` +
                `against the model's published surface. Fix: send text that ` +
                `stands alone as top-level Malloy -- a complete ` +
                `\`source:\`/\`query:\`/\`run:\` statement rather than a ` +
                `continuation of one already in the model.`,
+            detail,
          );
       }
       return;

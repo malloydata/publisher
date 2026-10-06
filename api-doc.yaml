@@ -1895,12 +1895,13 @@ paths:
         diagnostic; the rest of the document compiles. A tile expression that
         uses a construct `append` refuses (a data root of its own, such as
         `duckdb.table(...)`) is refused with 400, and a tile that does not parse
-        is reported as a `tile-does-not-compile` problem. At scope `append`, submitted text that writes a render tag turning a value
+        is reported as a `tile-does-not-compile` problem. Submitted text that is a document (it carries the tag, at scope `append`) and writes a render tag turning a value
         into a URL (`# image`, `# link`), or HTML in a `# label`, is refused with 400
-        before anything compiles, for a field, view or query alike; a model file
-        keeps the tags it defines itself. The same refusal covers an annotation that
+        before anything compiles, for a field, view or query alike, because other
+        viewers run it; plain `append` text without the tag, and a model file,
+        keep the tags they define themselves. The same refusal covers an annotation that
         reads `@env.`, one the tag parser rejects or that exceeds 8,192 characters,
-        a fragment that frees a column (`except:`, `rename:`) and declares one of the same name
+        text that frees a column (`except:`, `rename:`) and declares one of the same name
         in the same extend chain, and one with over 1,000 annotations or 64 KB of them.
         This removes the author-written paths only: the renderer's other
         value-to-HTML sinks are not covered by it. A cell that names a source
@@ -6203,6 +6204,16 @@ components:
             and a model that does not exist is a 400 that deliberately says only
             that it could not be loaded. An invalid scope value is rejected with
             a 400 naming the valid set.
+
+            "append" text that carries a model-level `## artifact` tag is a
+            document, which other viewers run, and is also refused with a 400
+            for `# image`, `# link`, markup in a `# label`, `@env.` in an
+            annotation, an annotation the tag parser rejects or that exceeds
+            8,192 characters, `except:` or `rename:` followed by a declaration
+            of the same name in the same extend chain, and more than 1,000
+            annotations or 64 KB of them. Plain "append" text without that tag
+            keeps those tags; a model file defines them itself, and its edit is
+            checked at "file".
         includeSql:
           type: boolean
           default: false
@@ -6282,9 +6293,19 @@ components:
         kind:
           type: string
           enum: [dashboard, notebook]
-          description: From the tag's `kind`; a notebook when it names none.
+          description: >-
+            From the tag's `kind`. When it names none, a document that lists
+            `tiles` or carries a `dashboard { … }` grid tag is a dashboard and
+            any other is a notebook: submitted text has no folder to decide.
         manifest:
-          $ref: "#/components/schemas/DashboardManifest"
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            Shaped like a served dashboard's manifest, with two differences:
+            `path` is absent (the text runs on the model it was compiled on top
+            of, which is the model in the request URL) and `name` is that
+            model's file slug rather than a document name, which the host owns;
+            `title` is the heading.
         cells:
           type: array
           description: >-

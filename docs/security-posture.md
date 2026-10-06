@@ -190,15 +190,11 @@ and is not is worse than its absence: it invites an integrator to believe a page
 Either verify it or remove it until it can be verified. It also gates widening embedding to more
 surfaces ([#931](https://github.com/malloydata/publisher/issues/931)).
 
-**3. Package markdown is rendered with raw HTML parsing enabled.** `markdown-to-jsx` runs with
-its default `disableParsingRawHTML: false`, so raw HTML in a package's markdown becomes JSX.
-React will not execute an inline `<script>` this way, and link `href`s are already scheme-checked
-precisely because packages can come from untrusted git or S3 sources — so this is a narrow
-surface, not an open one. Still, it is the one place a declarative artifact touches
-author-controlled HTML, and it is worth either disabling raw HTML or sanitizing deliberately.
-Two call sites, not one: notebook cells and an environment's About panel (`NotebookCell.tsx`,
-`About.tsx`). Neither passes the option, so fixing one and calling it done would leave the other
-open.
+**3. Package markdown is rendered without raw HTML parsing (closed).** The SDK's `Prose`, which draws
+every markdown surface (text tiles, descriptions, notebook cells and an environment's About panel), runs
+`markdown-to-jsx` with `disableParsingRawHTML: true`, so raw HTML in a package's markdown renders as text.
+Link `href`s are scheme-checked as well, because packages can come from untrusted git or S3 sources.
+A new markdown surface should go through `Prose` rather than call the library directly.
 
 **4. Resize messages are not origin-checked.** Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer

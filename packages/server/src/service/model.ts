@@ -2835,6 +2835,42 @@ export class Model {
    }
 
    /**
+    * The query boundary for the joins a document's own text writes, the same
+    * two checks the query route runs on a caller join: `text` read before
+    * compiling, then the compiled `runnable` once it exists. A document that
+    * passes both runs on the query route. A no-op when the boundary is inert.
+    */
+   public async assertDocumentJoinsQueryable(
+      text: string,
+      runnable?: { getPreparedQuery(): Promise<unknown> },
+   ): Promise<void> {
+      if (!runnable) {
+         await this.assertCallerJoinBasesEarly(text, {}, "boundary");
+         return;
+      }
+      await this.assertCallerJoinsQueryable(runnable as QueryMaterializer, {
+         kind: "query",
+         text,
+      });
+   }
+
+   /**
+    * Throws the generic 404 for `query` when it names a source the caller may
+    * not be told about, in a model where that 404 is the only answer: a hidden
+    * source and an absent one then read the same, so a tile's compile problem
+    * is never what confirms a name. An ungated model explains a hidden source
+    * already, so there the compile problem is shown. A no-op when the boundary
+    * is inert.
+    */
+   public assertTextNameVisible(query: string, definitions: string): void {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!this.hasAnyAuthorizeNote()) return;
+      if (this.queryTextSourcesQueryable(`${definitions}\n${query}`)) return;
+      throw new NotQueryableError("Query target is not queryable.");
+   }
+
+   /**
     * Decide, before compiling, what a caller-written join's TEXT reaches: the
     * boundary (`phase: "boundary"`) or every lock (`phase: "locks"`), so a
     * refused caller hears 404 or 403 rather than the compiler's opinion of a

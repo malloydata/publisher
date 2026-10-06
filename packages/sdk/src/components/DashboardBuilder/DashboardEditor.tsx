@@ -5,6 +5,7 @@ import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest, Given } from "../../client";
+import type { GivenValue } from "../../hooks/givenValue";
 import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -69,24 +70,6 @@ import type { SaveContext, SaveHandler } from "./useDocumentEditor";
  * editor (its value is written into each tile's query) but reaches the package
  * only when the file is saved into it.
  */
-/**
- * Open a document the host keeps as TEXT, rather than a file in a package.
- *
- * The text comes from the host's authoritative {@link DocumentStorage} and is
- * compiled by the server, as the viewer, on top of `modelPath`: the model whose
- * sources the document may name. The manifest is that compile's `document`, and
- * every tile, cell and control option runs as the document's definitions
- * followed by one `run:`, so each viewer sees what their own identity allows.
- * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
- * and only the model's givens can be bound.
- */
-export interface TextSourceOptions {
-   /** The model the text is compiled and run on top of. */
-   modelPath: string;
-   /** Givens the host sets itself: no control is shown for them. */
-   hiddenGivens?: readonly string[];
-}
-
 export type DashboardEditorProps = (
    | {
         /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
@@ -137,6 +120,26 @@ export type DashboardEditorProps = (
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
 };
+
+/**
+ * Open a document the host keeps as TEXT, rather than a file in a package.
+ *
+ * The text comes from the host's authoritative {@link DocumentStorage} and is
+ * compiled by the server, as the viewer, on top of `modelPath`: the model whose
+ * sources the document may name. The manifest is that compile's `document`, and
+ * every tile, cell and control option runs as the document's definitions
+ * followed by one `run:`, so each viewer sees what their own identity allows.
+ * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
+ * and only the model's givens can be bound.
+ */
+export interface TextSourceOptions {
+   /** The model the text is compiled and run on top of. */
+   modelPath: string;
+   /** Givens the host sets itself: no control is shown for them. */
+   hiddenGivens?: readonly string[];
+   /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
+   givens?: Record<string, string>;
+}
 
 /** A compile with no readable document: no manifest, but the text still opens. */
 const NO_MANIFEST: DashboardManifest = {};
@@ -928,6 +931,7 @@ function Surface({
          packageName,
          modelPath: runModelPath,
          source: opened.source,
+         ...(textSource?.givens ? { givens: textSource.givens } : {}),
       },
       { enabled: textSource !== undefined },
    );
@@ -949,6 +953,7 @@ function Surface({
       () => new Set(textSource?.hiddenGivens ?? []),
       [textSource],
    );
+   const hostGivens = textSource?.givens;
    const restrictedTiles = useMemo(
       () =>
          new Set(
@@ -1067,12 +1072,14 @@ function Surface({
    );
    const runnable = useMemo(
       () =>
-         new Set(
-            modelSpecs
+         new Set([
+            ...modelSpecs
                .map((spec) => spec.name)
                .filter((name): name is string => name !== undefined),
-         ),
-      [modelSpecs],
+            // A host-set given has no control, but the server is sent it.
+            ...Object.keys(hostGivens ?? {}),
+         ]),
+      [modelSpecs, hostGivens],
    );
    const specs = useMemo(
       () => previewGivens(doc, modelSpecs),
@@ -1091,6 +1098,14 @@ function Surface({
       documentName: slug,
       ...(preamble !== undefined ? { preamble } : {}),
    });
+   // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
+   const tileGivens = useMemo(() => {
+      const hostOnly = Object.entries(hostGivens ?? {}).filter(
+         ([name]) => !declaredTypes.has(name),
+      );
+      if (hostOnly.length === 0) return applied;
+      return new Map<string, GivenValue>([...hostOnly, ...applied]);
+   }, [hostGivens, declaredTypes, applied]);
 
    const manifestSettled = !served || isSuccess || isError;
    // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
@@ -1141,7 +1156,7 @@ function Surface({
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
-                  givens={applied}
+                  givens={tileGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
@@ -1161,6 +1176,7 @@ function Surface({
          preamble,
          restrictedTiles,
          applied,
+         tileGivens,
          declaredTypes,
          specs,
       ],
@@ -1216,6 +1232,7 @@ function Surface({
             {...(saveLabel ? { saveLabel } : {})}
             {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
+            {...(textSource ? { explicitKind: true } : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

@@ -1890,6 +1890,7 @@ export async function compileTileGivens(
    gatesOf: (sourceName: string) => readonly string[] | undefined,
    skip?: ReadonlySet<string>,
    onPrepared?: (tile: string, prepared: unknown) => Promise<void>,
+   onCompileError?: (tile: string, error: unknown) => void,
 ): Promise<Map<string, CompiledTileGivens>> {
    const compiled = new Map<string, CompiledTileGivens>();
    for (const tile of tiles) {
@@ -1903,7 +1904,8 @@ export async function compileTileGivens(
          prepared = (await materializer
             .loadQuery(`run: ${tile}`)
             .getPreparedQuery()) as typeof prepared;
-      } catch {
+      } catch (error) {
+         onCompileError?.(tile, error);
          continue;
       }
       await onPrepared?.(tile, prepared);

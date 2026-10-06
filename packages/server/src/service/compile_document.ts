@@ -9,7 +9,7 @@ import {
 } from "@malloydata/malloy";
 import {
    AccessDeniedError,
-   NotQueryableError,
+   OffSurfaceError,
    UnparseableTextError,
 } from "../errors";
 import {
@@ -66,16 +66,19 @@ export interface DocumentGates {
    text(text: string): Promise<void>;
    /** The compiled backstop: throws AccessDeniedError when the query actually reads a source the caller may not. */
    compiled(runnable: { getPreparedQuery(): Promise<unknown> }): Promise<void>;
-   /** Throws NotQueryableError when `query` targets a source off the package's query surface. */
-   boundary(query: string, definitions: string): void;
-   /** The same check on the source the compiled query reads, which sees through a derivation the text hides. */
+   /** Throws NotQueryableError when `query`, or a join the document's definitions write, reaches a source off the package's query surface. */
+   boundary(query: string, definitions: string): Promise<void>;
+   /** The same check on the compiled query: the source it reads, which sees through a derivation the text hides, and the joins it carries. */
    boundaryCompiled(
+      runnable: { getPreparedQuery(): Promise<unknown> },
       compiledSource: string | undefined,
       query: string,
       definitions: string,
-   ): void;
+   ): Promise<void>;
    /** Throws CompileRefusedError when `text` uses a construct append-scope text may not (a data root of its own). */
    constructs(text: string): Promise<void>;
+   /** Throws NotQueryableError when `query` names a source a gated model keeps the caller from confirming, so a tile that does not compile reads the same for a hidden source and an absent one. */
+   nameVisible(query: string, definitions: string): void;
 }
 
 export interface DocumentCell {
@@ -91,7 +94,7 @@ export interface DocumentCell {
 
 export interface CompiledDocument {
    kind: DashboardManifest["kind"];
-   manifest?: Omit<DashboardManifest, "entryFile"> & { path: string };
+   manifest?: Omit<DashboardManifest, "entryFile" | "path">;
    cells: DocumentCell[];
 }
 
@@ -162,6 +165,20 @@ async function denied(gates: DocumentGates, text: string): Promise<boolean> {
       if (error instanceof AccessDeniedError) return true;
       throw error;
    }
+}
+
+function tileProblem(
+   expression: string,
+   reason: string,
+   cause: "parse" | "compile",
+): LogMessage {
+   return {
+      code: "tile-does-not-compile",
+      severity: "error",
+      message:
+         `Tile "${expression}" ${cause === "parse" ? "could not be parsed" : "does not compile"}: ${reason.replace(/\.?\s*$/, ".")} ` +
+         `Fix: write the tile as one query over a source and a view, such as \`source -> view\` or \`source -> { group_by: field }\`.`,
+   } as LogMessage;
 }
 
 function problemLine(problem: LogMessage): number | undefined {
@@ -253,20 +270,17 @@ export async function compileDocument(input: {
          if (!(error instanceof UnparseableTextError)) throw error;
          // Nothing compiles it, so it is one tile that fails, not a refusal of the document.
          unparsedTiles.add(key);
-         tileProblems.push({
-            code: "tile-does-not-compile",
-            severity: "error",
-            message: `Tile "${expression}" could not be parsed.`,
-         } as LogMessage);
+         tileProblems.push(tileProblem(expression, error.detail, "parse"));
       }
    }
 
    const boundaryProblems: LogMessage[] = [];
-   const checkBoundary = (query: string, line: number | undefined) => {
+   const checkBoundary = async (query: string, line: number | undefined) => {
       try {
-         gates.boundary(query, definitions);
+         await gates.boundary(query, definitions);
       } catch (error) {
-         if (!(error instanceof NotQueryableError)) throw error;
+         // Only a refusal that explains itself is a problem; the generic one is the whole request's 404, so a gated model never tells a hidden name from an absent one.
+         if (!(error instanceof OffSurfaceError)) throw error;
          boundaryProblems.push({
             code: "query-not-queryable",
             severity: "error",
@@ -285,13 +299,13 @@ export async function compileDocument(input: {
    };
    for (const cell of code) {
       if (cell.kind === "query" && !restrictedCells.has(cell)) {
-         checkBoundary(cell.text, cell.startLine);
+         await checkBoundary(cell.text, cell.startLine);
       }
    }
    for (const expression of tileExpressions) {
       const key = normalizeTileExpression(expression);
       if (!restrictedTiles.has(key) && !unparsedTiles.has(key)) {
-         checkBoundary(`run: ${expression}`, undefined);
+         await checkBoundary(`run: ${expression}`, undefined);
       }
    }
    if (boundaryProblems.length > 0) return { problems: boundaryProblems };
@@ -324,11 +338,20 @@ export async function compileDocument(input: {
          else throw error;
       }
    };
-   const compiledBoundary = (prepared: unknown, query: string) => {
+   const compiledBoundary = async (
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      prepared: unknown,
+      query: string,
+   ) => {
       try {
-         gates.boundaryCompiled(readsSource(prepared), query, definitions);
+         await gates.boundaryCompiled(
+            runnable,
+            readsSource(prepared),
+            query,
+            definitions,
+         );
       } catch (error) {
-         if (!(error instanceof NotQueryableError)) throw error;
+         if (!(error instanceof OffSurfaceError)) throw error;
          boundaryProblems.push({
             code: "query-not-queryable",
             severity: "error",
@@ -347,7 +370,11 @@ export async function compileDocument(input: {
       });
       if (denied) continue;
       try {
-         compiledBoundary(await runnable.getPreparedQuery(), cell.text);
+         await compiledBoundary(
+            runnable,
+            await runnable.getPreparedQuery(),
+            cell.text,
+         );
       } catch (error) {
          if (!(error instanceof MalloyError)) throw error;
       }
@@ -364,7 +391,24 @@ export async function compileDocument(input: {
             denied = true;
             restrictedTiles.add(normalizeTileExpression(tile));
          });
-         if (!denied) compiledBoundary(prepared, `run: ${tile}`);
+         if (!denied) {
+            await compiledBoundary(
+               { getPreparedQuery: async () => prepared },
+               prepared,
+               `run: ${tile}`,
+            );
+         }
+      },
+      (tile, error) => {
+         if (!(error instanceof MalloyError)) return;
+         gates.nameVisible(`run: ${tile}`, definitions);
+         tileProblems.push(
+            tileProblem(
+               tile,
+               error.problems.map((problem) => problem.message).join("; "),
+               "compile",
+            ),
+         );
       },
    );
    if (boundaryProblems.length > 0) return { problems: boundaryProblems };
@@ -433,7 +477,7 @@ export async function compileDocument(input: {
       problems,
       document: {
          kind: manifest.kind,
-         manifest: { ...rest, name: slug, path: modelName },
+         manifest: { ...rest, name: slug },
          cells,
       },
    };

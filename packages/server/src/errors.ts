@@ -384,7 +384,15 @@ export class InvalidArgumentError extends BadRequestError {}
 export class CompileRefusedError extends BadRequestError {}
 
 /** The restricted-construct gate could not parse the text, so it judged nothing: a refusal for a fragment, a plain compile problem for one tile of a document. */
-export class UnparseableTextError extends CompileRefusedError {}
+export class UnparseableTextError extends CompileRefusedError {
+   constructor(
+      message: string,
+      /** The parser's own words, which the message alone does not carry. */
+      readonly detail: string,
+   ) {
+      super(message);
+   }
+}
 
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {

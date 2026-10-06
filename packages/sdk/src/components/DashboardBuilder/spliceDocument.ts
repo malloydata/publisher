@@ -336,6 +336,8 @@ interface SpliceContext extends TileMembership {
    edits: Edit[];
    /** The file's package path, when known. */
    modelPath?: string;
+   /** A kind switch writes `kind=` whichever way it goes; see {@link SpliceOptions.explicitKind}. */
+   explicitKind?: boolean;
 }
 
 /**
@@ -748,10 +750,10 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       };
       if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
          inner = append("kind=notebook");
-      // A tag with no kind takes its folder's; a document held as text has no dashboards/ folder, so a dashboard there must say so.
+      // A tag with no kind takes its folder's, and the server's compile of text takes none: a switch that leaves it off lets the two disagree.
       else if (
          kindOf(current) !== kindOf(next) &&
-         !ctx.modelPath?.startsWith("dashboards/")
+         (ctx.explicitKind || !ctx.modelPath?.startsWith("dashboards/"))
       )
          inner = append("kind=dashboard");
       if (current.title !== next.title)
@@ -2070,6 +2072,8 @@ export interface SpliceOptions {
    changeKind?: boolean;
    /** The file's path within the package; a dashboard under `notebooks/` is tagged `kind=dashboard` rather than left untagged. */
    modelPath?: string;
+   /** Write `kind=dashboard` too, whatever the folder: for a document held as text, which the server reads by its tags and not by a folder. */
+   explicitKind?: boolean;
 }
 
 export async function spliceDashboardDocument(
@@ -2139,6 +2143,7 @@ async function spliceLines(
       ...(options.modelPath !== undefined
          ? { modelPath: options.modelPath }
          : {}),
+      ...(options.explicitKind ? { explicitKind: true } : {}),
    };
 
    // Each concern plans its own edits against the file as it stands; the
