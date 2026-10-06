@@ -1621,7 +1621,9 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
-                  skill_uses: dict | None = None) -> list[str]:
+                  skill_uses: dict | None = None,
+                  source: str = "spawned",
+                  queried: dict[str, int] | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1715,8 +1717,9 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         # longer attributes all of them to the judge.
         lines += ["", f"! {len(doubted)} golden(s) not believed. "
                       f"Dataset issues, NOT model failures:"]
-        for qid, status, note, source in doubted:
-            whose = "the set declares" if source == "set" else "the judge says"
+        for qid, status, note, declared_by in doubted:
+            whose = ("the set declares" if declared_by == "set"
+                     else "the judge says")
             lines += [f"    {status:15s} {qid}  ({whose})",
                       f"      {note or '(no note)'}"]
         lines += ["  Route via the golden side door in skill:eval-loop before "
@@ -1728,7 +1731,25 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for qid, hits in vetoed:
             lines += [f"    {qid}: {'; '.join(hits)}"]
 
-    lines += skill_lines(skill_uses)
+    if source == "logs":
+        # The session ran in the host's own agent, with the host's skills.
+        # This harness granted it none, so "none of the granted skills was
+        # read" would describe a run that never happened.
+        lines += ["", "SKILLS",
+                  "  not measured  logged sessions ran with the host's skills, "
+                  "not ones this harness granted"]
+        # What the run actually measured, since --scope did not bind it.
+        if queried:
+            lines += ["", "PACKAGES",
+                      "  queried       " + ", ".join(
+                          f"{k} ({n})" for k, n in sorted(
+                              queried.items(), key=lambda kv: (-kv[1], kv[0])))]
+            if len(queried) > 1:
+                lines += ["                ! the same set was answered from "
+                          "more than one package, so a verdict describes the "
+                          "package that answered it, not one model"]
+    else:
+        lines += skill_lines(skill_uses)
     lines += evidence_lines(evidence)
 
     lines += ["", "COVERAGE & RETRIEVAL"]
@@ -1743,6 +1764,11 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   "misses. This run does not measure retrieval; wait for the "
                   "index to be ready and re-run. flip_table.py refuses a pair "
                   "with an arm like this."]
+    elif retrieval_mode != "semantic" and source == "logs":
+        lines += ["                the host's logged responses do not say "
+                  "which retriever ranked them. That is the host's record, "
+                  "not a local fallback to lexical; flip_table.py still "
+                  "refuses to pair it with a semantic arm."]
     elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
@@ -2218,12 +2244,22 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
                         # resolve outside the one that declares it, so the two
                         # kept as parallel lists drift the moment the answer
                         # and the last probe are different calls.
+                        inp = c["input"]
                         pending[c["id"]] = {"tool": "execute_query",
                                             "targets": None,
                                             "query": q,
                                             "modelPath": (
-                                                c["input"].get("modelPath")
-                                                or c["input"].get("model_path"))}
+                                                inp.get("modelPath")
+                                                or inp.get("model_path")),
+                                            # Where it ran, from its own
+                                            # arguments. A logged session is not
+                                            # bound to the run's --scope: one
+                                            # question in a real pull was
+                                            # answered from three packages.
+                                            "environment": inp.get("environment"),
+                                            "package": inp.get("package"),
+                                            "version": (inp.get("version")
+                                                        or inp.get("version_id"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2314,6 +2350,7 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
 
     final_query, final_source, final_path = pick_final_query(
         queries, calls, text)
+    queried = queried_packages(calls)
 
     return {
         "qid": qid,
@@ -2326,6 +2363,7 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,
+        "queried_packages": queried,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2469,6 +2507,26 @@ AGREEMENT = (
     r"identical to the golden",
     r"correct filter and value",
 )
+
+
+def queried_packages(calls: list[dict[str, Any]]) -> list[str]:
+    """`environment/package@version` for each package an attempt's ANSWERED
+    queries ran against, in first-use order.
+
+    A call that named no version is written without `@`: it ran against
+    whatever the workspace pinned at that moment, and the call does not say
+    which. A failed call is left out, because it measured nothing there.
+    """
+    out: list[str] = []
+    for c in calls:
+        if c.get("tool") != "execute_query" or c.get("error") \
+                or not c.get("package"):
+            continue
+        name = (f"{c['environment']}/" if c.get("environment") else "") \
+            + c["package"] + (f"@{c['version']}" if c.get("version") else "")
+        if name not in out:
+            out.append(name)
+    return out
 
 
 def run_provenance(attempts) -> tuple[str, str]:
@@ -3152,6 +3210,14 @@ def main(argv: list[str] | None = None) -> int:
                          "has no route to, and that server names its "
                          "environments independently. Default: [truth] "
                          "environment in the set's eval.toml")
+    ap.add_argument("--truth-mcp-url", default=None,
+                    help="platform target: re-derive goldens against a truth "
+                         "package PUBLISHED ON THE HOST, through this MCP URL "
+                         "and the --hosted-mcp-server login. Needs "
+                         "--truth-organization and --truth-environment")
+    ap.add_argument("--truth-organization", default=None,
+                    help="with --truth-mcp-url: the organization publishing "
+                         "the truth package")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
                          "pre-run golden check. Default: the [truth] server in "
@@ -3362,9 +3428,20 @@ def main(argv: list[str] | None = None) -> int:
     # target there may not be one, and then it is skipped and said so.
     golden_check = "skipped"
     truth = a.truth_publisher or (a.publisher if a.target != "platform" else None)
+    hosted_truth = None
+    if getattr(a, "truth_mcp_url", None):
+        if not (a.truth_organization and a.truth_environment):
+            raise SystemExit("--truth-mcp-url needs --truth-organization and "
+                             "--truth-environment: where the truth package is "
+                             "published")
+        hosted_truth = {"mcp_url": a.truth_mcp_url,
+                        "server": a.hosted_mcp_server,
+                        "organization": a.truth_organization,
+                        "environment": a.truth_environment,
+                        "workdir": a.out / ".truth"}
     if a.rebuild:
         golden_check = "not run (rebuild)"
-    elif truth and not a.skip_golden_check:
+    elif (truth or hosted_truth) and not a.skip_golden_check:
         print("checking goldens against the truth package")
         # The truth server is a SEPARATE server and names its environments
         # however it likes; assuming it reuses the model server's environment
@@ -3390,7 +3467,8 @@ def main(argv: list[str] | None = None) -> int:
                                   target_package=a.package,
                                   quiet=True,
                                   definitions=(pathlib.Path(a.definitions)
-                                               if a.definitions else None))
+                                               if a.definitions else None),
+                                  hosted=hosted_truth)
         # The audits run with or without a truth package, so their findings are
         # read on BOTH paths. Taking the skip branch and dropping `findings`
         # put the set-name lint -- the check a truthPackage-less set most needs
@@ -3428,7 +3506,9 @@ def main(argv: list[str] | None = None) -> int:
         golden_check = "skipped by --skip-golden-check"
     else:
         print("  ! no truth server for a golden check on a platform target "
-              "(--truth-publisher); goldens are taken as they stand")
+              "(--truth-mcp-url for one published on the host, or "
+              "--truth-publisher for a local one); goldens are taken as they "
+              "stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
     set_meta = {}
@@ -3750,6 +3830,7 @@ def main(argv: list[str] | None = None) -> int:
                                     if att.get("host_log", True) else "unknown"),
                       contamination_reasons=att.get("breaches") or [],
                       answer_captured=att.get("answer_captured", True),
+                      queriedPackages=att.get("queried_packages") or [],
                       input_tokens=att.get("input_tokens"),
                       output_tokens=att.get("output_tokens"),
                       cache_read_tokens=att.get("cache_read_tokens"),
@@ -3939,6 +4020,14 @@ def main(argv: list[str] | None = None) -> int:
             contamination_reasons[reason] = \
                 contamination_reasons.get(reason, 0) + 1
 
+    # Read off the attempts before the summary, which words its warnings by
+    # where the answers came from.
+    source, tier = run_provenance(attempts.values())
+    queried: dict[str, int] = {}
+    for att in attempts.values():
+        for pkg in att.get("queried_packages") or []:
+            queried[pkg] = queried.get(pkg, 0) + 1
+
     for line in summary_lines(
             out=a.out, set_dir=a.set_dir, events_n=len(events),
             attempted=len(cases), decided=conf, passed=ok, near=near,
@@ -3949,7 +4038,7 @@ def main(argv: list[str] | None = None) -> int:
             max_turns=a.max_turns,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
-            skill_uses=skill_uses,
+            skill_uses=skill_uses, source=source, queried=queried,
             answerer_cost=cost, judge_cost=judge_cost,
 ):
         print(line)
@@ -3988,7 +4077,12 @@ def main(argv: list[str] | None = None) -> int:
     # with the opening pins because it is not knowable until the transcripts
     # have been read: a `--rebuild` over a directory somebody else filled does
     # not know what filled it.
-    source, tier = run_provenance(attempts.values())
+    # A logged run did not answer from --scope. Leaving the scope's version as
+    # the pin would claim one model version answered sessions that, measured,
+    # ran on three different packages; the attempts carry what each one used.
+    if source == "logs":
+        ledger.update_run(a.out, targetVersion=None,
+                          queriedPackages=sorted(queried))
     ledger.update_run(a.out, source=source, sourceTier=tier,
                       answererCostUsd=round(cost, 4),
                       answererCostCopiedFrom=copied_from,

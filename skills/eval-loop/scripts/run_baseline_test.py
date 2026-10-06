@@ -1413,6 +1413,46 @@ class UsageFields(unittest.TestCase):
         self.assertEqual(set(rb.usage_fields(None).values()), {None})
 
 
+class QueriedPackages(unittest.TestCase):
+    """What an attempt actually queried, read off its calls."""
+
+    def test_each_answered_package_once_in_first_use_order(self):
+        calls = [
+            {"tool": "execute_query", "environment": "samples",
+             "package": "storefront", "error": None},
+            {"tool": "get_context", "error": None},
+            {"tool": "execute_query", "environment": "samples",
+             "package": "ecommerce", "version": "0.0.58", "error": None},
+            {"tool": "execute_query", "environment": "samples",
+             "package": "storefront", "error": None}]
+        self.assertEqual(rb.queried_packages(calls),
+                         ["samples/storefront", "samples/ecommerce@0.0.58"])
+
+    def test_a_failed_query_measured_nothing_there(self):
+        calls = [{"tool": "execute_query", "environment": "samples",
+                  "package": "orders", "error": "compile_error"}]
+        self.assertEqual(rb.queried_packages(calls), [])
+
+    def test_derive_attempt_reads_where_each_query_ran(self):
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "q1",
+                 "name": "mcp__publisher__execute_query",
+                 "input": {"environment": "samples", "package": "storefront",
+                           "model_path": "m.malloy", "query": "run: x -> {}"}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "q1",
+                 "content": [{"type": "text", "text": "{}"}]}]}}]
+        with tempfile.TemporaryDirectory() as d:
+            a = argparse.Namespace(target="local", hosted_tools=(),
+                                   set_dir=pathlib.Path(d) / "set",
+                                   answerer_skills=[])
+            att = rb.derive_attempt(events, {"qid": "c1"}, a,
+                                    pathlib.Path(d), None)
+        self.assertEqual(att["queried_packages"], ["samples/storefront"])
+        self.assertEqual(att["calls"][0]["package"], "storefront")
+
+
 class RunSummary(unittest.TestCase):
     """The end-of-run report is three layers, and the order is the point.
 
@@ -1438,6 +1478,41 @@ class RunSummary(unittest.TestCase):
 
     def index_of(self, lines, needle):
         return next(i for i, l in enumerate(lines) if needle in l)
+
+    def test_a_logged_run_does_not_blame_skills_it_never_granted(self):
+        body = "\n".join(self.lines(
+            source="logs", skill_uses={"attempts": 3, "with_skill": 0}))
+        self.assertNotIn("none of the granted skills was read", body)
+        self.assertIn("not measured  logged sessions ran with the host's skills",
+                      body)
+
+    def test_a_logged_run_names_the_packages_that_answered_it(self):
+        body = "\n".join(self.lines(source="logs", queried={
+            "samples/storefront": 2, "samples/ecommerce": 1}))
+        self.assertIn("queried       samples/storefront (2), samples/ecommerce (1)",
+                      body)
+        self.assertIn("answered from more than one package", body)
+
+    def test_a_logged_run_does_not_call_unreported_retrieval_lexical(self):
+        body = "\n".join(self.lines(source="logs",
+                                     retrieval_mode="unreported"))
+        self.assertNotIn("Local retrieval degrades to lexical", body)
+        self.assertIn("do not say which retriever ranked them", body)
+
+    def test_a_spawned_run_keeps_both_warnings(self):
+        body = "\n".join(self.lines(
+            retrieval_mode="lexical",
+            skill_uses={"attempts": 3, "with_skill": 0}))
+        self.assertIn("none of the granted skills was read", body)
+        self.assertIn("Local retrieval degrades to lexical", body)
+
+    def test_a_doubted_golden_still_says_who_declared_it(self):
+        # The loop variable once shared the name of the `source` parameter.
+        body = "\n".join(self.lines(
+            source="logs",
+            doubted=[("q1", "verified_wrong", "note", "set")]))
+        self.assertIn("(the set declares)", body)
+        self.assertIn("not measured  logged sessions", body)
 
     def test_a_consumed_coverage_report_is_named_not_pointed_at(self):
         # With a report given, "not measured here" is false and must not print.

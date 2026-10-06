@@ -77,7 +77,13 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      # and the two must not be confused: one is a limit of the
                      # measurement and the other is a result. Absent means the
                      # source could carry prose, which is every spawned run.
-                     "answer_captured", "at"},
+                     "answer_captured",
+                     # The packages this attempt's answered queries ran
+                     # against, as `environment/package@version` (no `@` when
+                     # the call named no version). Written from the calls, so a
+                     # logged session that used three packages says three, and
+                     # a run's own --scope cannot stand in for it.
+                     "queriedPackages", "at"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
@@ -104,6 +110,8 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
                      "error", "traceId",
                      "query", "modelPath", "filterParams", "retrieval_mode",
+                     # Where an execute_query ran, from its own arguments.
+                     "environment", "package", "version",
                      "at"},
     },
     "score": {
@@ -212,7 +220,7 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # host-side tool log that makes contamination decidable. A run
                 # that cannot say which it was cannot be compared with one that
                 # can, and a T1 run has no pass rate to quote at all.
-                "source", "sourceTier",
+                "source", "sourceTier", "queriedPackages",
                 "callBudget", "status", "answererSkills",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 # The run whose attempts this run's answerer cost was COPIED

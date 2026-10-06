@@ -144,6 +144,7 @@ import json
 import pathlib
 import re
 import sys
+import tempfile
 import traceback
 import urllib.parse
 from typing import Any
@@ -252,8 +253,12 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     if a.rewrite:
         q = rewrite_table_refs(q)
     # try_query, not query: one bad golden reports and the sweep continues.
-    rows, err = try_query(a.publisher, a.environment, a.truth_package,
-                          a.truth_model, q)
+    if getattr(a, "hosted", None):
+        rows, err = hosted_truth_query(a.hosted, a.truth_package,
+                                       a.truth_model, q)
+    else:
+        rows, err = try_query(a.publisher, a.environment, a.truth_package,
+                              a.truth_model, q)
     if err:
         if "not queryable" in err:
             # The single most likely state of a set authored before its truth
@@ -309,6 +314,51 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         if not close_enough(v, got[k], places):
             return "diff", f"{k}: golden {v}, query {got[k]}", rows
     return "ok", ", ".join(f"{k}={v}" for k, v in scalars.items()), rows
+
+
+def hosted_truth_query(hosted: dict[str, Any], package: str, model_path: str,
+                       malloy: str) -> tuple[list[dict[str, Any]], str | None]:
+    """One canonical query against a truth package published on a host.
+
+    The rule does not change: a value is verified when it re-derives through a
+    package of raw tables with no modelling. Only where that package is served
+    changes. A hosted platform publishes packages behind OAuth, which no plain
+    request in this tree can reach, so the query goes through `hosted_query`,
+    the eval-loop's single `claude -p` transport.
+
+    A page the host cut short is an error, not rows: a golden compared against
+    the first N rows of a longer result would pass or fail on the cut.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                           / "eval-loop" / "scripts"))
+    import hosted_query                                  # noqa: PLC0415
+    rows, cut, err = hosted_query.query(hosted_query.Target(**hosted),
+                                        package, model_path, malloy)
+    if err:
+        return [], err
+    if cut:
+        return [], ("the host cut the truth query's result at its row limit, "
+                    "so it cannot be compared whole")
+    return rows, None
+
+
+def hosted_isolation_findings(truth_package: str | None,
+                              target_package: str | None) -> list[str]:
+    """The hosted half of the isolation guard.
+
+    A local truth server is checked by listing what it serves. A host serves
+    every package in an organization, so the check that can be made is the
+    one that matters most: the truth package is not the package under test.
+    Keeping it out of the answerer's workspace is the operator's to do and is
+    stated in the replay guide, because nothing here can list a workspace's
+    attachments.
+    """
+    if truth_package and target_package and truth_package == target_package:
+        return [f"the truth package and the package under test are both "
+                f"{truth_package!r}, so a golden would be re-derived through "
+                f"the model it is meant to check. Fix: publish the raw tables "
+                f"as their own package and name it in set.json's truthPackage"]
+    return []
 
 
 # ---------------------------------------------------------------- 2. rubric numbers
@@ -1135,7 +1185,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            verbose: bool = False,
            definitions: pathlib.Path | None = None,
            verify_figures_flag: bool = False,
-           figure_model: str = "sonnet") -> dict[str, Any]:
+           figure_model: str = "sonnet",
+           hosted: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
     stop a run.
 
@@ -1151,7 +1202,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         truth_package=meta.get("truthPackage"),
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)),
-        verify_figures=verify_figures_flag, figure_model=figure_model)
+        verify_figures=verify_figures_flag, figure_model=figure_model,
+        hosted=hosted)
     # Only the value check needs a truth server. Without one it does not happen,
     # and `skipped` carries that all the way out to the exit code -- but every
     # audit below still runs. Returning here skipped four checks that need no
@@ -1160,7 +1212,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     skipped = None
     if not a.truth_package:
         skipped = "set.json names no truthPackage; nothing to re-derive against"
-    elif not publisher:
+    elif not publisher and not hosted:
         # Same class as the line above: the value check did not happen, and
         # exit 3 says so. What it must never be is a guess at a port.
         skipped = ("no --publisher given, so no truth server to re-derive "
@@ -1248,7 +1300,10 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
 
-    if not server_absent:
+    if not server_absent and hosted:
+        findings += hosted_isolation_findings(
+            a.truth_package, target_package or meta.get("targetPackage"))
+    elif not server_absent:
         findings += truth_isolation_findings(
             publisher, environment,
             target_package or meta.get("targetPackage"))
@@ -1479,6 +1534,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None,
                     help="the environment on the TRUTH server. Default: "
                          "[truth] environment in eval.toml")
+    ap.add_argument("--truth-mcp-url", default=None,
+                    help="re-derive against a truth package published on a "
+                         "hosted platform, through this MCP URL, instead of a "
+                         "local --publisher. Needs --truth-organization and "
+                         "--environment, and an OAuth login under "
+                         "--hosted-mcp-server")
+    ap.add_argument("--hosted-mcp-server", default="credible",
+                    help="with --truth-mcp-url: the MCP server name you "
+                         "authenticated under (also the OAuth cache key)")
+    ap.add_argument("--truth-organization", default=None,
+                    help="with --truth-mcp-url: the organization publishing "
+                         "the truth package")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
                     help="case file to verify, relative to the set dir")
@@ -1538,6 +1605,21 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as e:
         print(e, file=sys.stderr)
         return CANNOT_RUN
+    hosted = None
+    if args.truth_mcp_url:
+        if args.publisher:
+            ap.error("--truth-mcp-url and --publisher name two truth servers; "
+                     "pass one")
+        if not (args.truth_organization and args.environment):
+            ap.error("--truth-mcp-url needs --truth-organization and "
+                     "--environment (where the truth package is published)")
+        hosted = {"mcp_url": args.truth_mcp_url,
+                  "server": args.hosted_mcp_server,
+                  "organization": args.truth_organization,
+                  "environment": args.environment,
+                  # Outside the set: the set directory is in git, and the
+                  # transport writes its MCP config where it runs.
+                  "workdir": pathlib.Path(tempfile.mkdtemp(prefix="truth-"))}
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
                  "checked, when, and how")
@@ -1549,7 +1631,7 @@ def main(argv: list[str] | None = None) -> int:
                attest=args.attest, verbose=args.verbose,
                definitions=args.definitions,
                verify_figures_flag=args.verify_figures,
-               figure_model=args.figure_model)
+               figure_model=args.figure_model, hosted=hosted)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a
