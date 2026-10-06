@@ -20,7 +20,7 @@ Task-specific guides for working with Malloy through this Publisher deployment. 
 
 That matters because the four channels used to take "everything under `skills/` minus `credible-*`" independently, so a skill added here shipped everywhere by default and there was nowhere to say otherwise. Registering a skill is now one line in the manifest, and forgetting to is a red build rather than a silent non-ship.
 
-`groups` names the two roles a consumer can take on its own: `analysis` (8 skills) is what an agent answering questions over a published model loads, `modeling` (21) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
+`groups` names the two roles a consumer can take on its own: `analysis` (8 skills) is what an agent answering questions over a published model loads, `modeling` (22) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
 
 **A group is installable on its own**, which is a property `manifest.spec.ts` holds it to: a member never `skill:`-references a skill outside its group, so nothing tells the agent to read what it does not have. That is why `malloy-getting-started` and `malloy-analysis-report` name `malloy-gotchas-modeling` and `malloy-model` in prose rather than as `skill:` references. Both are modeling doctrine, and an answerer that followed the reference would hold exactly what the `analysis` group exists to withhold.
 
@@ -41,7 +41,7 @@ Two rules make it work:
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
+- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-analysis-report`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
 - **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill), plus `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills

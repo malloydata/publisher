@@ -75,12 +75,12 @@ a source list the query tier already returns. The examples are still the most ef
 disambiguate the parameter shape, and the skill still owns the reasoning (when to retry, when to
 widen, when to flag a gap).
 
-### malloy-notebooks carrying report cell-shape examples
+### malloy-analysis-report carrying cell-shape examples
 
 Tension: Principle 3 and the lean-skills norm say structure already on a tool description should
 not be duplicated in a skill.
 
-Decision (when a report-authoring tool ships): `malloy-notebooks` (which absorbed `malloy-analysis-report`) keeps per-cell shape examples
+Decision (when a report-authoring tool ships): `malloy-analysis-report` keeps per-cell shape examples
 (markdown versus Malloy cell variants) and the chart-annotation walk-throughs for the report
 patterns it recommends.
 

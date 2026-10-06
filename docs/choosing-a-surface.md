@@ -97,7 +97,7 @@ Pick on the shape of the deliverable instead.
 **Pros**
 
 - Fastest surface to author: no tags to learn beyond what the queries already use, no layout
-  decisions. Agents produce them well (the `malloy-notebooks` skill targets them).
+  decisions. Agents produce them well (the `malloy-analysis-report` skill targets them).
 - Prose is a first-class citizen: context, caveats, and interpretation live next to the numbers.
 - The natural output of an analysis session: a sequence of validated queries becomes a report.
 - A notebook is plain Malloy, not a Publisher-specific format. A legacy

@@ -11,6 +11,7 @@
     "eval-loop",
     "eval-report",
     "malloy-analysis",
+    "malloy-analysis-report",
     "malloy-charts",
     "malloy-dashboards",
     "malloy-define",
@@ -24,7 +25,6 @@
     "malloy-model",
     "malloy-model-as-you-go",
     "malloy-modeling",
-    "malloy-notebook-chat",
     "malloy-notebooks",
     "malloy-phrase-detection",
     "malloy-powerbi-review",
@@ -38,12 +38,12 @@
     "analysis": [
       "malloy-getting-started",
       "malloy-analysis",
-      "malloy-notebook-chat",
       "malloy-phrase-detection",
       "malloy-queries",
       "malloy-charts",
       "malloy-notebooks",
-      "malloy-source-unreachable"
+      "malloy-source-unreachable",
+      "malloy-analysis-report"
     ],
     "modeling": [
       "malloy-modeling",
@@ -66,7 +66,8 @@
       "malloy-html-data-apps",
       "malloy-dashboards",
       "malloy-getting-started",
-      "malloy-source-unreachable"
+      "malloy-source-unreachable",
+      "malloy-analysis-report"
     ],
     "eval": [
       "eval-loop",
