@@ -21,7 +21,6 @@
     "malloy-html-data-apps",
     "malloy-lookml-review",
     "malloy-materialization",
-    "malloy-materialization-tuning",
     "malloy-model",
     "malloy-model-as-you-go",
     "malloy-modeling",
@@ -65,7 +64,6 @@
       "malloy-queries",
       "malloy-phrase-detection",
       "malloy-html-data-apps",
-      "malloy-materialization-tuning",
       "malloy-dashboards",
       "malloy-getting-started",
       "malloy-source-unreachable"
