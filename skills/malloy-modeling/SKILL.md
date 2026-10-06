@@ -108,7 +108,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 **Present choices as A/B/C.** When asking the user to choose, use lettered options with one-line descriptions. Mark your recommendation.
 
-**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. At the end, offer a dashboard over the model for views people will come back to (`skill:malloy-dashboards`); offer a notebook only for a narrative with prose between the numbers.
+**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. **Every source you write gets a source-level `#(doc)` description and a stated grain (`primary_key:` or "one row per ..."), including intermediate steps such as a de-duplication or clean-up source. Or fold the clean-up into the one source it feeds, so there is nothing undescribed left in the package.** Build a dashboard or notebook only when the user asks for one.
 
 ## Route by Intent
 
