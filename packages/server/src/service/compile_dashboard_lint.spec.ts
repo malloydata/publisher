@@ -11,14 +11,7 @@
  * on the load path by `tests/integration/dashboards`; if a case is removed
  * from it, the two suites disagree.
  */
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -26,6 +19,11 @@ import { fileURLToPath } from "url";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
+import { resetNotebookMetricsForTest } from "../notebook_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 
 const FIXTURE = path.join(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -402,7 +400,10 @@ describe("compile_model, package scope: curation findings", () => {
       ).toEqual([]);
       // The three on the saved files are still reported.
       expect(
-         refusals(problems).map((p) => ({ model: p.model, message: p.message })),
+         refusals(problems).map((p) => ({
+            model: p.model,
+            message: p.message,
+         })),
       ).toEqual(SAVED_REFUSALS);
    });
 
@@ -432,5 +433,60 @@ describe("compile_model, package scope: curation findings", () => {
       expect(
          problems.filter((p) => p.message.includes("doesn't export")),
       ).toEqual([]);
+   });
+});
+
+/**
+ * The dry run runs the load's discovery over a package nothing serves. The
+ * notebook discovery counter means "a served package was discovered", so a
+ * compile, which agents call in a loop, must leave it alone.
+ */
+describe("compile_model, package scope: telemetry", () => {
+   let rootDir: string;
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetNotebookMetricsForTest();
+   });
+
+   afterEach(async () => {
+      resetNotebookMetricsForTest();
+      await harness.shutdown();
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("does not count a dry run as a notebook discovery", async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-nbmetric-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      const env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("notebooks-malloyyo", async (stagingPath) => {
+         await fs.cp(
+            path.join(FIXTURE, "..", "notebooks-malloyyo"),
+            stagingPath,
+            {
+               recursive: true,
+            },
+         );
+      });
+      const count = () =>
+         harness.collectCounter("publisher_notebook_discovery_total", {
+            format: "malloy",
+         });
+      const afterLoad = await count();
+      // The control: loading the package did count, so the harness sees it.
+      expect(afterLoad).toBeGreaterThan(0);
+
+      await env.compileSource(
+         "notebooks-malloyyo",
+         "index.malloy",
+         undefined,
+         false,
+         undefined,
+         "package",
+      );
+
+      expect(await count()).toBe(afterLoad);
    });
 });
