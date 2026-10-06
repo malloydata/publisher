@@ -30,6 +30,7 @@ const mount = async (
    options: {
       onSave?: (source: string) => Promise<void> | void;
       onDirtyChange?: (dirty: boolean) => void;
+      onExit?: () => void;
    } = {},
 ) => {
    const document = await openDocument(SOURCE);
@@ -38,6 +39,7 @@ const mount = async (
          source={SOURCE}
          document={document}
          {...(options.onSave ? { onSave: options.onSave } : {})}
+         {...(options.onExit ? { onExit: options.onExit } : {})}
          {...(options.onDirtyChange
             ? { onDirtyChange: options.onDirtyChange }
             : {})}
@@ -124,6 +126,58 @@ describe("DashboardBuilder: leaving with a structural edit", () => {
       fireEvent.click(button("Saving…"));
       await act(async () => finish());
       await screen.findByRole("button", { name: "Saved" });
+      expect(onSave).toHaveBeenCalledTimes(1);
+   });
+});
+
+describe("DashboardBuilder: a host's opt-in Close", () => {
+   it("draws no Close unless the host passes onExit", async () => {
+      await mount({ onSave: async () => {} });
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+   });
+
+   it("draws Close beside Save, and leaves at once when nothing is unsaved", async () => {
+      const onExit = mock(() => {});
+      await mount({ onSave: async () => {}, onExit });
+      expect(button("Saved")).toBeDefined();
+      fireEvent.click(button("Close"));
+      expect(onExit).toHaveBeenCalledTimes(1);
+   });
+
+   it("asks first when there are edits, and Keep editing stays", async () => {
+      const onExit = mock(() => {});
+      await mount({ onSave: async () => {}, onExit });
+      retitle();
+      fireEvent.click(button("Close"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Keep editing" }),
+      );
+      expect(onExit).not.toHaveBeenCalled();
+   });
+
+   it("Discard changes leaves without saving", async () => {
+      const onExit = mock(() => {});
+      const onSave = mock(async () => {});
+      await mount({ onSave, onExit });
+      retitle();
+      fireEvent.click(button("Close"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Discard changes" }),
+      );
+      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(onSave).not.toHaveBeenCalled();
+   });
+
+   it("Save and exit saves, then leaves", async () => {
+      const onExit = mock(() => {});
+      const onSave = mock(async () => {});
+      await mount({ onSave, onExit });
+      retitle();
+      fireEvent.click(button("Close"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Save and exit" }),
+      );
+      await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
       expect(onSave).toHaveBeenCalledTimes(1);
    });
 });

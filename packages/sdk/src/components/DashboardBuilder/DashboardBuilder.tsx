@@ -63,6 +63,7 @@ import {
 import { TextTileBody } from "./TextTileBody";
 import { TileCard } from "../Dashboard/TileCard";
 import { AppDialog } from "../AppDialog";
+import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
@@ -209,10 +210,11 @@ export interface DashboardBuilderProps {
    modelPath?: string;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
-    * and save. Leaving is the host's too: the builder draws no way out, and
-    * reports unsaved work through `onDirtyChange` for the host to guard.
+    * and save.
     */
    toolbar?: ReactNode;
+   /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
+   onExit?: () => void;
 }
 
 export function DashboardBuilder({
@@ -221,6 +223,7 @@ export function DashboardBuilder({
    onSave,
    onChange,
    onDirtyChange,
+   onExit,
    renderTile,
    controls,
    givens,
@@ -515,6 +518,7 @@ export function DashboardBuilder({
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onDirtyChange,
+      onExit,
       onChange,
       shortcuts,
       report: {
@@ -1063,6 +1067,7 @@ export function DashboardBuilder({
                >
                   {null}
                </AppDialog>
+               <UnsavedChangesDialog {...session.exitGuard.dialog} />
                <AddTileDialog
                   open={addingTile}
                   document={editor.document}

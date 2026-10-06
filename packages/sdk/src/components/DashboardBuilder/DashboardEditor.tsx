@@ -106,6 +106,12 @@ export type DashboardEditorProps = (
     * without this a host cannot tell whether leaving costs anything.
     */
    onDirtyChange?: (dirty: boolean) => void;
+   /**
+    * Leave the editor: opted into, it draws Close after Save, which asks first
+    * when edits are unsaved. A host with a way out of its own (the Console's
+    * header View) leaves it unset and guards with `onDirtyChange`.
+    */
+   onExit?: () => void;
 };
 
 const LEGACY_REFUSAL =
@@ -115,7 +121,7 @@ const WITHHELD_REFUSAL =
    "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";
 
 export function DashboardEditor(props: DashboardEditorProps) {
-   const { onEvent, onDirtyChange, kind = "dashboard", path } = props;
+   const { onEvent, onDirtyChange, onExit, kind = "dashboard", path } = props;
    const notebook = kind === "notebook";
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
@@ -742,6 +748,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                   : {})}
                onSave={save}
                onDirtyChange={reportDirty}
+               {...(onExit ? { onExit } : {})}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
@@ -775,6 +782,7 @@ function Surface({
    replaces,
    onSave,
    onDirtyChange,
+   onExit,
    onEvent,
    savesTo,
    saveLabel,
@@ -797,6 +805,7 @@ function Surface({
    replaces?: string;
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
+   onExit?: () => void;
    onEvent?: (event: BuilderEvent) => void;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -1050,6 +1059,7 @@ function Surface({
                }))}
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
+            {...(onExit ? { onExit } : {})}
             {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}

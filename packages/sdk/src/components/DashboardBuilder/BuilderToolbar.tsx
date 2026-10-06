@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
+import CheckIcon from "@mui/icons-material/Check";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import { Button, Divider, IconButton, Stack, Tooltip } from "@mui/material";
 import type { ReactNode, Ref } from "react";
 import type { SavesTo } from "./documentSession";
+import { SecondaryButton } from "../buttons";
 import { MOD } from "./useBuilderShortcuts";
 
 /** Where Save puts the document, in the words under the button. */
@@ -44,6 +46,11 @@ export interface BuilderToolbarProps {
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
+   /**
+    * Leave the builder: draws Close after Save, for a host that opts in. The
+    * Console leaves from its own header and passes nothing.
+    */
+   onExit?: () => void;
 }
 
 export function BuilderToolbar({
@@ -59,6 +66,7 @@ export function BuilderToolbar({
    saveButton,
    actions,
    onAddTile,
+   onExit,
 }: BuilderToolbarProps) {
    return (
       <Stack
@@ -116,7 +124,7 @@ export function BuilderToolbar({
          </Tooltip>
          {/* The host's own actions, then Save, which keeps the builder open.
           Leaving is the host's: the builder draws no way out of itself. */}
-         {(actions || onSave) && (
+         {(actions || onSave || onExit) && (
             <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
          )}
          {actions}
@@ -143,6 +151,13 @@ export function BuilderToolbar({
                </span>
             </Tooltip>
          ) : null}
+         {onExit && (
+            <SecondaryButton
+               label="Close"
+               icon={<CheckIcon />}
+               onClick={onExit}
+            />
+         )}
       </Stack>
    );
 }
