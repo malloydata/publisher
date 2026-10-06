@@ -118,6 +118,7 @@ import {
    type ServeShapeGiven,
    documentFlagsForLifts,
    authorRefinementsFor,
+   NEVER_THINNED,
 } from "./materialization_serve_transform";
 
 /**
@@ -273,6 +274,11 @@ export function upstreamReuseFromManifest(params: {
       upstreams++;
       if (address in params.substituted) continue;
       if (address in params.full) {
+         // Held by a storage destination and excluded from the warehouse
+         // manifest. Read by this SQL only if the compare says a stored table
+         // was inlined; otherwise it is a declared join the query never uses,
+         // and neither a recompute nor a reason.
+         if (!params.sqlInlinesStored) continue;
          inManifestOnly.push(name);
          if (params.tier === "colocated") {
             const destination =
@@ -295,7 +301,15 @@ export function upstreamReuseFromManifest(params: {
             `(neither built in this run nor supplied by reference)`,
       );
    }
-   if (params.sqlInlinesStored && reasons.length === 0) {
+   // The compare says a stored table was inlined and no stop accounts for it:
+   // a stored-tier parent the walk did name is what a storage build stacks on,
+   // not a reason; one it did not name is a join on a stored stop's own
+   // definition, which only the compiler reached.
+   if (
+      params.sqlInlinesStored &&
+      reasons.length === 0 &&
+      inManifestOnly.length === 0
+   ) {
       reasons.push(
          `the build SQL inlines a stored table reached through a refinement ` +
             `declared on a stored upstream (a join the walk does not follow)`,
@@ -3327,7 +3341,9 @@ export class MaterializationService {
               tier: isStorageBuild ? "storage" : "colocated",
               sqlInlinesStored,
               compilerMissing,
-              rootAddress: instruction.sourceEntityId,
+              // The content address, not the instruction's id: an orchestrator
+              // may assign its own ids, and the walk's addresses are content.
+              rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
            })
          : { fields: {}, inManifestOnly: [], missing: [] };
 
@@ -3378,8 +3394,13 @@ export class MaterializationService {
          // compiler reached through a join on a stored stop: either way the
          // build SQL above inlined it, and reading the parent's lake table
          // instead is the chained build.
-         const dependsOnStorageUpstream =
-            reuse.inManifestOnly.length > 0 || sqlInlinesStored;
+         //
+         // The compare alone decides: a stored table the SQL reads is one the
+         // permissive render substitutes and the build render inlines, so the
+         // two differ exactly when there is a parent to stack on. A walk stop
+         // the SQL never reads (a declared join the query does not use) must
+         // not start a chained attempt the passthrough build did not need.
+         const dependsOnStorageUpstream = sqlInlinesStored;
          // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
          // underlying column, including ones the source hides (`except:`, non-public
          // access modifiers). Query reachability is bounded by the declared
@@ -3812,7 +3833,7 @@ export class MaterializationService {
                environment,
                physicalTableName,
                planFacts,
-               instruction.sourceEntityId,
+               params.contentSourceEntityId ?? instruction.sourceEntityId,
                lift,
             );
             recordChainedStorageBuild("parent_reuse");
@@ -4365,26 +4386,57 @@ export class MaterializationService {
          [{ sourceName: persistSource.name }, ...derived],
          lift,
       );
-      const transientModel = buildChainedStorageBuildModel({
-         upstreams,
-         downstreamName: persistSource.name,
-         downstreamDefText,
-         destinationName,
-         derived,
-         documentFlags,
-         givens: chainedBuildGivens(persistSource),
-      });
-      try {
-         return await buildDownstreamIntoStorage({
+      const givens = chainedBuildGivens(persistSource);
+      const buildOver = (
+         parents: ServeBinding[],
+      ): Promise<StorageBuildResult> =>
+         buildDownstreamIntoStorage({
             destinationName,
             destinationConnection,
-            transientModel,
+            transientModel: buildChainedStorageBuildModel({
+               upstreams: parents,
+               downstreamName: persistSource.name,
+               downstreamDefText,
+               destinationName,
+               derived,
+               documentFlags,
+               givens,
+            }),
             downstreamName: persistSource.name,
-            virtualMap: buildVirtualMap(upstreams),
+            virtualMap: buildVirtualMap(parents),
             physicalTableName,
             partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
          });
+      // The parents' refinements, in two tiers, as the serve shape thins them:
+      // everything the source declares first, and when that does not compile,
+      // only the kinds that change rows (`NEVER_THINNED`: the extend-block
+      // `where:`). The optional kinds are emitted optimistically — a dimension
+      // or view on the parent that reads a join to a source this destination
+      // cannot bind names an alias the model does not declare — and the
+      // downstream usually reads none of them; a downstream that does fails
+      // on the thinned tier too, and strict refuses it as not carried. The
+      // filter is never thinned, so no tier reads a parent unfiltered.
+      const thinned = upstreams.map((b) => ({
+         ...b,
+         refinements: (b.refinements ?? []).filter((r) =>
+            NEVER_THINNED.includes(r.kind),
+         ),
+      }));
+      const canThin = upstreams.some(
+         (b, i) =>
+            (b.refinements ?? []).length !==
+            (thinned[i].refinements ?? []).length,
+      );
+      try {
+         try {
+            return await buildOver(upstreams);
+         } catch (err) {
+            if (!(err instanceof MaterializationEligibilityError) || !canThin) {
+               throw err;
+            }
+            return await buildOver(thinned);
+         }
       } catch (err) {
          // The model reached only stored parents (checked above), so a shape
          // failure here is one the build could not carry, not one the

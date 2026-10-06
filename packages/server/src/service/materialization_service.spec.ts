@@ -5758,7 +5758,7 @@ describe("upstreamReuseFromManifest", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,
-         sqlInlinesStored: false,
+         sqlInlinesStored: true,
          compilerMissing: [],
          substituted: {},
          full: { "addr-daily": {} },
@@ -5776,7 +5776,7 @@ describe("upstreamReuseFromManifest", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,
-         sqlInlinesStored: false,
+         sqlInlinesStored: true,
          compilerMissing: [],
          substituted: {},
          full: { "addr-daily": {} },
@@ -5904,6 +5904,24 @@ describe("upstreamReuseFromManifest", () => {
          compilerMissing: [],
       });
       expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a storage-tier stop the SQL never read is neither a parent nor a reason", () => {
+      // In the full manifest, excluded from the warehouse manifest — and the
+      // compare says nothing stored was inlined: a declared join the query
+      // does not use. The build is the passthrough it always was.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.inManifestOnly).toEqual([]);
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
 
