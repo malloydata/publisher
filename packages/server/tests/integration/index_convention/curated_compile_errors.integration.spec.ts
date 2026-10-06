@@ -244,12 +244,10 @@ describe.serial("compile errors on a curated package", () => {
             // Over MCP all three read the same.
             expect(a.mcp).toEqual(missing.mcp);
          }
-         // Over REST a hidden, ungated source and a missing one read the same.
-         // (A hidden source that is itself gated can answer in the words of
-         // the named-source refusal where the others use the generic ones;
-         // that predates this and is not what this test pins.)
+         // Over REST a hidden source, a hidden gated source and a missing one
+         // all read the same, so a refusal cannot be used to find a hidden name.
          expect(stores.rest).toEqual(missing.rest);
-         expect(vault.rest.status).toBe(missing.rest.status);
+         expect(vault.rest).toEqual(missing.rest);
       }
    }, 120_000);
 
