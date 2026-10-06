@@ -30,13 +30,20 @@ export const editableSx = (
    at: PencilAt = "line",
 ): SystemStyleObject<Theme> => {
    // The pseudo-element's selector, at rest and while the field is hovered
-   // or focused: on the field itself for a line, on its first block for prose.
-   const block = ":is(p, h1, h2, h3, h4, h5, h6):first-child::after";
-   const host = at === "line" ? "&::after" : `& ${block}`;
+   // or focused: on the field itself for a line; for prose, on its first
+   // paragraph or heading, or on the lone span markdown renders a single line
+   // of prose as, with no paragraph around it.
+   const blocks = [
+      ":is(p, h1, h2, h3, h4, h5, h6):first-child::after",
+      "> * > span:only-child::after",
+   ];
+   const within = (prefix: string) =>
+      blocks.map((block) => `${prefix} ${block}`).join(", ");
+   const host = at === "line" ? "&::after" : within("&");
    const lit =
       at === "line"
          ? "&:hover::after, &:focus-visible::after"
-         : `&:hover ${block}, &:focus-visible ${block}`;
+         : `${within("&:hover")}, ${within("&:focus-visible")}`;
    return {
       cursor: "text",
       borderRadius: "2px",
