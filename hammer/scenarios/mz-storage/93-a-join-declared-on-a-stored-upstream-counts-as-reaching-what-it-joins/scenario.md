@@ -102,7 +102,7 @@ pinned stored table the build SQL would inline, and the build cannot stack on
   reference: daily
   reference: daily_counts
 
-cites: not materialized in destination 'lake'
+cites: materialized outside destination 'lake'
 
 ## Mutate orders_pg.sjs_orders
 
@@ -124,7 +124,7 @@ from the warehouse — fresh — and the entry says so.
   reference: daily
   reference: daily_counts
 
-cites: not materialized in destination 'lake'
+cites: materialized outside destination 'lake'
 
 ## Bind sjs
 

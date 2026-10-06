@@ -4042,11 +4042,45 @@ export class MaterializationService {
          present,
       );
       if (missing.length > 0) {
+         // Say where the table is, not only where it is not: a parent in the
+         // source warehouse or in another destination is fine where it lives
+         // and is simply out of this build's reach, and the tables strict is
+         // protecting are the stored ones a recompute of this source would
+         // rebuild.
+         const where = (name: string): string => {
+            const sourceID = reached.persisted.find(
+               (p) => p.name === name,
+            )?.sourceID;
+            const address =
+               sourceID === undefined
+                  ? undefined
+                  : planFacts.addressBySourceId[sourceID];
+            const entry =
+               address === undefined ? undefined : builtEntries[address];
+            if (entry?.storageDestinationName !== undefined) {
+               return (
+                  `'${name}' is materialized in destination ` +
+                  `'${entry.storageDestinationName}', not '${destinationName}'`
+               );
+            }
+            if (entry !== undefined) {
+               return (
+                  `'${name}' is materialized outside destination ` +
+                  `'${destinationName}' (a warehouse table, or a reference ` +
+                  `that does not say where it lives), which this build cannot read`
+               );
+            }
+            return (
+               `'${name}' is not materialized in destination ` +
+               `'${destinationName}' for this build`
+            );
+         };
          throw new ChainedUpstreamMissingError(
             missing,
-            `persisted upstream ${missing.map((n) => `'${n}'`).join(", ")} ` +
-               `of '${persistSource.name}' is not materialized in destination ` +
-               `'${destinationName}' for this build`,
+            `persisted upstream of '${persistSource.name}': ` +
+               `${missing.map(where).join("; ")} — the build cannot stack on ` +
+               `it, and the recompute that remains would rebuild the stored ` +
+               `tables its SQL inlines`,
          );
       }
       // A path to the source warehouse — a table joined beside a stored parent,

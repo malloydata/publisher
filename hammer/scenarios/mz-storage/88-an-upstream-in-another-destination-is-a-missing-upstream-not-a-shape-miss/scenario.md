@@ -92,7 +92,7 @@ so strict refuses — and the reason says where it is missing from.
 - rollup -> cxd_rollup__g2 @ far
   reference: daily
 
-cites: not materialized in destination 'far'
+cites: materialized in destination 'lake', not 'far'
 
 ## Mutate orders_pg.cxd_orders
 
