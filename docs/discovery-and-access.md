@@ -104,7 +104,11 @@ the text targets a source on the surface, or one the text derives only from such
 a **400** whose `problems` locate each error in the submitted text, the same answer a package with
 no surface gives. When any statement targets a source off the surface, or a name the boundary cannot
 read, the answer is a 404 in the plain form, since text that does not compile names no target the
-boundary could explain.
+boundary could explain. One exception: text that fails only at the grammar and has no `run:` target
+to read (for example `run` with no colon) is a 400 with the grammar error, because a grammar error
+says nothing about the model. That holds only when the model carries no `#(authorize)` and no
+`#(access_filter)`, and every source the text joins is on the surface or derived from one; otherwise
+it is the plain 404.
 
 ## Curating, and what curation is not
 
