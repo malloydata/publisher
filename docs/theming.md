@@ -38,7 +38,13 @@ mutation is.
       "tableBody":             { "light": "#727883", "dark": "#e2e8f0" },
       "tile":                  { "light": "#f5fafc", "dark": "#0f172a" },
       "tileTitle":             { "light": "#5d626b", "dark": "#94a3b8" },
-      "mapColor":              { "light": "#14b3cb", "dark": "#14b3cb" }
+      "mapColor":              { "light": "#14b3cb", "dark": "#14b3cb" },
+      "border":                { "light": "#e2e8f0", "dark": "#334155" },
+      "cardBorder":            { "light": "#cbd5e1", "dark": "#475569" },
+      "axis":                  { "light": "#cbd5e1", "dark": "#475569" },
+      "gridline":              { "light": "#cbd5e1", "dark": "#475569" },
+      "chartText":             { "light": "#0f172a", "dark": "#e2e8f0" },
+      "value":                 { "light": "#0f172a", "dark": "#f1f5f9" }
     },
     "font": { "family": "Inter, sans-serif", "size": 12 }
   }
@@ -52,3 +58,17 @@ mutation is.
 `palette.series` and `font` are shared across modes; the rest of the palette keys take an explicit
 `{ light, dark }` pair. `mapColor` is the saturated end of the choropleth gradient on `# shape_map`
 and `# segment_map` visualizations.
+
+The chrome around the data has its own keys, so a host can match its own hairlines and text without
+overriding the renderer's CSS. The values in the example above are the built-in defaults.
+
+| Key          | Paints                                                               |
+| ------------ | -------------------------------------------------------------------- |
+| `border`     | Table gridlines and row rules                                        |
+| `cardBorder` | A dashboard card's edge, and the rule under a pinned table header    |
+| `axis`       | Chart axis domain and tick lines                                     |
+| `gridline`   | Chart gridlines                                                      |
+| `chartText`  | Chart text: axis labels and titles, legends, chart and header titles |
+| `value`      | The big-value (KPI) number on a dashboard tile                       |
+
+A colour set for `light` only is not carried into dark for these keys: dark keeps its default.

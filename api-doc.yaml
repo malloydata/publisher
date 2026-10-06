@@ -3073,6 +3073,60 @@ components:
                   type: string
                 dark:
                   type: string
+            border:
+              type: object
+              description: Hairline color for table gridlines and row rules,
+                per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            cardBorder:
+              type: object
+              description: Edge color of a dashboard card and of a pinned table
+                header row, per mode. A step stronger than `border`, so a
+                card reads as a card on a page whose ground and tile share
+                one colour.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            axis:
+              type: object
+              description: Color of chart axis domain and tick lines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            gridline:
+              type: object
+              description: Color of chart gridlines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            chartText:
+              type: object
+              description: Color of chart text (axis labels and titles, legend,
+                chart and header titles), per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            value:
+              type: object
+              description: Color of the big-value (KPI) number in a dashboard
+                tile, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
         font:
           type: object
           description:

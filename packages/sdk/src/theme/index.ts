@@ -13,6 +13,7 @@ export {
    scrollBehavior,
    visibleWithoutHoverSx,
 } from "./motion";
+export type { PerModeColorKey } from "./keys";
 export { readChartAnnotations } from "./readChartAnnotations";
 export { resolveMode, resolveTheme } from "./resolveTheme";
 export { ThemeProvider, usePublisherTheme } from "./ThemeContext";

@@ -14,10 +14,10 @@ import type { ResolvedTheme, Theme, ThemeMode } from "./types";
  * (a layer that sets only `palette.tile.dark` doesn't clobber the
  * instance-level `palette.tile.light`).
  *
- * The derived fields on ResolvedTheme (border, cardBorder, pinnedBorder,
- * valueColor, foreground, axisFaint) are computed once here from the
- * active mode so the three builders that consume the theme stop
- * recomputing them with duplicated hex literals.
+ * The chrome fields on ResolvedTheme (border, cardBorder, pinnedBorder,
+ * valueColor, foreground, axisFaint, gridline) are resolved once here from
+ * the per-mode palette keys (border, cardBorder, value, chartText, axis,
+ * gridline) so the builders that consume the theme never branch on mode.
  */
 export function resolveTheme(
    layers: Array<Theme | undefined>,
@@ -43,6 +43,12 @@ export function resolveTheme(
       tile: { ...(defaultPalette.tile ?? {}) },
       tileTitle: { ...(defaultPalette.tileTitle ?? {}) },
       mapColor: { ...(defaultPalette.mapColor ?? {}) },
+      border: { ...(defaultPalette.border ?? {}) },
+      cardBorder: { ...(defaultPalette.cardBorder ?? {}) },
+      axis: { ...(defaultPalette.axis ?? {}) },
+      gridline: { ...(defaultPalette.gridline ?? {}) },
+      chartText: { ...(defaultPalette.chartText ?? {}) },
+      value: { ...(defaultPalette.value ?? {}) },
    };
 
    // Which per-mode colours a layer set for each mode, as against the
@@ -101,21 +107,21 @@ export function resolveTheme(
       // Table interior follows the operator's chart background so
       // tables and chart canvases share a single "viz surface" colour.
       tableBackground: background,
-      // Derived, mode-keyed defaults. Operators don't edit these in
-      // v1; they're consistent borders / readable foreground text for
-      // each mode. If a user later asks to customise them, expose them
-      // on the schema and the editor and replace the literals below.
-      border: isDark ? "1px solid #334155" : "1px solid #e2e8f0",
+      // Chrome colours. Each is a per-mode palette key (defaults in
+      // DEFAULT_THEME); unlike mapColor, a value set only for light is not
+      // carried into dark: dark falls back to its own default, because a
+      // light-mode rule or text colour rarely reads on the dark ground.
+      border: `1px solid ${pick("border")}`,
       // A card's edge, one stop darker than a table's gridline on the same
       // slate ramp. See `cardBorder` on ResolvedTheme for why the two are not
       // the same value.
-      cardBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
-      // Slate, not the teal-cast `#daedf3` this was: a pinned table header
-      // outlined in a hue no longer anywhere else on the page.
-      pinnedBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
-      valueColor: isDark ? "#f1f5f9" : "#0f172a",
-      foreground: isDark ? "#e2e8f0" : "#0f172a",
-      axisFaint: isDark ? "#475569" : "#cbd5e1",
+      cardBorder: `1px solid ${pick("cardBorder")}`,
+      // The pinned table header's rule is the card edge's colour.
+      pinnedBorder: `1px solid ${pick("cardBorder")}`,
+      valueColor: pick("value"),
+      foreground: pick("chartText"),
+      axisFaint: pick("axis"),
+      gridline: pick("gridline"),
       shadow: isDark
          ? {
               lift: "0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08)",
