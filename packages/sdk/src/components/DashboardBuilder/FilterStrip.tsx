@@ -22,6 +22,7 @@ export function FilterStrip({
    unknownFieldsOf,
    onEdit,
    onAdd,
+   addDisabledReason,
    onRemove,
    children,
 }: {
@@ -31,6 +32,8 @@ export function FilterStrip({
    unknownFieldsOf: (name: string, type: string | undefined) => string[];
    onEdit: (control: BuilderControl) => void;
    onAdd: () => void;
+   /** Why adding is off; set, the chip is disabled and its tooltip says why. */
+   addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
    /** The host's live control row. */
@@ -145,21 +148,32 @@ export function FilterStrip({
                   {/* Beside the chips and shaped like one, as the next filter
                    would be: outlined where they are filled, so it reads as the
                    empty slot rather than another filter. */}
-                  <Chip
-                     size="small"
-                     variant="outlined"
-                     icon={<AddIcon />}
-                     label="Filter"
-                     aria-label="Add filter"
-                     aria-haspopup="dialog"
-                     onClick={() => onAdd()}
-                     sx={{
-                        cursor: "pointer",
-                        color: theme.tileTitle,
-                        borderStyle: "dashed",
-                        "& .MuiChip-icon": { color: "inherit", fontSize: 16 },
-                     }}
-                  />
+                  {/* A disabled button takes no pointer events, so the tooltip
+                      saying why sits on a wrapper. */}
+                  <Tooltip title={addDisabledReason ?? ""}>
+                     <span>
+                        <Chip
+                           component="button"
+                           size="small"
+                           variant="outlined"
+                           icon={<AddIcon />}
+                           label="Filter"
+                           aria-label="Add filter"
+                           aria-haspopup="dialog"
+                           disabled={addDisabledReason !== undefined}
+                           onClick={() => onAdd()}
+                           sx={{
+                              cursor: "pointer",
+                              color: theme.tileTitle,
+                              borderStyle: "dashed",
+                              "& .MuiChip-icon": {
+                                 color: "inherit",
+                                 fontSize: 16,
+                              },
+                           }}
+                        />
+                     </span>
+                  </Tooltip>
                </Stack>
             </Stack>
 

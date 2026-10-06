@@ -262,6 +262,8 @@ Default (implicit). Use explicitly for `.size=fill` property.
 | `# link` | Hyperlinks | `.url_template="https://example.com/$$"` |
 | `# image` | Inline images | `.height=40px`, `.width=100px` |
 
+`# image` and `# link` are fine in a model file. A document held as text (one with a model-level `## artifact` tag, compiled at scope `append`) is refused if it writes either; define the field in the model file and check that edit at scope `file`.
+
 **Currency codes:** `usd` ($), `eur`, `gbp`. **Scale:** K/M/B/T/Q or `auto`.
 **Number suffix styles:** `word` ("42.5 million"), `letter` ("42.5M"), `scientific`.
 

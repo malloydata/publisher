@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Stack, Typography } from "@mui/material";
+import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import type { DashboardManifest, Given } from "../../client";
+import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { DashboardTile } from "../Dashboard/DashboardTile";
@@ -14,6 +15,7 @@ import {
    type TileHeadingSlots,
 } from "../Dashboard/TileCard";
 import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
+import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
@@ -23,6 +25,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
 import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import type { TextSourceOptions } from "./DashboardEditor";
 import type { BuilderEvent } from "./telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
@@ -38,7 +41,11 @@ import type { SaveContext, SaveHandler } from "./useDocumentEditor";
  * declared here and not yet in the package is written into each tile's query as
  * a literal, so it works the moment it is added.
  */
+/** A compile with no readable document: no manifest, but the text still opens. */
+const NO_MANIFEST: DashboardManifest = {};
+
 export function EditorSurface({
+   textSource,
    kind,
    modelGivens,
    environmentName,
@@ -56,6 +63,7 @@ export function EditorSurface({
    saveLabel,
    note,
 }: {
+   textSource?: TextSourceOptions;
    kind: DocumentKind;
    /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
    modelGivens?: Given[];
@@ -90,7 +98,11 @@ export function EditorSurface({
       [opened.generation, opened.document],
    );
 
-   const { data, isSuccess, isError } = useQueryWithApiError({
+   const {
+      data,
+      isSuccess: manifestLoaded,
+      isError: manifestFailed,
+   } = useQueryWithApiError({
       queryKey: [
          "dashboard-editor-manifest",
          environmentName,
@@ -128,9 +140,50 @@ export function EditorSurface({
          );
       },
       // The server does not serve a dashboard with no tiles, so asking would 404.
-      enabled: served,
+      enabled: served && !textSource,
    });
-   const manifest = data;
+   // A text source takes its manifest from compiling the text as the viewer.
+   const runModelPath = textSource?.modelPath ?? modelPath;
+   const compiled = useCompiledDocument(
+      {
+         environmentName,
+         packageName,
+         modelPath: runModelPath,
+         source: opened.source,
+         ...(textSource?.givens ? { givens: textSource.givens } : {}),
+      },
+      { enabled: textSource !== undefined },
+   );
+   const compiledDocument = compiled.data?.document;
+   const manifest: DashboardManifest | undefined = textSource
+      ? compiled.isSuccess
+         ? (compiledDocument?.manifest ?? NO_MANIFEST)
+         : undefined
+      : data;
+   const isSuccess = textSource ? compiled.isSuccess : manifestLoaded;
+   const isError = textSource ? compiled.isError : manifestFailed;
+   const preamble = textSource
+      ? documentPreamble(compiledDocument?.cells)
+      : undefined;
+   const compileErrors = (compiled.data?.result.problems ?? []).filter(
+      (problem) => problem.severity === "error",
+   );
+   const hidden = useMemo(
+      () => new Set(textSource?.hiddenGivens ?? []),
+      [textSource],
+   );
+   const hostGivens = textSource?.givens;
+   const restrictedTiles = useMemo(
+      () =>
+         new Set(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.restricted && tile.query
+                  ? [tileExpressionKey(tile.query)]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
 
    // The package's other dashboards, by slug: where a clicked cell can go.
    const { data: dashboardList } = useQueryWithApiError({
@@ -214,17 +267,27 @@ export function EditorSurface({
       [onSave, savesTo],
    );
    const modelSpecs = useMemo(
-      () => manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : []),
-      [manifest, opened.conversion, modelGivens],
+      () =>
+         (
+            manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
+         ).filter(
+            // Only a document held as text hides a `#(secure)` given's control; a saved file's givens show as before.
+            (spec) =>
+               !(textSource && spec.secure === true) &&
+               !(spec.name !== undefined && hidden.has(spec.name)),
+         ),
+      [manifest, opened.conversion, modelGivens, hidden, textSource],
    );
    const runnable = useMemo(
       () =>
-         new Set(
-            modelSpecs
+         new Set([
+            ...modelSpecs
                .map((spec) => spec.name)
                .filter((name): name is string => name !== undefined),
-         ),
-      [modelSpecs],
+            // A host-set given has no control, but the server is sent it.
+            ...Object.keys(hostGivens ?? {}),
+         ]),
+      [modelSpecs, hostGivens],
    );
    const specs = useMemo(
       () => previewGivens(doc, modelSpecs),
@@ -238,10 +301,22 @@ export function EditorSurface({
       autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
-      modelPath: manifest?.path,
+      modelPath: textSource ? runModelPath : manifest?.path,
       versionId,
       documentName: slug,
+      ...(preamble !== undefined ? { preamble } : {}),
+      ...(hostGivens ? { hostGivens } : {}),
    });
+   // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
+   const tileHostGivens = useMemo(
+      () =>
+         Object.fromEntries(
+            Object.entries(hostGivens ?? {}).filter(
+               ([name]) => !declaredTypes.has(name),
+            ),
+         ),
+      [hostGivens, declaredTypes],
+   );
 
    const manifestSettled = !served || isSuccess || isError;
    // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
@@ -289,7 +364,13 @@ export function EditorSurface({
                   environmentName={environmentName}
                   packageName={packageName}
                   versionId={versionId}
-                  modelPath={modelPath}
+                  modelPath={runModelPath}
+                  {...(preamble !== undefined ? { preamble } : {})}
+                  {...(restrictedTiles.has(
+                     tileExpressionKey(`${tile.source} -> ${tile.name}`),
+                  )
+                     ? { restricted: true }
+                     : {})}
                   tile={query.expression}
                   {...(query.annotation
                      ? { annotation: query.annotation }
@@ -300,6 +381,7 @@ export function EditorSurface({
                   {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
                   givens={applied}
+                  hostGivens={tileHostGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
@@ -315,8 +397,11 @@ export function EditorSurface({
          environmentName,
          packageName,
          versionId,
-         modelPath,
+         runModelPath,
+         preamble,
+         restrictedTiles,
          applied,
+         tileHostGivens,
          declaredTypes,
          specs,
       ],
@@ -324,7 +409,25 @@ export function EditorSurface({
 
    return (
       <Stack sx={{ gap: 1 }}>
+         {textSource && compileErrors.length > 0 && (
+            <Alert severity="error">
+               The server could not compile this document:{" "}
+               {compileErrors.map((problem) => problem.message).join("; ")}
+            </Alert>
+         )}
+         {textSource && compiled.isError && (
+            <Alert severity="error">
+               The server could not compile this document:{" "}
+               {compiled.error?.message}
+            </Alert>
+         )}
          <DashboardBuilder
+            {...(textSource
+               ? {
+                    addFilterDisabledReason:
+                       "This document holds no given: of its own. Bind a filter the model offers from its chip.",
+                 }
+               : {})}
             source={opened.source}
             document={opened.document}
             renderTile={renderTile}
@@ -356,6 +459,7 @@ export function EditorSurface({
             {...(saveLabel ? { saveLabel } : {})}
             {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
+            {...(textSource ? { explicitKind: true } : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

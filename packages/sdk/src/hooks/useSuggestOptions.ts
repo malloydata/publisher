@@ -4,9 +4,13 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { Given } from "../client";
-import { givensToRequest } from "../components/given/paramCodec";
+import { withPreamble } from "../components/Dashboard/textSource";
+import {
+   givensToRequest,
+   withHostGivens,
+} from "../components/given/paramCodec";
 import { useServer } from "../components/ServerProvider";
-import type { GivenValue } from "./givenValue";
+import type { GivenValue, HostGivenValue } from "./givenValue";
 
 /**
  * How many options a generated `suggest { source=… dimension=… }` asks for.
@@ -92,9 +96,10 @@ export function suggestRequestGivens(
 ): Record<string, unknown> | undefined {
    const names = spec.suggest?.givenNames;
    if (!applied || !names || names.length === 0) return undefined;
-   const request = givensToRequest(
-      applied.values,
-      applied.declaredTypes,
+   const request = withHostGivens(
+      givensToRequest(applied.values, applied.declaredTypes, names),
+      // A control's own value wins, so only what no control declares is added.
+      hostOnly(applied),
       names,
    );
    return Object.keys(request).length > 0 ? request : undefined;
@@ -104,6 +109,19 @@ export function suggestRequestGivens(
 export interface AppliedGivens {
    values: ReadonlyMap<string, GivenValue>;
    declaredTypes: ReadonlyMap<string, string | undefined>;
+   /** Givens the host sets with no control: a gated source's suggest needs them, and they may be lists. */
+   host?: Readonly<Record<string, HostGivenValue>>;
+}
+
+function hostOnly(
+   applied: AppliedGivens,
+): Record<string, HostGivenValue> | undefined {
+   if (!applied.host) return undefined;
+   return Object.fromEntries(
+      Object.entries(applied.host).filter(
+         ([name]) => !applied.declaredTypes.has(name),
+      ),
+   );
 }
 
 export function useSuggestOptions(
@@ -120,6 +138,11 @@ export function useSuggestOptions(
     * caller that omits it gets the pre-gating behaviour.
     */
    applied?: AppliedGivens,
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the suggest as
+    * the viewer's own text. Absent, a suggest runs by name or by view as before.
+    */
+   preamble?: string,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -167,6 +190,8 @@ export function useSuggestOptions(
                // Only the givens the suggest carries, so a change to any OTHER
                // control leaves the cached list alone.
                givens === undefined ? null : JSON.stringify(givens),
+               // Only a text source keys on its definitions, so no other key changes shape.
+               ...(preamble === undefined ? [] : [preamble]),
             ],
             enabled: modelPath !== undefined,
             // Option lists change with the data, not with the filters, so they
@@ -179,7 +204,7 @@ export function useSuggestOptions(
                   environmentName,
                   packageName,
                   modelPath as string,
-                  suggest.query !== undefined
+                  suggest.query !== undefined && preamble === undefined
                      ? {
                           queryName: suggest.query,
                           compactJson: true,
@@ -187,9 +212,14 @@ export function useSuggestOptions(
                           givens,
                        }
                      : {
-                          query: buildSuggestQuery(
-                             suggest.source as string,
-                             suggest.dimension as string,
+                          query: withPreamble(
+                             preamble ?? "",
+                             suggest.query !== undefined
+                                ? `run: ${suggest.query}`
+                                : buildSuggestQuery(
+                                     suggest.source as string,
+                                     suggest.dimension as string,
+                                  ),
                           ),
                           compactJson: true,
                           versionId,

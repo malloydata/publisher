@@ -46,6 +46,7 @@ export function useOpenedDocument({
    noun,
    refusedEvent,
    legacyFormat,
+   textHeld,
    startedAt,
    onEventRef,
 }: {
@@ -66,6 +67,8 @@ export function useOpenedDocument({
    noun: string;
    refusedEvent: "notebook.open_refused" | "dashboard.open_refused";
    legacyFormat: boolean;
+   /** The document is held as text by the host: there is no package file to fall back on. */
+   textHeld: boolean;
    /** When the open was asked for, so "opened" can say how long it took. */
    startedAt: MutableRefObject<number>;
    onEventRef: MutableRefObject<((event: BuilderEvent) => void) | undefined>;
@@ -171,7 +174,7 @@ export function useOpenedDocument({
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readForEditor(opening, modelPath)
+      void readForEditor(opening, modelPath, textHeld)
          .then((result) => {
             if (stale) return;
             if (result.ok === false) {
@@ -234,6 +237,7 @@ export function useOpenedDocument({
       notebook,
       noun,
       refusedEvent,
+      textHeld,
       // Refs, stable: read when the open lands, never a reason to open again.
       startedAt,
       onEventRef,
@@ -247,8 +251,21 @@ export function useOpenedDocument({
          });
    }, [legacyFormat, onEventRef]);
 
+   // The record is the only document a text source has, so it must exist and be one the host calls authoritative.
+   useEffect(() => {
+      if (!textHeld || !draftChecked || opened || readFailure !== undefined)
+         return;
+      if (!authoritative)
+         setOpenError(
+            "a document held as text needs a storage whose workspace is authoritative. Fix: mark the workspace that keeps it `authoritative`.",
+         );
+      else if (draft === undefined)
+         setOpenError("the host's storage has no document at this location.");
+   }, [textHeld, draftChecked, opened, readFailure, authoritative, draft]);
+
    const withheld =
       notebook &&
+      !textHeld &&
       !opened &&
       draftChecked &&
       !fromDraft &&

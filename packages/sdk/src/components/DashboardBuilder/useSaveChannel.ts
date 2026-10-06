@@ -44,6 +44,7 @@ export function useSaveChannel({
    apiClients,
    queryClient,
    mutable,
+   textHeld,
    readFailure,
    authoritative,
    resume,
@@ -69,6 +70,8 @@ export function useSaveChannel({
    queryClient: QueryClient;
    /** Whether the server takes writes; unknown while `/status` loads. */
    mutable: boolean | undefined;
+   /** A document held as text is saved only to the host's record, never into the package. */
+   textHeld: boolean;
    readFailure: string | undefined;
    authoritative: boolean;
    resume: boolean | undefined;
@@ -241,7 +244,7 @@ export function useSaveChannel({
    );
    const canWriteWorkspace = workspace?.writeable === true;
    // Unknown while `/status` loads, and a package write needs a yes.
-   const takesWrites = mutable === true;
+   const takesWrites = mutable === true && !textHeld;
    const { savesTo, pinnedPackageSave, writer } = saveTarget({
       authoritative,
       mutable: takesWrites,

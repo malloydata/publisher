@@ -5,6 +5,7 @@ import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useRef } from "react";
 import type { Given } from "../../client";
+import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { BuilderEvent } from "./telemetry";
@@ -92,11 +93,41 @@ export type DashboardEditorProps = (
     * header View) leaves it unset and guards with `onDirtyChange`.
     */
    onExit?: () => void;
+   /** Edit a document held as text; see {@link TextSourceOptions}. */
+   textSource?: TextSourceOptions;
 };
 
+/**
+ * Open a document the host keeps as TEXT, rather than a file in a package.
+ *
+ * The text comes from the host's authoritative {@link DocumentStorage} and is
+ * compiled by the server, as the viewer, on top of `modelPath`: the model whose
+ * sources the document may name. The manifest is that compile's `document`, and
+ * every tile, cell and control option runs as the document's definitions
+ * followed by one `run:`, so each viewer sees what their own identity allows.
+ * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
+ * and only the model's givens can be bound.
+ */
+export interface TextSourceOptions {
+   /** The model the text is compiled and run on top of. */
+   modelPath: string;
+   /** Givens the host sets itself: no control is shown for them. */
+   hiddenGivens?: readonly string[];
+   /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
+   givens?: Record<string, HostGivenValue>;
+}
+
 export function DashboardEditor(props: DashboardEditorProps) {
-   const { onEvent, onDirtyChange, onExit, kind = "dashboard", path } = props;
+   const {
+      onEvent,
+      onDirtyChange,
+      onExit,
+      kind = "dashboard",
+      path,
+      textSource,
+   } = props;
    const notebook = kind === "notebook";
+   const textHeld = textSource !== undefined;
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
       environmentName,
@@ -144,7 +175,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
             versionId,
             notebook ? true : undefined,
          ),
-      enabled: uriNamesBoth && !legacyFormat,
+      enabled: uriNamesBoth && !legacyFormat && !textHeld,
    });
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
@@ -197,6 +228,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       noun,
       refusedEvent,
       legacyFormat,
+      textHeld,
       startedAt,
       onEventRef,
    });
@@ -219,6 +251,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       apiClients,
       queryClient,
       mutable,
+      textHeld,
       readFailure,
       authoritative,
       resume,
@@ -253,7 +286,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
          ? workspace.description
          : undefined;
    const caption =
-      !authoritative && mutable === undefined
+      !authoritative && !textHeld && mutable === undefined
          ? isLoadingStatus
             ? "Checking whether this server takes writes."
             : "This server did not say whether it takes writes, so Save is off."
@@ -291,7 +324,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
             context={`Opening the ${noun}`}
          />
       );
-   if (!opened && (!packageText || !draftChecked))
+   if (!opened && (!(textHeld || packageText) || !draftChecked))
       return <Loading text={`Opening the ${noun}…`} />;
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
@@ -363,6 +396,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
                environmentName={environmentName}
                packageName={packageName}
                modelPath={modelPath}
+               {...(textSource ? { textSource } : {})}
                slug={dashboardName}
                modelGivens={
                   (modelQuery.data?.data as { givens?: Given[] } | undefined)

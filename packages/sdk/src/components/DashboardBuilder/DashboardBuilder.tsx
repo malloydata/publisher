@@ -175,6 +175,14 @@ export interface DashboardBuilderProps {
    replaces?: string;
    /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
    modelPath?: string;
+   /** The document is held as text, which the server reads by its tags rather than its folder: the tag always carries `kind=`. */
+   explicitKind?: boolean;
+   /**
+    * Why "Add filter" is off, or absent when it is on. A document kept as bare
+    * text has no `given:` of its own to write, so only the model's givens can
+    * be bound, from the chips.
+    */
+   addFilterDisabledReason?: string;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
@@ -203,6 +211,8 @@ export function DashboardBuilder({
    saveLabel,
    replaces,
    modelPath,
+   explicitKind,
+   addFilterDisabledReason,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -211,6 +221,7 @@ export function DashboardBuilder({
       ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
       ...(modelPath !== undefined ? { modelPath } : {}),
+      ...(explicitKind ? { explicitKind } : {}),
    });
    const gridBox = useRef<HTMLDivElement>(null);
    const {
@@ -436,6 +447,9 @@ export function DashboardBuilder({
                      unknownFieldsOf={bindings.unknownFieldsOf}
                      onEdit={(control) => setFilterDialog({ control })}
                      onAdd={() => setFilterDialog({})}
+                     {...(addFilterDisabledReason
+                        ? { addDisabledReason: addFilterDisabledReason }
+                        : {})}
                      onRemove={bindings.dropControl}
                   >
                      {controls}

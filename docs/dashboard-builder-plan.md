@@ -67,8 +67,8 @@ model-level `where:` of the same name: binding is per declaration, not per name.
 So the convention became: the dashboard declares its own givens and binds them
 per tile with `+ { where: field ~ $GIVEN }` refinements. The builder adds and
 removes filters by editing that one file and never edits imports or model files.
-A shared `givens.malloy` remains for controls the data app and notebooks share;
-a dashboard can import and bind those, but the builder cannot change them. A
+A given the model reads stays in the model and is imported by name; a dashboard
+can bind it, but the builder cannot change it. A
 plain `date` or `number` given binds with `>=` (`~` does not compile against a
 `date`).
 
