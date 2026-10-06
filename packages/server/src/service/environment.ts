@@ -58,6 +58,7 @@ import {
    assertNoRenderTags,
    assertNoRestrictedConstructs,
 } from "./compile_restriction";
+import { translatorMalloyError } from "./translator_error";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -932,9 +933,16 @@ export class Environment {
                      );
                   }
                } catch (error) {
-                  // Compiler diagnostics are returned by the worker below.
-                  // Authorization denials are policy outcomes and propagate.
-                  if (!(error instanceof MalloyError)) throw error;
+                  // Compiler diagnostics are returned by the worker below,
+                  // the translator's plain Error among them (the worker
+                  // classifies it). Authorization denials are policy outcomes
+                  // and propagate.
+                  if (
+                     !(error instanceof MalloyError) &&
+                     !translatorMalloyError(error)
+                  ) {
+                     throw error;
+                  }
                }
             }
 
@@ -1470,8 +1478,10 @@ export class Environment {
                ]),
                sql,
             };
-         } catch (error) {
-            // If parsing/compilation fails, return the errors
+         } catch (thrown) {
+            // If parsing/compilation fails, return the errors. The
+            // translator's plain Error is one of them, not a server fault.
+            const error = translatorMalloyError(thrown) ?? thrown;
             if (error instanceof MalloyError) {
                return {
                   problems: tagProblems([

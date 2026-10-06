@@ -145,7 +145,7 @@ One notebook with all three prose forms: floating markdown cells, attached markd
 import { order_items, products } from "../storefront.malloy"
 
 ##|(markdown)
-# Category review
+## Category review
 
 Pick a **Category** in the controls above and every chart below re-runs for it.
 Leave the control empty to read the whole catalog.

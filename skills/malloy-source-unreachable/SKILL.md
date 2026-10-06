@@ -51,7 +51,7 @@ The fix is the same in each case: add the source to the `export { ... }` in `ind
 Work down this list. The first three are far more common than the last.
 
 1. **It is off the surface.** The package publishes a curated set and this source is not in it. Nothing you can do from the query side; it is a package edit.
-2. **The package failed to load, or is serving a stale model.** Call `get_status`. A package that never loaded is absent from listings entirely, which reads exactly like "does not exist". A package whose last reload failed to compile is listed and answering, from the model it compiled *before* that save, and carries `stale: true`. Neither is visible from a listing alone.
+2. **The package failed to load, or is serving a stale model.** Call `list_packages`: a package that failed to load appears with an `error`, and one serving the model it compiled *before* a failed reload carries `stale: true` and the `error` too. `get_status` has the full load errors.
 3. **You are talking to a different server than you think.** Call `list_packages` and check the environment and package names are the ones you expect. A stale `.mcp.json` outlives the server that wrote it, and another Publisher may hold that port.
 4. **Your search phrasing missed it.** Retry with a bare target (no `search_text`) to enumerate rather than rank. If it appears there, the source exists and was a ranking miss.
 
