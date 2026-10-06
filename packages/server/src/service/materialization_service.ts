@@ -328,7 +328,7 @@ export function upstreamReuseFromManifest(params: {
  * strict still refuses and non-strict still recomputes (with a generic
  * reason) instead of the build failing on an error nobody classified. The
  * real-compiler spec pins the current wording; the id belongs on the error
- * object, which is asked of core.
+ * object, which is asked of core in malloydata/malloy#3133.
  */
 export function strictMissSourceId(
    err: unknown,
