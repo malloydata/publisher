@@ -117,7 +117,7 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
 
    if (!parsed) {
       return (
-         <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+         <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
             <Typography variant="h6" sx={{ fontWeight: 600 }}>
                Can&apos;t open data app
             </Typography>
@@ -145,7 +145,7 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
             // parent.
             ...(fillViewport
                ? { height: "100%", display: "flex", flexDirection: "column" }
-               : { maxWidth: 1200, mx: "auto" }),
+               : { maxWidth: 1600, mx: "auto" }),
          }}
       >
          <Stack

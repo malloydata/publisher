@@ -92,7 +92,7 @@ describe("DashboardBuilder: charts", () => {
       choose("a by_cat", "Line");
       closeMenu();
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
@@ -110,7 +110,7 @@ describe("DashboardBuilder: charts", () => {
       choose("a by_cat", "From the view");
       closeMenu();
       const save = screen.queryByRole("button", {
-         name: "Save changes",
+         name: "Save",
          hidden: true,
       });
       expect(save === null || (save as HTMLButtonElement).disabled).toBe(true);
@@ -135,7 +135,7 @@ describe("DashboardBuilder: charts", () => {
       closeMenu();
       editInline("by_brand", "Tile title", "Brands");
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("  # bar_chart { size=spark }\n");
@@ -180,7 +180,7 @@ describe("DashboardBuilder: charts", () => {
       choose("new tile", "Big value");
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(

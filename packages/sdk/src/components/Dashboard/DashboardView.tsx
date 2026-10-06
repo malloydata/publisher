@@ -14,12 +14,11 @@ import {
    type DrillRowsRequest,
 } from "../drill";
 import { GivensPanel } from "../given";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
+import { givensToRequest } from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
-import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import type { DashboardEventHandler } from "./telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
@@ -106,11 +105,9 @@ export function DashboardView({
       return new Map<string, GivenValue>([...hostOnly, ...applied]);
    }, [manifest, givens, declaredTypes, applied]);
 
-   // The rows behind a clicked value, and a tile's query in the explorer —
-   // the two ways past a number. Composite tiles only: each names its
-   // source, which is what the rows are of and what the explorer opens on.
+   // The rows behind a clicked value: the way past a number. Composite tiles
+   // only: each names its source, which is what the rows are of.
    const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
-   const [exploring, setExploring] = useState<string | undefined>(undefined);
    const onRows = useCallback((request: DrillRowsRequest) => {
       const steps = stepsOf(request.context);
       if (steps === undefined) return;
@@ -127,12 +124,6 @@ export function DashboardView({
    const rowsGivens = useMemo(
       () => givensToRequest(tileGivens, declaredTypes),
       [tileGivens, declaredTypes],
-   );
-
-   // The explorer's controls take the URL-string form, not the request form.
-   const exploreGivens = useMemo(
-      () => givensToParams(applied, declaredTypes),
-      [applied, declaredTypes],
    );
 
    const { drill, drillMenu } = useDrill({
@@ -245,13 +236,6 @@ export function DashboardView({
                            tile.givenNames,
                            specs,
                         )}
-                        onExplore={() => {
-                           setExploring(tile.query);
-                           onEvent?.({
-                              type: "dashboard.explored",
-                              tile: tile.query ?? "",
-                           });
-                        }}
                      />
                   )
                }
@@ -264,37 +248,26 @@ export function DashboardView({
 
          {drillMenu}
          {modelPath !== undefined && (
-            <>
-               <RowsDialog
-                  request={rows}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={rowsGivens}
-                  onClose={() => setRows(undefined)}
-                  onDone={(ok, durationMs) => {
-                     if (rows)
-                        onEvent?.({
-                           type: "dashboard.rows_shown",
-                           source: rows.source,
-                           view: rows.view,
-                           field: rows.field,
-                           ok,
-                           durationMs,
-                        });
-                  }}
-               />
-               <ExploreDialog
-                  tile={exploring}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={exploreGivens}
-                  onClose={() => setExploring(undefined)}
-               />
-            </>
+            <RowsDialog
+               request={rows}
+               environmentName={environmentName}
+               packageName={packageName}
+               {...(versionId === undefined ? {} : { versionId })}
+               modelPath={modelPath}
+               givens={rowsGivens}
+               onClose={() => setRows(undefined)}
+               onDone={(ok, durationMs) => {
+                  if (rows)
+                     onEvent?.({
+                        type: "dashboard.rows_shown",
+                        source: rows.source,
+                        view: rows.view,
+                        field: rows.field,
+                        ok,
+                        durationMs,
+                     });
+               }}
+            />
          )}
       </Stack>
    );
@@ -322,6 +295,7 @@ function TextTile({
 function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
       <DashboardProse
+         chrome="card"
          title={manifest.title ?? manifest.name}
          {...(manifest.description
             ? { description: manifest.description }
@@ -333,20 +307,27 @@ function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
 /**
  * The prose header over just the two fields it needs, so the BUILDER can draw
  * the same header over a `DashboardDocument`, which is not a manifest.
+ *
+ * The description is drawn as a text tile is, in the document's own tile
+ * chrome: the same box and the same type as the markdown between the tiles,
+ * so the page's prose reads as one kind of thing wherever it sits.
  */
 export function DashboardProse({
    title,
    description,
+   chrome = "card",
 }: {
    title: string;
    description?: string;
+   /** The chrome the document's tiles take, which the description matches. */
+   chrome?: TileChrome;
 }) {
    return (
-      <Box>
+      <Stack sx={{ gap: 2 }}>
          <Typography variant="h5" sx={{ fontWeight: 600 }}>
             {title}
          </Typography>
-         {description && <Prose variant="caption">{description}</Prose>}
-      </Box>
+         {description && <TextTile markdown={description} chrome={chrome} />}
+      </Stack>
    );
 }

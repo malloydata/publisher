@@ -26,7 +26,11 @@ const DARK_DIVIDER = "#334155";
  * is resolved upstream). Component-level overrides switch on `isDark`
  * rather than re-reading the palette so the file is grep-able per token.
  */
-export const createPublisherTheme = (mode: ThemeMode = "light") => {
+export const createPublisherTheme = (
+   mode: ThemeMode = "light",
+   /** The instance palette's accent (`ResolvedTheme.accent` and its pair); absent, the default blue. */
+   accentPair?: { accent: string; accentHover: string; accentContrast: string },
+) => {
    const isDark = mode === "dark";
    const background = isDark ? DARK_BACKGROUND : colors.white;
    const surface = isDark ? DARK_SURFACE : colors.white;
@@ -36,10 +40,10 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
 
    // Contained primary buttons read their bg from primary.main and their text
    // from contrastText, so this is the colour of every confirming action in
-   // the Console. The palette's anchor blue, which is also its first chart
-   // series: the button that saves a dashboard and the first line on it are
-   // the same hue, and the page has one accent rather than a neutral button
-   // beside coloured content.
+   // the Console. The palette's first chart series, as the SDK resolves it
+   // into `accent`: the button that saves a dashboard and the first line on it
+   // are the same hue, and the page has one accent rather than a neutral
+   // button beside coloured content. Without a palette, the anchor blue.
    //
    // Dark mode inverts the pair rather than shifting the blue. A mid blue on a
    // slate page is only 3.5:1 against the page and puts white text at 3.7:1,
@@ -47,9 +51,12 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
    // resting one. A bright fill with a near-black label reads at 7:1 on both
    // counts, and is what a dark theme wants anyway: the button is the lit
    // thing on the page, not a darker patch of it.
-   const primaryMain = isDark ? "#60a5fa" : PALETTE.blue;
-   const primaryHover = isDark ? "#93c5fd" : "#1d4ed8";
-   const primaryContrast = isDark ? "#0f172a" : "#ffffff";
+   const primaryMain =
+      accentPair?.accent ?? (isDark ? "#60a5fa" : PALETTE.blue);
+   const primaryHover =
+      accentPair?.accentHover ?? (isDark ? "#93c5fd" : "#1d4ed8");
+   const primaryContrast =
+      accentPair?.accentContrast ?? (isDark ? "#0f172a" : "#ffffff");
 
    return createTheme({
       cssVariables: { nativeColor: true },

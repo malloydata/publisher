@@ -193,7 +193,7 @@ describe("DashboardEditor", () => {
          await screen.findByText(/could not be re-read from the server/),
       ).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
-      expect(button("Save changes")).toBeDefined();
+      expect(button("Save")).toBeDefined();
    });
 
    it("does not call an undecided server writable or read-only while its status loads", async () => {
@@ -242,7 +242,7 @@ describe("DashboardEditor", () => {
       const storage = mount();
       await screen.findByText("Storefront");
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(async () =>
          expect(await storage.getDocument(DRAFT)).toContain(
             '# label="Categories"',
@@ -279,7 +279,7 @@ describe("DashboardEditor", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("hands the exit to the host and reports the open", async () => {
+   it("reports the open, and offers Save rather than Close when it can save", async () => {
       const onExit = mock(() => {});
       const onEvent = mock((_event: DashboardEvent) => {});
       mount(onExit, onEvent);
@@ -294,7 +294,8 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+      expect(button("Saved")).toBeDefined();
+      expect(onExit).not.toHaveBeenCalled();
    });
 });

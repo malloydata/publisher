@@ -135,6 +135,8 @@ export default function Notebook(props: NotebookProps) {
                {(title || description) && (
                   <Box sx={{ mb: 2 }}>
                      <DashboardProse
+                        // A notebook's text tiles have no card; its description matches them.
+                        chrome="none"
                         title={title ?? ""}
                         {...(description ? { description } : {})}
                      />

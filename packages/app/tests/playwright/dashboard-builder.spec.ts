@@ -68,7 +68,7 @@ test.describe("dashboard-builder", () => {
    // the package, and every test here opens the same dashboard.
    const openEditor = async (page: Page) => {
       await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText(/^Tiled/).first()).toBeVisible();
@@ -101,7 +101,7 @@ test.describe("dashboard-builder", () => {
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
       await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(

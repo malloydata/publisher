@@ -93,7 +93,7 @@ test.describe("dashboard-create", () => {
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here/edit$`),
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(

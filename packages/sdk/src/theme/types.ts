@@ -24,6 +24,16 @@ export interface ResolvedTheme {
    mode: ThemeMode;
 
    series: string[];
+   /**
+    * The Console's accent — primary buttons, sliders, the builder's selection
+    * — taken from the first series colour, lifted toward white in dark mode.
+    * See `accentFor`.
+    */
+   accent: string;
+   /** The accent's hover state. */
+   accentHover: string;
+   /** The label colour that reads on the accent. */
+   accentContrast: string;
    font: {
       family: string;
       size: number;

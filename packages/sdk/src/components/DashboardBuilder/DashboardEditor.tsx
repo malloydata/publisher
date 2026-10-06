@@ -20,17 +20,11 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
-import { DashboardBar } from "../Dashboard/DashboardBar";
 import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
-import {
-   buildCatalog,
-   isDashboardModel,
-   visibleToDashboard,
-   type PackageCatalog,
-} from "./catalog";
+import { buildCatalog, isDashboardModel, type PackageCatalog } from "./catalog";
 import { locatorFor } from "../DocumentCreate/documentPath";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
@@ -297,8 +291,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // Whether the builder holds edits the record does not have, and the version
    // being held back because of them.
    const [dirty, setDirty] = useState(false);
-   // A save that can still be undone is held like an edit, until the next edit: remounting on a newer version would drop the offer silently.
-   const [undoOffered, setUndoOffered] = useState(false);
    const [accepted, setAccepted] = useState<string | undefined>(undefined);
    // The text on this channel the editor has already reckoned with: what it
    // opened, and what it wrote. Compared against the CHANNEL rather than
@@ -311,9 +303,14 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // What the builder is on. A save does not remount it, so this follows the
    // save rather than the text the builder was opened with.
    const current = opened?.source;
+   // Work the package does not have: unsaved edits, or a copy saved beside the
+   // package that differs from it. Either way a newer version is held back
+   // behind the banner rather than loaded over what the reader made.
+   const aheadOfPackage =
+      !authoritative && draft !== undefined && draft !== packageNow;
    const holding =
       incoming &&
-      (dirty || undoOffered) &&
+      (dirty || aheadOfPackage) &&
       current !== undefined &&
       latest !== accepted;
    const opening = holding ? current : incoming ? latest : (current ?? latest);
@@ -656,15 +653,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
          />
       );
    if (!opened && (!packageText || !draftChecked))
-      // The bar first, so the page it is opening into is already the right
-      // shape: the reader's view had a bar in this spot, and a spinner where
-      // the bar was made the switch look like a page reload.
-      return (
-         <Stack sx={{ gap: 2 }}>
-            <DashboardBar />
-            <Loading text={`Opening the ${noun}…`} />
-         </Stack>
-      );
+      return <Loading text={`Opening the ${noun}…`} />;
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
    // so opening it and arming Save would publish it over the record.
@@ -714,13 +703,11 @@ export function DashboardEditor(props: DashboardEditorProps) {
                   </Button>
                }
             >
-               {!dirty
-                  ? "This dashboard changed since you opened it. Loading the new version drops Undo save."
-                  : savesTo === "package"
-                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
-                    : savesTo === "host"
-                      ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
-                      : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
+               {savesTo === "package"
+                  ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
+                  : savesTo === "host"
+                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
+                    : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
             </Alert>
          )}
          {supersedeFailure !== undefined && (
@@ -751,7 +738,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
                   : {})}
                onSave={save}
                onDirtyChange={reportDirty}
-               onSaveNoticeChange={setUndoOffered}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
@@ -786,7 +772,6 @@ function Surface({
    replaces,
    onSave,
    onDirtyChange,
-   onSaveNoticeChange,
    onEvent,
    savesTo,
    saveLabel,
@@ -810,7 +795,6 @@ function Surface({
    replaces?: string;
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
-   onSaveNoticeChange: (showing: boolean) => void;
    onEvent?: (event: BuilderEvent) => void;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -891,26 +875,14 @@ function Surface({
       [dashboardList, slug],
    );
 
-   // The catalog: what the package publishes, limited to what this file can
-   // see. A tile runs against this file and may read only the package surface,
-   // so offering a source from any other file would offer a tile that 404s.
-   // Files off the surface are not readable anyway (their model GET is 404).
-   const imports = useMemo(() => {
-      const dir = modelPath.slice(0, modelPath.lastIndexOf("/") + 1);
-      return opened.document.imports.map((imported) => ({
-         ...imported,
-         path: new URL(
-            imported.from,
-            `https://malloy.invalid/${dir}`,
-         ).pathname.slice(1),
-      }));
-   }, [opened.document.imports, modelPath]);
+   // The catalog: every source the package publishes. A tile runs against
+   // this file and may read only the package surface; files off it are not
+   // readable anyway (their model GET is 404).
    const { data: catalog } = useQueryWithApiError<PackageCatalog>({
       queryKey: [
          "dashboard-editor-catalog",
          environmentName,
          packageName,
-         ...imports.map((i) => i.path),
          versionId,
       ],
       queryFn: async () => {
@@ -940,9 +912,10 @@ function Surface({
          const models = settled.flatMap((result) =>
             result.status === "fulfilled" ? [result.value] : [],
          );
-         return visibleToDashboard(buildCatalog(models), imports, models);
+         // Every published source: a tile on one the file cannot see yet
+         // imports it as it is added.
+         return buildCatalog(models);
       },
-      enabled: imports.length > 0,
    });
 
    const [doc, setDoc] = useState(opened.document);
@@ -1076,7 +1049,6 @@ function Surface({
                }))}
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
-            onSaveNoticeChange={onSaveNoticeChange}
             {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}

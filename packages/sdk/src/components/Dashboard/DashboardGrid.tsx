@@ -14,10 +14,6 @@ export const MAX_COLUMNS = 24;
 export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
    Math.min(Math.max(current + delta, 1), Math.min(columns, MAX_COLUMNS));
 
-/** A tile's width for a width preset: a share of the grid, held to what the builder offers. */
-export const presetSpan = (columns: number, share: number) =>
-   Math.min(Math.max(1, Math.round(columns / share)), MAX_COLUMNS);
-
 /**
  * The gutter between tiles, in px.
  *

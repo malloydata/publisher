@@ -3,7 +3,6 @@
 
 import {
    AppDialog,
-   BackLink,
    SecondaryButton,
    useServer,
    type Theme,
@@ -27,7 +26,6 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { MapsSection } from "./sections/MapsSection";
 import { SeriesColorsSection } from "./sections/SeriesColorsSection";
 import { TablesSection } from "./sections/TablesSection";
@@ -46,7 +44,6 @@ export default function ThemeEditorPage() {
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
 
-   const navigate = useNavigate();
    const themeQuery = useQuery({
       queryKey: ["theme"],
       queryFn: async () => {
@@ -257,7 +254,6 @@ export default function ThemeEditorPage() {
 
    return (
       <Box sx={{ p: 4, maxWidth: 980, mx: "auto" }}>
-         <BackLink label="Publisher" href="/" onClick={() => navigate("/")} />
          <Stack
             direction="row"
             justifyContent="space-between"

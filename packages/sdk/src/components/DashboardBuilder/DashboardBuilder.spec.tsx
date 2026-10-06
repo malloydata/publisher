@@ -14,6 +14,7 @@ import type { DashboardEvent } from "../Dashboard/telemetry";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
 import { closeMenu, editInline } from "./testing/inline";
+import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -141,7 +142,7 @@ describe("DashboardBuilder", () => {
       fireEvent.click(screen.getByLabelText("Filter By category"));
       fireEvent.click(screen.getByRole("button", { name: "Apply" }));
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("view: by_cat is by_category\n");
@@ -235,7 +236,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       // tech until it ends, and the test runner never ends it; the header's
       // button has to be reached through that.
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
@@ -277,7 +278,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
 
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       // A `date` is a value, not a filter expression: `>=`, and no declaration
@@ -304,7 +305,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
       fireEvent.click(screen.getByLabelText("Remove filter CATEGORY"));
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).not.toContain("CATEGORY");
       expect(written).toContain("view: by_cat is by_category\n");
@@ -336,7 +337,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       expect(screen.getByLabelText("Edit filter CATEGORY")).toBeDefined();
       fireEvent.click(button("Redo"));
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).not.toContain("CATEGORY");
       expect(written).toContain("view: by_cat is by_category\n");
@@ -470,7 +471,7 @@ describe("DashboardBuilder: a control the model declares", () => {
       fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
       fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("view: by_cat is by_category\n");
       expect(written).not.toContain("$CATEGORY");
@@ -525,10 +526,9 @@ describe("DashboardBuilder: tiles added and removed", () => {
       expect(tile("sales_by_state_tile")).toBeDefined();
 
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
-      expect(await screen.findByText(/Added a tile/)).toBeDefined();
       expect(written).toContain(
          'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
       );
@@ -543,14 +543,13 @@ describe("DashboardBuilder: tiles added and removed", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
       expect(screen.queryByLabelText("Tile by_cat")).toBeNull();
 
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
-      expect(await screen.findByText(/Removed 1 tile/)).toBeDefined();
       expect(written).toContain('tiles=["a -> by_brand"]');
       expect(written).not.toContain("view: by_cat");
       // The comment above the removed tile is still in the file.
@@ -564,9 +563,9 @@ describe("DashboardBuilder: the last tile", () => {
    it("cannot be removed while the saved dashboard has tiles, and says why on screen", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      const remove = screen.getByRole("button", { name: /Remove tile/ });
+      const remove = screen.getByRole("button", { name: /^Delete/ });
       expect(remove.getAttribute("aria-disabled")).toBe("true");
       const reason = screen.getByText(
          "A saved dashboard needs at least one tile.",
@@ -615,19 +614,17 @@ describe("DashboardBuilder: a tile's own settings", () => {
 });
 
 describe("DashboardBuilder: widths and the page's own settings", () => {
-   it("sets a tile to a fraction of the grid from its menu", async () => {
+   it("sets a tile's width by dragging its right edge, not from its menu", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      const third = screen.getByRole("button", { name: "Width ⅓" });
-      fireEvent.click(third);
-      expect(third.getAttribute("aria-pressed")).toBe("true");
+      expect(screen.queryByRole("button", { name: /^Width/ })).toBeNull();
       closeMenu();
-      // 12 columns, a third is 4.
+      dragEdge("By category", 4);
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 4");
       expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
    });
 
-   it("edits the page's title, width and autorun, and writes them to the tag", async () => {
+   it("edits the page's title and description, and writes them to the file", async () => {
       let saved = "";
       await mount((source) => {
          saved = source;
@@ -641,18 +638,13 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
       fireEvent.keyDown(description, { key: "Escape" });
       expect(screen.getByText("What sold, and where.")).toBeDefined();
 
-      fireEvent.click(button("Settings"));
-      fireEvent.click(screen.getByLabelText("Run as controls change"));
-      // Closing commits, once.
-      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
-
       editInline("Storefront", "Dashboard title", "Storefront, weekly");
       expect(screen.getByText("Storefront, weekly")).toBeDefined();
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(saved).not.toBe(""));
       expect(saved).toContain(
-         '## artifact { title="Storefront, weekly" tiles=["a -> by_cat", "a -> by_brand"] autorun=false } dashboard { columns=12 }',
+         '## artifact { title="Storefront, weekly" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }',
       );
       expect(saved).toContain('##" What sold, and where.');
 
@@ -689,7 +681,7 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(button("Drill-through…"));
+      fireEvent.click(button("Drill"));
 
       fireEvent.mouseDown(
          screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
@@ -712,7 +704,7 @@ source: a is scoped_orders extend {
       );
       fireEvent.click(button("Apply"));
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(saved).not.toBe(""));
       expect(saved).toContain(
          `  # label="Category"
@@ -724,7 +716,7 @@ source: a is scoped_orders extend {
    it("explains itself when the source declares no dimension here", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(button("Drill-through…"));
+      fireEvent.click(button("Drill"));
       expect(
          screen.getByText(/declares no dimensions of its own/),
       ).toBeDefined();
@@ -826,7 +818,7 @@ describe("DashboardBuilder: saving", () => {
       }, onEvent);
 
       retitle("By category", "Renamed");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() => expect(written).toBeDefined());
       // The tag is rewritten in place; the declaration is otherwise untouched,
@@ -861,7 +853,7 @@ describe("DashboardBuilder: saving", () => {
          throw new Error("disk full");
       }, onEvent);
       retitle("By category", "Renamed");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain("disk full"),
@@ -872,6 +864,6 @@ describe("DashboardBuilder: saving", () => {
       });
       // The edit is still on screen and still unsaved.
       expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
-      expect(button("Save changes")).toBeDefined();
+      expect(button("Save")).toBeDefined();
    });
 });

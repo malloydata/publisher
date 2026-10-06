@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
    DataAppViewer,
    encodeResourceUri,
    Model,
    packageFileUrl,
    useGivenUrlParams,
-   useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
@@ -25,7 +23,6 @@ function ModelPage() {
    const { server } = useServer();
    // Every branch below has the same parent, the package, so the way up is
    // built once here.
-   const navigate = useRouterClickHandler();
    // Parameter values ride in the query string, so a Model's Run is a
    // shareable link, the same as a dashboard's or a notebook's.
    const { params: givens, onGivensChange } = useGivenUrlParams();
@@ -121,21 +118,9 @@ function ModelPage() {
          packageName: params.packageName,
          modelPath: dataAppPath,
       });
-      return (
-         <Box sx={wrapperSx}>
-            <BackLink
-               label={params.packageName}
-               href={`/${params.environmentName}/${params.packageName}`}
-               onClick={(event) =>
-                  navigate(
-                     `/${params.environmentName}/${params.packageName}`,
-                     event,
-                  )
-               }
-            />
-            <DataAppViewer resourceUri={dataAppResourceUri} />
-         </Box>
-      );
+      // No wrapper: the viewer lays itself out at the dashboard's width and
+      // edges, and a second padded box around it would push it 24px further in.
+      return <DataAppViewer resourceUri={dataAppResourceUri} />;
    }
 
    const resourceUri = encodeResourceUri({
@@ -147,16 +132,6 @@ function ModelPage() {
    if (modelPath?.endsWith(".malloy")) {
       return (
          <Box sx={wrapperSx}>
-            <BackLink
-               label={params.packageName}
-               href={`/${params.environmentName}/${params.packageName}`}
-               onClick={(event) =>
-                  navigate(
-                     `/${params.environmentName}/${params.packageName}`,
-                     event,
-                  )
-               }
-            />
             <Model
                resourceUri={resourceUri}
                runOnDemand={true}
@@ -193,16 +168,6 @@ function ModelPage() {
    });
    return (
       <Box sx={wrapperSx}>
-         <BackLink
-            label={params.packageName}
-            href={`/${params.environmentName}/${params.packageName}`}
-            onClick={(event) =>
-               navigate(
-                  `/${params.environmentName}/${params.packageName}`,
-                  event,
-               )
-            }
-         />
          <Typography variant="h6" sx={{ fontWeight: 600 }}>
             Nothing to open at this path
          </Typography>

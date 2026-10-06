@@ -48,16 +48,17 @@ import {
    type QueryTile,
 } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
-import { SaveNotice } from "./SaveNotice";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
-import { SettingsPopover, settingsOf } from "./SettingsPopover";
+import { withSource } from "./imports";
 import { FilterStrip } from "./FilterStrip";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
+import { TileCard } from "../Dashboard/TileCard";
 import { useTileReorder } from "./useTileReorder";
+import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
 import { useBuilderSession } from "./useBuilderSession";
 import { useDashboardEditor } from "./useDashboardEditor";
@@ -257,6 +258,18 @@ export function DashboardBuilder({
             }),
          onLanded: setSelected,
       });
+   // Dragging a tile's right edge sets its width, written once on release.
+   const { resize, startResize, onResize, endResize } = useTileResize({
+      tiles: editor.document.tiles,
+      columns,
+      gridBox,
+      onStart: setSelected,
+      commit: (index, span) =>
+         editor.update((draft) => {
+            const tile = draft.tiles[index];
+            if (tile) tile.colspan = span;
+         }),
+   });
    // The filter window: open on a control, or open to add one.
    const [filterDialog, setFilterDialog] = useState<
       { control?: BuilderControl } | undefined
@@ -277,27 +290,6 @@ export function DashboardBuilder({
    const [drillSource, setDrillSource] = useState<string | undefined>(
       undefined,
    );
-   // The page's settings, anchored to the toolbar button that opened them.
-   const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(
-      null,
-   );
-   // One object per document, or the popover's draft would reset on every
-   // render of the builder while it is open.
-   const settings = useMemo(
-      () => settingsOf(editor.document),
-      [editor.document],
-   );
-
-   // Imported sources a tile or extension reads, which the settings cannot take off.
-   const sourcesInUse = useMemo(
-      () =>
-         new Set([
-            ...editor.document.sources.map((source) => source.base),
-            ...editor.document.tiles.filter(isQueryTile).map((t) => t.source),
-         ]),
-      [editor.document],
-   );
-
    // The givens the MODEL offers: the caller's list, less any the opened file
    // declared itself. A caller gets that list from the server's manifest, which
    // resolves givens across the file and its imports without saying which is
@@ -547,6 +539,9 @@ export function DashboardBuilder({
    const addTile = (tile: NewTile) => {
       setAddingTile(false);
       editor.update((draft) => {
+         // A source the file cannot see yet comes in by name, with the tile.
+         if (tile.modelPath)
+            draft.imports = withSource(draft, tile.base, tile.modelPath);
          let extension = draft.sources.find((s) => s.base === tile.base);
          if (!extension) {
             // A name of the file's own: the base's, suffixed, since an
@@ -671,13 +666,30 @@ export function DashboardBuilder({
    };
 
    // What the grid lays out: the document, except mid-gesture, where it is
-   // the preview — the tiles in their previewed order. So the row reflows under
-   // the pointer exactly as it will once the edit lands.
-   const shown = preview ?? editor.document.tiles;
+   // the preview — the tile being resized at its previewed width, or the tiles
+   // in their previewed order. So the row reflows under the pointer exactly as
+   // it will once the edit lands.
+   const shown =
+      resize !== undefined
+         ? editor.document.tiles.map((each, index) =>
+              index === resize.index ? { ...each, colspan: resize.span } : each,
+           )
+         : (preview ?? editor.document.tiles);
    // And, while a drag is live, the empty end of every row as a drop target.
    // Not otherwise: a gap is only a place to land while something is in hand.
    const empty = editor.document.tiles.length === 0;
    const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
+   // The builder's actions: at the right end of the filter row, which is sticky,
+   // rather than in a second header above the page.
+   const actions = (
+      <BuilderToolbar
+         {...session.toolbarProps}
+         {...(toolbar ? { actions: toolbar } : {})}
+         {...(catalog ? { onAddTile: () => openAdd() } : {})}
+         savesTo={savesTo}
+         {...(saveLabel ? { saveLabel } : {})}
+      />
+   );
    return (
       // The padding is for the SELECTION RING. An outline is painted outside
       // the element's border box, so a selected tile's ring lands beyond the
@@ -688,34 +700,21 @@ export function DashboardBuilder({
       // grid alone, so the header, the control row and the tiles all inset
       // together and stay aligned with each other. 4px = the ring's 2px offset
       // plus its 2px width.
-      // The bar carries its own gap to what it sits over, so the surface adds
-      // none between the two.
       <OpenDraftContext.Provider value={openDraft}>
-         <Stack sx={{ gap: 0 }}>
-            {/* Outside the ring's inset, so the bar lines up to the pixel with the
-             reader's — the whole point of it being the same bar. */}
-            <BuilderToolbar
-               {...session.toolbarProps}
-               {...(toolbar ? { actions: toolbar } : {})}
-               {...(catalog ? { onAddTile: () => openAdd() } : {})}
-               onSettings={setSettingsAnchor}
-               savesTo={savesTo}
-               {...(saveLabel ? { saveLabel } : {})}
-            />
-
+         {/* Pulled out by the ring's inset, so the content inside it lands on
+          the same edges as the reader's view: editing and reading are the same
+          page, and the margins must not move between them. */}
+         <Stack sx={{ gap: 0, mx: "-4px" }}>
             {/* The ring's inset, minus the top: nothing at the top of this stack
-             can be selected (the prose and the control row are not tiles), and
-             4px there would put the title 4px further from the bar than the
-             reader's is. */}
+             can be selected (the prose and the control row are not tiles). */}
             <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
                {editor.pendingOpen && (
                   <Alert severity="info">
                      This notebook is in the cell format. Saving rewrites it as
                      a layout notebook, and a named query run once becomes that
-                     tile&apos;s view; Undo save puts it back.
+                     tile&apos;s view.
                   </Alert>
                )}
-               <SaveNotice {...session.notice} />
                <Box>
                   <Typography variant="h5" sx={{ fontWeight: 600 }}>
                      <InlineText
@@ -733,8 +732,11 @@ export function DashboardBuilder({
                         }
                      />
                   </Typography>
+               </Box>
+               {/* The description in a text tile's box, edited as one is: the
+                same card and type the reader's view draws it in. */}
+               <TileCard sx={{ minHeight: 72 }}>
                   <InlineMarkdown
-                     variant="caption"
                      markdown={editor.document.description ?? ""}
                      placeholder="Add a description"
                      onCommit={(next) =>
@@ -744,37 +746,44 @@ export function DashboardBuilder({
                         })
                      }
                   />
-               </Box>
+               </TileCard>
 
                {empty ? (
-                  <Stack
-                     sx={{
-                        alignItems: "flex-start",
-                        gap: 1,
-                        py: 3,
-                        px: 2,
-                        border: 1,
-                        borderStyle: "dashed",
-                        borderColor: "divider",
-                        borderRadius: 1,
-                     }}
-                  >
-                     <Typography variant="body2">
-                        This {notebook ? "notebook" : "dashboard"} is not served
-                        until it has a tile.
-                     </Typography>
-                     {catalog && (
-                        <Button
-                           size="small"
-                           variant="contained"
-                           onClick={() => openAdd()}
-                        >
-                           Add tile
-                        </Button>
-                     )}
-                  </Stack>
+                  <>
+                     {/* No filter row to ride on yet, so the actions stand alone. */}
+                     <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+                        {actions}
+                     </Box>
+                     <Stack
+                        sx={{
+                           alignItems: "flex-start",
+                           gap: 1,
+                           py: 3,
+                           px: 2,
+                           border: 1,
+                           borderStyle: "dashed",
+                           borderColor: "divider",
+                           borderRadius: 1,
+                        }}
+                     >
+                        <Typography variant="body2">
+                           This {notebook ? "notebook" : "dashboard"} is not
+                           served until it has a tile.
+                        </Typography>
+                        {catalog && (
+                           <Button
+                              size="small"
+                              variant="contained"
+                              onClick={() => openAdd()}
+                           >
+                              Add tile
+                           </Button>
+                        )}
+                     </Stack>
+                  </>
                ) : (
                   <FilterStrip
+                     actions={actions}
                      controls={controlList}
                      tileCount={editor.document.tiles.length}
                      unknownFieldsOf={unknownFieldsOf}
@@ -799,7 +808,9 @@ export function DashboardBuilder({
                   onDragEnd={onDragEnd}
                >
                   <Box ref={gridBox} sx={{ position: "relative" }}>
-                     {!notebook && dragging && <GridGuides columns={columns} />}
+                     {!notebook && (dragging || resize !== undefined) && (
+                        <GridGuides columns={columns} />
+                     )}
 
                      <DashboardGrid
                         tiles={entries}
@@ -824,6 +835,15 @@ export function DashboardBuilder({
                                     ? {
                                          onInsertAfter: () =>
                                             openAdd(index + 1),
+                                      }
+                                    : {})}
+                                 {...(columns > 1 && resizable(each)
+                                    ? {
+                                         resizing: resize?.index === index,
+                                         onResizeStart: (event) =>
+                                            startResize(event, index),
+                                         onResizeMove: onResize,
+                                         onResizeEnd: endResize,
                                       }
                                     : {})}
                                  onSelect={() => setSelected(index)}
@@ -918,7 +938,6 @@ export function DashboardBuilder({
                              "A saved dashboard needs at least one tile.",
                        }
                      : {})}
-                  columns={columns}
                   view={menuView}
                   onDrills={() => {
                      setDrillSource(menuTile?.source);
@@ -944,24 +963,6 @@ export function DashboardBuilder({
                      })
                   }
                />
-               <SettingsPopover
-                  anchor={settingsAnchor}
-                  settings={settings}
-                  catalog={catalog}
-                  inUse={sourcesInUse}
-                  onClose={() => setSettingsAnchor(null)}
-                  onCommit={(next) =>
-                     editor.update((draft) => {
-                        if (next.kind === undefined) delete draft.kind;
-                        else draft.kind = next.kind;
-                        if (next.columns === undefined) delete draft.columns;
-                        else draft.columns = next.columns;
-                        if (next.autorun === undefined) delete draft.autorun;
-                        else draft.autorun = next.autorun;
-                        draft.imports = next.imports;
-                     })
-                  }
-               />
                <AddTileDialog
                   open={addingTile}
                   document={editor.document}
@@ -977,3 +978,11 @@ export function DashboardBuilder({
       </OpenDraftContext.Provider>
    );
 }
+
+/**
+ * Whether dragging this tile's edge can be saved: its width is a tag this file
+ * owns. An inherited tile's tags live on the model's view, which the builder
+ * does not write.
+ */
+const resizable = (tile: DashboardTile): boolean =>
+   isTextTile(tile) || tile.declaration.kind !== "inherited";

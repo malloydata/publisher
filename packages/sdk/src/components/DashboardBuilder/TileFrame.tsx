@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
-import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
-import { Box, IconButton, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
+import type { PointerEvent, ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import {
@@ -23,8 +21,8 @@ import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
 
 /**
- * Everything the builder draws AROUND a tile: the selection outline, the grip,
- * the menu button and, in a notebook, the insert button. The tile
+ * Everything the builder draws AROUND a tile: the selection outline, the menu
+ * button, the handle at the right edge and, in a notebook, the insert button. The tile
  * itself is `children` — the host's real `DashboardTile`, or a placeholder
  * saying what the tile will run.
  */
@@ -37,6 +35,10 @@ export function TileFrame({
    onInsertAfter,
    onSelect,
    onOpenMenu,
+   resizing = false,
+   onResizeStart,
+   onResizeMove,
+   onResizeEnd,
    children,
 }: {
    tile: DashboardTile;
@@ -50,12 +52,18 @@ export function TileFrame({
    onInsertAfter?: () => void;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
+   /** This tile's edge is being dragged. */
+   resizing?: boolean;
+   /** Dragging the right edge sets the width; absent, the tile has no edge handle (one column, or tags the file does not own). */
+   onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
+   onResizeMove?: (event: PointerEvent<HTMLDivElement>) => void;
+   onResizeEnd?: (event: PointerEvent<HTMLDivElement>) => void;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
    return (
       <TileSortable id={tileKey(tile)} index={index}>
-         {({ ref, handleRef, isDragSource }) => (
+         {({ ref, handleRef }) => (
             <Box
                ref={ref}
                onClick={onSelect}
@@ -70,7 +78,7 @@ export function TileFrame({
                data-tile-key={tileKey(tile)}
                data-flash={flash || undefined}
                sx={{
-                  // Anchors the grip, menu and insert buttons to
+                  // Anchors the menu, edge and insert buttons to
                   // this tile.
                   position: "relative",
                   // Same again: this wrapper sits BETWEEN
@@ -98,16 +106,16 @@ export function TileFrame({
                   // takes up space, so selecting a tile
                   // cannot shift the layout being arranged.
                   outline: selected
-                     ? `2px solid ${theme.drillLink}`
+                     ? `2px solid ${theme.accent}`
                      : `2px solid transparent`,
                   outlineOffset: 2,
                   ...(flash && {
-                     outlineColor: theme.drillLink,
-                     boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.drillLink} 25%, transparent)`,
+                     outlineColor: theme.accent,
+                     boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
                   }),
                   transition:
                      "outline-color 120ms, opacity 120ms, box-shadow 120ms",
-                  // The handles, grip and menu are invisible
+                  // The edge handle and menu are invisible
                   // until wanted, and wanted is: the pointer
                   // over the tile, or the tile selected. A
                   // hover rule on the WRAPPER, so all three
@@ -133,7 +141,7 @@ export function TileFrame({
                   },
                   "&&[data-dnd-placeholder]": {
                      opacity: 0.45,
-                     outline: `2px dashed ${theme.drillLink}`,
+                     outline: `2px dashed ${theme.accent}`,
                      boxShadow: "none",
                   },
                   "&:hover .builder-affordance, &:focus-within .builder-affordance":
@@ -143,56 +151,31 @@ export function TileFrame({
                   // will respond to the pointer, told apart
                   // from the ones that will not.
                   "&:hover": {
-                     outlineColor: selected
-                        ? theme.drillLink
-                        : theme.cardBorder,
+                     outlineColor: selected ? theme.accent : theme.cardBorder,
                      boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
                   },
                }}
             >
                {children}
 
-               {/* The grip. On every tile, including an
-                inherited one — order is this file's
-                `tiles=[…]` array, not anything on the view.
-                The whole card starts a pointer drag; the grip
-                is the sign of it and the library's HANDLE,
-                where keyboard focus and the screen-reader
-                instructions land: Space picks the tile up,
-                the arrows move it, Escape puts it back. */}
+               {/* The library's HANDLE, where keyboard focus and the
+                screen-reader instructions land: Space picks the tile up, the
+                arrows move it, Escape puts it back. Visually hidden: a pointer
+                drags the whole card, and the open hand over it says so. */}
                <Box
                   ref={handleRef}
-                  className="builder-affordance"
                   aria-label={`Move ${tileLabel(tile)}`}
                   sx={{
                      position: "absolute",
-                     top: "2px",
-                     left: "2px",
-                     display: "grid",
-                     placeItems: "center",
-                     width: "22px",
-                     height: "22px",
-                     borderRadius: "4px",
-                     cursor: "grab",
-                     touchAction: "none",
-                     zIndex: 2,
-                     color: theme.tileTitle,
-                     bgcolor: theme.tile,
-                     opacity: isDragSource || selected ? 0.9 : 0,
-                     transition: "opacity 120ms",
-                     "&:hover": { opacity: 1 },
-                     "&:active": { cursor: "grabbing" },
-                     "&:focus-visible": {
-                        opacity: 1,
-                        outline: `2px solid ${theme.drillLink}`,
-                        outlineOffset: 1,
-                     },
+                     width: "1px",
+                     height: "1px",
+                     overflow: "hidden",
+                     clipPath: "inset(50%)",
+                     whiteSpace: "nowrap",
                   }}
-               >
-                  <DragIndicatorIcon sx={{ fontSize: 16 }} />
-               </Box>
+               />
 
-               {/* The tile's menu: its chart, width and drill-through.
+               {/* The tile's menu: its chart and drill-through.
                 A press here is never the start of a drag: the
                 sensor refuses to activate from a button. */}
                <IconButton
@@ -207,7 +190,7 @@ export function TileFrame({
                      position: "absolute",
                      top: "2px",
                      right: "2px",
-                     width: 22,
+                     width: 28,
                      height: 22,
                      zIndex: 2,
                      color: theme.tileTitle,
@@ -220,8 +203,53 @@ export function TileFrame({
                      },
                   }}
                >
-                  <MoreVertIcon sx={{ fontSize: 16 }} />
+                  <SpreadDotsIcon />
                </IconButton>
+
+               {/* The right edge, draggable to set the width. Its own
+                pointer handling stops the press reaching the sortable, and
+                the sensor refuses a separator regardless. */}
+               {onResizeStart && (
+                  <Box
+                     className="builder-affordance"
+                     role="separator"
+                     aria-orientation="vertical"
+                     aria-label={`Resize ${tileLabel(tile)}`}
+                     onPointerDown={onResizeStart}
+                     onPointerMove={onResizeMove}
+                     onPointerUp={onResizeEnd}
+                     onPointerCancel={onResizeEnd}
+                     onClick={(event) => event.stopPropagation()}
+                     sx={{
+                        position: "absolute",
+                        top: 0,
+                        bottom: 0,
+                        // Straddles the edge, so the target is a usable width
+                        // without eating into the tile's content.
+                        right: "-5px",
+                        width: "10px",
+                        cursor: "col-resize",
+                        touchAction: "none",
+                        zIndex: 2,
+                        // Invisible until wanted: a rule down every tile edge
+                        // would read as a table.
+                        opacity: resizing || selected ? 1 : 0,
+                        transition: "opacity 120ms",
+                        "&:hover": { opacity: 1 },
+                        "&::after": {
+                           content: '""',
+                           position: "absolute",
+                           top: "50%",
+                           left: "50%",
+                           transform: "translate(-50%, -50%)",
+                           width: "4px",
+                           height: "28px",
+                           borderRadius: "2px",
+                           bgcolor: theme.accent,
+                        },
+                     }}
+                  />
+               )}
 
                {onInsertAfter && (
                   <IconButton
@@ -308,14 +336,14 @@ export function GapTarget({ after }: { after: string }) {
                sx={{
                   minHeight: 48,
                   borderRadius: 1,
-                  border: `1px dashed ${theme.drillLink}`,
+                  border: `1px dashed ${theme.accent}`,
                   // Tinted with the same hue as the dashed edge, so the fill
                   // and the border read as one affordance lighting up. It was
                   // `theme.tile`, the CARD colour, which is the one value
                   // guaranteed to match whatever this sits on: a near-no-op
                   // before the card went white, and an exact one after.
                   bgcolor: isDropTarget
-                     ? `color-mix(in srgb, ${theme.drillLink} 12%, transparent)`
+                     ? `color-mix(in srgb, ${theme.accent} 12%, transparent)`
                      : "transparent",
                   opacity: isDropTarget ? 0.95 : 0.4,
                   transition: "opacity 120ms, background-color 120ms",
@@ -349,15 +377,29 @@ export function GridGuides({ columns }: { columns: number }) {
             <Box
                key={column}
                sx={{
-                  borderLeft: `1px dashed ${theme.drillLink}`,
+                  borderLeft: `1px dashed ${theme.accent}`,
                   borderRight:
                      column === columns - 1
-                        ? `1px dashed ${theme.drillLink}`
+                        ? `1px dashed ${theme.accent}`
                         : "none",
                   opacity: 0.35,
                }}
             />
          ))}
       </Box>
+   );
+}
+
+/**
+ * The tile menu's ⋯, with its dots spread wider than the stock icon's so it
+ * reads as three dots rather than a dash at this size.
+ */
+function SpreadDotsIcon() {
+   return (
+      <SvgIcon sx={{ fontSize: 18 }} viewBox="0 0 24 24">
+         <circle cx="3.5" cy="12" r="2" />
+         <circle cx="12" cy="12" r="2" />
+         <circle cx="20.5" cy="12" r="2" />
+      </SvgIcon>
    );
 }

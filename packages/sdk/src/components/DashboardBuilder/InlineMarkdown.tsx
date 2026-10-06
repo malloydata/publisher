@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Button, Stack, TextField, Typography } from "@mui/material";
+import { editableSx } from "./inlineEdit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { Prose, type ProseVariant } from "../Prose";
@@ -85,24 +86,25 @@ export function InlineMarkdown({
                event.preventDefault();
                setEditing(true);
             }}
-            sx={{
-               cursor: "text",
-               minHeight: 24,
-               borderRadius: "2px",
-               "&:hover, &:focus-visible": {
-                  outline: "1px dashed currentColor",
-               },
-            }}
+            sx={[{ minHeight: 24 }, editableSx(theme, "prose")]}
          >
             {markdown.trim() ? (
-               <Prose variant={variant}>{markdown}</Prose>
+               <>
+                  <Prose variant={variant}>{markdown}</Prose>
+               </>
             ) : (
-               <Typography
-                  variant="body2"
-                  sx={{ color: theme.tileTitle, opacity: 0.6 }}
-               >
-                  {placeholder}
-               </Typography>
+               <>
+                  <Typography
+                     variant="body2"
+                     sx={{
+                        color: theme.tileTitle,
+                        opacity: 0.6,
+                        fontStyle: "italic",
+                     }}
+                  >
+                     {placeholder}
+                  </Typography>
+               </>
             )}
             {closedProblem && (
                <Typography variant="caption" color="error" role="alert">

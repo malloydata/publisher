@@ -41,6 +41,23 @@ process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINA
 server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
 `GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
 
+## [Unreleased] — A calmer dashboard and notebook builder, and one theme accent
+
+The builder is the read-only page in a second state, with fewer controls around it.
+
+- **Edit and View are in the Console's header**, beside the breadcrumbs, on every dashboard and notebook page. View returns to the read-only page and asks first if there are unsaved edits. The page's own Edit bar, and the "Back to …" links on every page, are gone. Reading and editing now have the same header and the same margins, and dashboards, notebooks and data apps share one page width.
+- **Save saves in place.** The builder no longer closes on save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits.
+- **Builder actions sit on the filter row**: + Tile, undo and redo, and Save, beside the filter chips, with + Filter as a chip after them. Settings is gone: a document stays the kind it was created as, a tile's width is set by dragging its right edge (the width presets, Grid width and "Run as controls change" are removed; a file's own `columns` and `autorun` are kept), and adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list to manage.
+- **Tile menu**: Drill and Delete, a viz type that applies as it is picked, and a ⋯ button. Editable titles, subtitles and descriptions carry a small pencil after their text.
+- **The description is drawn as a text tile**, in both modes.
+- **Dashboard tiles no longer offer Explore.** `DashboardTile`'s `onExplore` prop is unchanged for hosts that pass it.
+
+**Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is now the palette's first series colour (`ResolvedTheme.accent`, with `accentHover` and `accentContrast`), lifted in dark mode so it reads. In dark mode a series colour too dark for the canvas is lifted until it reads, and a map colour set only for light is carried into dark. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
+
+**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. `DashboardEditor`'s `onExit` draws Close only when the builder has nowhere to save; a host that saves is expected to own the way out, as the Console's header does. `onSaveNoticeChange` no longer reports a notice.
+
+**Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
+
 ## [Unreleased] - The Docker image is signed with cosign
 
 `ms2data/malloy-publisher` is now signed at release with Sigstore cosign (keyless, through GitHub Actions OIDC). Verify a release with:

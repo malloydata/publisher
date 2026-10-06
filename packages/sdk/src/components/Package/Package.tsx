@@ -46,7 +46,6 @@ import ContentTypeIcon, {
    type ContentType,
 } from "./ContentTypeIcon";
 import { AppDialog } from "../AppDialog";
-import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
@@ -394,10 +393,6 @@ export default function Package({
          sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
          <Box sx={{ mb: 4 }}>
-            <BackLink
-               label={environmentName}
-               onClick={(event) => onClick(`/${environmentName}/`, event)}
-            />
             <Typography
                variant="h4"
                component="h1"
@@ -535,7 +530,6 @@ export default function Package({
                            {...(artifact.secondary === undefined
                               ? {}
                               : { description: artifact.secondary })}
-                           rightLabel={KIND_BADGE[artifact.kind]}
                            onClick={(event) =>
                               onClick(
                                  artifact.slug === undefined
@@ -774,11 +768,6 @@ function PackageItemRow({
       />
    );
 }
-
-const KIND_BADGE: Record<DocumentKind, string> = {
-   dashboard: "Dashboard",
-   notebook: "Notebook",
-};
 
 interface ArtifactRow {
    kind: DocumentKind;

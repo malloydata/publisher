@@ -120,7 +120,7 @@ test.describe("embedded host", () => {
       );
       const writes = watchPackageWrites(page);
       await page.goto(`/${curated.env}/${curated.pkg}/notebooks/local/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText("Kept in the host's record")).toBeVisible();
@@ -169,7 +169,7 @@ test.describe("embedded host", () => {
          },
       );
       const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
 
@@ -253,7 +253,7 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/dashboards/overview/edit`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText("Record overview")).toBeVisible();
@@ -276,7 +276,7 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(
@@ -295,7 +295,7 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(

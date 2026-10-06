@@ -58,7 +58,7 @@ afterEach(cleanup);
 describe("DashboardBuilder: an open inline draft", () => {
    it("asks before exiting with a typed, uncommitted markdown draft", async () => {
       const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
+      await mount({ onExit });
       type(openDescription(), "Half-typed");
       fireEvent.click(button("Close"));
       expect(screen.getByRole("dialog")).toBeDefined();
@@ -67,7 +67,7 @@ describe("DashboardBuilder: an open inline draft", () => {
 
    it("exits at once when the open markdown field is unchanged", async () => {
       const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
+      await mount({ onExit });
       openDescription();
       fireEvent.click(button("Close"));
       expect(onExit).toHaveBeenCalledTimes(1);
@@ -75,7 +75,7 @@ describe("DashboardBuilder: an open inline draft", () => {
 
    it("asks when the markdown draft is one the writer would refuse", async () => {
       const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
+      await mount({ onExit });
       type(openDescription(), "# not ok\n|##");
       expect(screen.getByText(/would close the text early/)).toBeDefined();
       fireEvent.click(button("Close"));
@@ -83,22 +83,23 @@ describe("DashboardBuilder: an open inline draft", () => {
       expect(onExit).not.toHaveBeenCalled();
    });
 
-   it("does not ask after the draft is committed and saved", async () => {
+   it("is clean again once the committed draft is saved, and stays open", async () => {
       const onExit = mock(() => {});
+      const onDirtyChange = mock((_dirty: boolean) => {});
       const onSave = mock(async (_source: string) => {});
-      await mount({ onExit, onSave });
+      await mount({ onExit, onSave, onDirtyChange });
       type(openDescription(), "Committed");
       fireEvent.click(button("Done"));
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(onExit).not.toHaveBeenCalled();
+      expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
    });
 
    it("does not ask after Cancel drops the draft", async () => {
       const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
+      await mount({ onExit });
       type(openDescription(), "Dropped");
       fireEvent.click(button("Cancel"));
       fireEvent.click(button("Close"));
@@ -133,21 +134,20 @@ describe("DashboardBuilder: an open inline draft", () => {
       }
    });
 
-   it("Save and exit commits the open markdown draft into the saved file", async () => {
+   it("Save commits the open markdown draft into the saved file, and stays open", async () => {
       const onExit = mock(() => {});
       const onSave = mock(async (_source: string) => {});
       await mount({ onExit, onSave });
       type(openDescription(), "Kept words");
-      fireEvent.click(button("Close"));
-      fireEvent.click(button("Save and exit"));
-      await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
-      expect(onSave).toHaveBeenCalledTimes(1);
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(onExit).not.toHaveBeenCalled();
       expect(onSave.mock.calls[0]?.[0]).toContain("Kept words");
    });
 
    it("asks before exiting with a typed, uncommitted title", async () => {
       const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
+      await mount({ onExit });
       fireEvent.click(screen.getByText("By category"));
       type(screen.getByLabelText("Tile title"), "Renamed");
       fireEvent.click(button("Close"));

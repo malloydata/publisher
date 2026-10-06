@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PALETTE } from "../components/styles";
+import { accentFor, legibleOn } from "./accent";
 import { DEFAULT_THEME } from "./defaults";
 import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
 import type { ResolvedTheme, Theme, ThemeMode } from "./types";
@@ -45,6 +46,13 @@ export function resolveTheme(
       mapColor: { ...(defaultPalette.mapColor ?? {}) },
    };
 
+   // Which per-mode colours a layer set for each mode, as against the
+   // defaults: a colour set for light alone is carried into dark (lifted to
+   // read there) rather than dropped for the default.
+   const setFor: Record<ThemeMode, Set<PerModeColorKey>> = {
+      light: new Set(),
+      dark: new Set(),
+   };
    for (const layer of layers) {
       if (!layer) continue;
       if (Array.isArray(layer.palette?.series)) {
@@ -54,6 +62,8 @@ export function resolveTheme(
          const override = layer.palette?.[key];
          if (override) {
             perMode[key] = { ...perMode[key], ...override };
+            if (override.light !== undefined) setFor.light.add(key);
+            if (override.dark !== undefined) setFor.dark.add(key);
          }
       }
       if (typeof layer.font?.family === "string") {
@@ -69,9 +79,18 @@ export function resolveTheme(
       perMode[key][mode] ?? (defaultPalette[key]?.[mode] as string);
 
    const background = pick("background");
+   // The map's brand end, set for light only: lifted into dark rather than
+   // swapped for the default blue, so a themed map stays the operator's hue.
+   const mapColor =
+      isDark && setFor.light.has("mapColor") && !setFor.dark.has("mapColor")
+         ? legibleOn(perMode.mapColor.light as string, background)
+         : pick("mapColor");
    return {
       mode,
-      series,
+      // One series list for both modes, picked against a light page: in dark,
+      // a colour too dark to see on the canvas is lifted until it reads.
+      series: isDark ? series.map((c) => legibleOn(c, background)) : series,
+      ...accentFor(series[0], mode),
       font: { family: fontFamily, size: fontSize },
       background,
       tableHeader: pick("tableHeader"),
@@ -79,7 +98,7 @@ export function resolveTheme(
       tableBody: pick("tableBody"),
       tile: pick("tile"),
       tileTitle: pick("tileTitle"),
-      mapColor: pick("mapColor"),
+      mapColor,
       // Table interior follows the operator's chart background so
       // tables and chart canvases share a single "viz surface" colour.
       tableBackground: background,

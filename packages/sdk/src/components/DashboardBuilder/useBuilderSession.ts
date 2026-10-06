@@ -17,7 +17,6 @@ import {
 } from "./useBuilderShortcuts";
 import type { LastSave, SaveHandler, SaveOutcome } from "./useDocumentEditor";
 import { useExitGuard } from "./useExitGuard";
-import type { SaveNoticeProps } from "./SaveNotice";
 
 /** What a builder's session reads of its document editor. */
 export interface SessionEditor<D, L extends LastSave = LastSave> {
@@ -102,9 +101,6 @@ export function useBuilderSession<
    const [saving, setSaving] = useState(false);
    const [viewing, setViewing] = useState(false);
    const [undone, setUndone] = useState(false);
-   const [moved, setMoved] = useState<
-      { before: number; after: number } | undefined
-   >(undefined);
    const saveButton = useRef<HTMLButtonElement>(null);
    const reportRef = useRef(report);
    reportRef.current = report;
@@ -151,15 +147,10 @@ export function useBuilderSession<
       const { structural } = editor;
       const fromOpen = editor.pendingOpen ?? false;
       const size = reportRef.current.size;
-      const sizes = {
-         before: unitRef.current.count(editor.saved),
-         after: unitRef.current.count(editor.document),
-      };
       return editor
          .save()
          .then((outcome) => {
             if (outcome.ok === true) {
-               setMoved(sizes);
                reportRef.current.saved({
                   size,
                   structural,
@@ -244,17 +235,6 @@ export function useBuilderSession<
    const canUndoSave = !!onSave && !saving && editor.canUndoSave;
    const lastSave = editor.lastSave;
 
-   const notice: SaveNoticeProps = {
-      ...(lastSave ? { lastSave } : {}),
-      unit: unit.name,
-      moved,
-      canUndoSave,
-      undone: undone && lastSave === undefined,
-      viewing,
-      onView: setViewing,
-      onUndoSave: undoSave,
-   };
-
    const toolbarProps: Pick<
       BuilderToolbarProps,
       | "canUndo"
@@ -286,7 +266,6 @@ export function useBuilderSession<
       undoSave,
       canUndoSave,
       lastSave,
-      notice,
       toolbarProps,
    };
 }

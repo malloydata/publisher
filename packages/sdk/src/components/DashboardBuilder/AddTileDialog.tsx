@@ -11,7 +11,7 @@ import {
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import type { CatalogSource, PackageCatalog } from "./catalog";
+import type { PackageCatalog } from "./catalog";
 import type { ChartPick } from "./chartLine";
 import { isBareName } from "./malloyText";
 import type { DashboardDocument } from "./document";
@@ -20,24 +20,23 @@ import { AppDialog } from "../AppDialog";
 import { SourceViewPicker } from "./SourceViewPicker";
 
 /**
- * What a new tile is: a view, picked from the package, on a source this file
- * can reach.
+ * What a new tile is: a view, picked from the package.
  *
  * The picker is what makes a tile expression correct BY CONSTRUCTION. Every
  * `source -> view` it offers came from the catalog, so the builder never emits
  * a tile that does not resolve — which is why saving needs no compile step
  * beyond the reader's own round-trip.
  *
- * "Can reach" is the rule the writer enforces and the reason some sources are
- * not offered: a tile's view is declared in an extension of a model source, and
- * that source has to be in this file's scope. The builder never adds an
- * import, so a model source is offered only when the file already extends it,
- * or imports it BY NAME. A bare `import "../m.malloy"` may well bring it in,
- * but the file cannot say so, and a guess here fails the whole package load.
+ * Every source the package publishes is offered. A tile's view is declared in
+ * an extension of its model source, so a source the file cannot see yet is
+ * imported by name when the tile is added (`withSource`); one the file already
+ * reaches, by name or through a whole-file import of its model, is left alone.
  */
 export interface NewTile {
    /** The model source the view lives on. */
    base: string;
+   /** The model that declares it, for the import a source the file cannot see yet needs. */
+   modelPath: string;
    /** The view, as the catalog names it. */
    view: string;
    label?: string;
@@ -59,20 +58,6 @@ export interface AddTileDialogProps {
    onAddText: () => void;
 }
 
-/** The catalog sources this file can put a tile on; see the note above. */
-function reachableSources(
-   document: DashboardDocument,
-   catalog: PackageCatalog | undefined,
-): CatalogSource[] {
-   if (!catalog) return [];
-   const reachable = new Set<string>();
-   for (const source of document.sources) reachable.add(source.base);
-   for (const imported of document.imports)
-      if (imported.kind === "names")
-         for (const name of imported.names) reachable.add(name);
-   return catalog.sources.filter((source) => reachable.has(source.name));
-}
-
 export function AddTileDialog({
    open,
    document,
@@ -84,10 +69,7 @@ export function AddTileDialog({
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
    const noun = document.kind === "notebook" ? "notebook" : "dashboard";
-   const sources = useMemo(
-      () => reachableSources(document, catalog),
-      [document, catalog],
-   );
+   const sources = useMemo(() => catalog?.sources ?? [], [catalog]);
    const [mode, setMode] = useState<"query" | "text">("query");
    const [base, setBase] = useState<string>("");
    const [view, setView] = useState<string>("");
@@ -145,6 +127,9 @@ export function AddTileDialog({
                         ? onAddText()
                         : onAdd({
                              base,
+                             modelPath:
+                                sources.find((s) => s.name === base)
+                                   ?.modelPath ?? "",
                              view,
                              ...(label.trim() ? { label: label.trim() } : {}),
                              ...(chart !== "default"

@@ -162,7 +162,7 @@ test.describe("notebook tiles", () => {
       await tileByKey(page, "text.second")
          .getByLabel("Settings for second")
          .click();
-      await page.getByRole("button", { name: "Remove tile" }).click();
+      await page.getByRole("button", { name: "Delete" }).click();
       await saveChanges(page);
       // The drag-and-drop live region is a status too, so pick this one by its text.
       await expect(
