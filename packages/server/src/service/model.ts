@@ -181,6 +181,7 @@ import {
    stringifyQueryResponse,
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
+import { onlyParseFailures } from "./compile_restriction";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -263,6 +264,7 @@ import {
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+import { translatorMalloyError } from "./translator_error";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -611,7 +613,8 @@ async function compileErrorOf(runnable: {
       await runnable.getPreparedQuery();
       return undefined;
    } catch (error) {
-      return error instanceof MalloyError ? error : undefined;
+      if (error instanceof MalloyError) return error;
+      return translatorMalloyError(error);
    }
 }
 
@@ -4594,11 +4597,14 @@ export class Model {
          model.setGateRuntime(runtime as HydrationRuntime);
          model.compiledSourceText = compiledTextFor(modelURL);
          return model;
-      } catch (error) {
-         let computedError = error;
-         if (error instanceof Error && error.stack) {
-            logger.error("Error stack", error.stack);
+      } catch (thrown) {
+         if (thrown instanceof Error && thrown.stack) {
+            logger.error("Error stack", thrown.stack);
          }
+         // The translator's plain Error is the author's mistake too, as it is
+         // on the worker path (package_load_worker.ts compileOneModel).
+         const error = translatorMalloyError(thrown) ?? thrown;
+         let computedError = error;
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
@@ -5429,6 +5435,44 @@ export class Model {
          }
       }
       return "deferred";
+   }
+
+   /**
+    * Whether `compileError` for ad-hoc `query` may be shown although
+    * {@link queryTextSourcesQueryable} cannot vouch for the text, because no
+    * run target can be read off it (`run` with no colon, SQL, a bare `run:`).
+    *
+    * A grammar failure says nothing about the model, so the only way the
+    * answer could depend on a hidden name is a check that reads names before
+    * the compile and refuses on one. Three do, and this is false whenever one
+    * could act, so a hidden name and a missing one still get the same answer:
+    *   - the run-target check, which has no target to read here (zero names);
+    *   - the caller-join check, which refuses a hidden join base before the
+    *     compile and lets a missing one through to it, so every join base
+    *     must be curated or derived from curated sources in the text;
+    *   - the lock checks, which read every name in the text and answer
+    *     differently for a gated one: false when anything is gated, using the
+    *     same test {@link notQueryable} applies before it will explain a
+    *     refusal.
+    * Where nothing is gated, the boundary already says a hidden source is real
+    * (see {@link OffSurfaceError}), so there is no existence to protect.
+    */
+   private parseFailureNamesNothing(
+      query: string,
+      compileError: MalloyError,
+   ): boolean {
+      return (
+         onlyParseFailures(compileError.problems) &&
+         extractRunTargetSourceNames(query).length === 0 &&
+         [...buildJoinBaseMap(query).values()].every((bases) =>
+            [...bases].every(
+               (b) =>
+                  this.isCuratedSource(b) || this.derivesFromCurated(b, query),
+            ),
+         ) &&
+         !this.declaresAnyGate() &&
+         !this.hasAnyAuthorizeNote()
+      );
    }
 
    /**
@@ -7717,7 +7761,9 @@ export class Model {
       // that reaches here is in text the caller may run: when every run target
       // is queryable (curated, or derived only from curated sources) the caller
       // gets the compiler's problems as a 400 located in its own text;
-      // otherwise the answer is the backstop's 404. A given that will not bind
+      // otherwise the answer is the backstop's 404. The one exception is text
+      // that fails only at the grammar and names no run target, in a model
+      // where nothing is gated (see parseFailureNamesNothing). A given that will not bind
       // is left to the run path, which answers it opaquely when a gate reads it.
       // Skipped when the query routed: the routed runnable compiled the same
       // text, so checking the live one would cost a second compile.
@@ -7732,7 +7778,8 @@ export class Model {
          if (compileError && !isGivenBindingFailure(compileError)) {
             if (
                boundary === "deferred" &&
-               !this.queryTextSourcesQueryable(query)
+               !this.queryTextSourcesQueryable(query) &&
+               !this.parseFailureNamesNothing(query, compileError)
             ) {
                // Explain the refusal (`OffSurfaceError`, ungated only) when a
                // run target is a real model source off the surface — the same

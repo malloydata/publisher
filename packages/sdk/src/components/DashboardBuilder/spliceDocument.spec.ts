@@ -1456,17 +1456,32 @@ source: products_tiles is products extend {
 `);
    });
 
-   it("refuses a tile on a source the file does not import by name", async () => {
-      const r = await splice(SOURCE, (d) => {
-         d.sources.push({ name: "orders_tiles", base: "order_items" });
-         d.tiles.push({
-            name: "t",
-            source: "orders_tiles",
-            declaration: { kind: "reference", from: "by_category" },
-         });
+   const addOnOrderItems = (d: DashboardDocument) => {
+      d.sources.push({ name: "orders_tiles", base: "order_items" });
+      d.tiles.push({
+         name: "t",
+         source: "orders_tiles",
+         declaration: { kind: "reference", from: "by_category" },
       });
+   };
+
+   it("refuses a tile on a source the file does not import", async () => {
+      const r = await splice(
+         SOURCE.replace('import "../data_app.malloy"\n', ""),
+         addOnOrderItems,
+      );
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("not imported by name");
+      if (spliceFailed(r))
+         expect(r.reason).toContain(
+            "`order_items` is not imported in this file",
+         );
+   });
+
+   // A whole-file import brings every source the model exports, so the builder
+   // adds no named import and the extension has to be accepted without one.
+   it("accepts a tile on a source a whole-file import carries", async () => {
+      const r = await splice(SOURCE, addOnOrderItems);
+      expect(r.ok).toBe(true);
    });
 });
 

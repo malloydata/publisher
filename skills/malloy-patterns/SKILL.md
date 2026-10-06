@@ -117,5 +117,5 @@ These search terms find docs on dialect-specific SQL *functions* available insid
 
 ```
 Call: search_malloy_docs
-Parameters: { question: "How do I use window functions in Malloy?" }
+Parameters: { query: "window functions lag" }
 ```

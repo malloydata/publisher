@@ -1815,6 +1815,65 @@ class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
         self.assertEqual(got, new)
 
 
+class AttemptEventCarriesGivens(unittest.TestCase):
+    """`final_givens` was computed per attempt and never written, so a replay
+    of `final_query` from the ledger ran unscoped."""
+
+    def test_the_final_givens_reach_events_jsonl(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        att = {"submitted": True, "final_query": "run: s -> { aggregate: n }",
+               "final_givens": {"region": "West"}, "n_get_context": 1,
+               "n_execute": 1, "n_execute_errors": 0, "host_tool_uses": 0,
+               "answer_text": "12", "transcriptPath": "t/q1.jsonl"}
+        e = rb.attempt_event({"qid": "q1", "question": "how many?"}, att,
+                             "baseline", {})
+        rb.store_events(tmp / "events.jsonl", [e], None)
+        got = [json.loads(l) for l in
+               (tmp / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(got[0]["final_givens"], {"region": "West"})
+        self.assertEqual(got[0]["final_query"], "run: s -> { aggregate: n }")
+
+
+class JudgeSeesEachQuerysGivens(unittest.TestCase):
+    """The judge saw each query's text without its givens, beside rows the
+    givens had filtered, and could fail a correct answer for it."""
+
+    def test_a_query_is_shown_with_its_givens(self):
+        att = {"queries": ["run: s -> { aggregate: n }", "run: s -> { x }"],
+               "query_givens": [{"region": "West"}, None]}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            '[1] run: s -> { aggregate: n }\n    givens: {"region": "West"}'
+            "\n\n[2] run: s -> { x }")
+
+    def test_one_text_under_two_givens_shows_each_its_own(self):
+        q = "run: s -> { aggregate: n }"
+        att = {"queries": [q, q],
+               "query_givens": [{"region": "West"}, {"region": "East"}],
+               "calls": [{"tool": "execute_query", "query": q,
+                          "givens": {"region": "West"}},
+                         {"tool": "execute_query", "query": q,
+                          "givens": {"region": "East"}}]}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            f'[1] {q}\n    givens: {{"region": "West"}}'
+            f'\n\n[2] {q}\n    givens: {{"region": "East"}}')
+
+    def test_without_per_query_givens_the_final_query_shows_final_givens(self):
+        # A judge fixture carries the final query's givens and nothing else.
+        att = {"queries": ["run: s -> { x }", "run: s -> { aggregate: n }"],
+               "final_query": "run: s -> { aggregate: n }",
+               "final_givens": {"region": "West"}}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            "[1] run: s -> { x }\n\n[2] run: s -> { aggregate: n }"
+            '\n    givens: {"region": "West"}')
+
+    def test_no_queries_reads_none(self):
+        self.assertEqual(rb.queries_for_judge({}), "(none)")
+
+
 class PersistedStubIsTheResult(unittest.TestCase):
     """Above a size the CLI decides, a tool result reaches the answerer as a
     stub naming a file. Reading the stub as the payload scored 14 of 74
@@ -2032,6 +2091,317 @@ class ExpectedEntityLint(unittest.TestCase):
 
     def test_nothing_to_lint_against_is_none_not_empty(self):
         self.assertEqual(rb.expected_entity_lint(self.CASES, None, ""), (None, []))
+
+
+class FinalQueryGivens(unittest.TestCase):
+    """The answerer scopes a query with Publisher `givens`, passed beside the
+    query text. Re-running the text alone returns unfiltered rows, so the judge
+    compares the wrong rows with the golden."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.set_dir = self.tmp / "set"
+        self.set_dir.mkdir()
+        self.a = argparse.Namespace(
+            publisher="http://localhost:1", environment="e", package="p",
+            model_path="model.malloy", rebuild=True, target="local",
+            set_dir=self.set_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def attempt(self, calls, final_text):
+        d = self.tmp / "art" / "q1"
+        d.mkdir(parents=True)
+        blocks = []
+        for i, inp in enumerate(calls):
+            blocks.append(("assistant", [{
+                "type": "tool_use", "id": f"t{i}",
+                "name": "mcp__publisher__execute_query", "input": inp}]))
+            blocks.append(("user", [{
+                "type": "tool_result", "tool_use_id": f"t{i}",
+                "content": json.dumps({"rows": []}), "is_error": False}]))
+        blocks.append(("assistant", [{"type": "text", "text": final_text}]))
+        events = [{"type": k, "message": {"content": c}} for k, c in blocks]
+        events.append({"type": "result", "subtype": "success",
+                       "is_error": False, "usage": {}, "num_turns": 1})
+        (d / "answerer.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n")
+        return rb.run_answerer({"qid": "q1", "question": "how many?"},
+                               self.a, self.tmp / "art")
+
+    GIVENS = {"region": "West", "period": "2026-07-01 to 2026-10-01"}
+
+    def test_the_final_calls_givens_are_recorded(self):
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS}],
+            "Total is 5.\n\n```malloy\nrun: sales -> { aggregate: n }\n```")
+        self.assertEqual(got["final_givens"], self.GIVENS)
+        self.assertEqual(got["final_model_path"], "sales.malloy")
+
+    def test_givens_follow_the_chosen_call_not_the_last_probe(self):
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS},
+             {"query": "run: sales -> { aggregate: m }",
+              "modelPath": "sales.malloy", "givens": {"region": "East"}}],
+            "```malloy\nrun: sales -> { aggregate: n }\n```")
+        self.assertEqual(got["final_givens"], self.GIVENS)
+
+    def test_each_query_keeps_the_givens_it_was_sent_with(self):
+        q = "run: sales -> { aggregate: n }"
+        got = self.attempt(
+            [{"query": q, "modelPath": "sales.malloy",
+              "givens": {"region": "West"}},
+             {"query": q, "modelPath": "sales.malloy",
+              "givens": {"region": "East"}}],
+            "West is 5.")
+        self.assertEqual(got["queries"], [q, q])
+        self.assertEqual(got["query_givens"],
+                         [{"region": "West"}, {"region": "East"}])
+        self.assertEqual(
+            rb.queries_for_judge(got),
+            f'[1] {q}\n    givens: {{"region": "West"}}'
+            f'\n\n[2] {q}\n    givens: {{"region": "East"}}')
+
+    def test_a_call_with_no_givens_records_none(self):
+        got = self.attempt([{"query": "run: sales -> { aggregate: n }"}],
+                           "no fence")
+        self.assertIsNone(got["final_givens"])
+
+    def test_every_call_the_harness_captures_passes_the_ledger(self):
+        """The class of bug: a field the harness puts on a call that the
+        ledger's field list does not know. `run_baseline` writes each captured
+        call with `ledger.event("tool_call", ...)`, which rejects any field not
+        in the schema, so a run whose answerer passed `givens` died at write
+        time. This pushes the real captured calls through the real writer."""
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                               / "eval-answer" / "scripts"))
+        import ledger
+        got = self.attempt(
+            [{"query": "run: sales -> { aggregate: n }",
+              "modelPath": "sales.malloy", "givens": self.GIVENS}],
+            "```malloy\nrun: sales -> { aggregate: n }\n```")
+        base = {"qid": "q1", "sample": None, "phase": "baseline"}
+        events = [ledger.event("tool_call", **base, **call, traceId=None)
+                  for call in got["calls"]]
+        self.assertEqual(events[0]["givens"], self.GIVENS)
+
+    def test_the_rerun_sends_the_givens(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)) as tq:
+            rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_model_path": "sales.malloy",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        self.assertEqual(tq.call_args.kwargs.get("givens"), self.GIVENS)
+
+    def test_an_old_record_without_givens_reruns_as_before(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)) as tq:
+            rb.prediction_for(
+                {"qid": "q"}, {"final_query": "run: s -> { aggregate: n }"},
+                self.a, self.tmp, True)
+        self.assertIsNone(tq.call_args.kwargs.get("givens"))
+
+    def test_a_cached_unscoped_run_is_not_reused_once_givens_exist(self):
+        d = self.tmp / "q"
+        d.mkdir()
+        (d / "prediction.json").write_text(json.dumps(
+            {"query": "run: s -> { aggregate: n }", "rendered": "| unfiltered |"}))
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)):
+            got = rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        self.assertNotIn("unfiltered", got)
+
+    def test_the_cache_records_the_givens_it_ran_with(self):
+        with mock.patch.object(rb, "try_query",
+                               return_value=([{"n": 5}], None)):
+            rb.prediction_for(
+                {"qid": "q"},
+                {"final_query": "run: s -> { aggregate: n }",
+                 "final_givens": self.GIVENS},
+                self.a, self.tmp, True)
+        c = json.loads((self.tmp / "q" / "prediction.json").read_text())
+        self.assertEqual(c["givens"], self.GIVENS)
+
+
+class McpCallToolErrors(unittest.TestCase):
+    """A tool error arrives as a normal reply with `isError: true` and the
+    message as plain text. Parsing that text as JSON reported a decode error
+    that read like an empty body, and the real message was lost."""
+
+    def reply(self, result, sse=True):
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result})
+        raw = f"event: message\ndata: {body}\n\n" if sse else body
+
+        class Resp:
+            def read(self_): return raw.encode()
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+
+        return mock.patch.object(rb.urllib.request, "urlopen",
+                                 lambda req, timeout=None: Resp())
+
+    def call(self, result, **kw):
+        with self.reply(result, **kw):
+            return rb.mcp_call("http://x/mcp", "get_context", {})
+
+    def test_a_tool_error_raises_with_the_tools_own_text(self):
+        msg = ("MCP error -32602: Input validation error: Invalid enum value. "
+               "Expected 'source' | 'measure', received 'any'")
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": msg}],
+                       "isError": True})
+        self.assertIn("received 'any'", str(cm.exception))
+        self.assertNotIn("Expecting value", str(cm.exception))
+
+    def test_a_tool_error_is_raised_from_a_plain_json_reply_too(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": "no such package"}],
+                       "isError": True}, sse=False)
+        self.assertIn("no such package", str(cm.exception))
+
+    def test_a_long_error_is_trimmed(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [{"type": "text", "text": "x" * 5000}],
+                       "isError": True})
+        self.assertLess(len(str(cm.exception)), 1000)
+
+    def test_an_error_with_no_text_still_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            self.call({"content": [], "isError": True})
+        self.assertIn("isError", str(cm.exception))
+
+    def test_an_ordinary_reply_still_parses(self):
+        got = self.call({"content": [{"type": "text",
+                                      "text": json.dumps({"sources": []})}],
+                         "isError": False})
+        self.assertEqual(got, {"sources": []})
+
+    def test_a_retrieval_error_reply_stops_the_wait_after_one_probe(self):
+        # The shape `jsonToolError` builds for get_context's retrieval
+        # failure: the JSON payload as an embedded resource, then the prose.
+        payload = {"error": "Semantic search is unavailable: 401",
+                   "suggestions": ["check the key"], "sources": [],
+                   "retrieval": "error", "retrieval_reason": "provider-error"}
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps(payload)}},
+            {"type": "text", "text": "Semantic search is unavailable: 401"}]}
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        calls = []
+        real = rb.mcp_call
+
+        def counted(*args, **kw):
+            calls.append(1)
+            return real(*args, **kw)
+
+        with self.reply(result), \
+                mock.patch.object(rb, "mcp_call", counted), \
+                mock.patch.object(rb.time, "sleep", lambda s: None):
+            ready, said = rb.wait_retrieval_ready(a)
+        self.assertFalse(ready)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(said, rb.retrieval_error_message("provider-error"))
+
+    def test_an_error_reply_without_a_retrieval_error_still_raises(self):
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps({"error": "no such package",
+                                              "suggestions": [],
+                                              "sources": []})}},
+            {"type": "text", "text": "no such package"}]}
+        with self.reply(result), self.assertRaises(rb.McpToolError) as cm:
+            rb.retrieval_probe(a)
+        self.assertIn("no such package", str(cm.exception))
+
+
+class RowsGoldenInAFile(unittest.TestCase):
+    """A `rows` golden may keep its rows in a CSV named by `golden.path`. Read
+    from `value` only, it fell through to "(unanswerable ...)" and the judge
+    marked a correct answer as one that should have declined."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "gold").mkdir()
+        (self.tmp / "gold" / "q1.csv").write_text("region,total\nWest,12\nEast,7\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    G = {"kind": "rows", "path": "gold/q1.csv"}
+
+    def test_the_rows_in_the_file_reach_the_judge(self):
+        line = rb.golden_for_judge(self.G, self.tmp, "q1")
+        self.assertNotIn("unanswerable", line)
+        self.assertEqual(json.loads(line),
+                         [{"region": "West", "total": 12},
+                          {"region": "East", "total": 7}])
+
+    def test_value_wins_over_the_file(self):
+        g = {**self.G, "value": [{"region": "North", "total": 1}]}
+        self.assertEqual(json.loads(rb.golden_for_judge(g, self.tmp, "q1")),
+                         [{"region": "North", "total": 1}])
+
+    def test_a_long_file_is_cut_and_the_cut_is_stated(self):
+        rows = "".join(f"r{i},{i}\n" for i in range(600))
+        (self.tmp / "gold" / "big.csv").write_text("region,total\n" + rows)
+        line = rb.golden_for_judge({"kind": "rows", "path": "gold/big.csv"},
+                                   self.tmp, "big")
+        self.assertIn("first 500 of 600 rows", line)
+
+    def test_a_missing_file_is_an_error_naming_case_and_path(self):
+        with self.assertRaises(ValueError) as cm:
+            rb.golden_for_judge({"kind": "rows", "path": "gold/gone.csv"},
+                                self.tmp, "q9")
+        self.assertIn("q9", str(cm.exception))
+        self.assertIn("gold/gone.csv", str(cm.exception))
+
+    def test_a_path_outside_the_set_is_refused(self):
+        with self.assertRaises(ValueError):
+            rb.golden_for_judge({"kind": "rows", "path": "../x.csv"},
+                                self.tmp, "q1")
+
+    def test_a_rows_golden_with_neither_still_says_unanswerable(self):
+        self.assertIn("unanswerable",
+                      rb.golden_for_judge({"kind": "rows"}, self.tmp, "q1"))
+
+    def test_the_preflight_names_every_unreadable_file_before_any_spend(self):
+        cases = [{"qid": "q1", "golden": self.G},
+                 {"qid": "q2", "golden": {"kind": "rows", "path": "gold/no.csv"}}]
+        problems = rb.rows_golden_problems(cases, self.tmp)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("q2", problems[0])
+
+    def test_a_golden_withheld_from_the_judge_does_not_stop_the_run(self):
+        # golden_refusal() keeps these from the judge, so their file is never
+        # read for this run.
+        cases = [{"qid": f"q{i}", "golden": {"kind": "rows", "status": st,
+                                             "path": "gold/no.csv"}}
+                 for i, st in enumerate(("provisional", "invalid",
+                                         "ambiguous", "verified_wrong"))]
+        self.assertEqual(rb.rows_golden_problems(cases, self.tmp), [])
+
+    def test_only_a_run_that_judges_now_reads_golden_files(self):
+        ns = lambda **kw: argparse.Namespace(
+            **{"no_judge": False, "rebuild": False, "rejudge": False, **kw})
+        self.assertTrue(rb.renders_goldens(ns()))
+        self.assertFalse(rb.renders_goldens(ns(no_judge=True)))
+        self.assertFalse(rb.renders_goldens(ns(rebuild=True)))
+        self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
 
 
 if __name__ == "__main__":

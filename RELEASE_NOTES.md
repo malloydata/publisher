@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
+
+Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
+
+Public SDK surface: `buildCatalog` credits a source only to a model whose `modelInfo` exports it, so **a model without `modelInfo` now contributes no catalog sources**, and a host passing a hand-built `PackageCatalog` should set `modelPath` to the exporting model. `CatalogSource` gains optional `exporters` (every model that exports the source; absent means `[modelPath]`) and `visibleIn` (every model that lists it), and `NewTile` carries `exporters`. **What to do:** a host that builds its catalog from models fetched without `modelInfo` will see an empty tile picker after upgrading, so keep `modelInfo` on the models it passes to `buildCatalog`, or pass a hand-built catalog with `modelPath` set to the exporting model. A document held as text (`DashboardEditor textSource`) is offered only the sources its run model lists and adds no import.
+
+## [Unreleased] — SDK: KPI strips line up, the range slider looks like its neighbours, and the storefront charts read cleaner
+
+- **KPI strip.** A renderer `# big_value` strip now lays out as a grid with cards of one width, instead of a wrapping row sized to each card's text that left a lone fifth card. A nested (embedded) `big_value` is unchanged. The column floor is 250px so a wide value never spills onto its neighbour.
+- **Range slider.** A `range_min`/`range_max` control is drawn as an outlined field with the label notched into its edge and min/max captions under the track. Labels, readouts and aria names are unchanged. It is taller than a text field, so a neighbour's helper line sits under its own box.
+- **Builder defaults.** The builder no longer shows `Default: (empty)` under a filter control the viewer shows nothing for, and an unwrapped filter default beginning with `f` (`fall`) is no longer shown as `all`.
+- **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
+- **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
+
 ## [Unreleased] - Compile returns the document it describes
 
 `POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.

@@ -33,5 +33,20 @@ class GateExit(unittest.TestCase):
         self.assertEqual(cj.gate_exit(2, rows=[{}], fails=[], unresolved=[({}, "gone")]), 1)
 
 
+
+class FixtureAttempt(unittest.TestCase):
+    """A fixture's givens reach the judge with its query."""
+
+    def test_the_final_givens_are_shown_with_the_final_query(self):
+        att = cj.fixture_attempt({
+            "answer_text": "West is 5.",
+            "final_query": "run: s -> { aggregate: n }",
+            "queries": ["run: s -> { aggregate: n }"],
+            "final_givens": {"region": "West"}})
+        self.assertEqual(att["final_givens"], {"region": "West"})
+        self.assertEqual(
+            cj.rb.queries_for_judge(att),
+            '[1] run: s -> { aggregate: n }\n    givens: {"region": "West"}')
+
 if __name__ == "__main__":
     unittest.main()

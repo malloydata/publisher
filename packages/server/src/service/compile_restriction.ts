@@ -16,6 +16,7 @@ import {
    parseMotly,
    tagText,
 } from "./motly";
+import { translatorMalloyError } from "./translator_error";
 
 /**
  * Construct containment for caller-submitted `/compile` text.
@@ -64,6 +65,17 @@ const SYNTAX_ERROR_CODE = "syntax-error";
 /** Whether `problem` says the text failed to parse rather than failing to mean something. */
 function isParseFailure(problem: LogMessage): boolean {
    return problem.code === SYNTAX_ERROR_CODE && problem.severity === "error";
+}
+
+/**
+ * Whether `problems` holds at least one error and every error is a parse
+ * failure. A parse failure is a function of the submitted text alone: the
+ * parser stops before it reads a source, a field or a connection, so the list
+ * cannot say anything about the model it was compiled against.
+ */
+export function onlyParseFailures(problems: readonly LogMessage[]): boolean {
+   const errors = problems.filter((problem) => problem.severity === "error");
+   return errors.length > 0 && errors.every(isParseFailure);
 }
 
 /** The restricted-construct rejections among `problems`, if any. */
@@ -459,8 +471,12 @@ export async function assertNoRestrictedConstructs(
       // URL) and must stay distinguishable from "the caller wrote something
       // forbidden" -- silently treating it as a pass would open the gate on
       // exactly the errors that carry no evidence either way.
-      if (!(error instanceof MalloyError)) throw error;
-      problems = error.problems;
+      // The translator's plain Error is the caller's text, not the
+      // infrastructure: it is read as the one problem it stands for.
+      const compileError =
+         error instanceof MalloyError ? error : translatorMalloyError(error);
+      if (!compileError) throw error;
+      problems = compileError.problems;
    }
 
    const rejected = restrictedRejections(problems);

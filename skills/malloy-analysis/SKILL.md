@@ -42,7 +42,7 @@ Write Malloy using only the model's names. Load `skill:malloy-queries` for synta
 
 **Check these three before your first `execute_query`** - they account for most first-attempt compile failures, and they are the ones a SQL habit gets wrong:
 
-- **Counting.** `count(field)` is already the *distinct* count of that field. Malloy has no `count(distinct field)`; it is a parse error, not a deprecation.
+- **Counting.** `count(field)` is already the *distinct* count of that field. `count(distinct field)` is a compile error (its message says "deprecated"); write `count(field)`.
 - **Separators.** Within a clause, fields are separated by commas or newlines, never `;`. A semicolon fails with `no viable alternative at input '<next-field>'`.
 - **Join paths.** A dotted path like `carriers.name` resolves only if the source declares that join. Confirm the join name and the field under it in a `get_context` result instead of inferring either from a table name.
 
@@ -54,7 +54,7 @@ If you define a calculated field that is not already in the model, treat it care
 - Consider alternatives: if there is more than one reasonable way to define the field (different null handling, different aggregation logic), briefly tell the user which approach you chose and why.
 
 **A cumulative total is not a cumulative percentage.** `sum_cumulative(x)` gives a running total in the units of `x`: counts, dollars, households. A cumulative SHARE needs a denominator as well:
-`sum_cumulative(x) { partition_by: g, order_by: k } / all(x, g)` for a share within each group, or `/ sum_window(x)` for a share of the grand total. Choose the denominator that matches what should equal 100%: if each group's curve must reach 100%, the denominator is that group's own total, not the overall one.
+`sum_cumulative(x) { partition_by: g, order_by: k } / group_total` for a share within each group, where `group_total is all(x, g)` is written in `aggregate:` (an `all(x, g)` written inside `calculate:` compiles but returns a wrong denominator), or `/ sum_window(x)` for a share of the grand total. Choose the denominator that matches what should equal 100%: if each group's curve must reach 100%, the denominator is that group's own total, not the overall one.
 
 Do not decide share-vs-total from the question's wording alone: the question often does not say, and the model does. Treat **any** of these as specifying a share:
 
@@ -77,7 +77,7 @@ Your first result is a draft, not an answer. The difference between a useful ana
 - **Check the common failure modes:**
   - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
   - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
-  - Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
+  - Null-driven loss: `count() { where: the_field is null }` shows how many rows a key field drops (`count(the_field)` counts distinct values, so subtracting it from `count()` is not a null count).
   - Parts that do not sum to the whole: if you split a total into categories, confirm they add up.
   - The key number: recompute the single most important aggregate a different way, or filter to one entity and recount.
 - **Quick reference by query type:**
@@ -103,7 +103,7 @@ This is different from a genuine ambiguity about WHICH metric they meant; there,
 
 **Do not print spurious precision.** A warehouse returns `108.130521077`; nobody wants nine decimal places. Round for display to what the number can actually support (an index or a count to a whole number, a rate to one or two decimals, a currency amount to cents), and keep the full value only if the user asked for it. Where a field carries a render tag such as `# number` or `# percent`, that is the model author telling you the intended display; you are not expected to reimplement the renderer, but do not present a value in a way the tag plainly contradicts.
 
-**Running a named view: pass the source as well as the view name.** `query_name` names a view inside a source, so it needs `source` to resolve; without it the call is ambiguous. And before concluding a named view is genuinely empty, re-run it with the source and the model path stated explicitly: an empty result and a misresolved call look alike in an answer, and abandoning a purpose-built view for a hand-written one is the expensive mistake here.
+**Running a named view: pass the view's source with it.** A view name sent without its source is read as a top-level query, and Publisher answers with an error such as `Reference to undefined object` or `No queryable query`: that error means the source is missing from the call, not that the view does not exist. Before concluding a named view is genuinely empty, re-run it with the source and the model path stated explicitly: an empty result and a misresolved call look alike in an answer, and abandoning a purpose-built view for a hand-written one is the expensive mistake here.
 
 **Careful: aliasing a field drops its documentation and tags.** `rev is net_revenue_amount` returns a field with no `#(doc)`, no `# label` and no render tag: the annotations belong to the original name. If you need an entity's documentation or its display intent, query it under its own name and rename only in your prose.
 

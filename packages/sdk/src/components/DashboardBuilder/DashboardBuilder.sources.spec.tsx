@@ -22,9 +22,10 @@ source: a is scoped_orders extend {
 }
 `;
 
-const source = (name: string, modelPath: string) => ({
+const source = (name: string, modelPath: string, ...also: string[]) => ({
    name,
    modelPath,
+   exporters: [modelPath, ...also],
    views: [{ name: "by_x" }],
    givens: [],
    fields: [],
@@ -34,8 +35,9 @@ const catalog = {
       source("scoped_orders", "data_app.malloy"),
       source("spare", "spare.malloy"),
       source("regions", "data_app.malloy"),
-      source("events", "events.malloy"),
-      source("hidden", "dashboards/shared.malloy"),
+      // Re-exported by spare.malloy, which the file already imports by name.
+      source("events", "events.malloy", "spare.malloy"),
+      source("reports", "reports.malloy"),
    ],
 };
 
@@ -102,10 +104,16 @@ describe("adding a tile brings its source in", () => {
    });
 
    it("gives a source from a model the file does not import a line of its own", async () => {
-      const text = await written("events");
+      const text = await written("reports");
       expect(text).toContain(
-         'import { spare } from "../spare.malloy"\nimport { events } from "../events.malloy"\n',
+         'import { spare } from "../spare.malloy"\nimport { reports } from "../reports.malloy"\n',
       );
+   });
+
+   it("joins an import of a model that re-exports the source rather than adding another model's", async () => {
+      const text = await written("events");
+      expect(text).toContain('import { spare, events } from "../spare.malloy"');
+      expect(text).not.toContain("events.malloy");
    });
 
    it("offers no Settings to edit sources by hand", async () => {
