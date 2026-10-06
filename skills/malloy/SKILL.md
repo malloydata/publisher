@@ -29,8 +29,7 @@ This table is a catalogue of what exists, not of what is loaded. A host that ins
 | Skill | Use when... |
 |-------|-------------|
 | `skill:malloy-discover` | Silent data discovery: tables, schemas, distributions, prior art |
-| `skill:malloy-scope` | Presenting findings and proposing an analytical focus |
-| `skill:malloy-define` | Proposing the source plan and field definitions |
+| `skill:malloy-define` | Proposing the analytical scope, the source plan and the field definitions |
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |

@@ -54,7 +54,7 @@ Keep it compact, with these sections:
 
 ## 8-Step Modeling Workflow
 
-The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions. Read each step's skill **before starting that step**, including the decision skills for steps 1–4 (`skill:malloy-discover`, `skill:malloy-scope`, `skill:malloy-define`). They govern what the model says; skipping them to reach the build skills is how unreviewed business logic ships.
+The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions. Read each step's skill **before starting that step**, including the decision skills for steps 1–4 (`skill:malloy-discover`, `skill:malloy-define`). They govern what the model says; skipping them to reach the build skills is how unreviewed business logic ships.
 
 **A field is not complete until it has its definition, `#(doc)` tag, and rendering tags, and any threshold or business convention in it is user-confirmed, distribution-derived, or explicitly flagged in its `#(doc)`** (see `skill:malloy-document` § Mark conventions as conventions). Documentation is part of defining a field, not a separate activity. Read `skill:malloy-document` for full documentation standards (doc string writing, tag ordering).
 
@@ -66,7 +66,7 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | Step | Skill | What Happens |
 |------|-------|-------------|
 | 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art. With no package yet, start from `search_database_schema` to find the tables in the connection |
-| 2. Propose Scope | `skill:malloy-scope` | Present findings, user selects focus |
+| 2. Propose Scope | `skill:malloy-define` (Propose the analytical scope) | Present findings, user selects focus |
 | 3. Propose Sources | `skill:malloy-define` | Propose source plan, user confirms architecture |
 | 4. Propose Definitions | `skill:malloy-define` | Propose fields per base source, user confirms logic |
 | 5. Build Base Sources | `skill:malloy-model` | Write fully documented base source files (one per table), check diagnostics. Read `skill:malloy-document` for doc standards. |

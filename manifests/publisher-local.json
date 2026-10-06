@@ -33,7 +33,6 @@
     "malloy-publish",
     "malloy-queries",
     "malloy-review",
-    "malloy-scope",
     "malloy-source-unreachable"
   ],
   "supporting": [],
@@ -55,7 +54,6 @@
       "malloy-model-as-you-go",
       "malloy-materialization",
       "malloy-define",
-      "malloy-scope",
       "malloy-discover",
       "malloy-charts",
       "malloy-notebooks",

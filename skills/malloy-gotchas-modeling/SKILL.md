@@ -439,7 +439,7 @@ Two count-shaped numbers side by side, one filtered and one not; read as "701 of
 - **Keep the join as a population baseline** when comparing a row to the whole population is the intent (e.g. `energy_vs_decade`). Then every joined field's `#(doc)` must say it is a fixed population value that does not respond to filters, and count-shaped fields with no comparison purpose (like `decade_track_count`) should be `internal:`; they only invite the misreading.
 - **Compute the aggregate as a query-based source from the detail table** so it derives from one source of truth and the derivation is visible.
 
-This is the modeling-time consequence of ignoring `skill:malloy-scope`'s advice to skip pre-aggregated snapshot tables and compute fresh in Malloy instead.
+This is the modeling-time consequence of ignoring `skill:malloy-define`'s scope advice to skip pre-aggregated snapshot tables and compute fresh in Malloy instead.
 
 ## Thresholds Are Decisions, Not Syntax
 
