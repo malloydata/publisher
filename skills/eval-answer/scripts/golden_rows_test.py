@@ -41,6 +41,12 @@ class LoadRows(unittest.TestCase):
         self.assertEqual(golden_rows.load_rows(g, self.set_dir, "q1"),
                          [{"a": 1, "b": None}])
 
+    def test_true_and_false_become_booleans(self):
+        g = self.csv("q1.csv", "id,active,note\n1,true,False\n2,false,truex\n")
+        self.assertEqual(golden_rows.load_rows(g, self.set_dir, "q1"),
+                         [{"id": 1, "active": True, "note": "False"},
+                          {"id": 2, "active": False, "note": "truex"}])
+
     def test_value_wins_when_both_exist(self):
         g = self.csv("q1.csv", "a\n1\n")
         g["value"] = [{"a": 99}]

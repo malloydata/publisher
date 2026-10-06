@@ -2711,11 +2711,17 @@ def rows_golden_problems(cases: list[dict[str, Any]],
 
     Checked before any model call, so a missing or misplaced file stops the run
     where it costs nothing instead of surfacing as a judge error per case.
+
+    A case whose golden is refused (provisional, invalid, ambiguous, verified
+    wrong) is never scored, so its file is not read: a missing CSV on one of
+    those must not stop the whole run.
     """
     out = []
     for c in cases:
         g = c.get("golden") or {}
         if g.get("kind") != "rows":
+            continue
+        if golden_refusal(g):
             continue
         try:
             golden_rows.load_rows(g, set_dir, c["qid"])

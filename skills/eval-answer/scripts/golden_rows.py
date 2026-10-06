@@ -33,9 +33,15 @@ def _cell(text: str | None) -> Any:
     """A CSV cell as a value: numbers as numbers, empty as null.
 
     Only canonical numerals convert, so an identifier such as `007` stays text.
+    `true` and `false` (lower case, as JSON and Publisher write them) become
+    booleans, so they compare equal to what a query returns.
     """
     if text is None or text == "":
         return None
+    if text == "true":
+        return True
+    if text == "false":
+        return False
     if _INT.fullmatch(text):
         return int(text)
     if _FLOAT.fullmatch(text):

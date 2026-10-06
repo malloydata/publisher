@@ -2269,6 +2269,13 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("q2", problems[0])
 
+    def test_the_preflight_skips_a_golden_that_will_not_be_scored(self):
+        for status in ("provisional", "invalid", "ambiguous", "verified_wrong"):
+            cases = [{"qid": "q1", "golden": self.G},
+                     {"qid": "q2", "golden": {"kind": "rows", "status": status,
+                                              "path": "gold/no.csv"}}]
+            self.assertEqual(rb.rows_golden_problems(cases, self.tmp), [], status)
+
 
 if __name__ == "__main__":
     unittest.main()
