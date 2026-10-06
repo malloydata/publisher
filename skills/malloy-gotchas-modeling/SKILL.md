@@ -32,7 +32,7 @@ SPDX-License-Identifier: MIT
 | `unexpected 'from'` | `from()` was removed. Write the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
 | Query-based source: "Can't find field" | The source query's `group_by` and `aggregate` fields must match what `extend {}` references; check imported sources exist |
 | "Cannot redefine 'X'" | See Cannot Redefine Query-Based Source Columns |
-| `sum(items.cost)` fails with `Join path is required for this calculation` | Over a `join_many` path write `items.cost.sum()`. Over a `join_one` path `sum(o.total)` compiles but weights each joined value once per base row; write `o.total.sum()` for the joined source's own total |
+| `sum(items.cost)` fails with `Join path is required for this calculation` | Over a `join_many` path write `items.cost.sum()`. Over a `join_one` path both compile: `sum(o.total)` counts each order once per base row, `o.total.sum()` once per order. Use the second for the joined source's own total |
 | `order_by` on a joined path fails | Alias the field in `group_by` (`yr is races.year`) and order by the alias |
 
 ## Reserved Words: Backtick Them

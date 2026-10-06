@@ -282,7 +282,7 @@ Read the `malloy-charts` skill for chart types, properties, data shape requireme
 
 ## More Compile Mistakes
 
-**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path through a `join_many` fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix. Over a `join_one` path the call form compiles but is wrong for `sum` and `avg`: it counts the joined value once per base row, so an order's total is added once for each of its line items. Write `o.total.sum()` to total the joined source itself (`min` and `max` are unaffected).
+**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path through a `join_many` fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix. Over a `join_one` path both forms compile and mean different things: `sum(o.total)` adds each order's total once per base row (once per line item), `o.total.sum()` once per order. For the joined source's own total (order value, customers) you almost always want the second; the first is right only when the question is weighted per base row. `min` and `max` are unaffected.
 
 Wrong: `measure: cogs is sum(inventory_items.item_cost)`
 Right: `measure: cogs is inventory_items.item_cost.sum()`
