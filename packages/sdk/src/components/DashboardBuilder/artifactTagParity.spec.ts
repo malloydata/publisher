@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { newNotebookSource } from "../DocumentCreate/newNotebook";
-import { artifactTag, splitSourceLines } from "./malloyText";
+import { artifactTag, splitSourceLines } from "../../utils/malloyText";
 
 // One case table for this reader and the server's; `artifact_tag_parity.spec.ts` there reads the same file.
 const FIXTURE = path.join(import.meta.dir, "testing/artifactTagParity.json");

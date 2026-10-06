@@ -16,7 +16,6 @@ import {
    type BuilderShortcutHandlers,
 } from "./useBuilderShortcuts";
 import type { LastSave, SaveHandler, SaveOutcome } from "./useDocumentEditor";
-import { useExitGuard } from "./useExitGuard";
 
 /** What a builder's session reads of its document editor. */
 export interface SessionEditor<D, L extends LastSave = LastSave> {
@@ -61,7 +60,6 @@ export interface SessionSaveInfo {
 export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
-   onExit?: () => void;
    onDirtyChange?: (dirty: boolean) => void;
    /** Whether the save notice is showing, on every change and on mount. */
    onSaveNoticeChange?: (showing: boolean) => void;
@@ -88,7 +86,6 @@ export function useBuilderSession<
 >({
    editor,
    onSave,
-   onExit,
    onDirtyChange,
    onSaveNoticeChange,
    onChange,
@@ -210,14 +207,6 @@ export function useBuilderSession<
       return prepare ? prepare(run) : run();
    }, [prepare]);
 
-   const exitGuard = useExitGuard({
-      dirty: hasEdits,
-      saving,
-      canSave: !!onSave,
-      save,
-      onExit: () => onExit?.(),
-   });
-
    useBuilderShortcuts(
       // One handlers object per change of what they read, so the key listener is not torn down and re-bound on every render.
       useMemo(
@@ -226,9 +215,9 @@ export function useBuilderSession<
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open || viewing,
+            paused: viewing,
          }),
-         [shortcuts, editor, onSave, save, exitGuard.dialog.open, viewing],
+         [shortcuts, editor, onSave, save, viewing],
       ),
    );
 
@@ -244,7 +233,6 @@ export function useBuilderSession<
       | "dirty"
       | "saving"
       | "onSave"
-      | "onExit"
       | "saveButton"
    > = {
       canUndo: editor.canUndo,
@@ -255,13 +243,11 @@ export function useBuilderSession<
       saving,
       saveButton,
       ...(onSave ? { onSave: save } : {}),
-      ...(onExit ? { onExit: exitGuard.requestExit } : {}),
    };
 
    return {
       saving,
       save,
-      exitGuard,
       /** Write the file back as it was before the last save, and put the edits back unsaved. */
       undoSave,
       canUndoSave,

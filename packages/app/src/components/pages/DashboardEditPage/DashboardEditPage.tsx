@@ -9,7 +9,6 @@ import {
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
 import {
    logDashboardEvent,
@@ -52,10 +51,7 @@ export default function DashboardEditPage({
    kind = "dashboard",
    path,
 }: DashboardEditPageProps) {
-   const navigate = useNavigate();
    const guard = useLeaveGuard();
-   const { pathname } = useLocation();
-   const dashboardPath = pathname.replace(/\/edit\/?$/, "");
    const onEvent = useMemo(() => {
       if (kind === "dashboard")
          return logDashboardEvent({
@@ -85,10 +81,6 @@ export default function DashboardEditPage({
                   dashboard={dashboardName}
                   kind={kind}
                   path={path}
-                  onExit={() => {
-                     guard.leaving();
-                     navigate(dashboardPath);
-                  }}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

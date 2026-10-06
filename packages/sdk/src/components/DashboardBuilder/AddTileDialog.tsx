@@ -13,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { PackageCatalog } from "./catalog";
 import type { ChartPick } from "./chartLine";
-import { isBareName } from "./malloyText";
+import { isBareName } from "../../utils/malloyText";
 import type { DashboardDocument } from "./document";
 import { ChartPicker } from "./ChartPicker";
 import { AppDialog } from "../AppDialog";

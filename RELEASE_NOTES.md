@@ -54,7 +54,12 @@ The builder is the read-only page in a second state, with fewer controls around 
 
 **Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is now the palette's first series colour (`ResolvedTheme.accent`, with `accentHover` and `accentContrast`), lifted in dark mode so it reads. In dark mode a series colour too dark for the canvas is lifted until it reads, and a map colour set only for light is carried into dark. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
 
-**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. `DashboardEditor`'s `onExit` draws Close only when the builder has nowhere to save; a host that saves is expected to own the way out, as the Console's header does. The builder draws no save notice, so a host that held incoming versions on `onSaveNoticeChange` should stop.
+**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. The viewer and the builder are now separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
+
+- **Breaking: `onExit` is removed** from `DashboardEditor`, `NotebookEditor` and `DashboardBuilder`, along with the builder's Close button and its unsaved-changes prompt. Draw your own way out beside the builder, and guard it with `onDirtyChange` (the Console does this with a header View button and a route leave guard; `UnsavedChangesDialog` is still exported for it).
+- **Breaking: `DashboardBar` is removed.** Nothing in the SDK drew it any more.
+- **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`, so the host owns where each lives. Without it, `Package` navigates to the Console's routes as before.
+- The builder draws no save notice, so a host that held incoming versions on `onSaveNoticeChange` should stop.
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 

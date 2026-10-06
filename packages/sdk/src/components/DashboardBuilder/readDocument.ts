@@ -34,7 +34,7 @@ import {
    splitSourceLines,
    tagAnnotation,
    tileSteps,
-} from "./malloyText";
+} from "../../utils/malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.

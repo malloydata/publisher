@@ -15,7 +15,7 @@ import {
 import { useEffect, useRef } from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
+import { isIdentifier, tileSteps } from "../../utils/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { now } from "../../utils/clock";

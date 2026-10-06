@@ -215,7 +215,6 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
    const open = async (
       options: {
          onSave?: (source: string) => void;
-         onExit?: () => void;
          onEvent?: (event: BuilderEvent) => void;
          onDirtyChange?: (dirty: boolean) => void;
       } = {},
@@ -254,30 +253,11 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       expect(onDirtyChange).toHaveBeenLastCalledWith(false);
    });
 
-   it("leaves at once when nothing was changed since the conversion and there is nowhere to save", async () => {
-      const onExit = mock(() => {});
-      await open({ onExit });
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole("button", { name: "Keep editing" })).toBeNull();
-   });
-
-   it("asks before leaving once the converted notebook is edited and there is nowhere to save", async () => {
-      const onExit = mock(() => {});
-      await open({ onExit });
-      editInline("Revenue by month", "Tile title", "Monthly revenue");
-      fireEvent.click(button("Close"));
-      expect(button("Keep editing")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
    it("Save writes the untouched conversion and stays open", async () => {
       const writes: string[] = [];
-      const onExit = mock(() => {});
-      await open({ onSave: (source) => void writes.push(source), onExit });
+      await open({ onSave: (source) => void writes.push(source) });
       fireEvent.click(button("Save"));
       await waitFor(() => expect(writes).toHaveLength(1));
-      expect(onExit).not.toHaveBeenCalled();
    });
 
    it("saves the conversion exactly as converted", async () => {

@@ -31,7 +31,6 @@ import {
    type BuilderGiven,
    type MappingRow,
 } from "./controls";
-import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { changedTileKey } from "./changedTile";
 import { InlineMarkdown } from "./InlineMarkdown";
@@ -54,9 +53,16 @@ import { withSource } from "./imports";
 import { FilterStrip } from "./FilterStrip";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
-import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
+import {
+   GapTarget,
+   GridGuides,
+   TILE_HOVER,
+   TileFrame,
+   TilePlaceholder,
+} from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
 import { TileCard } from "../Dashboard/TileCard";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
 import { TileMenu } from "./TileMenu";
@@ -204,11 +210,10 @@ export interface DashboardBuilderProps {
    modelPath?: string;
    /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
-    * and save. Leaving is `onExit`, not this: the builder draws Done itself.
+    * and save. Leaving is the host's too: the builder draws no way out, and
+    * reports unsaved work through `onDirtyChange` for the host to guard.
     */
    toolbar?: ReactNode;
-   /** Leave the builder: renders "Close", which asks first when there are unsaved edits. */
-   onExit?: () => void;
 }
 
 export function DashboardBuilder({
@@ -223,7 +228,6 @@ export function DashboardBuilder({
    givens,
    catalog,
    toolbar,
-   onExit,
    dashboards,
    onEvent,
    conversion,
@@ -232,6 +236,7 @@ export function DashboardBuilder({
    replaces,
    modelPath,
 }: DashboardBuilderProps) {
+   const { theme } = usePublisherTheme();
    const editor = useDashboardEditor({
       source,
       document,
@@ -473,7 +478,6 @@ export function DashboardBuilder({
       prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
-      onExit,
       onDirtyChange,
       onSaveNoticeChange,
       onChange,
@@ -740,8 +744,23 @@ export function DashboardBuilder({
                   <Box sx={{ my: "-4px" }}>{actions}</Box>
                </Stack>
                {/* The description as the reader's view draws it, unboxed in
-                the document's prose type, edited where it is read. */}
-               <TileCard chrome="none">
+                the document's prose type, edited where it is read. It lifts on
+                hover as a tile does; the edge sits outside the text rather than
+                padding it, so the text does not move between modes. */}
+               <TileCard
+                  chrome="none"
+                  sx={{
+                     borderRadius: 1,
+                     outline: "2px solid transparent",
+                     outlineOffset: 8,
+                     transition: "outline-color 120ms, box-shadow 120ms",
+                     "&:hover": {
+                        ...TILE_HOVER(theme),
+                        // The outline is offset; the shadow follows it out.
+                        boxShadow: `0 0 0 8px ${theme.background}, 0 2px 18px 8px rgba(0, 0, 0, 0.10)`,
+                     },
+                  }}
+               >
                   <InlineMarkdown
                      markdown={editor.document.description ?? ""}
                      placeholder="Add a description"
@@ -973,7 +992,6 @@ export function DashboardBuilder({
                   onAdd={addTile}
                   onAddText={addText}
                />
-               <UnsavedChangesDialog {...session.exitGuard.dialog} />
             </Stack>
          </Stack>
       </OpenDraftContext.Provider>

@@ -28,7 +28,6 @@ source: a is scoped_orders extend {
 
 const mount = async (
    options: {
-      onExit?: () => void;
       onSave?: (source: string) => Promise<void> | void;
       onDirtyChange?: (dirty: boolean) => void;
    } = {},
@@ -38,7 +37,6 @@ const mount = async (
       <DashboardBuilder
          source={SOURCE}
          document={document}
-         {...(options.onExit ? { onExit: options.onExit } : {})}
          {...(options.onSave ? { onSave: options.onSave } : {})}
          {...(options.onDirtyChange
             ? { onDirtyChange: options.onDirtyChange }
@@ -57,84 +55,35 @@ const retitle = () => {
 const shortcut = (key: string) =>
    fireEvent.keyDown(window, { key, ctrlKey: true, metaKey: true });
 
-const dialogs = () => screen.getAllByRole("dialog", { hidden: true });
-
-const settleTick = () => act(async () => {});
-
 afterEach(cleanup);
 
 describe("DashboardBuilder: leaving", () => {
-   it("renders no Close without an onExit", async () => {
-      await mount();
-      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
-   });
-
-   it("exits at once when nothing is unsaved", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit });
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
    it("draws Save and no Close when it can save", async () => {
-      await mount({ onExit: () => {}, onSave: async () => {} });
+      await mount({ onSave: async () => {} });
       expect(button("Saved").hasAttribute("disabled")).toBe(true);
       retitle();
       expect(button("Save")).toBeDefined();
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
    });
 
-   it("asks first when there are edits and nowhere to save, and Keep editing stays", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit });
-      retitle();
-      fireEvent.click(button("Close"));
-      expect(screen.getByRole("dialog")).toBeDefined();
-      fireEvent.click(button("Keep editing"));
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("Discard changes exits", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit });
-      retitle();
-      fireEvent.click(button("Close"));
-      fireEvent.click(button("Discard changes"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
    it("Save saves in place and stays in the builder", async () => {
-      const onExit = mock(() => {});
       const onSave = mock(async () => {});
-      await mount({ onExit, onSave });
+      await mount({ onSave });
       retitle();
       fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       expect(onSave).toHaveBeenCalledTimes(1);
-      expect(onExit).not.toHaveBeenCalled();
    });
 
    it("stays open when the save fails", async () => {
-      const onExit = mock(() => {});
       const onSave = mock(async () => {
          throw new Error("nope");
       });
-      await mount({ onExit, onSave });
+      await mount({ onSave });
       retitle();
       fireEvent.click(button("Save"));
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
       await screen.findByText(/nope/);
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("offers no Save and exit when the builder cannot save", async () => {
-      await mount({ onExit: () => {} });
-      retitle();
-      fireEvent.click(button("Close"));
-      expect(
-         screen.queryByRole("button", { name: "Save and exit" }),
-      ).toBeNull();
-      expect(button("Discard changes")).toBeDefined();
    });
 
    it("reports clean when it unmounts dirty", async () => {
@@ -153,25 +102,13 @@ const removeTile = () => {
 };
 
 describe("DashboardBuilder: leaving with a structural edit", () => {
-   it("ignores undo and redo shortcuts while the exit dialog is open", async () => {
-      await mount({ onExit: () => {} });
-      removeTile();
-      fireEvent.click(button("Close"));
-      shortcut("z");
-      await settleTick();
-      expect(dialogs()).toHaveLength(1);
-      expect(screen.queryByLabelText("Settings for By category")).toBeNull();
-   });
-
    it("Save writes a structural edit at once, once, and stays open", async () => {
-      const onExit = mock(() => {});
       const onSave = mock(async () => {});
-      await mount({ onExit, onSave });
+      await mount({ onSave });
       removeTile();
       fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
       expect(onSave).toHaveBeenCalledTimes(1);
-      expect(onExit).not.toHaveBeenCalled();
    });
 
    it("holds the button through a save in flight, so a second press cannot write twice", async () => {
@@ -179,7 +116,7 @@ describe("DashboardBuilder: leaving with a structural edit", () => {
       const onSave = mock(
          () => new Promise<void>((resolve) => (finish = resolve)),
       );
-      await mount({ onExit: () => {}, onSave });
+      await mount({ onSave });
       retitle();
       shortcut("s");
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));

@@ -80,8 +80,6 @@ export type DashboardEditorProps = (
         dashboardName: string;
      }
 ) & {
-   /** Leave the editor: its "Close", which asks first when edits are unsaved. Absent, no such button. */
-   onExit?: () => void;
    /**
     * What the editor does — opened, saved, refused — for the host to log or
     * count; see `DashboardEvent`. A notebook reports `NotebookEvent`s instead.
@@ -117,7 +115,7 @@ const WITHHELD_REFUSAL =
    "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";
 
 export function DashboardEditor(props: DashboardEditorProps) {
-   const { onExit, onEvent, onDirtyChange, kind = "dashboard", path } = props;
+   const { onEvent, onDirtyChange, kind = "dashboard", path } = props;
    const notebook = kind === "notebook";
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
@@ -747,7 +745,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
-               {...(onExit ? { onExit } : {})}
                note={note}
             />
          )}
@@ -781,7 +778,6 @@ function Surface({
    onEvent,
    savesTo,
    saveLabel,
-   onExit,
    note,
 }: {
    kind: DocumentKind;
@@ -804,7 +800,6 @@ function Surface({
    onEvent?: (event: BuilderEvent) => void;
    savesTo: SavesTo;
    saveLabel?: string;
-   onExit?: () => void;
    note: string;
 }) {
    const { apiClients } = useServer();
@@ -1059,7 +1054,6 @@ function Surface({
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
-            {...(onExit ? { onExit } : {})}
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }

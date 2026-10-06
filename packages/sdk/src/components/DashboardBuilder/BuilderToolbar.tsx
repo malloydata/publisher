@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
-import CheckIcon from "@mui/icons-material/Check";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import { Button, Divider, IconButton, Stack, Tooltip } from "@mui/material";
 import type { ReactNode, Ref } from "react";
-import { SecondaryButton } from "../buttons";
 import type { SavesTo } from "./documentSession";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -45,8 +43,6 @@ export interface BuilderToolbarProps {
    saveButton?: Ref<HTMLButtonElement>;
    /** The host's own extra actions, beside Save. */
    actions?: ReactNode;
-   /** Leave editing: draws "Close" at the right edge, only when there is nowhere to save. Absent, no such button. */
-   onExit?: () => void;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
 }
@@ -63,7 +59,6 @@ export function BuilderToolbar({
    saveLabel,
    saveButton,
    actions,
-   onExit,
    onAddTile,
 }: BuilderToolbarProps) {
    return (
@@ -120,9 +115,9 @@ export function BuilderToolbar({
                </IconButton>
             </span>
          </Tooltip>
-         {/* The host's own actions, then Save, which keeps the builder open;
-          Close only where there is nowhere to save. */}
-         {(actions || onSave || onExit) && (
+         {/* The host's own actions, then Save, which keeps the builder open.
+          Leaving is the host's: the builder draws no way out of itself. */}
+         {(actions || onSave) && (
             <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
          )}
          {actions}
@@ -148,15 +143,7 @@ export function BuilderToolbar({
                   </Button>
                </span>
             </Tooltip>
-         ) : (
-            onExit && (
-               <SecondaryButton
-                  label="Close"
-                  icon={<CheckIcon />}
-                  onClick={onExit}
-               />
-            )
-         )}
+         ) : null}
       </Stack>
    );
 }

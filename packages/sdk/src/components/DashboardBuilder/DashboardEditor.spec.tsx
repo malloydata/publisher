@@ -110,10 +110,7 @@ const DRAFT = {
    path: "env/pkg/dashboards/overview.malloy",
 };
 
-const mount = (
-   onExit?: () => void,
-   onEvent?: (event: DashboardEvent) => void,
-) => {
+const mount = (onEvent?: (event: DashboardEvent) => void) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -121,7 +118,6 @@ const mount = (
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
-            {...(onExit ? { onExit } : {})}
             {...(onEvent ? { onEvent } : {})}
          />
       </DocumentStorageProvider>,
@@ -262,7 +258,7 @@ describe("DashboardEditor", () => {
       );
       await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(undefined, onEvent);
+      mount(onEvent);
       expect(
          await screen.findByText(
             /edits to this dashboard saved in this browser/,
@@ -280,9 +276,8 @@ describe("DashboardEditor", () => {
    });
 
    it("reports the open, and offers Save rather than Close when it can save", async () => {
-      const onExit = mock(() => {});
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(onExit, onEvent);
+      mount(onEvent);
       await screen.findByText("Storefront");
       await waitFor(() =>
          expect(onEvent.mock.calls.map((call) => call[0].type)).toContain(
@@ -296,6 +291,5 @@ describe("DashboardEditor", () => {
       });
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
       expect(button("Saved")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
    });
 });

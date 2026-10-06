@@ -151,8 +151,8 @@ export function TileFrame({
                   // will respond to the pointer, told apart
                   // from the ones that will not.
                   "&:hover": {
-                     outlineColor: selected ? theme.accent : theme.cardBorder,
-                     boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
+                     ...TILE_HOVER(theme),
+                     ...(selected && { outlineColor: theme.accent }),
                   },
                }}
             >
@@ -287,6 +287,16 @@ export function TileFrame({
       </TileSortable>
    );
 }
+
+/**
+ * How anything in the builder that responds to the pointer says so on hover:
+ * a lift and an edge, the way a tile does. Shared, so the page's description
+ * highlights exactly as a tile or a text block beside it does.
+ */
+export const TILE_HOVER = (theme: { cardBorder: string }) => ({
+   outlineColor: theme.cardBorder,
+   boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
+});
 
 /**
  * No host-supplied tile: say what this one will run, so the surface is still

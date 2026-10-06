@@ -160,24 +160,6 @@ describe("useBuilderSession reports", () => {
    });
 });
 
-describe("useBuilderSession exit", () => {
-   it("offers Done only when the host can leave, and leaves at once when clean", () => {
-      expect(mount().result.current.toolbarProps.onExit).toBeUndefined();
-      const onExit = mock(() => {});
-      const { result } = mount({ onExit }, makeEditor({ dirty: false }));
-      act(() => result.current.toolbarProps.onExit?.());
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
-   it("asks before leaving unsaved edits", () => {
-      const onExit = mock(() => {});
-      const { result } = mount({ onExit });
-      act(() => result.current.toolbarProps.onExit?.());
-      expect(onExit).not.toHaveBeenCalled();
-      expect(result.current.exitGuard.dialog.open).toBe(true);
-   });
-});
-
 describe("useBuilderSession undo save", () => {
    const LAST = {
       before: "a",
