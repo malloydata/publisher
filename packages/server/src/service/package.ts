@@ -2965,6 +2965,9 @@ export class Package {
       malloyConfig: MalloyConfig,
       outcome: LoadPackageOutcome,
       replacement?: { modelPath: string; source: string },
+      // The bound manifest the compile handed the worker, so hydration reads
+      // the same physical tables a reload would.
+      buildManifest?: BuildManifest["entries"],
    ): Promise<{
       renderTags: ApiPackageWarning[];
       dashboards: ApiPackageWarning[];
@@ -3002,6 +3005,7 @@ export class Package {
                packagePath,
                malloyConfig,
                sm,
+               { buildManifest, skipAuthorizeWarningLog: true },
             );
          } catch (err) {
             // As `reloadAllModels` does: one model that will not hydrate costs

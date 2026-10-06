@@ -11,12 +11,21 @@
  * on the load path by `tests/integration/dashboards`; if a case is removed
  * from it, the two suites disagree.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Environment } from "./environment";
+import { Model } from "./model";
+import { Package } from "./package";
 
 const FIXTURE = path.join(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -203,7 +212,10 @@ describe("compile_model, package scope: curation findings", () => {
       });
    };
 
+   const spies: { mockRestore(): void }[] = [];
+
    afterEach(async () => {
+      for (const spy of spies.splice(0)) spy.mockRestore();
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -235,17 +247,136 @@ describe("compile_model, package scope: curation findings", () => {
       expect(refused.map((p) => p.model)).toContain("dashboards/tiles.malloy");
    });
 
-   it("reports only the intended findings for a well-formed convention package", async () => {
+   const REFUSAL_FIX =
+      "which index.malloy doesn't export, so it won't load. Fix: add " +
+      "orders_staging to the export { ... } in index.malloy. (reported as an " +
+      "error at package load)";
+
+   // The three findings the saved fixture carries: two tiles on `tiles` and
+   // the single-query dashboard `hidden`, each reading orders_staging.
+   const SAVED_REFUSALS = [
+      {
+         model: "dashboards/hidden.malloy",
+         message: `hidden: Dashboard hidden reads orders_staging, ${REFUSAL_FIX}`,
+      },
+      {
+         model: "dashboards/tiles.malloy",
+         message:
+            "tiles: Tile orders_staging -> by_flag on dashboard tiles reads " +
+            `orders_staging, ${REFUSAL_FIX}`,
+      },
+      {
+         model: "dashboards/tiles.malloy",
+         message:
+            "tiles: Tile staged -> by_flag on dashboard tiles reads " +
+            `orders_staging, ${REFUSAL_FIX}`,
+      },
+   ];
+
+   it("reports exactly the surface refusals for a well-formed convention package", async () => {
       await install("dashboards-convention");
       const { problems } = await compilePackage("dashboards-convention");
 
-      // The fixture's artifact tags are well formed, so the only refusals are
-      // the three the surface withholds. A malformed tag shows up here as an
-      // "Unknown render tag" on the dashboard.
-      expect(refusals(problems)).toHaveLength(3);
+      // The fixture's artifact tags are well formed, so these are the only
+      // findings of any kind. A malformed tag would add an "Unknown render
+      // tag" on the dashboard.
       expect(
-         problems.some((p) => p.message.includes("Unknown render tag")),
-      ).toBe(false);
+         problems.map((p) => ({ model: p.model, message: p.message })),
+      ).toEqual(SAVED_REFUSALS);
+   });
+
+   it("reports a render-tag finding from the what-if text, under its own code", async () => {
+      await install("dashboards-convention");
+      const saved = await fs.readFile(
+         path.join(FIXTURE, "..", "dashboards-convention", "orders.malloy"),
+         "utf8",
+      );
+      const { problems } = await compilePackage("dashboards-convention", {
+         modelPath: "orders.malloy",
+         source: saved.replace(
+            "  view: by_status is {",
+            "  # no_such_tag\n  view: by_status is {",
+         ),
+      });
+
+      expect(
+         problems.filter(
+            (p) =>
+               p.model === "orders.malloy" &&
+               (p as { code?: string }).code === "render-tag",
+         ),
+      ).toEqual([
+         {
+            code: "render-tag",
+            severity: "warn",
+            model: "orders.malloy",
+            message:
+               "orders -> by_status: Unknown render tag 'no_such_tag' on field 'root'",
+         } as (typeof problems)[number],
+      ]);
+   });
+
+   /**
+    * A check that throws must not read as a clean package. The compile still
+    * succeeds, because the compiler's own answer is intact, but it says the
+    * dashboard findings are unknown.
+    */
+   it("says the findings are unknown when the dashboard checks throw", async () => {
+      await install("dashboards-convention");
+      spies.push(
+         spyOn(Package, "dryRunFindings").mockRejectedValue(
+            new Error("simulated lint failure"),
+         ),
+      );
+      const { problems } = await compilePackage("dashboards-convention");
+
+      expect(problems).toEqual([
+         {
+            code: "dashboard-lint",
+            severity: "warn",
+            message:
+               "The dashboard and render-tag checks did not run, so their " +
+               "findings are unknown rather than clean. Reload the package to " +
+               'see them. The cause is in the server log under "Dashboard ' +
+               'lint failed during compile".',
+         } as (typeof problems)[number],
+      ]);
+   });
+
+   it("costs a model that will not hydrate only its own findings", async () => {
+      await install("dashboards-convention");
+      const real = Model.fromSerialized.bind(Model);
+      spies.push(
+         spyOn(Model, "fromSerialized").mockImplementation(
+            (...args: Parameters<typeof Model.fromSerialized>) => {
+               if (args[3].modelPath === "dashboards/hidden.malloy") {
+                  throw new Error("simulated hydration failure");
+               }
+               return real(...args);
+            },
+         ),
+      );
+      const { problems } = await compilePackage("dashboards-convention");
+
+      expect(
+         problems.filter((p) => p.model === "dashboards/hidden.malloy"),
+      ).toEqual([
+         {
+            code: "render-tag",
+            severity: "warn",
+            model: "dashboards/hidden.malloy",
+            message:
+               "The load-time checks could not read this model (simulated " +
+               "hydration failure), so its render-tag findings are unknown " +
+               "rather than clean.",
+         } as (typeof problems)[number],
+      ]);
+      // The other files' findings survive.
+      expect(
+         problems
+            .filter((p) => p.model === "dashboards/tiles.malloy")
+            .map((p) => p.message),
+      ).toEqual(SAVED_REFUSALS.slice(1).map((r) => r.message));
    });
 
    /**
@@ -270,7 +401,9 @@ describe("compile_model, package scope: curation findings", () => {
          refusals(problems).filter((p) => p.model === "dashboards/new.malloy"),
       ).toEqual([]);
       // The three on the saved files are still reported.
-      expect(refusals(problems)).toHaveLength(3);
+      expect(
+         refusals(problems).map((p) => ({ model: p.model, message: p.message })),
+      ).toEqual(SAVED_REFUSALS);
    });
 
    it("still refuses a what-if dashboard that re-bases onto a hidden source", async () => {

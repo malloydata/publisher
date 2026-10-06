@@ -1147,6 +1147,7 @@ export class Environment {
                   source === undefined
                      ? undefined
                      : { modelPath: modelName, source },
+                  boundManifestEntries,
                );
                collect(
                   dryRunFindingsAsDiagnostics(
