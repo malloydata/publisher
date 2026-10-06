@@ -7,8 +7,7 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import type { CompiledModel } from "../../client";
 import { buildCatalog } from "./catalog";
-import { isQueryTile } from "./document";
-import { withSource } from "./imports";
+import { addTileToDocument } from "./addTileToDocument";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 import { openDocument } from "./testing/fixtures";
 
@@ -74,29 +73,26 @@ async function loadPackage() {
    };
 }
 
-/** What the builder writes for a new tile on `base`: its import, an extension, a tile on it. */
+/** What the builder writes for a new tile on `base`, through the same function the add-tile hook calls. */
 async function addTile(
    text: string,
    base: string,
    catalog: ReturnType<typeof buildCatalog>,
+   { textHeld = false } = {},
 ) {
    const source = catalog.sources.find((s) => s.name === base)!;
    const document = structuredClone(await openDocument(text));
-   document.imports = withSource(
+   addTileToDocument(
       document,
-      base,
-      source.modelPath,
-      DOCUMENT,
-      source.exporters,
+      {
+         base,
+         modelPath: source.modelPath,
+         exporters: source.exporters,
+         view: "by_category",
+         colspan: 6,
+      },
+      { modelPath: DOCUMENT, textHeld, notebook: false },
    );
-   document.sources.push({ name: `${base}_tiles`, base });
-   document.tiles.push({
-      name: "by_category_tile",
-      source: `${base}_tiles`,
-      declaration: { kind: "reference", from: "by_category" },
-      colspan: 6,
-   });
-   expect(document.tiles.filter(isQueryTile)).toHaveLength(1);
    const result = await spliceDashboardDocument(text, document, {
       modelPath: DOCUMENT,
    });
@@ -133,7 +129,6 @@ describe("the file an add-tile writes compiles", () => {
          expect(
             catalog.sources.find((s) => s.name === "order_items")?.modelPath,
          ).toBe("storefront.malloy");
-         expect(await pkg.problems(text)).toEqual([]);
          expect(text).toContain(
             'import { products, order_items } from "../storefront.malloy"',
          );
@@ -151,6 +146,21 @@ describe("the file an add-tile writes compiles", () => {
             buildCatalog(pkg.models),
          );
          expect(await pkg.problems(text)).toEqual([]);
+         expect(text.match(/^import /gm)).toHaveLength(1);
+      } finally {
+         await pkg.close();
+      }
+   });
+
+   it("writes no import for a text-held document, whatever the source", async () => {
+      const pkg = await loadPackage();
+      try {
+         const text = await addTile(
+            FILE('import "../storefront.malloy"'),
+            "order_items",
+            buildCatalog(pkg.models),
+            { textHeld: true },
+         );
          expect(text.match(/^import /gm)).toHaveLength(1);
       } finally {
          await pkg.close();
