@@ -49,12 +49,12 @@ The builder is the read-only page in a second state, with fewer controls around 
 - **Save saves in place.** The builder no longer closes on save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits.
 - **Builder actions sit on the filter row**: + Tile, undo and redo, and Save, beside the filter chips, with + Filter as a chip after them. Settings is gone: a document stays the kind it was created as, a tile's width is set by dragging its right edge (the width presets, Grid width and "Run as controls change" are removed; a file's own `columns` and `autorun` are kept), and adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list to manage.
 - **Tile menu**: Drill and Delete, a viz type that applies as it is picked, and a ⋯ button. Editable titles, subtitles and descriptions carry a small pencil after their text.
-- **The description is drawn as a text tile**, in both modes.
+- **The description reads the same in both modes**: unboxed, in the document's prose type, edited where it is read.
 - **Dashboard tiles no longer offer Explore.** `DashboardTile`'s `onExplore` prop is unchanged for hosts that pass it.
 
 **Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is now the palette's first series colour (`ResolvedTheme.accent`, with `accentHover` and `accentContrast`), lifted in dark mode so it reads. In dark mode a series colour too dark for the canvas is lifted until it reads, and a map colour set only for light is carried into dark. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
 
-**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. `DashboardEditor`'s `onExit` draws Close only when the builder has nowhere to save; a host that saves is expected to own the way out, as the Console's header does. `onSaveNoticeChange` no longer reports a notice.
+**For SDK embedders.** `Notebook` no longer caps its width at 1200px or pads its sides; it fills the column its host gives it, as `Dashboard` does. `DataAppViewer` lays out at 1600px. `DashboardEditor`'s `onExit` draws Close only when the builder has nowhere to save; a host that saves is expected to own the way out, as the Console's header does. The builder draws no save notice, so a host that held incoming versions on `onSaveNoticeChange` should stop.
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 

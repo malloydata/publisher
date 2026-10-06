@@ -12,8 +12,7 @@ import type { BuilderControl } from "./controls";
 /**
  * The strip where the dashboard's controls are configured — the ONE place: a
  * chip per control opens its window, and "Add filter" beside them declares a
- * new one. The builder's own actions sit at its right end, and the live
- * control row the host renders sits under it.
+ * new one. The live control row the host renders sits under it.
  */
 export function FilterStrip({
    controls: controlList,
@@ -22,7 +21,6 @@ export function FilterStrip({
    onEdit,
    onAdd,
    onRemove,
-   actions,
    children,
 }: {
    controls: BuilderControl[];
@@ -33,8 +31,6 @@ export function FilterStrip({
    onAdd: () => void;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
-   /** The builder's actions, at the right end of the strip. */
-   actions?: ReactNode;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -51,17 +47,14 @@ export function FilterStrip({
             sx={{
                gap: 1,
                position: "sticky",
-               // The top of the scroller: there is no bar above it, so the
-               // builder's actions it carries stay in reach on a long page.
+               // Pinned at the top of the scroller, so the controls stay in
+               // reach on a long page.
                top: 0,
                zIndex: 4,
                bgcolor: theme.background,
                pb: 1,
             }}
          >
-            {/* Two groups on one line: the chips wrap among themselves, so
-             the actions keep their place at the right end however many
-             filters there are. */}
             <Stack
                direction="row"
                sx={{ gap: 2, alignItems: "center", minHeight: 32 }}
@@ -161,7 +154,6 @@ export function FilterStrip({
                      }}
                   />
                </Stack>
-               {actions}
             </Stack>
 
             {children}

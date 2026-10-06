@@ -89,22 +89,18 @@ export function InlineMarkdown({
             sx={[{ minHeight: 24 }, editableSx(theme, "prose")]}
          >
             {markdown.trim() ? (
-               <>
-                  <Prose variant={variant}>{markdown}</Prose>
-               </>
+               <Prose variant={variant}>{markdown}</Prose>
             ) : (
-               <>
-                  <Typography
-                     variant="body2"
-                     sx={{
-                        color: theme.tileTitle,
-                        opacity: 0.6,
-                        fontStyle: "italic",
-                     }}
-                  >
-                     {placeholder}
-                  </Typography>
-               </>
+               <Typography
+                  variant="body2"
+                  sx={{
+                     color: theme.tileTitle,
+                     opacity: 0.6,
+                     fontStyle: "italic",
+                  }}
+               >
+                  {placeholder}
+               </Typography>
             )}
             {closedProblem && (
                <Typography variant="caption" color="error" role="alert">

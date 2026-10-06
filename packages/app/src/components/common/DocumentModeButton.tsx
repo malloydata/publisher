@@ -6,9 +6,13 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useLocation, useNavigate } from "react-router-dom";
 
-/** `/:env/:pkg/(dashboards|notebooks)/:slug`, with `/edit` when the builder is open. */
+/**
+ * `/:env/:pkg/(dashboards|notebooks)/:slug`, with `/edit` when the builder is
+ * open, under whatever `basePath` the host mounted the Console at: the router
+ * treats that as a route path, not a basename, so it is part of `pathname`.
+ */
 const DOCUMENT_ROUTE =
-   /^(\/[^/]+\/[^/]+\/(?:dashboards|notebooks)\/([^/]+?))(\/edit)?\/?$/;
+   /^(.*\/[^/]+\/[^/]+\/(?:dashboards|notebooks)\/([^/]+?))(\/edit)?\/?$/;
 
 /**
  * A slug ending in a model suffix is a FILE route, not a document: ModelPage

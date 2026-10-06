@@ -305,9 +305,15 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const current = opened?.source;
    // Work the package does not have: unsaved edits, or a copy saved beside the
    // package that differs from it. Either way a newer version is held back
-   // behind the banner rather than loaded over what the reader made.
+   // behind the banner rather than loaded over what the reader made. Only a
+   // copy the builder is ON counts: one the reader passed over for the package
+   // file is not work in front of them, and holding a version back for it
+   // would tell them "your edits are still here" about edits they never opened.
    const aheadOfPackage =
-      !authoritative && draft !== undefined && draft !== packageNow;
+      !authoritative &&
+      draft !== undefined &&
+      current === draft &&
+      draft !== packageNow;
    const holding =
       incoming &&
       (dirty || aheadOfPackage) &&

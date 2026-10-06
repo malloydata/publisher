@@ -679,8 +679,8 @@ export function DashboardBuilder({
    // Not otherwise: a gap is only a place to land while something is in hand.
    const empty = editor.document.tiles.length === 0;
    const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
-   // The builder's actions: at the right end of the filter row, which is sticky,
-   // rather than in a second header above the page.
+   // The builder's actions: on the title's line, at the right, above the
+   // description — the page's own heading row rather than a second header.
    const actions = (
       <BuilderToolbar
          {...session.toolbarProps}
@@ -715,8 +715,11 @@ export function DashboardBuilder({
                      tile&apos;s view.
                   </Alert>
                )}
-               <Box>
-                  <Typography variant="h5" sx={{ fontWeight: 600 }}>
+               <Stack direction="row" sx={{ alignItems: "center", gap: 2 }}>
+                  <Typography
+                     variant="h5"
+                     sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}
+                  >
                      <InlineText
                         value={editor.document.title}
                         placeholder={
@@ -732,10 +735,13 @@ export function DashboardBuilder({
                         }
                      />
                   </Typography>
-               </Box>
-               {/* The description in a text tile's box, edited as one is: the
-                same card and type the reader's view draws it in. */}
-               <TileCard sx={{ minHeight: 72 }}>
+                  {/* Overhangs the title's line rather than heightening it, so
+                   the title sits where the reader's view puts it. */}
+                  <Box sx={{ my: "-4px" }}>{actions}</Box>
+               </Stack>
+               {/* The description as the reader's view draws it, unboxed in
+                the document's prose type, edited where it is read. */}
+               <TileCard chrome="none">
                   <InlineMarkdown
                      markdown={editor.document.description ?? ""}
                      placeholder="Add a description"
@@ -750,10 +756,6 @@ export function DashboardBuilder({
 
                {empty ? (
                   <>
-                     {/* No filter row to ride on yet, so the actions stand alone. */}
-                     <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                        {actions}
-                     </Box>
                      <Stack
                         sx={{
                            alignItems: "flex-start",
@@ -783,7 +785,6 @@ export function DashboardBuilder({
                   </>
                ) : (
                   <FilterStrip
-                     actions={actions}
                      controls={controlList}
                      tileCount={editor.document.tiles.length}
                      unknownFieldsOf={unknownFieldsOf}
