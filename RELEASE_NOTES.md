@@ -45,6 +45,34 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
+
+- **No renderer download at idle.** `RenderedResult` no longer starts importing `@malloydata/render`
+  (about 3.4 MB, 1 MB gzipped) the moment its module is evaluated, which made every page of a host
+  that loaded the main entry download it whether or not it drew a result. A result panel now starts
+  the import when its query is in flight, so the first chart still does not wait on it. A host that
+  stripped the old statement at build time can drop that patch; one that fails its build when the
+  statement is missing will now fail and should drop the check.
+- **Offscreen dashboard tiles wait.** A dashboard or notebook-layout tile runs its query once it is
+  within about 600px of the viewport, rather than on mount, so a long dashboard no longer bills the
+  warehouse for tiles nobody scrolls to. The distance is measured in whatever box scrolls the page
+  (the Console scrolls inside one), and printing runs every tile. Where `IntersectionObserver` is
+  unavailable every tile runs as before. A tile waiting to come near reads "Loading…", not
+  "Running…".
+- **Superseded queries are cancelled.** Tile, result, suggestion and filter-value queries pass
+  react-query's abort signal to the request, so a query whose givens changed or whose tile unmounted
+  is aborted instead of finishing. A cancelled query shows as still loading, never as an error. The
+  server cancels the query with it: when a client disconnects from `POST …/models/{path}/query`,
+  the query's abort signal fires (the path a query timeout already takes), so the database stops
+  work that nobody will read rather than running on after its concurrency slot was released.
+- **`usePublisherTheme` from `@malloy-publisher/sdk/client`.** The light entry now exports it (and the
+  `Theme`, `ThemeMode` and `ResolvedTheme` types), so a host following the SDK's colour mode at its
+  root no longer needs the main entry on its critical path.
+- **No refetch on refocus.** The SDK's `globalQueryClient` no longer refetches every stale query
+  when the tab regains focus, including the package, model and status queries of a host that shares
+  that client. Retries stay off. _What to do:_ a host that relied on a refresh on refocus calls
+  `invalidateQueries` itself.
+
 ## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
 
 `simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it
@@ -54,6 +82,47 @@ process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINA
 (`HTTPS_PROXY`, `NO_PROXY`), `SSL_CERT_FILE` and `HOME` still pass through, so settings in the
 server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
 `GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
+
+## [Unreleased] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
+
+The builder is the read-only page in a second state, with fewer controls around it.
+
+- **Edit and View are in the Console's header**, beside the breadcrumbs, on every dashboard and notebook page. View returns to the read-only page and asks first if there are unsaved edits. The page's own Edit bar, and the "Back to …" links on every page, are gone. Reading and editing have the same header and margins, and dashboards, notebooks and data apps share one page width.
+- **Save saves in place.** The builder stays open after a save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits. The first save of a cell-format notebook, which rewrites it in the tile layout, asks first.
+- **The builder's actions sit on the title's line**: + Tile, undo, redo and Save. + Filter is a chip after the filter chips.
+- **Settings is gone.** A document stays the kind it was created as. A tile's width is set by dragging its right edge, or by focusing that edge and pressing the arrow keys (Home and End for one column and the full grid); the tile menu's width presets, Grid width and "Run as controls change" are removed, and a file's own `columns` and `autorun` are kept. Adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list.
+- **Tile menu**: Drill, Delete, and a viz type that applies as it is picked. Editable titles, subtitles and descriptions carry a small pencil after their text. The description is drawn as the document's text tiles are, in both modes (a dashboard boxes it, a notebook leaves it bare), and selected like a tile.
+- **Dashboard tiles no longer offer Explore.**
+
+**Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is the palette's first series colour (`ResolvedTheme.accent`, `accentHover`, `accentContrast`, and `accentFor`), kept as picked when it reads against the page at 3:1 and otherwise moved only as far as it takes. In dark mode a series colour too dark for the canvas is lifted the same way, and a map colour set only for light is carried into dark. Drill links keep the Console's default blue. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
+
+**Themeable chart and table chrome (not breaking).** Six new per-mode palette keys set colours that were fixed until now: `border` (table gridlines), `cardBorder` (a dashboard card's edge and a pinned table header's rule), `axis` (chart axis domain and ticks), `gridline` (chart gridlines), `chartText` (chart axis, legend and title text) and `value` (a KPI tile's number). Their defaults are the colours drawn before, so an unthemed page looks the same. Set them in `publisher.config.json`'s `theme.palette`, the Theme editor (Charts and Tables), or a `# theme.palette.<key>.{light,dark}` annotation; a host that overrode these with CSS can set them through the theme instead. `ResolvedTheme` gains `gridline`; `foreground`, `axisFaint` and `valueColor` keep their names and now read `chartText`, `axis` and `value`.
+
+**For SDK embedders (BREAKING).** The viewer and the builder are separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
+
+- **`onExit` is optional.** Without it, `DashboardEditor`, `NotebookEditor` and `DashboardBuilder` draw no way out, and leaving is the host's (the Console's is View in its header): draw your own and guard it with `onDirtyChange`; `UnsavedChangesDialog` is still exported. With it, the toolbar shows **Close** after Save, and Close on unsaved work asks first, as before. _What to do:_ nothing, if you pass it.
+- **`onSaveNoticeChange` is removed** from `DashboardBuilder`, with the save notice. _What to do:_ drop the prop; there is no notice to hold a newer version behind.
+- **`DashboardBar` is removed.** _What to do:_ draw your own bar; nothing in the SDK used it.
+- **The builder's Show as switch is removed.** _What to do:_ nothing; a document's kind is chosen when it is created (`NewDocumentDialog`'s `allowKindChange` is unchanged).
+- **`Dashboard` no longer offers Explore from here on its tiles.** _What to do:_ if you want it, render `DashboardTile` with its `onExplore` prop, which is unchanged.
+- **`Notebook` no longer caps its width** at 1200px or pads its sides; it fills its container, as `Dashboard` does. _What to do:_ give it a container with the width you want. `DataAppViewer` lays out at 1600px.
+- **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`. Without it, `Package` navigates to the Console's routes as before.
+
+**Consistency and polish.**
+
+- Destructive text (Delete on a tile, Remove filter) takes the host MUI theme's error palette — `error.dark` in light mode, `error.main` in dark — through the exported `dangerTextColor`, so a host with its own error red gets it.
+- Filter wording is one set: the chip's ×, and the filter window's **Remove filter**; the drill window is titled **Drill**, matching the tile menu.
+- New exported tokens: `MOTION_FAST`, `reducedMotionSx`, `scrollBehavior`, `visibleWithoutHoverSx`, `ResolvedTheme.shadow` (`lift`, `drag`), `LOADING_COPY`, `STICKY_CONTROLS_Z`, `TILE_MIN_HEIGHT`, and `MONO_FONT_FAMILY` (which the Console now reads from the SDK). Motion respects `prefers-reduced-motion`.
+- `TileCard` takes `kind` (`query` or `text`), which sets its floor; the builder's text tiles and description use it.
+- `Notebook`'s embed dialog is removed; its copy-link button remains. The model page's copy link is a labelled button.
+- No bold: headings and labels use the theme's medium weight, as Credible's do.
+- Prose (package READMEs, notebook markdown, descriptions, text tiles) is set in the instance theme's `font.family`, as tile titles are, rather than the host MUI theme's font. The filter panel's Apply and Reset take the host theme's button casing.
+- Notebook blocks have one clear space around them when hovered or selected: the ring stands 12px off bare content, its menu sits on the ring's edge rather than over the text, notebook tiles are 40px apart in both modes, and document prose is flush at its top and bottom so a text tile lines up with a chart tile's title.
+- The builder's undo and redo shortcuts do nothing while a dialog or menu is open.
+- The builder's save state is announced to screen readers, and a tile's resize edge is a focusable separator with its width as its value.
+- `DashboardBuilder` and `DashboardEditor` are split into hooks and parts; their exports and props are unchanged.
+
+**Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 
 ## [Unreleased] - The Docker image is signed with cosign
 

@@ -33,7 +33,7 @@ import {
    artifactTag,
    isBareName,
    setsArtifactProperty,
-} from "./malloyText";
+} from "../../utils/malloyText";
 import { parseTagLines } from "./tagParse";
 import { loadMalloy, loadMalloyTag } from "./loadMalloy";
 

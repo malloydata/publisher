@@ -84,7 +84,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("lists a dashboard and a notebook in one section, each with its kind, ordered by what is shown", async () => {
+it("lists a dashboard and a notebook in one section, ordered by what is shown", async () => {
    dashboards = [
       { name: "overview", path: "dashboards/overview.malloy", title: "Zebra" },
    ];
@@ -94,11 +94,7 @@ it("lists a dashboard and a notebook in one section, each with its kind, ordered
    ];
    mount();
 
-   expect(await rows()).toEqual([
-      "AardvarkNotebook",
-      "plainNotebook",
-      "ZebraDashboard",
-   ]);
+   expect(await rows()).toEqual(["Aardvark", "plain", "Zebra"]);
    expect(screen.queryByRole("heading", { name: "Dashboards" })).toBeNull();
    expect(screen.queryByRole("heading", { name: "Notebooks" })).toBeNull();
 });
@@ -112,9 +108,9 @@ it("shows the folder only to tell two files with one slug apart, and opens each 
    mount();
 
    expect(await rows()).toEqual([
-      "solo" + "Notebook",
-      "story" + "dashboards/story.malloy" + "Dashboard",
-      "story" + "notebooks/story.malloy" + "Notebook",
+      "solo",
+      "story" + "dashboards/story.malloy",
+      "story" + "notebooks/story.malloy",
    ]);
    fireEvent.click(screen.getByText("dashboards/story.malloy"));
    fireEvent.click(screen.getByText("notebooks/story.malloy"));
@@ -128,7 +124,7 @@ it("keeps a titled .malloynb's path as its secondary text", async () => {
    notebooks = [{ path: "orders.malloynb", title: "Orders" }];
    mount();
 
-   expect(await rows()).toEqual(["Ordersorders.malloynbNotebook"]);
+   expect(await rows()).toEqual(["Ordersorders.malloynb"]);
 });
 
 it("says so when either list fails, and still lists the other", async () => {
@@ -141,7 +137,7 @@ it("says so when either list fails, and still lists the other", async () => {
    expect(
       await screen.findByText(/Could not list some artifacts/),
    ).toBeDefined();
-   expect(await rows()).toEqual(["overviewDashboard"]);
+   expect(await rows()).toEqual(["overview"]);
 });
 
 it("treats a 404 on the notebooks list as none, without an error", async () => {
@@ -151,7 +147,7 @@ it("treats a 404 on the notebooks list as none, without an error", async () => {
    );
    mount();
 
-   expect(await rows()).toEqual(["overviewDashboard"]);
+   expect(await rows()).toEqual(["overview"]);
    expect(screen.queryByText(/Could not list/)).toBeNull();
 });
 

@@ -78,14 +78,14 @@ test.describe("package-dashboards", () => {
       await expect(
          page.getByRole("heading", { name: "Notebooks", exact: true }),
       ).toHaveCount(0);
-      // One list: a dashboard row and a notebook row each carry a name and a kind badge.
+      // One list: a dashboard row and a notebook row, each once, by name.
       const artifacts = page.getByRole("region", { name: "Artifacts" });
       await expect(
          artifacts.getByRole("button", { name: /Business Overview/ }),
-      ).toContainText("Dashboard");
+      ).toHaveCount(1);
       await expect(
          artifacts.getByRole("button", { name: /Orders in a window/ }),
-      ).toContainText("Notebook");
+      ).toHaveCount(1);
       await expect(
          artifacts.getByRole("button", { name: "New", exact: true }),
       ).toBeVisible();

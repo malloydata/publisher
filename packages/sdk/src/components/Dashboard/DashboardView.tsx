@@ -13,17 +13,18 @@ import {
    type DrillNavigation,
    type DrillRowsRequest,
 } from "../drill";
-import { GivensPanel } from "../given";
-import {
-   givensToParams,
-   givensToRequest,
-   withHostGivens,
-} from "../given/paramCodec";
+import { GivensPanel, type GivensLayout } from "../given";
+import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
+import {
+   DashboardGrid,
+   BARE_DESCRIPTION_MARGIN_PX,
+   DEFAULT_COLUMNS,
+   GRID_GAP_PX,
+   NOTEBOOK_GAP_PX,
+} from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
-import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import type { DashboardEventHandler } from "./telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
@@ -31,6 +32,14 @@ import { tileIgnoredFilterLabels } from "./TileFilterTag";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
+
+/**
+ * The sticky control row's stacking level: above anything a tile raises
+ * inside itself as it scrolls under (a result's floating buttons sit at 1–2),
+ * and below MUI's app bar, popovers and dialogs. Shared so the builder's
+ * control row sits at the same level as the reader's.
+ */
+export const STICKY_CONTROLS_Z = 4;
 
 export interface DashboardViewProps {
    /** The dashboard, or the tile layout a layout notebook carries. */
@@ -57,9 +66,14 @@ export interface DashboardViewProps {
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
    /**
+    * How the control row is drawn: `bar` for a dashboard, `panel` for a
+    * notebook, so a layout notebook's controls match a cell notebook's.
+    */
+   controlsLayout?: GivensLayout;
+   /**
     * Text-source mode: the document's definitions (see `documentPreamble`),
     * sent ahead of each tile's `run:` so every query runs as the viewer's own
-    * text. Rows and Explore, which reopen a tile by name, are off in this mode.
+    * text. Rows, which reopens a tile by name, is off in this mode.
     */
    preamble?: string;
    /** Text-source mode: the model the text runs on top of, in place of `manifest.path`. */
@@ -87,6 +101,7 @@ export function DashboardView({
    maxResultSize,
    onEvent,
    chrome = "card",
+   controlsLayout = "bar",
    preamble,
    runModelPath,
    hiddenGivens,
@@ -152,11 +167,9 @@ export function DashboardView({
       );
    }, [manifest, givens, declaredTypes]);
 
-   // The rows behind a clicked value, and a tile's query in the explorer —
-   // the two ways past a number. Composite tiles only: each names its
-   // source, which is what the rows are of and what the explorer opens on.
+   // The rows behind a clicked value: the way past a number. Composite tiles
+   // only: each names its source, which is what the rows are of.
    const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
-   const [exploring, setExploring] = useState<string | undefined>(undefined);
    const onRows = useCallback((request: DrillRowsRequest) => {
       const steps = stepsOf(request.context);
       if (steps === undefined) return;
@@ -177,12 +190,6 @@ export function DashboardView({
             tileHostGivens,
          ),
       [applied, declaredTypes, tileHostGivens],
-   );
-
-   // The explorer's controls take the URL-string form, not the request form.
-   const exploreGivens = useMemo(
-      () => givensToParams(applied, declaredTypes),
-      [applied, declaredTypes],
    );
 
    const { drill, drillMenu } = useDrill({
@@ -208,7 +215,7 @@ export function DashboardView({
    if (manifest.error) {
       return (
          <Stack spacing={2}>
-            <DashboardHeader manifest={manifest} />
+            <DashboardHeader manifest={manifest} chrome={chrome} />
             <Alert severity="error">{manifest.error}</Alert>
          </Stack>
       );
@@ -220,19 +227,25 @@ export function DashboardView({
 
    return (
       <Stack spacing={2}>
-         {chrome === "card" && <DashboardHeader manifest={manifest} />}
+         {chrome === "card" && (
+            <DashboardHeader manifest={manifest} chrome={chrome} />
+         )}
 
-         {/* Sticky so the controls stay in reach while the tiles scroll under. */}
-         <Box
-            sx={{
-               position: "sticky",
-               top: 0,
-               zIndex: 2,
-               bgcolor: "background.default",
-            }}
-         >
-            <GivensPanel {...controls.panel} layout="bar" />
-         </Box>
+         {/* Sticky so the controls stay in reach while the tiles scroll under.
+             Only when there are controls: GivensPanel draws nothing without
+             them, and an empty box would still cost the Stack a gap. */}
+         {specs.length > 0 && (
+            <Box
+               sx={{
+                  position: "sticky",
+                  top: 0,
+                  zIndex: STICKY_CONTROLS_Z,
+                  bgcolor: "background.default",
+               }}
+            >
+               <GivensPanel {...controls.panel} layout={controlsLayout} />
+            </Box>
+         )}
 
          {modelPath === undefined ? (
             <Alert severity="error">
@@ -263,6 +276,7 @@ export function DashboardView({
                tiles={tiles}
                columns={columns}
                minTilePx={MIN_TILE_PX}
+               rowGapPx={chrome === "none" ? NOTEBOOK_GAP_PX : GRID_GAP_PX}
                // Position too, not the expression alone: `tiles=[…]` can repeat
                // one, which is a typo rather than a request for two identical
                // panels, and keying on the expression made the duplicate warn
@@ -298,15 +312,7 @@ export function DashboardView({
                         )}
                         {...(preamble !== undefined
                            ? { preamble, restricted: tile.restricted }
-                           : {
-                                onExplore: () => {
-                                   setExploring(tile.query);
-                                   onEvent?.({
-                                      type: "dashboard.explored",
-                                      tile: tile.query ?? "",
-                                   });
-                                },
-                             })}
+                           : {})}
                      />
                   )
                }
@@ -319,37 +325,26 @@ export function DashboardView({
 
          {drillMenu}
          {modelPath !== undefined && (
-            <>
-               <RowsDialog
-                  request={rows}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={rowsGivens}
-                  onClose={() => setRows(undefined)}
-                  onDone={(ok, durationMs) => {
-                     if (rows)
-                        onEvent?.({
-                           type: "dashboard.rows_shown",
-                           source: rows.source,
-                           view: rows.view,
-                           field: rows.field,
-                           ok,
-                           durationMs,
-                        });
-                  }}
-               />
-               <ExploreDialog
-                  tile={exploring}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  {...(versionId === undefined ? {} : { versionId })}
-                  modelPath={modelPath}
-                  givens={exploreGivens}
-                  onClose={() => setExploring(undefined)}
-               />
-            </>
+            <RowsDialog
+               request={rows}
+               environmentName={environmentName}
+               packageName={packageName}
+               {...(versionId === undefined ? {} : { versionId })}
+               modelPath={modelPath}
+               givens={rowsGivens}
+               onClose={() => setRows(undefined)}
+               onDone={(ok, durationMs) => {
+                  if (rows)
+                     onEvent?.({
+                        type: "dashboard.rows_shown",
+                        source: rows.source,
+                        view: rows.view,
+                        field: rows.field,
+                        ok,
+                        durationMs,
+                     });
+               }}
+            />
          )}
       </Stack>
    );
@@ -364,7 +359,7 @@ function TextTile({
    chrome: TileChrome;
 }) {
    return (
-      <TileCard chrome={chrome}>
+      <TileCard chrome={chrome} kind="text">
          <Prose variant="document">{markdown}</Prose>
       </TileCard>
    );
@@ -374,9 +369,19 @@ function TextTile({
  * The dashboard's prose header: its title, and the description as MARKDOWN
  * (Malloy carries a `##"` block through with its newlines intact).
  */
-function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
+function DashboardHeader({
+   manifest,
+   chrome,
+}: {
+   manifest: DashboardManifest;
+   chrome: TileChrome;
+}) {
    return (
       <DashboardProse
+         // The description follows the text-tile rule: drawn in the same chrome
+         // the document's text tiles take, so a dashboard boxes it as it boxes
+         // a text tile, and a notebook (which passes `none`) leaves it bare.
+         chrome={chrome}
          title={manifest.title ?? manifest.name}
          {...(manifest.description
             ? { description: manifest.description }
@@ -388,20 +393,36 @@ function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
 /**
  * The prose header over just the two fields it needs, so the BUILDER can draw
  * the same header over a `DashboardDocument`, which is not a manifest.
+ *
+ * The description is drawn as a text tile is, in the document's own tile
+ * chrome: the same box and the same type as the markdown between the tiles,
+ * so the page's prose reads as one kind of thing wherever it sits.
  */
 export function DashboardProse({
    title,
    description,
+   chrome = "card",
 }: {
    title: string;
    description?: string;
+   /** The chrome the document's tiles take, which the description matches. */
+   chrome?: TileChrome;
 }) {
    return (
-      <Box>
-         <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {title}
-         </Typography>
-         {description && <Prose variant="caption">{description}</Prose>}
-      </Box>
+      <Stack sx={{ gap: 2 }}>
+         {/* No explicit weight: the host theme's h5 weight applies. */}
+         <Typography variant="h5">{title}</Typography>
+         {description && (
+            <Box
+               sx={
+                  chrome === "none"
+                     ? { my: `${BARE_DESCRIPTION_MARGIN_PX}px` }
+                     : undefined
+               }
+            >
+               <TextTile markdown={description} chrome={chrome} />
+            </Box>
+         )}
+      </Stack>
    );
 }

@@ -120,10 +120,11 @@ test.describe("embedded host", () => {
       );
       const writes = watchPackageWrites(page);
       await page.goto(`/${curated.env}/${curated.pkg}/notebooks/local/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByText("Kept in the host's record")).toBeVisible();
+      // Where Save writes is the Save button's tooltip, labelling it.
+      await expect(page.getByLabel("Kept in the host's record")).toBeVisible();
       await expect(page.getByText("read-only here")).toHaveCount(0);
 
       await editText(firstTextTile(page), "Edited in the host.");
@@ -169,7 +170,7 @@ test.describe("embedded host", () => {
          },
       );
       const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
 
@@ -253,7 +254,7 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/dashboards/overview/edit`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText("Record overview")).toBeVisible();
@@ -276,7 +277,7 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(
@@ -295,11 +296,11 @@ test.describe("embedded host", () => {
       await page.goto(
          `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
       );
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: /^(Save|Saved|Saving…)$/ }),
       ).toHaveCount(0);
       await expect(page.getByText("does not take writes")).toBeVisible();
 

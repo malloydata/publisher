@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   act,
    cleanup,
    fireEvent,
    render,
@@ -15,7 +16,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { BuilderEvent } from "./telemetry";
-import { closeMenu, editInline } from "./testing/inline";
+import { editInline } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
@@ -87,12 +88,20 @@ const mountText = async (
    );
 
 describe("DashboardBuilder: a notebook is one column", () => {
-   it("offers no width: no grid width, no width presets", async () => {
+   it("draws its text and description bare, as the notebook reader does", async () => {
       await mountText(NOTEBOOK);
-      fireEvent.click(button("Settings"));
-      expect(screen.getByLabelText("Show as")).toBeDefined();
-      expect(screen.queryByLabelText("Grid width")).toBeNull();
-      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
+      for (const card of document.querySelectorAll("[data-chrome]"))
+         expect(card.getAttribute("data-chrome")).toBe("none");
+      expect(document.querySelectorAll("[data-chrome]").length).toBeGreaterThan(
+         0,
+      );
+   });
+
+   it("offers no width: no resize edge, no width presets", async () => {
+      await mountText(NOTEBOOK);
+      expect(
+         screen.queryByRole("separator", { name: /^Width of / }),
+      ).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for intro"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
@@ -120,29 +129,25 @@ describe("DashboardBuilder: a notebook is one column", () => {
       expect(screen.queryByLabelText("Tile width")).toBeNull();
       fireEvent.click(screen.getByLabelText("View sales_by_state"));
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("view: sales_by_state_tile is sales_by_state");
       expect(written).not.toContain("colspan");
       expect(written).not.toContain("columns");
    });
 
-   it("names the document's own kind in the Add tile dialog", async () => {
+   it("describes the Add tile dialog the same way for either kind", async () => {
       await mountText(NOTEBOOK, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText(
-            "A tile shows one view of one source this notebook imports.",
-         ),
+         screen.getByText("A tile shows one view of a source in this package."),
       ).toBeDefined();
       cleanup();
 
       await mountText(DASHBOARD, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText(
-            "A tile shows one view of one source this dashboard imports.",
-         ),
+         screen.getByText("A tile shows one view of a source in this package."),
       ).toBeDefined();
    });
 
@@ -157,7 +162,7 @@ describe("DashboardBuilder: a notebook is one column", () => {
       fireEvent.click(screen.getByLabelText("Insert tile after intro"));
       fireEvent.click(screen.getByRole("button", { name: "Text" }));
       fireEvent.click(screen.getByRole("button", { name: "Add text" }));
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
          'tiles=[intro { kind=text }, text_1 { kind=text }, "a -> by_cat"]',
@@ -177,7 +182,7 @@ describe("DashboardBuilder: a notebook is one column", () => {
       fireEvent.click(screen.getByLabelText("Add tile at the end"));
       fireEvent.click(screen.getByRole("button", { name: "Text" }));
       fireEvent.click(screen.getByRole("button", { name: "Add text" }));
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
          'tiles=[intro { kind=text }, "a -> by_cat", text_1 { kind=text }]',
@@ -193,8 +198,8 @@ describe("DashboardBuilder: a notebook is one column", () => {
    it("reports notebook events, with the cell count", async () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       await mountText(NOTEBOOK, { onSave: () => {}, onEvent });
-      editInline("by_cat", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      editInline("By cat", "Tile title", "Categories");
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "notebook.saved",
@@ -206,48 +211,11 @@ describe("DashboardBuilder: a notebook is one column", () => {
    });
 });
 
-describe("DashboardBuilder: Show as", () => {
-   const showAs = (kind: "Dashboard" | "Notebook") => {
-      fireEvent.click(button("Settings"));
-      fireEvent.click(screen.getByRole("button", { name: kind }));
-      fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
-   };
-
-   it("turns a dashboard into a notebook in place, and drops its width", async () => {
-      let written: string | undefined;
-      await mountText(DASHBOARD, {
-         onSave: (source) => {
-            written = source;
-         },
-      });
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      expect(screen.getByRole("button", { name: "Width ½" })).toBeDefined();
-      closeMenu();
-      showAs("Notebook");
-      // The menu follows the toggle at once.
-      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
-      closeMenu();
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain("kind=notebook");
-      expect(written).not.toContain("columns");
-      // Everything else in the file is where it was.
-      expect(written).toContain("source: a is scoped_orders extend {");
-   });
-
-   it("turns a notebook back into a dashboard", async () => {
-      let written: string | undefined;
-      await mountText(NOTEBOOK, {
-         onSave: (source) => {
-            written = source;
-         },
-      });
-      showAs("Dashboard");
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(written).toBeDefined());
-      expect(written).not.toContain("kind=notebook");
-      expect(written).toContain('title="Review"');
+describe("DashboardBuilder: a document's kind", () => {
+   it("is fixed once created: there is no switch between dashboard and notebook", async () => {
+      await mountText(DASHBOARD, { onSave: () => {} });
+      expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+      expect(screen.queryByLabelText("Show as")).toBeNull();
    });
 });
 
@@ -255,7 +223,6 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
    const open = async (
       options: {
          onSave?: (source: string) => void;
-         onExit?: () => void;
          onEvent?: (event: BuilderEvent) => void;
          onDirtyChange?: (dirty: boolean) => void;
       } = {},
@@ -279,10 +246,10 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       await open({ onSave: () => {}, onDirtyChange });
       expect(
          screen.getByText(
-            /This notebook is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view; Undo save puts it back\./,
+            /This notebook is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view\./,
          ),
       ).toBeDefined();
-      expect(button("Save changes")).toBeDefined();
+      expect(button("Save")).toBeDefined();
       // Each tile says why it has no preview yet, beside the view it will run.
       expect(
          screen.getAllByText("Preview appears after you Save"),
@@ -294,31 +261,41 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       expect(onDirtyChange).toHaveBeenLastCalledWith(false);
    });
 
-   it("leaves at once when nothing was changed since the conversion", async () => {
-      const onExit = mock(() => {});
-      await open({ onSave: () => {}, onExit });
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole("button", { name: "Keep editing" })).toBeNull();
+   it("asks before Save converts the file, and writes it once confirmed", async () => {
+      const writes: string[] = [];
+      await open({ onSave: (source) => void writes.push(source) });
+      fireEvent.click(button("Save"));
+      expect(
+         await screen.findByText(
+            /Saving rewrites this notebook in the tile layout/,
+         ),
+      ).toBeDefined();
+      expect(writes).toHaveLength(0);
+      fireEvent.click(button("Convert and save"));
+      await waitFor(() => expect(writes).toHaveLength(1));
    });
 
-   it("asks before leaving once the converted notebook is edited", async () => {
-      const onExit = mock(() => {});
-      await open({ onSave: () => {}, onExit });
-      editInline("Revenue by month", "Tile title", "Monthly revenue");
-      fireEvent.click(button("Close"));
-      expect(button("Keep editing")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
+   it("writes nothing when the conversion is cancelled", async () => {
+      const writes: string[] = [];
+      await open({ onSave: (source) => void writes.push(source) });
+      fireEvent.click(button("Save"));
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      await act(async () => {});
+      expect(writes).toHaveLength(0);
+      expect(button("Save")).toBeDefined();
    });
 
-   it("saves the conversion, and Undo save writes the cell format back byte for byte", async () => {
+   it("saves the conversion exactly as converted", async () => {
       const writes: string[] = [];
       const onEvent = mock((_event: BuilderEvent) => {});
       const conversion = await open({
          onSave: (source) => void writes.push(source),
          onEvent,
       });
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Convert and save" }),
+      );
       await waitFor(() => expect(writes).toHaveLength(1));
       // Nothing was edited, so the file written is the conversion itself.
       expect(writes[0]).toBe(conversion.to);
@@ -329,35 +306,5 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       expect(
          screen.queryByText(/This notebook is in the cell format/),
       ).toBeNull();
-
-      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
-      await waitFor(() => expect(writes).toHaveLength(2));
-      expect(writes[1]).toBe(LEGACY);
-      // Back to conversion-pending: the banner and Save return.
-      expect(
-         await screen.findByText(/This notebook is in the cell format/),
-      ).toBeDefined();
-      expect(button("Save changes")).toBeDefined();
-      expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
-         "notebook.saved",
-         "notebook.save_undone",
-      ]);
-   });
-
-   it("keeps the edits made before the save through its undo", async () => {
-      const writes: string[] = [];
-      await open({ onSave: (source) => void writes.push(source) });
-      editInline("Revenue by month", "Tile title", "Monthly revenue");
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(writes).toHaveLength(1));
-      expect(writes[0]).toContain('# label="Monthly revenue"');
-
-      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
-      await waitFor(() => expect(writes).toHaveLength(2));
-      expect(writes[1]).toBe(LEGACY);
-      expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
-      expect(
-         screen.getByLabelText("Settings for Monthly revenue"),
-      ).toBeDefined();
    });
 });

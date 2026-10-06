@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { SavesTo } from "../DashboardBuilder/documentSession";
+/** Where a host's Save lands, as an editor's events report it. */
+export type SavesTo = "package" | "browser" | "host";
 import type { DashboardCreatedEvent } from "../DocumentCreate/events";
 
 /**

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 export { Dashboard, type DashboardProps } from "./Dashboard";
-export { DashboardView, type DashboardViewProps } from "./DashboardView";
+export {
+   DashboardView,
+   STICKY_CONTROLS_Z,
+   type DashboardViewProps,
+} from "./DashboardView";
 export { TileFilterTag, tileIgnoredFilterLabels } from "./TileFilterTag";
 export { DashboardTile, type DashboardTileProps } from "./DashboardTile";
 export {
@@ -11,5 +15,5 @@ export {
    withPreamble,
 } from "./textSource";
 export type { DashboardEvent, DashboardEventHandler } from "./telemetry";
-export { TileCard, TileHeading } from "./TileCard";
+export { TILE_MIN_HEIGHT, TileCard, TileHeading } from "./TileCard";
 export type { TileHeadingSlots } from "./TileCard";

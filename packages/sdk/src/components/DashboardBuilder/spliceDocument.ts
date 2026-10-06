@@ -29,7 +29,7 @@ import {
    isBareName,
    isStrictName,
    malloyPath,
-} from "./malloyText";
+} from "../../utils/malloyText";
 import {
    parseMalloy,
    parseRefused,

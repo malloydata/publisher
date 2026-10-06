@@ -3,7 +3,13 @@
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import {
+   MOTION_FAST,
+   reducedMotionSx,
+   visibleWithoutHoverSx,
+} from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { useNearViewport } from "../../hooks/useNearViewport";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
@@ -133,6 +139,11 @@ export function DashboardTile({
    restricted,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
+   // A tile far below the fold waits to be scrolled near before it runs: its
+   // query is billed by the warehouse whether or not anyone ever sees it. The
+   // card holds its minimum height meanwhile, so the grid barely moves when it
+   // fills.
+   const [cardRef, nearViewport] = useNearViewport<HTMLDivElement>();
    const state = useQueryResult(
       {
          environmentName,
@@ -154,7 +165,8 @@ export function DashboardTile({
             givenNames,
          ),
       },
-      { enabled: restricted !== true },
+      // Restricted tiles never run; the rest wait to come near the viewport.
+      { enabled: nearViewport && restricted !== true },
    );
    // A 403 is the viewer's access, which only text-source mode runs as them.
    const noAccess =
@@ -163,6 +175,7 @@ export function DashboardTile({
 
    return (
       <TileCard
+         cardRef={cardRef}
          borderless={borderless}
          chrome={chrome}
          sx={{
@@ -173,7 +186,9 @@ export function DashboardTile({
             // the title on every card at once.
             "& .publisher-tile-explore": {
                opacity: 0,
-               transition: "opacity 120ms",
+               transition: `opacity ${MOTION_FAST}`,
+               ...reducedMotionSx,
+               ...visibleWithoutHoverSx,
             },
             "&:hover .publisher-tile-explore, & .publisher-tile-explore:focus-visible":
                { opacity: 1 },

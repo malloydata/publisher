@@ -123,6 +123,12 @@ export const PER_MODE_COLOR_KEYS = [
    "tile",
    "tileTitle",
    "mapColor",
+   "border",
+   "cardBorder",
+   "axis",
+   "gridline",
+   "chartText",
+   "value",
 ] as const;
 
 export type Package = {

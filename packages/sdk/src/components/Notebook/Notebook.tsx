@@ -18,7 +18,7 @@ import { DashboardProse, DashboardView } from "../Dashboard/DashboardView";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToParams, givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { cellRuns } from "./cellKind";
@@ -135,6 +135,8 @@ export default function Notebook(props: NotebookProps) {
                {(title || description) && (
                   <Box sx={{ mb: 2 }}>
                      <DashboardProse
+                        // A notebook's text tiles have no card; its description matches them.
+                        chrome="none"
                         title={title ?? ""}
                         {...(description ? { description } : {})}
                      />
@@ -151,6 +153,8 @@ export default function Notebook(props: NotebookProps) {
                   onNavigate={props.onDrillNavigate}
                   maxResultSize={props.maxResultSize}
                   chrome="none"
+                  // A cell notebook's control panel, not a dashboard's bar.
+                  controlsLayout="panel"
                />
             </CleanNotebookSection>
          </CleanNotebookContainer>
@@ -564,7 +568,7 @@ function CellNotebook({
 
                {/* Loading State */}
                {!isSuccess && !isError && (
-                  <Loading text={"Fetching Notebook..."} />
+                  <Loading text={LOADING_COPY.opening("notebook")} />
                )}
 
                {/* Notebook Cells */}

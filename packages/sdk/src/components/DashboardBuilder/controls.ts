@@ -8,7 +8,7 @@ import {
    type LocalGiven,
    type QueryTile,
 } from "./document";
-import { isStrictName } from "./malloyText";
+import { isStrictName } from "../../utils/malloyText";
 
 /**
  * The builder's view of the dashboard's filter controls, and the pure edits it

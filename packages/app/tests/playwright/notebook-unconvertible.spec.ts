@@ -52,7 +52,7 @@ test.describe("an unconvertible notebook", () => {
       await expect(refusal).toContainText("extends its source inline");
       await expect(refusal).toContainText(/line \d+/i);
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: /^(Save|Saved|Saving…)$/ }),
       ).toHaveCount(0);
 
       // The read view is unaffected by the refusal.

@@ -51,14 +51,14 @@ test.describe("builder affordances", () => {
          { "dashboards/solo.malloy": SOLO_DASHBOARD },
       );
       await page.goto(`/${pe.env}/${pe.pkg}/dashboards/solo/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       const tile = page.getByLabel("Tile order_tile");
       await expect(tile).toBeVisible();
 
       await page.getByRole("button", { name: /^Settings for / }).click();
-      const remove = page.getByRole("button", { name: "Remove tile" });
+      const remove = page.getByRole("button", { name: "Delete" });
       await expect(remove).toHaveAttribute("aria-disabled", "true");
       await expect(
          page.getByText("A saved dashboard needs at least one tile."),
@@ -83,7 +83,7 @@ test.describe("builder affordances", () => {
       );
       await page.setViewportSize({ width: 1280, height: 720 });
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await page.getByRole("button", { name: "Add tile", exact: true }).click();

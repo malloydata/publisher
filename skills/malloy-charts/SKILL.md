@@ -299,10 +299,16 @@ Publisher styles charts and tables from one structured theme. The instance sets 
 | `# theme.palette.tile.{light,dark}` | Dashboard tile background | per-mode |
 | `# theme.palette.tileTitle.{light,dark}` | Dashboard tile title color | per-mode |
 | `# theme.palette.mapColor.{light,dark}` | Choropleth gradient (`# shape_map` / `# segment_map`) | per-mode |
+| `# theme.palette.border.{light,dark}` | Table gridlines and row rules | per-mode |
+| `# theme.palette.cardBorder.{light,dark}` | Dashboard card edge and pinned table header rule | per-mode |
+| `# theme.palette.axis.{light,dark}` | Chart axis domain and tick lines | per-mode |
+| `# theme.palette.gridline.{light,dark}` | Chart gridlines | per-mode |
+| `# theme.palette.chartText.{light,dark}` | Chart axis, legend and title text | per-mode |
+| `# theme.palette.value.{light,dark}` | Big-value (KPI) number color | per-mode |
 | `# theme.font.family` | Font for all rendered text | shared |
 | `# theme.font.size` | Table font size (px) | shared |
 
-The seven `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes.
+The thirteen per-mode `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes.
 
 ```malloy
 // Model-wide defaults (## applies to every view in the model):

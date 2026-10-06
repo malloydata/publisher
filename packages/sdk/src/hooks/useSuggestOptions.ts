@@ -198,7 +198,7 @@ export function useSuggestOptions(
             // are cached well past a single control interaction.
             staleTime: 5 * 60 * 1000,
             refetchOnWindowFocus: false,
-            queryFn: async () => {
+            queryFn: async ({ signal }: { signal: AbortSignal }) => {
                const suggest = spec.suggest ?? {};
                const response = await apiClients.models.executeQueryModel(
                   environmentName,
@@ -225,6 +225,8 @@ export function useSuggestOptions(
                           versionId,
                           givens,
                        },
+                  undefined,
+                  { signal },
                );
                return readOptionValues(
                   response.data.result,
