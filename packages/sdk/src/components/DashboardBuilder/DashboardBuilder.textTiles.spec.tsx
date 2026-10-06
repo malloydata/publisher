@@ -16,6 +16,7 @@ import { isTextTile } from "./document";
 import { openDocument } from "./testing/fixtures";
 import { TEXT_TILE_PLACEHOLDER } from "./TextTileBody";
 import { useDashboardEditor } from "./useDashboardEditor";
+import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "a -> by_cat", empty { kind=text }] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -99,7 +100,7 @@ describe("DashboardBuilder: text tiles", () => {
          within(tile("text_1")).getByText(TEXT_TILE_PLACEHOLDER),
       ).toBeDefined();
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
          'tiles=[intro { kind=text colspan=12 }, "a -> by_cat", empty { kind=text }, text_1 { kind=text colspan=12 }]',
@@ -119,20 +120,21 @@ describe("DashboardBuilder: text tiles", () => {
       }
    });
 
-   it("sets a text tile's width from its menu, which offers no title or chart", async () => {
+   it("sets a text tile's width by dragging its edge; its menu offers no title, chart or width", async () => {
       let written: string | undefined;
       await mount((source) => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for intro"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
-      expect(screen.queryByText("Drill-through…")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Width ½" }));
-      fireEvent.keyDown(screen.getByRole("button", { name: "Width ½" }), {
+      expect(screen.queryByText("Drill")).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Width/ })).toBeNull();
+      fireEvent.keyDown(screen.getByRole("button", { name: "Delete" }), {
          key: "Escape",
       });
+      dragEdge("intro", 6);
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("intro { kind=text colspan=6 }");
    });
@@ -143,10 +145,10 @@ describe("DashboardBuilder: text tiles", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for intro"));
-      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
       expect(screen.queryByLabelText("Tile intro")).toBeNull();
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain('tiles=["a -> by_cat", empty { kind=text }]');
       expect(written).not.toContain("##|(markdown) intro");

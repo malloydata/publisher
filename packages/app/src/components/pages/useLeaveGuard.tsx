@@ -6,9 +6,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBlocker } from "react-router-dom";
 
 /**
- * Guards an editor page against leaving with unsaved edits, by a link, Back or
- * closing the tab. The editor's own Done prompts for itself, so `onExit` calls
- * `leaving()` first and its navigation passes unasked.
+ * Guards an editor page against leaving with unsaved edits, by a link, Back,
+ * the header's View or closing the tab. The builder draws no way out of
+ * itself, so this is the one guard. `leaving()` lets a navigation the page
+ * has already confirmed pass unasked.
  */
 export function useLeaveGuard() {
    const [dirty, setDirty] = useState(false);

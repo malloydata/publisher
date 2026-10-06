@@ -240,7 +240,7 @@ describe("versionId", () => {
       mountByUri();
       await screen.findByText("Storefront");
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
       // Four positional arguments, none of them a version: the client's
@@ -262,7 +262,7 @@ describe("versionId", () => {
       ).length;
 
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
 
       // Proof, not a proxy for one: the live query's key now ends in a
@@ -293,7 +293,7 @@ describe("Save, pinned to a version", () => {
          ),
       ).toBeDefined();
       expect(
-         screen.queryByRole("button", { name: "Save changes", hidden: true }),
+         screen.queryByRole("button", { name: "Save", hidden: true }),
       ).toBeNull();
       expect(
          screen.queryByRole("button", { name: "Saved", hidden: true }),
@@ -308,7 +308,7 @@ describe("Save, pinned to a version", () => {
       // Unaffected: a copy kept beside the package never goes through
       // `updateModelSource`, so the version pin has nothing to refuse.
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
    });
 });

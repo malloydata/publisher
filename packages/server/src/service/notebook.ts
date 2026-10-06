@@ -259,6 +259,50 @@ function findArtifactLineOutsideBlocks(
       }
       if (artifactLine.test(trimmed)) return trimmed;
    }
+   return lexedArtifactNote(source, lines, artifactLine);
+}
+
+/**
+ * The tag when it follows code on its line (`run: x -> v ## artifact { … }`),
+ * which the lexer reads as a note and a line test cannot see: this is what
+ * keeps "is this a document" the same here as where the file is compiled. Only
+ * text with a `##` that is not at a line's start is lexed.
+ */
+function lexedArtifactNote(
+   source: string,
+   lines: readonly string[],
+   artifactLine: LineTest,
+): string | undefined {
+   if (!lines.some((line) => /\S.*##/.test(line) && !/^\s*##/.test(line))) {
+      return undefined;
+   }
+   const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
+      urls: { [NOTEBOOK_PARSE_URL]: source },
+   });
+   const parse = translator.parseStep.step(translator).parse;
+   const stream = parse?.tokenStream as unknown as TokenStreamShape | undefined;
+   const tokens = stream?.getTokens?.() ?? [];
+   const name = (type: number) =>
+      stream?.tokenSource?.vocabulary?.getSymbolicName(type);
+   const text = (i: number) =>
+      source.slice(tokens[i].startIndex, tokens[i].stopIndex + 1);
+   for (let i = 0; i < tokens.length; i++) {
+      const kind = name(tokens[i].type);
+      if (kind === "DOC_ANNOTATION" && artifactLine.test(text(i))) {
+         return text(i).trim();
+      }
+      if (kind !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
+      let body = "";
+      let j = i;
+      while (name(tokens[j].type) !== "BLOCK_ANNOTATION_END") {
+         body += text(j);
+         if (++j >= tokens.length || name(tokens[j].type) === "EOF") {
+            return undefined;
+         }
+      }
+      if (artifactLine.test(body)) return body;
+      i = j;
+   }
    return undefined;
 }
 
@@ -315,6 +359,14 @@ export interface NotebookCellSpan {
    /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
    queryIndex?: number;
 }
+
+/**
+ * The 0-based `[start, end)` character offsets of a code cell's `text` in the
+ * file it was read from. Kept beside the cell rather than on it so a cell stays
+ * exactly what it is served as; for blanking a cell without touching a
+ * neighbor on its line.
+ */
+export const cellOffsets = new WeakMap<NotebookCellSpan, [number, number]>();
 
 /** Why the reader refused a notebook: the 1-based line, and a message that names the fix. */
 export interface NotebookReaderError {
@@ -495,6 +547,8 @@ type ReaderItem =
         caption?: string;
         startLine: number;
         endLine: number;
+        start: number;
+        end: number;
      }
    | { kind: "note"; note: ReaderNote };
 
@@ -534,7 +588,7 @@ function markdownLineBody(noteText: string): string {
  */
 export function readNotebookCells(
    parse: NotebookParse,
-   modelDef: Pick<ModelDef, "queryList">,
+   modelDef: Pick<ModelDef, "queryList"> | undefined,
    text: string,
 ): NotebookReadResult {
    const refuse = (error: NotebookReaderError): NotebookReadResult => ({
@@ -771,6 +825,8 @@ export function readNotebookCells(
             ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
+            start: span.start,
+            end: span.end,
          });
          continue;
       }
@@ -854,7 +910,8 @@ export function readNotebookCells(
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
-   if (runCount !== modelDef.queryList.length) {
+   // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
+   if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
          message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
@@ -872,7 +929,7 @@ export function readNotebookCells(
          lineRun = undefined;
          const queryIndex = item.run ? runsSeen++ : undefined;
          // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
-         cells.push(
+         const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
                     kind: "query",
@@ -904,8 +961,9 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                 },
-         );
+                 };
+         cellOffsets.set(pushed, [item.start, item.end]);
+         cells.push(pushed);
          return;
       }
       const { note } = item;

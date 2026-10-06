@@ -17,7 +17,6 @@ import {
 } from "./useBuilderShortcuts";
 import type { LastSave, SaveHandler, SaveOutcome } from "./useDocumentEditor";
 import { useExitGuard } from "./useExitGuard";
-import type { SaveNoticeProps } from "./SaveNotice";
 
 /** What a builder's session reads of its document editor. */
 export interface SessionEditor<D, L extends LastSave = LastSave> {
@@ -62,10 +61,9 @@ export interface SessionSaveInfo {
 export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
-   onExit?: () => void;
    onDirtyChange?: (dirty: boolean) => void;
-   /** Whether the save notice is showing, on every change and on mount. */
-   onSaveNoticeChange?: (showing: boolean) => void;
+   /** The host's way out, opted into: draws Close, which asks first when edits are unsaved. */
+   onExit?: () => void;
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
@@ -89,9 +87,8 @@ export function useBuilderSession<
 >({
    editor,
    onSave,
-   onExit,
    onDirtyChange,
-   onSaveNoticeChange,
+   onExit,
    onChange,
    extraDirty = false,
    report,
@@ -100,11 +97,7 @@ export function useBuilderSession<
    shortcuts,
 }: BuilderSessionOptions<D, L>) {
    const [saving, setSaving] = useState(false);
-   const [viewing, setViewing] = useState(false);
    const [undone, setUndone] = useState(false);
-   const [moved, setMoved] = useState<
-      { before: number; after: number } | undefined
-   >(undefined);
    const saveButton = useRef<HTMLButtonElement>(null);
    const reportRef = useRef(report);
    reportRef.current = report;
@@ -124,19 +117,6 @@ export function useBuilderSession<
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    useEffect(() => () => onDirtyChangeRef.current?.(false), []);
-   // The offer, not `canUndoSave`, which also drops while a write is in flight; a host holding a newer version back must keep holding then. Without a writer nothing can be undone, so the offer is withdrawn.
-   const undoOffered = editor.lastSave !== undefined && !!onSave;
-   useEffect(() => {
-      onSaveNoticeChange?.(undoOffered);
-   }, [undoOffered, onSaveNoticeChange]);
-   const onSaveNoticeChangeRef = useRef(onSaveNoticeChange);
-   onSaveNoticeChangeRef.current = onSaveNoticeChange;
-   useEffect(() => () => onSaveNoticeChangeRef.current?.(false), []);
-
-   // The viewer shows the offer's change, so it closes when the offer is withdrawn.
-   useEffect(() => {
-      if (!undoOffered) setViewing(false);
-   }, [undoOffered]);
    const unitRef = useRef(unit);
    unitRef.current = unit;
    // The line saying the undo happened goes with the next edit or save; leaving it up over new work would say something stale.
@@ -151,15 +131,10 @@ export function useBuilderSession<
       const { structural } = editor;
       const fromOpen = editor.pendingOpen ?? false;
       const size = reportRef.current.size;
-      const sizes = {
-         before: unitRef.current.count(editor.saved),
-         after: unitRef.current.count(editor.document),
-      };
       return editor
          .save()
          .then((outcome) => {
             if (outcome.ok === true) {
-               setMoved(sizes);
                reportRef.current.saved({
                   size,
                   structural,
@@ -235,25 +210,14 @@ export function useBuilderSession<
             undo: editor.undo,
             redo: editor.redo,
             ...(onSave ? { save } : {}),
-            paused: exitGuard.dialog.open || viewing,
+            paused: exitGuard.dialog.open,
          }),
-         [shortcuts, editor, onSave, save, exitGuard.dialog.open, viewing],
+         [shortcuts, editor, onSave, save, exitGuard.dialog.open],
       ),
    );
 
    const canUndoSave = !!onSave && !saving && editor.canUndoSave;
    const lastSave = editor.lastSave;
-
-   const notice: SaveNoticeProps = {
-      ...(lastSave ? { lastSave } : {}),
-      unit: unit.name,
-      moved,
-      canUndoSave,
-      undone: undone && lastSave === undefined,
-      viewing,
-      onView: setViewing,
-      onUndoSave: undoSave,
-   };
 
    const toolbarProps: Pick<
       BuilderToolbarProps,
@@ -264,8 +228,8 @@ export function useBuilderSession<
       | "dirty"
       | "saving"
       | "onSave"
-      | "onExit"
       | "saveButton"
+      | "onExit"
    > = {
       canUndo: editor.canUndo,
       canRedo: editor.canRedo,
@@ -286,7 +250,6 @@ export function useBuilderSession<
       undoSave,
       canUndoSave,
       lastSave,
-      notice,
       toolbarProps,
    };
 }

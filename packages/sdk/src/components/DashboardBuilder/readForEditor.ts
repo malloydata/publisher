@@ -24,8 +24,9 @@ const withLine = (reason: string, line: number | undefined) =>
 export async function readForEditor(
    text: string,
    modelPath?: string,
+   textHeld = false,
 ): Promise<EditorOpen> {
-   const read = await readDashboardDocument(text, modelPath);
+   const read = await readDashboardDocument(text, modelPath, textHeld);
    if (!readFailed(read)) return { ok: true, document: read.document };
    if (!read.legacyNotebook)
       return { ok: false, reason: withLine(read.reason, read.line) };
@@ -33,7 +34,11 @@ export async function readForEditor(
    const converted = await convertLegacyNotebook(text);
    if (conversionRefused(converted))
       return { ok: false, reason: withLine(converted.refused, converted.line) };
-   const reread = await readDashboardDocument(converted.text, modelPath);
+   const reread = await readDashboardDocument(
+      converted.text,
+      modelPath,
+      textHeld,
+   );
    if (readFailed(reread))
       return {
          ok: false,

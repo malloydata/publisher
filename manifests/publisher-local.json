@@ -35,7 +35,6 @@
     "malloy-model",
     "malloy-model-as-you-go",
     "malloy-modeling",
-    "malloy-notebook-chat",
     "malloy-notebooks",
     "malloy-patterns",
     "malloy-phrase-detection",
@@ -51,7 +50,6 @@
     "analysis": [
       "malloy-getting-started",
       "malloy-analysis",
-      "malloy-notebook-chat",
       "malloy-phrase-detection",
       "malloy-analysis-pitfalls",
       "malloy-queries",

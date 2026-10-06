@@ -4,7 +4,9 @@
 import { Box, type SxProps, type Theme } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import type { ReactNode } from "react";
+import { usePublisherTheme } from "../theme/ThemeContext";
 import type { NavigationClick } from "./click_helper";
+import { MONO_FONT_FAMILY } from "./styles";
 
 /**
  * Markdown authored inside a package — a dashboard's `##"` description, a
@@ -22,7 +24,7 @@ import type { NavigationClick } from "./click_helper";
  *   top to bottom. Full-size headings, reading-length lines.
  * - `caption`: the prose sits under a title it must not compete with — a
  *   dashboard's description, a package's README card. Body size; headings are
- *   section labels within the block, at body size and bold.
+ *   section labels within the block, at body size and medium weight.
  */
 export type ProseVariant = "document" | "caption";
 
@@ -119,8 +121,14 @@ function ProseLink({
 
 const STYLES: Record<ProseVariant, SxProps<Theme>> = {
    document: {
+      // Flush at both ends, as a caption is: the space around a block of
+      // prose is the layout's (the gap between tiles), not its first and last
+      // paragraph's, so a text tile's top lines up with a chart tile's title.
+      // markdown-to-jsx wraps two or more blocks in a div, and returns one bare.
+      "& > :first-child, & > div:only-child > :first-child": { mt: 0 },
+      "& > :last-child, & > div:only-child > :last-child": { mb: 0 },
       "& h1, & h2, & h3, & h4, & h5, & h6": {
-         fontWeight: 600,
+         fontWeight: "fontWeightMedium",
          color: "text.primary",
          mb: 1,
          mt: 2,
@@ -148,14 +156,18 @@ const STYLES: Record<ProseVariant, SxProps<Theme>> = {
       // competitors to the title above it, so they stay at body size.
       "& h1, & h2, & h3, & h4, & h5, & h6": {
          fontSize: "inherit",
-         fontWeight: 600,
+         fontWeight: "fontWeightMedium",
          m: "0.5em 0 0.25em",
       },
       "& p": { m: "0.5em 0" },
       "& ul, & ol": { m: "0.5em 0", pl: 3 },
-      "& code": { fontFamily: "monospace", fontSize: "0.9em" },
+      "& code": { fontFamily: MONO_FONT_FAMILY, fontSize: "0.9em" },
    },
 };
+
+function ProseImageAlt({ alt }: { alt?: string }) {
+   return <>{alt}</>;
+}
 
 export function Prose({
    children,
@@ -163,12 +175,30 @@ export function Prose({
    links,
    sx,
 }: ProseProps) {
+   // The instance theme's face, as a tile's heading takes it, so the prose
+   // between tiles and the titles on them read as one typeface.
+   const { theme } = usePublisherTheme();
    return (
-      <Box sx={[STYLES[variant], ...(Array.isArray(sx) ? sx : [sx])]}>
+      <Box
+         sx={[
+            STYLES[variant],
+            // After the variant: `caption`'s `typography: body2` sets a face too.
+            { fontFamily: theme.font.family },
+            ...(Array.isArray(sx) ? sx : [sx]),
+         ]}
+      >
          <Markdown
             options={{
+               // A document's single line is a paragraph like any other, so a
+               // one-line text block reads with the same leading and spacing
+               // as a longer one rather than as a bare inline run.
+               forceBlock: variant === "document",
+               // Authored text is not trusted markup: a `<meta refresh>`, `<iframe>`, `<form>` or `<style>` in it would act on the viewer's browser.
+               disableParsingRawHTML: true,
                overrides: {
                   a: { component: ProseLink, props: { context: links } },
+                  // `![](url)` would otherwise load from any server on view; the alt text is all that renders.
+                  img: { component: ProseImageAlt },
                },
             }}
          >

@@ -44,9 +44,20 @@ export const GAP_TYPE = "gap";
 export const builderSensors = [
    PointerSensor.configure({
       activatorElements: (source) => [source.element],
+      // A press on a control of the tile's own that is not a button — the
+      // resize edge — is that control's gesture, never a move. The library's
+      // own check only knows buttons, links and inputs, and it listens on the
+      // tile natively, before any React handler on the control could stop it.
+      preventActivation: (event, source) =>
+         (event.target instanceof Element &&
+            event.target.closest(`[${NO_DRAG}]`) !== null) ||
+         (PointerSensor.defaults.preventActivation?.(event, source) ?? false),
    }),
    KeyboardSensor,
 ];
+
+/** Marks an element inside a tile whose presses must never start a move. */
+export const NO_DRAG = "data-no-drag";
 
 /**
  * What a tile looks like while it is dragged: a COPY follows the pointer, and

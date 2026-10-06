@@ -114,7 +114,7 @@ describe("DashboardEditor, when the server takes writes", () => {
       ).toBeDefined();
 
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
       const [env, pkg, path, body] = updateModelSource.mock.calls[0];
@@ -133,26 +133,6 @@ describe("DashboardEditor, when the server takes writes", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("Undo save after resuming a draft writes the package file back, not the draft", async () => {
-      const draft = PACKAGE_FILE.replace(
-         'title="Storefront"',
-         'title="Drafted"',
-      );
-      await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
-      mount();
-      await screen.findByText("Storefront");
-      fireEvent.click(button("Resume"));
-      await screen.findByText("Drafted");
-      editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
-      fireEvent.click(
-         await screen.findByRole("button", { name: "Undo save", hidden: true }),
-      );
-      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(2));
-      expect(updateModelSource.mock.calls[1][3].source).toBe(PACKAGE_FILE);
-   });
-
    it("keeps the edit and shows the server's reason when the package refuses the write", async () => {
       updateModelSource.mockImplementationOnce(() =>
          Promise.reject({
@@ -167,13 +147,13 @@ describe("DashboardEditor, when the server takes writes", () => {
       mount();
       await screen.findByText("Storefront");
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain(
             "changed in the package since you opened it",
          ),
       );
-      expect(button("Save changes")).toBeDefined();
+      expect(button("Save")).toBeDefined();
    });
 
    it("drops the cached results of the saved file, which are keyed on query text, not content", async () => {
@@ -194,7 +174,7 @@ describe("DashboardEditor, when the server takes writes", () => {
       mount();
       await screen.findByText("Storefront");
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() =>
          expect(
             globalQueryClient.getQueryState(key("dashboards/overview.malloy"))
