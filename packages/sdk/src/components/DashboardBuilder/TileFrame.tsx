@@ -4,13 +4,19 @@
 import AddIcon from "@mui/icons-material/Add";
 import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
+import type { Theme } from "@mui/material";
+import type { SystemStyleObject } from "@mui/system";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import type { ResolvedTheme } from "../../theme/types";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import {
    TileCard,
    TileHeading,
+   type TileChrome,
    type TileHeadingSlots,
 } from "../Dashboard/TileCard";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import {
    tileKey,
    tileLabel,
@@ -80,8 +86,14 @@ export function TileFrame({
                onPointerDown={(event) => {
                   if (event.button === 0) onSelect();
                }}
+               // A named group, so the name is announced: a label on a plain
+               // element is not.
+               role="group"
                aria-label={`Tile ${tile.name}`}
                aria-current={selected}
+               // Keyboard focus anywhere in the tile selects it, as a press
+               // does, so the arrow-key nudge and the menu follow the keyboard.
+               onFocus={onSelect}
                data-tile-key={tileKey(tile)}
                data-flash={flash || undefined}
                sx={{
@@ -105,23 +117,7 @@ export function TileFrame({
                   // a scrollbar — still wins over its own
                   // pixels.
                   cursor: "grab",
-                  borderRadius: 1,
-                  // An outline rather than a border, and
-                  // outside the tile rather than on it: the
-                  // tile already has an edge of its own, and
-                  // an outline neither doubles that edge nor
-                  // takes up space, so selecting a tile
-                  // cannot shift the layout being arranged.
-                  outline: selected
-                     ? `2px solid ${theme.accent}`
-                     : `2px solid transparent`,
-                  outlineOffset: 2,
-                  ...(flash && {
-                     outlineColor: theme.accent,
-                     boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
-                  }),
-                  transition:
-                     "outline-color 120ms, opacity 120ms, box-shadow 120ms",
+                  ...selectionSx(theme, { selected, flash }),
                   // The edge handle and menu are invisible
                   // until wanted, and wanted is: the pointer
                   // over the tile, or the tile selected. A
@@ -144,7 +140,7 @@ export function TileFrame({
                   "&&[data-dnd-dragging]": {
                      opacity: 1,
                      outline: "none",
-                     boxShadow: "0 12px 32px rgba(0, 0, 0, 0.22)",
+                     boxShadow: theme.shadow.drag,
                   },
                   "&&[data-dnd-placeholder]": {
                      opacity: 0.45,
@@ -153,13 +149,9 @@ export function TileFrame({
                   },
                   "&:hover .builder-affordance, &:focus-within .builder-affordance":
                      { opacity: 1 },
-                  // A hovered tile lifts, as a card does in any
-                  // builder's edit mode: the one card that
-                  // will respond to the pointer, told apart
-                  // from the ones that will not.
-                  "&:hover": {
-                     ...TILE_HOVER(theme),
-                     ...(selected && { outlineColor: theme.accent }),
+                  // No hover on a touch screen: the affordances stand.
+                  "@media (hover: none)": {
+                     "& .builder-affordance": { opacity: 1 },
                   },
                }}
             >
@@ -199,13 +191,15 @@ export function TileFrame({
                      // card's own inner padding.
                      top: "8px",
                      right: "8px",
+                     // A 24px hit target at least, whatever the glyph.
                      width: 28,
-                     height: 22,
+                     height: 24,
                      zIndex: 2,
                      color: theme.tileTitle,
                      bgcolor: theme.tile,
                      opacity: selected || menuOpen ? 0.9 : 0,
-                     transition: "opacity 120ms",
+                     transition: `opacity ${MOTION_FAST}`,
+                     ...reducedMotionSx,
                      "&:hover": {
                         opacity: 1,
                         bgcolor: theme.tile,
@@ -272,7 +266,8 @@ export function TileFrame({
                         // Invisible until wanted: a rule down every tile edge
                         // would read as a table.
                         opacity: resizing || selected ? 1 : 0,
-                        transition: "opacity 120ms",
+                        transition: `opacity ${MOTION_FAST}`,
+                        ...reducedMotionSx,
                         "&:hover": { opacity: 1 },
                         "&:focus-visible": {
                            opacity: 1,
@@ -306,17 +301,18 @@ export function TileFrame({
                      }}
                      sx={{
                         position: "absolute",
-                        bottom: "-18px",
+                        bottom: "-12px",
                         left: "50%",
                         transform: "translateX(-50%)",
-                        width: 20,
-                        height: 20,
+                        width: 24,
+                        height: 24,
                         zIndex: 3,
                         color: theme.tileTitle,
                         bgcolor: theme.tile,
                         border: theme.cardBorder,
                         opacity: 0,
-                        transition: "opacity 120ms",
+                        transition: `opacity ${MOTION_FAST}`,
+                        ...reducedMotionSx,
                         "&:hover, &:focus-visible": {
                            opacity: 1,
                            bgcolor: theme.tile,
@@ -332,14 +328,35 @@ export function TileFrame({
    );
 }
 
+/** How far the selection ring stands outside what it selects: its 2px offset plus its 2px width. */
+export const SELECTION_RING_PX = 4;
+
 /**
- * How anything in the builder that responds to the pointer says so on hover:
- * a lift and an edge, the way a tile does. Shared, so the page's description
- * highlights exactly as a tile or a text block beside it does.
+ * The builder's selection look, for anything a person can select — a tile,
+ * the description: an outline outside the element (so selecting moves no
+ * layout), solid in the accent when selected, lifting on hover the way a card
+ * does in any builder's edit mode, and a brief halo when an undo or redo just
+ * changed it. One definition, so the description selects exactly as a tile.
  */
-export const TILE_HOVER = (theme: { cardBorder: string }) => ({
-   outlineColor: theme.cardBorder,
-   boxShadow: "0 2px 10px rgba(0, 0, 0, 0.10)",
+export const selectionSx = (
+   theme: ResolvedTheme,
+   { selected, flash = false }: { selected: boolean; flash?: boolean },
+): SystemStyleObject<Theme> => ({
+   borderRadius: 1,
+   outline: `2px solid ${selected ? theme.accent : "transparent"}`,
+   outlineOffset: 2,
+   ...(flash && {
+      outlineColor: theme.accent,
+      boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
+   }),
+   transition: `outline-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`,
+   ...reducedMotionSx,
+   "&:hover": {
+      outlineColor: selected
+         ? theme.accent
+         : theme.cardBorder.replace(/^1px solid /, ""),
+      boxShadow: theme.shadow.lift,
+   },
 });
 
 /**
@@ -350,17 +367,20 @@ export function TilePlaceholder({
    tile,
    heading,
    note,
+   chrome = "card",
 }: {
    tile: QueryTile;
    heading?: TileHeadingSlots;
    /** Why there is no preview, in place of an empty body. */
    note?: string;
+   /** The document's tile chrome, as the reader draws it. */
+   chrome?: TileChrome;
 }) {
    const { theme } = usePublisherTheme();
    return (
-      <TileCard sx={{ minHeight: 140 }}>
+      <TileCard chrome={chrome} sx={{ minHeight: 120 }}>
          <TileHeading
-            title={heading?.title ?? tile.label ?? tile.name}
+            title={heading?.title ?? tileDisplayTitle(tile)}
             subtitle={heading ? heading.subtitle : tile.subtitle}
          />
          {note && (
@@ -400,7 +420,8 @@ export function GapTarget({ after }: { after: string }) {
                      ? `color-mix(in srgb, ${theme.accent} 12%, transparent)`
                      : "transparent",
                   opacity: isDropTarget ? 0.95 : 0.4,
-                  transition: "opacity 120ms, background-color 120ms",
+                  transition: `opacity ${MOTION_FAST}, background-color ${MOTION_FAST}`,
+                  ...reducedMotionSx,
                }}
             />
          )}

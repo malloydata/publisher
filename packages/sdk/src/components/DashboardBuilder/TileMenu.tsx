@@ -6,6 +6,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { Button, Popover, Stack, Typography } from "@mui/material";
 import { useEffect, useId, useRef } from "react";
 import { useDraft } from "./useDraft";
+import { dangerTextColor } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
@@ -188,15 +189,14 @@ export function TileMenu({
                         removeBlocked !== undefined ? removeReasonId : undefined
                      }
                      disableRipple={removeBlocked !== undefined}
-                     sx={{
-                        // A deeper red than the theme's error: the action is
-                        // destructive, not a warning. Dark lightens it to read
-                        // on slate.
-                        color: theme.mode === "dark" ? "#f87171" : "#991b1b",
+                     sx={(muiTheme) => ({
+                        // The host's destructive red (its error palette's
+                        // deeper shade), so a host themes it rather than this.
+                        color: dangerTextColor(muiTheme),
                         ...(removeBlocked !== undefined
                            ? { opacity: 0.5, cursor: "default" }
                            : {}),
-                     }}
+                     })}
                      onClick={() => {
                         if (removeBlocked !== undefined) return;
                         discard();

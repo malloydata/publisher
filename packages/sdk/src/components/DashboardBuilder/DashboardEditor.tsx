@@ -8,7 +8,7 @@ import type { DashboardManifest, Given } from "../../client";
 import { modelResultsKey } from "../../hooks/useQueryResult";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
+import { DashboardTile } from "../Dashboard/DashboardTile";
 import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import type { BuilderEvent } from "./telemetry";
 import { now } from "../../utils/clock";
@@ -20,7 +20,13 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
-import type { TileHeadingSlots } from "../Dashboard/TileCard";
+import {
+   TileCard,
+   TileHeading,
+   type TileChrome,
+   type TileHeadingSlots,
+} from "../Dashboard/TileCard";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
@@ -990,9 +996,23 @@ function Surface({
    );
    const renderTile = useMemo(
       () =>
-         function LiveTile(tile: QueryTile, heading?: TileHeadingSlots) {
+         function LiveTile(
+            tile: QueryTile,
+            heading?: TileHeadingSlots,
+            chrome: TileChrome = "card",
+         ) {
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
-            if (!manifestSettled) return <Loading text="Running…" />;
+            // Until then the tile's own card and heading stand, so nothing pops in when it runs.
+            if (!manifestSettled)
+               return (
+                  <TileCard chrome={chrome}>
+                     <TileHeading
+                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        subtitle={heading ? heading.subtitle : tile.subtitle}
+                     />
+                     <Loading text="Running…" />
+                  </TileCard>
+               );
             const query = previewTileQuery(
                doc,
                tile,
@@ -1012,9 +1032,8 @@ function Surface({
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
-                  label={
-                     tile.label ?? tileTitle(`${tile.source} -> ${tile.name}`)
-                  }
+                  label={tileDisplayTitle(tile)}
+                  chrome={chrome}
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
                   borderless={tile.borderless}
@@ -1065,7 +1084,10 @@ function Surface({
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
             controls={
-               isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
+               isSuccess ? (
+                  // The reader's control layout for the kind: a notebook's panel, a dashboard's bar.
+                  <GivensPanel {...panel} layout={notebook ? "panel" : "bar"} />
+               ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
             savesTo={savesTo}

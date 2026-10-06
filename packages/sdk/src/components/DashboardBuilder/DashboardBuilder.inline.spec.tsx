@@ -72,6 +72,30 @@ const undo = () => fireEvent.click(button("Undo"));
 afterEach(cleanup);
 
 describe("click-to-edit text", () => {
+   it("selects a tile when keyboard focus lands in it, as a press does", async () => {
+      await mount();
+      fireEvent.focus(screen.getByLabelText("Settings for By category"));
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+   });
+
+   it("keeps the selection when Escape cancels a title being typed", async () => {
+      await mount();
+      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      fireEvent.click(screen.getByText("By category"));
+      const field = screen.getByLabelText("Tile title");
+      fireEvent.keyDown(field, { key: "Escape" });
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+   });
+
+   it("announces the save state for a screen reader", async () => {
+      await mount({ onSave: () => {} });
+      expect(screen.getByText("All changes saved")).toBeDefined();
+   });
+
    it("selects the description or a tile, never both", async () => {
       await mount();
       const description = screen.getByLabelText("Description");
@@ -138,9 +162,9 @@ describe("click-to-edit text", () => {
       await mount();
       expect(within(tile("by_cat")).getByText("Add a subtitle")).toBeDefined();
       // An unlabelled tile shows the name it falls back to.
-      expect(within(tile("by_brand")).getByText("by_brand")).toBeDefined();
+      expect(within(tile("by_brand")).getByText("By brand")).toBeDefined();
       editInline("By category", "Tile title", "");
-      expect(within(tile("by_cat")).getByText("by_cat")).toBeDefined();
+      expect(within(tile("by_cat")).getByText("By cat")).toBeDefined();
    });
 
    it("edits the page's title and description in place", async () => {

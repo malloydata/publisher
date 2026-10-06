@@ -17,7 +17,6 @@ import {
    DEFAULT_COLUMNS,
    nudgedSpan,
 } from "../Dashboard/DashboardGrid";
-import { tileTitle } from "../Dashboard/DashboardTile";
 import type { TileHeadingSlots } from "../Dashboard/TileCard";
 import type { SavesTo } from "./documentSession";
 import type { BuilderEvent } from "./telemetry";
@@ -56,14 +55,17 @@ import { builderSensors } from "./sortable";
 import {
    GapTarget,
    GridGuides,
-   TILE_HOVER,
+   selectionSx,
+   SELECTION_RING_PX,
    TileFrame,
    TilePlaceholder,
 } from "./TileFrame";
 import { TextTileBody } from "./TextTileBody";
-import { TileCard } from "../Dashboard/TileCard";
+import { TileCard, type TileChrome } from "../Dashboard/TileCard";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import { AppDialog } from "../AppDialog";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
+import { scrollBehavior } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
@@ -135,7 +137,12 @@ export interface DashboardBuilderProps {
     * heading itself passes it on (`DashboardTile`'s `heading`), or the tile
     * cannot be retitled on the page.
     */
-   renderTile?: (tile: QueryTile, heading?: TileHeadingSlots) => ReactNode;
+   renderTile?: (
+      tile: QueryTile,
+      heading?: TileHeadingSlots,
+      /** The document's tile chrome — bare on a notebook — so the live tile reads as the reader's. */
+      chrome?: TileChrome,
+   ) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -264,6 +271,15 @@ export function DashboardBuilder({
    // A notebook is one column whatever the file says, and the builder never writes its width.
    const notebook = editor.document.kind === "notebook";
    const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
+   // The reader's tile chrome for this document: cards on a dashboard, bare
+   // flow on a notebook. Every tile, text block and the description take it,
+   // so editing a document draws it the way reading it does.
+   const chrome: TileChrome = notebook ? "none" : "card";
+   // The name a reader's view titles an untitled document with.
+   const documentSlug = modelPath
+      ?.split("/")
+      .at(-1)
+      ?.replace(/\.malloy$/, "");
    const gridBox = useRef<HTMLDivElement>(null);
    const { dragging, preview, onDragStart, onDragOver, onDragEnd } =
       useTileReorder({
@@ -296,6 +312,10 @@ export function DashboardBuilder({
    >(undefined);
    // The add-tile picker.
    const [addingTile, setAddingTile] = useState(false);
+   // A save that would convert a cell-format notebook, waiting on the reader's yes.
+   const [confirmConversion, setConfirmConversion] = useState<
+      { go: () => void; stop: () => void } | undefined
+   >(undefined);
    // Where the next added tile lands; undefined appends.
    const [insertAt, setInsertAt] = useState<number | undefined>(undefined);
    const openAdd = (at?: number) => {
@@ -311,7 +331,7 @@ export function DashboardBuilder({
    // resolves givens across the file and its imports without saying which is
    // which — so it names this file's own declarations too, and keeps naming a
    // control after this document removes it, until a save is written and the
-   // package reloads. Without this, "Remove from dashboard" took the chip off
+   // package reloads. Without this, "Remove filter" took the chip off
    // and it came straight back, faint, labelled "from the model".
    const modelGivens = useMemo(() => {
       const ownDeclarations = new Set(
@@ -405,7 +425,15 @@ export function DashboardBuilder({
       () => ({
          // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
          escape: () => {
-            if (!menu && !filterDialog) {
+            // Not while a menu or a window is open: the key is theirs, and
+            // they close on it themselves.
+            if (
+               !menu &&
+               !filterDialog &&
+               !addingTile &&
+               drillSource === undefined &&
+               confirmConversion === undefined
+            ) {
                setSelected(undefined);
                setDescriptionSelected(false);
             }
@@ -426,7 +454,18 @@ export function DashboardBuilder({
             });
          },
       }),
-      [editor, menu, filterDialog, selected, columns, notebook, dragging],
+      [
+         editor,
+         menu,
+         filterDialog,
+         addingTile,
+         drillSource,
+         confirmConversion,
+         selected,
+         columns,
+         notebook,
+         dragging,
+      ],
    );
    useEffect(() => {
       const before = lastDocument.current;
@@ -441,7 +480,10 @@ export function DashboardBuilder({
             [],
       ).find((element) => element.dataset.tileKey === key);
       // jsdom has no layout, so no scrollIntoView.
-      target?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+      target?.scrollIntoView?.({
+         block: "nearest",
+         behavior: scrollBehavior(),
+      });
    }, [editor.document, gridBox]);
    useEffect(() => {
       if (flash === undefined) return;
@@ -490,9 +532,6 @@ export function DashboardBuilder({
    // layout, which the builder cannot take back: it asks before it writes.
    const pendingOpenRef = useRef(editor.pendingOpen);
    pendingOpenRef.current = editor.pendingOpen;
-   const [confirmConversion, setConfirmConversion] = useState<
-      { go: () => void; stop: () => void } | undefined
-   >(undefined);
    const prepareSave = useCallback(
       (run: () => Promise<void> | void): Promise<void> | void => {
          if (!pendingOpenRef.current) return prepare(run);
@@ -752,10 +791,16 @@ export function DashboardBuilder({
          {/* Pulled out by the ring's inset, so the content inside it lands on
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
-         <Stack sx={{ gap: 0, mx: "-4px" }}>
+         <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
             {/* The ring's inset, minus the top: nothing at the top of this stack
              can be selected (the prose and the control row are not tiles). */}
-            <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+            <Stack
+               sx={{
+                  gap: 2,
+                  px: `${SELECTION_RING_PX}px`,
+                  pb: `${SELECTION_RING_PX}px`,
+               }}
+            >
                {editor.pendingOpen && (
                   <Alert severity="info">
                      This notebook is in the cell format. Saving rewrites it as
@@ -771,7 +816,11 @@ export function DashboardBuilder({
                      <InlineText
                         value={editor.document.title}
                         placeholder={
-                           notebook ? "Untitled notebook" : "Untitled dashboard"
+                           // What a reader's view falls back to: the file's own name.
+                           documentSlug ??
+                           (notebook
+                              ? "Untitled notebook"
+                              : "Untitled dashboard")
                         }
                         ariaLabel={
                            notebook ? "Notebook title" : "Dashboard title"
@@ -787,27 +836,24 @@ export function DashboardBuilder({
                    the title sits where the reader's view puts it. */}
                   <Box sx={{ my: "-4px" }}>{actions}</Box>
                </Stack>
-               {/* The description in a text block's box, styled as one is: the
-                same card, lifting on hover as a tile does, and selected as a
-                tile is — one selection on the page, tile or description. */}
+               {/* The description, drawn as a text block is in this document — a card
+                on a dashboard, bare on a notebook, as the reader draws it —
+                lifting on hover and selected as a tile is: one selection on the
+                page, tile or description. */}
                <Box
+                  role="group"
                   aria-label="Description"
                   aria-current={descriptionSelected}
                   onPointerDown={selectDescription}
                   onFocus={selectDescription}
                >
                   <TileCard
+                     chrome={chrome}
                      sx={{
-                        minHeight: 72,
-                        outline: `2px solid ${descriptionSelected ? theme.accent : "transparent"}`,
-                        outlineOffset: 2,
-                        transition: "outline-color 120ms, box-shadow 120ms",
-                        "&:hover": {
-                           ...TILE_HOVER(theme),
-                           ...(descriptionSelected && {
-                              outlineColor: theme.accent,
-                           }),
-                        },
+                        ...(chrome === "card" && { minHeight: 72 }),
+                        ...selectionSx(theme, {
+                           selected: descriptionSelected,
+                        }),
                      }}
                   >
                      <InlineMarkdown
@@ -844,7 +890,7 @@ export function DashboardBuilder({
                         {catalog && (
                            <Button
                               size="small"
-                              variant="contained"
+                              startIcon={<AddIcon />}
                               onClick={() => openAdd()}
                            >
                               Add tile
@@ -938,6 +984,7 @@ export function DashboardBuilder({
                                  {isTextTile(each) ? (
                                     <TextTileBody
                                        tile={each}
+                                       chrome={chrome}
                                        onChange={(markdown) =>
                                           editTile(tileKey(each), (tile) => {
                                              if (isTextTile(tile))
@@ -949,17 +996,17 @@ export function DashboardBuilder({
                                     // Until the conversion is saved the package has none of its views to run.
                                     renderTile(
                                        each,
-                                       headingOf(
-                                          each,
-                                          tileTitle(
-                                             `${each.source} -> ${each.name}`,
-                                          ),
-                                       ),
+                                       headingOf(each, tileDisplayTitle(each)),
+                                       chrome,
                                     )
                                  ) : (
                                     <TilePlaceholder
                                        tile={each}
-                                       heading={headingOf(each, each.name)}
+                                       chrome={chrome}
+                                       heading={headingOf(
+                                          each,
+                                          tileDisplayTitle(each),
+                                       )}
                                        {...(editor.pendingOpen
                                           ? {
                                                note: "Preview appears after you Save",

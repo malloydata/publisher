@@ -68,7 +68,6 @@ export function AddTileDialog({
    onAddText,
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
-   const noun = document.kind === "notebook" ? "notebook" : "dashboard";
    const sources = useMemo(() => catalog?.sources ?? [], [catalog]);
    const [mode, setMode] = useState<"query" | "text">("query");
    const [base, setBase] = useState<string>("");
@@ -113,7 +112,7 @@ export function AddTileDialog({
          open={open}
          onClose={onClose}
          title="Add a tile"
-         description={`A tile shows one view of one source this ${noun} imports.`}
+         description="A tile shows one view of a source in this package."
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>
@@ -178,7 +177,7 @@ export function AddTileDialog({
             ) : sources.length === 0 ? (
                <Typography variant="body2" sx={{ color: theme.tileTitle }}>
                   {catalog
-                     ? `This ${noun} imports no source by name, so there is nothing to put a tile on. Import a source in the file first.`
+                     ? "This package publishes no source with a view to put on a tile."
                      : "The package's sources are still loading."}
                </Typography>
             ) : (
@@ -205,6 +204,7 @@ export function AddTileDialog({
                      state={chart}
                      view={picked}
                      cellLabel="new tile"
+                     variant="outlined"
                      {...(picked
                         ? {}
                         : {
@@ -224,31 +224,6 @@ export function AddTileDialog({
                         inputProps={{ "aria-label": "Tile title" }}
                         sx={{ flex: 1 }}
                      />
-                     {columns > 1 && (
-                        <TextField
-                           size="small"
-                           type="number"
-                           label={`Width (of ${columns})`}
-                           value={colspan}
-                           onChange={(event) =>
-                              setColspan(
-                                 Math.min(
-                                    Math.max(
-                                       Number(event.target.value) || 1,
-                                       1,
-                                    ),
-                                    columns,
-                                 ),
-                              )
-                           }
-                           inputProps={{
-                              min: 1,
-                              max: columns,
-                              "aria-label": "Tile width",
-                           }}
-                           sx={{ width: 140 }}
-                        />
-                     )}
                   </Stack>
                </>
             )}

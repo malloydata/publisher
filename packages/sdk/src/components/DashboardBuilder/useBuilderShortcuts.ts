@@ -67,7 +67,10 @@ export function useBuilderShortcuts(handlers: BuilderShortcutHandlers) {
          if (current.paused) return;
          const mod = isMac ? event.metaKey : event.ctrlKey;
          const key = event.key.toLowerCase();
+         // Escape in a field or a window is theirs: cancelling a title edit
+         // must not also drop the selection behind it.
          if (event.key === "Escape") {
+            if (inTextEntry(event.target) || inOverlay(event.target)) return;
             current.escape();
             return;
          }

@@ -133,7 +133,7 @@ describe("DashboardBuilder: charts", () => {
       ).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
       closeMenu();
-      editInline("by_brand", "Tile title", "Brands");
+      editInline("By brand", "Tile title", "Brands");
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
       );

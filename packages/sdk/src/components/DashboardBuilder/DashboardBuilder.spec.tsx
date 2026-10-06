@@ -107,7 +107,7 @@ describe("DashboardBuilder", () => {
       // The labelled tile shows its label; the unlabelled one falls back to the
       // view name, which is what the dashboard itself does.
       expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
-      expect(within(tile("by_brand")).getByText("by_brand")).toBeDefined();
+      expect(within(tile("by_brand")).getByText("By brand")).toBeDefined();
       expect(screen.getByText("Storefront")).toBeDefined();
    });
 
@@ -222,7 +222,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       fireEvent.change(screen.getByLabelText("Field to filter"), {
          target: { value: "brand" },
       });
-      fireEvent.change(screen.getByLabelText("Control label"), {
+      fireEvent.change(screen.getByLabelText("Filter label"), {
          target: { value: "Brand" },
       });
       fireEvent.click(
@@ -329,7 +329,9 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
       // From the control's window, which is the one place a control is removed.
       fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
-      fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Remove filter", hidden: true }),
+      );
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
 
       // One history entry for the whole removal.
@@ -426,8 +428,7 @@ describe("DashboardBuilder: fields, when the package is known", () => {
       fireEvent.change(screen.getByLabelText("Field to filter"), {
          target: { value: "sale_price" },
       });
-      const kind = () =>
-         screen.getByRole("combobox", { name: /Kind of control/ });
+      const kind = () => screen.getByRole("combobox", { name: /Filter kind/ });
       const submit = () =>
          screen.getByRole("button", { name: "Add filter", hidden: false });
       expect(kind().textContent).toBe("Number range");
@@ -469,7 +470,9 @@ describe("DashboardBuilder: a control the model declares", () => {
       });
       // From the control's window, which is the one place a control is removed.
       fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
-      fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Remove filter", hidden: true }),
+      );
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
@@ -608,7 +611,7 @@ describe("DashboardBuilder: a tile's own settings", () => {
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.getByText(/Declared on its source/)).toBeDefined();
       // Nor does its title open into a field on the tile.
-      fireEvent.click(screen.getByText("by_brand"));
+      fireEvent.click(screen.getByText("By brand"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
    });
 });
@@ -713,7 +716,7 @@ source: a is scoped_orders extend {
       fireEvent.keyDown(document.body, { key: "Escape" });
       fireEvent.mouseDown(
          screen.getByRole("combobox", {
-            name: /Sets the control/,
+            name: /Sets the filter/,
             hidden: true,
          }),
       );

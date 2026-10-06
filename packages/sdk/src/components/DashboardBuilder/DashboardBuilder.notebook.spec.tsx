@@ -88,6 +88,15 @@ const mountText = async (
    );
 
 describe("DashboardBuilder: a notebook is one column", () => {
+   it("draws its text and description bare, as the notebook reader does", async () => {
+      await mountText(NOTEBOOK);
+      for (const card of document.querySelectorAll("[data-chrome]"))
+         expect(card.getAttribute("data-chrome")).toBe("none");
+      expect(document.querySelectorAll("[data-chrome]").length).toBeGreaterThan(
+         0,
+      );
+   });
+
    it("offers no width: no resize edge, no width presets", async () => {
       await mountText(NOTEBOOK);
       expect(
@@ -127,22 +136,18 @@ describe("DashboardBuilder: a notebook is one column", () => {
       expect(written).not.toContain("columns");
    });
 
-   it("names the document's own kind in the Add tile dialog", async () => {
+   it("describes the Add tile dialog the same way for either kind", async () => {
       await mountText(NOTEBOOK, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText(
-            "A tile shows one view of one source this notebook imports.",
-         ),
+         screen.getByText("A tile shows one view of a source in this package."),
       ).toBeDefined();
       cleanup();
 
       await mountText(DASHBOARD, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText(
-            "A tile shows one view of one source this dashboard imports.",
-         ),
+         screen.getByText("A tile shows one view of a source in this package."),
       ).toBeDefined();
    });
 
@@ -193,7 +198,7 @@ describe("DashboardBuilder: a notebook is one column", () => {
    it("reports notebook events, with the cell count", async () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       await mountText(NOTEBOOK, { onSave: () => {}, onEvent });
-      editInline("by_cat", "Tile title", "Categories");
+      editInline("By cat", "Tile title", "Categories");
       fireEvent.click(button("Save"));
       await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
       expect(onEvent.mock.calls[0][0]).toMatchObject({

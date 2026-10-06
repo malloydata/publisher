@@ -6,6 +6,7 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import { Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
 
@@ -50,8 +51,10 @@ export function FilterStrip({
                // Pinned at the top of the scroller, so the controls stay in
                // reach on a long page.
                top: 0,
+               // The page's ground, as the reader's sticky control row uses:
+               // this bar is page chrome, not the chart canvas.
                zIndex: 4,
-               bgcolor: theme.background,
+               bgcolor: "background.default",
                pb: 1,
             }}
          >
@@ -107,7 +110,9 @@ export function FilterStrip({
                         >
                            <Chip
                               size="small"
-                              label={control.label ?? control.name}
+                              // Unused says so in words, not only by fading:
+                              // the state survives colour and touch.
+                              label={`${control.label ?? control.name}${control.boundTiles === 0 ? " · unused" : ""}`}
                               aria-label={`Edit filter ${control.name}`}
                               // Warning where a binding names a field the source
                               // does not have: the package would refuse the file.
@@ -129,7 +134,8 @@ export function FilterStrip({
                                  // control a reader would see.
                                  opacity: control.boundTiles === 0 ? 0.6 : 1,
                                  cursor: "pointer",
-                                 transition: "opacity 120ms",
+                                 transition: `opacity ${MOTION_FAST}`,
+                                 ...reducedMotionSx,
                               }}
                            />
                         </Tooltip>

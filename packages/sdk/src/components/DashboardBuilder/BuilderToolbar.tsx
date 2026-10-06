@@ -5,7 +5,14 @@ import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
-import { Button, Divider, IconButton, Stack, Tooltip } from "@mui/material";
+import {
+   Box,
+   Button,
+   Divider,
+   IconButton,
+   Stack,
+   Tooltip,
+} from "@mui/material";
 import type { ReactNode, Ref } from "react";
 import type { SavesTo } from "./documentSession";
 import { SecondaryButton } from "../buttons";
@@ -151,6 +158,28 @@ export function BuilderToolbar({
                </span>
             </Tooltip>
          ) : null}
+         {onSave && (
+            // The save state, said aloud: the button's face changes, which a
+            // screen reader does not announce on its own.
+            <Box
+               component="span"
+               aria-live="polite"
+               sx={{
+                  position: "absolute",
+                  width: "1px",
+                  height: "1px",
+                  overflow: "hidden",
+                  clipPath: "inset(50%)",
+                  whiteSpace: "nowrap",
+               }}
+            >
+               {saving
+                  ? "Saving"
+                  : dirty
+                    ? "Unsaved changes"
+                    : "All changes saved"}
+            </Box>
+         )}
          {onExit && (
             <SecondaryButton
                label="Close"

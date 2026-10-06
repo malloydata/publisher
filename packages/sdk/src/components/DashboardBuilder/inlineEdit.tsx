@@ -3,6 +3,7 @@
 
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import type { ResolvedTheme } from "../../theme/types";
 
 /** A thin pencil, drawn as a mask so it takes the text's own colour. */
@@ -62,7 +63,8 @@ export const editableSx = (
          maskRepeat: "no-repeat",
          WebkitMaskRepeat: "no-repeat",
          opacity: 0.35,
-         transition: "opacity 120ms",
+         transition: `opacity ${MOTION_FAST}`,
+         ...reducedMotionSx,
          pointerEvents: "none",
       },
       [lit]: {
