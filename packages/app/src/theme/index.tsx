@@ -1,7 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { accentFor, type ThemeMode } from "@malloy-publisher/sdk";
+import {
+   accentFor,
+   MOTION_FAST,
+   reducedMotionSx,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";
 
@@ -113,6 +118,17 @@ export const createPublisherTheme = (
             defaultProps: {
                disableRipple: true,
                disableTouchRipple: true,
+            },
+            styleOverrides: {
+               // The ripple is off, so keyboard focus needs a mark of its own:
+               // without one a tabbed-to button looks exactly like its
+               // neighbours.
+               root: {
+                  "&:focus-visible": {
+                     outline: `2px solid ${primaryMain}`,
+                     outlineOffset: 2,
+                  },
+               },
             },
          },
          MuiCssBaseline: {
@@ -295,7 +311,8 @@ export const createPublisherTheme = (
                   // slate ramp.
                   border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
                   borderRadius: 8,
-                  transition: "border-color 120ms ease-in",
+                  transition: `border-color ${MOTION_FAST} ease-in`,
+                  ...reducedMotionSx,
                   backgroundColor: surface,
                   // Rest darkened, so hover and focus each move up a rung to
                   // stay told apart from it — a field whose hover state is its

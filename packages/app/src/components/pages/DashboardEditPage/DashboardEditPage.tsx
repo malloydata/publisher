@@ -5,6 +5,7 @@ import {
    encodeResourceUri,
    type DashboardEvent,
    Loading,
+   LOADING_COPY,
    NarrowEditGate,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
@@ -70,7 +71,9 @@ export default function DashboardEditPage({
       // notebook, so the margins do not move between modes or kinds.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <NarrowEditGate>
-            <Suspense fallback={<Loading text="Opening the builder…" />}>
+            <Suspense
+               fallback={<Loading text={LOADING_COPY.opening("builder")} />}
+            >
                <DashboardEditor
                   // Remounts on a route change so another dashboard starts from a fresh read.
                   key={`${environmentName}/${packageName}/${kind}/${dashboardName}`}

@@ -165,6 +165,43 @@ describe("DashboardView chrome", () => {
    });
 });
 
+describe("DashboardView header", () => {
+   it("boxes a dashboard's description as it boxes a text tile", async () => {
+      render(
+         <DashboardView
+            manifest={{ ...base, description: "About **this**" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      const strong = await screen.findByText("this");
+      expect(strong.closest("[data-chrome]")?.getAttribute("data-chrome")).toBe(
+         "card",
+      );
+   });
+});
+
+describe("DashboardView control row", () => {
+   it("draws no sticky row when the document declares no controls", async () => {
+      const { container } = render(
+         <DashboardView
+            manifest={{ ...base, givens: [] }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      await screen.findByText("reader");
+      const sticky = Array.from(container.querySelectorAll("div")).filter(
+         (el) => getComputedStyle(el).position === "sticky",
+      );
+      expect(sticky).toHaveLength(0);
+   });
+});
+
 describe("DashboardView gate givens", () => {
    // ORG is read only by the source's `#(authorize)` gate: the tile names it,
    // the control row does not declare it, and the host supplies it.

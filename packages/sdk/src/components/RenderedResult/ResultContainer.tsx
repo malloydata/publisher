@@ -8,7 +8,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
 import { FloatingIconButton } from "../FloatingIconButton";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import { summarizeRenderLogs } from "./renderLogs";
 import { resolveResultHeight, type ResultSizing } from "./resultSizing";
 
@@ -117,7 +117,9 @@ export default function ResultContainer({
       );
    }
 
-   const loading = <Loading text="Loading..." centered={true} size={32} />;
+   const loading = (
+      <Loading text={LOADING_COPY.loading} centered={true} size={32} />
+   );
    const renderedHeight = resolveResultHeight({
       sizing,
       contentHeight,

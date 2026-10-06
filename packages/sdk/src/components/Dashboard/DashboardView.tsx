@@ -13,7 +13,7 @@ import {
    type DrillNavigation,
    type DrillRowsRequest,
 } from "../drill";
-import { GivensPanel } from "../given";
+import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
@@ -26,6 +26,14 @@ import { tileIgnoredFilterLabels } from "./TileFilterTag";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
+
+/**
+ * The sticky control row's stacking level: above anything a tile raises
+ * inside itself as it scrolls under (a result's floating buttons sit at 1–2),
+ * and below MUI's app bar, popovers and dialogs. Shared so the builder's
+ * control row sits at the same level as the reader's.
+ */
+export const STICKY_CONTROLS_Z = 4;
 
 export interface DashboardViewProps {
    /** The dashboard, or the tile layout a layout notebook carries. */
@@ -46,6 +54,11 @@ export interface DashboardViewProps {
    onEvent?: DashboardEventHandler;
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
+   /**
+    * How the control row is drawn: `bar` for a dashboard, `panel` for a
+    * notebook, so a layout notebook's controls match a cell notebook's.
+    */
+   controlsLayout?: GivensLayout;
 }
 
 /**
@@ -67,6 +80,7 @@ export function DashboardView({
    maxResultSize,
    onEvent,
    chrome = "card",
+   controlsLayout = "bar",
 }: DashboardViewProps) {
    const specs = useMemo(() => manifest.givens ?? [], [manifest]);
 
@@ -149,7 +163,7 @@ export function DashboardView({
    if (manifest.error) {
       return (
          <Stack spacing={2}>
-            <DashboardHeader manifest={manifest} />
+            <DashboardHeader manifest={manifest} chrome={chrome} />
             <Alert severity="error">{manifest.error}</Alert>
          </Stack>
       );
@@ -161,19 +175,25 @@ export function DashboardView({
 
    return (
       <Stack spacing={2}>
-         {chrome === "card" && <DashboardHeader manifest={manifest} />}
+         {chrome === "card" && (
+            <DashboardHeader manifest={manifest} chrome={chrome} />
+         )}
 
-         {/* Sticky so the controls stay in reach while the tiles scroll under. */}
-         <Box
-            sx={{
-               position: "sticky",
-               top: 0,
-               zIndex: 2,
-               bgcolor: "background.default",
-            }}
-         >
-            <GivensPanel {...controls.panel} layout="bar" />
-         </Box>
+         {/* Sticky so the controls stay in reach while the tiles scroll under.
+             Only when there are controls: GivensPanel draws nothing without
+             them, and an empty box would still cost the Stack a gap. */}
+         {specs.length > 0 && (
+            <Box
+               sx={{
+                  position: "sticky",
+                  top: 0,
+                  zIndex: STICKY_CONTROLS_Z,
+                  bgcolor: "background.default",
+               }}
+            >
+               <GivensPanel {...controls.panel} layout={controlsLayout} />
+            </Box>
+         )}
 
          {modelPath === undefined ? (
             <Alert severity="error">
@@ -282,7 +302,7 @@ function TextTile({
    chrome: TileChrome;
 }) {
    return (
-      <TileCard chrome={chrome}>
+      <TileCard chrome={chrome} kind="text">
          <Prose variant="document">{markdown}</Prose>
       </TileCard>
    );
@@ -292,12 +312,19 @@ function TextTile({
  * The dashboard's prose header: its title, and the description as MARKDOWN
  * (Malloy carries a `##"` block through with its newlines intact).
  */
-function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
+function DashboardHeader({
+   manifest,
+   chrome,
+}: {
+   manifest: DashboardManifest;
+   chrome: TileChrome;
+}) {
    return (
       <DashboardProse
-         // Unboxed, as a notebook's text is: the description is the page's
-         // own prose, not a tile on it.
-         chrome="none"
+         // The description follows the text-tile rule: drawn in the same chrome
+         // the document's text tiles take, so a dashboard boxes it as it boxes
+         // a text tile, and a notebook (which passes `none`) leaves it bare.
+         chrome={chrome}
          title={manifest.title ?? manifest.name}
          {...(manifest.description
             ? { description: manifest.description }
@@ -326,9 +353,8 @@ export function DashboardProse({
 }) {
    return (
       <Stack sx={{ gap: 2 }}>
-         <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {title}
-         </Typography>
+         {/* No explicit weight: the host theme's h5 weight applies. */}
+         <Typography variant="h5">{title}</Typography>
          {description && <TextTile markdown={description} chrome={chrome} />}
       </Stack>
    );

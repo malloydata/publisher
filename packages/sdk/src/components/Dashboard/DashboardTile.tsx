@@ -3,6 +3,11 @@
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
 import { IconButton, Tooltip } from "@mui/material";
+import {
+   MOTION_FAST,
+   reducedMotionSx,
+   visibleWithoutHoverSx,
+} from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
@@ -141,7 +146,9 @@ export function DashboardTile({
             // the title on every card at once.
             "& .publisher-tile-explore": {
                opacity: 0,
-               transition: "opacity 120ms",
+               transition: `opacity ${MOTION_FAST}`,
+               ...reducedMotionSx,
+               ...visibleWithoutHoverSx,
             },
             "&:hover .publisher-tile-explore, & .publisher-tile-explore:focus-visible":
                { opacity: 1 },

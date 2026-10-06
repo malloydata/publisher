@@ -169,7 +169,7 @@ function ModelPage() {
    });
    return (
       <Box sx={wrapperSx}>
-         <Typography variant="h6" sx={{ fontWeight: 600 }}>
+         <Typography variant="h6" sx={{ fontWeight: "fontWeightMedium" }}>
             Nothing to open at this path
          </Typography>
          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

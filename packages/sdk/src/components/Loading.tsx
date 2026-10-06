@@ -3,6 +3,20 @@
 
 import { Box, CircularProgress, Typography } from "@mui/material";
 
+/**
+ * The words a loading state says, in one place so every surface says them the
+ * same way: sentence case, a typographic ellipsis, and "opening" for a
+ * document rather than a mix of "Fetching", "Loading" and "Opening".
+ */
+export const LOADING_COPY = {
+   /** A document being fetched: "Opening the dashboard…", or "Opening…". */
+   opening: (noun?: string) => (noun ? `Opening the ${noun}…` : "Opening…"),
+   /** A query on its way to a result. */
+   running: "Running…",
+   /** Anything else that is on its way. */
+   loading: "Loading…",
+} as const;
+
 export interface LoadingProps {
    /**
     * The text to display below the spinner

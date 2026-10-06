@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import type { QueryResultState } from "../../hooks/useQueryResult";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillBinding } from "../drill/useDrill";
-import { Loading } from "../Loading";
+import { Loading, LOADING_COPY } from "../Loading";
 import ResultContainer from "./ResultContainer";
 
 export interface ResultPanelProps {
@@ -42,7 +42,7 @@ export interface ResultPanelProps {
 export function ResultPanel({
    state,
    context,
-   loadingText = "Running…",
+   loadingText = LOADING_COPY.running,
    maxHeight,
    maxResultSize,
    drill,

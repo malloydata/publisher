@@ -16,6 +16,14 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 export type TileChrome = "card" | "none";
 
 /**
+ * The least a carded tile is drawn at, by kind: a query tile holds a spinner
+ * and then a result, so it keeps room for one; a text tile holds a line or two
+ * of prose and is no taller than its text needs, past a floor that keeps a
+ * one-word tile from reading as a sliver. A bare (`none`) tile has no floor.
+ */
+export const TILE_MIN_HEIGHT = { query: 120, text: 72 } as const;
+
+/**
  * The card a dashboard tile sits in, and nothing else — so the builder, which
  * draws a stand-in tile when it has no server to run one, draws the same card
  * the reader does rather than restating its geometry.
@@ -46,10 +54,13 @@ export type TileChrome = "card" | "none";
 export function TileCard({
    borderless = false,
    chrome = "card",
+   kind = "query",
    sx,
    children,
 }: {
    borderless?: boolean;
+   /** What the tile holds, which sets its {@link TILE_MIN_HEIGHT}. */
+   kind?: keyof typeof TILE_MIN_HEIGHT;
    /** `none` drops the card entirely, for a document that reads top to bottom. */
    chrome?: TileChrome;
    sx?: SxProps<Theme>;
@@ -71,7 +82,7 @@ export function TileCard({
                display: "flex",
                flexDirection: "column",
                minWidth: 0,
-               minHeight: chrome === "none" ? 0 : 120,
+               minHeight: chrome === "none" ? 0 : TILE_MIN_HEIGHT[kind],
                p:
                   chrome === "none"
                      ? 0
