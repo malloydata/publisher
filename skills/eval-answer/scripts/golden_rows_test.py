@@ -47,6 +47,21 @@ class LoadRows(unittest.TestCase):
                          [{"id": 1, "active": True, "note": "False"},
                           {"id": 2, "active": False, "note": "truex"}])
 
+    def test_a_row_longer_than_the_header_is_a_golden_rows_error(self):
+        g = self.csv("q1.csv", "region,total\nWest,12,EXTRA\n")
+        with self.assertRaises(golden_rows.GoldenRowsError) as cm:
+            golden_rows.load_rows(g, self.set_dir, "q1")
+        self.assertEqual(
+            str(cm.exception),
+            "q1: golden.path 'gold/q1.csv' line 2 has a different number of "
+            "fields than the header (2); fix the row")
+
+    def test_a_row_shorter_than_the_header_is_a_golden_rows_error(self):
+        g = self.csv("q1.csv", "region,total\nWest,12\nEast\n")
+        with self.assertRaises(golden_rows.GoldenRowsError) as cm:
+            golden_rows.load_rows(g, self.set_dir, "q1")
+        self.assertIn("line 3", str(cm.exception))
+
     def test_value_wins_when_both_exist(self):
         g = self.csv("q1.csv", "a\n1\n")
         g["value"] = [{"a": 99}]

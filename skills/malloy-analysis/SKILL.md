@@ -107,7 +107,7 @@ This is different from a genuine ambiguity about WHICH metric they meant; there,
 
 **Do not print spurious precision.** A warehouse returns `108.130521077`; round for display to what the number can support (a count or index to a whole number, a rate to one or two decimals, currency to cents) and keep the full value only if asked. A render tag such as `# number` or `# percent` is the model author's intended display: you need not reimplement the renderer, but do not present a value in a way the tag plainly contradicts.
 
-**Running a named view: pass the view's source with it.** A bare view name can come back empty instead of erroring. Before concluding a named view is empty, re-run it with the source and model path stated explicitly: abandoning a purpose-built view for a hand-written one is the expensive mistake here.
+**Running a named view: pass the view's source with it.** A view name sent without its source is read as a top-level query, and Publisher answers with an error such as `Reference to undefined object` or `No queryable query`: that error means the source is missing from the call, not that the view does not exist. Before concluding a named view is genuinely empty, re-run it with the source and the model path stated explicitly: an empty result and a misresolved call look alike in an answer, and abandoning a purpose-built view for a hand-written one is the expensive mistake here.
 
 **Aliasing a field drops its documentation and tags.** `rev is net_revenue_amount` returns a field with no `#(doc)`, `# label` or render tag, because the annotations belong to the original name. To keep an entity's documentation or display intent, query it under its own name and rename only in your prose.
 

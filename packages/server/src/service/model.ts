@@ -5481,7 +5481,9 @@ export class Model {
     * the compile and refuses on one. Three do, and this is false whenever one
     * could act, so a hidden name and a missing one still get the same answer:
     *   - the run-target check, which has no target to read here (zero names);
-    *   - the caller-join check, which the text must not trigger (no joins);
+    *   - the caller-join check, which refuses a hidden join base before the
+    *     compile and lets a missing one through to it, so every join base
+    *     must be curated or derived from curated sources in the text;
     *   - the lock checks, which read every name in the text and answer
     *     differently for a gated one: false when anything is gated, using the
     *     same test {@link notQueryable} applies before it will explain a
@@ -5496,7 +5498,12 @@ export class Model {
       return (
          onlyParseFailures(compileError.problems) &&
          extractRunTargetSourceNames(query).length === 0 &&
-         buildJoinBaseMap(query).size === 0 &&
+         [...buildJoinBaseMap(query).values()].every((bases) =>
+            [...bases].every(
+               (b) =>
+                  this.isCuratedSource(b) || this.derivesFromCurated(b, query),
+            ),
+         ) &&
          !this.declaresAnyGate() &&
          !this.hasAnyAuthorizeNote()
       );

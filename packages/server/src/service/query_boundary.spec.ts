@@ -393,6 +393,32 @@ export { customers }`,
       }
    });
 
+   it("declared: a semantic error over a hidden source in text with no run target does not tell a real column from a missing one", async () => {
+      // Nothing can be run, so the boundary cannot vouch for the text; only a
+      // pure grammar failure is shown. A field error on a hidden source would
+      // otherwise answer 400 for a missing column and 404 for a real one.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const real = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is id }`,
+         );
+         const fake = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is nosuchfield }`,
+         );
+         expect(real).toBeInstanceOf(NotQueryableError);
+         expect(fake).toBeInstanceOf(NotQueryableError);
+         expect(fake.message).toBe(real.message);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: `~` against a date literal on an exported source returns the compiler's message, and a hidden or missing source still gets the same 404", async () => {
       // Malloy throws a plain Error for this (not a MalloyError with
       // problems), so it used to fall through to the boundary's 404.
@@ -466,6 +492,18 @@ export { customers, dated }`,
             expect(answer).toBeInstanceOf(NotQueryableError);
             expect(answer).not.toBeInstanceOf(QueryCompileError);
          }
+         // A join whose base is curated reads no hidden name, so its typo is
+         // shown like any other grammar failure.
+         const twin = await problemsOrRefusal(
+            model,
+            `run customers extend { join_one: c2 is customers on id = c2.id } -> { aggregate: total }`,
+         );
+         expect(twin).toBeInstanceOf(QueryCompileError);
+         expect(
+            (twin as QueryCompileError).problems.every(
+               (p) => p.code === "syntax-error",
+            ),
+         ).toBe(true);
       } finally {
          await duckdb.close();
       }

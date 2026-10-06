@@ -1815,6 +1815,46 @@ class NarrowedRebuildKeepsTheLedger(unittest.TestCase):
         self.assertEqual(got, new)
 
 
+class AttemptEventCarriesGivens(unittest.TestCase):
+    """`final_givens` was computed per attempt and never written, so a replay
+    of `final_query` from the ledger ran unscoped."""
+
+    def test_the_final_givens_reach_events_jsonl(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        att = {"submitted": True, "final_query": "run: s -> { aggregate: n }",
+               "final_givens": {"region": "West"}, "n_get_context": 1,
+               "n_execute": 1, "n_execute_errors": 0, "host_tool_uses": 0,
+               "answer_text": "12", "transcriptPath": "t/q1.jsonl"}
+        e = rb.attempt_event({"qid": "q1", "question": "how many?"}, att,
+                             "baseline", {})
+        rb.store_events(tmp / "events.jsonl", [e], None)
+        got = [json.loads(l) for l in
+               (tmp / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(got[0]["final_givens"], {"region": "West"})
+        self.assertEqual(got[0]["final_query"], "run: s -> { aggregate: n }")
+
+
+class JudgeSeesEachQuerysGivens(unittest.TestCase):
+    """The judge saw each query's text without its givens, beside rows the
+    givens had filtered, and could fail a correct answer for it."""
+
+    def test_a_query_is_shown_with_its_givens(self):
+        att = {"queries": ["run: s -> { aggregate: n }", "run: s -> { x }"],
+               "calls": [{"tool": "execute_query",
+                          "query": "run: s -> { aggregate: n }",
+                          "givens": {"region": "West"}},
+                         {"tool": "execute_query", "query": "run: s -> { x }",
+                          "givens": None}]}
+        self.assertEqual(
+            rb.queries_for_judge(att),
+            '[1] run: s -> { aggregate: n }\n    givens: {"region": "West"}'
+            "\n\n[2] run: s -> { x }")
+
+    def test_no_queries_reads_none(self):
+        self.assertEqual(rb.queries_for_judge({}), "(none)")
+
+
 class PersistedStubIsTheResult(unittest.TestCase):
     """Above a size the CLI decides, a tool result reaches the answerer as a
     stub naming a file. Reading the stub as the payload scored 14 of 74
@@ -2211,6 +2251,48 @@ class McpCallToolErrors(unittest.TestCase):
                          "isError": False})
         self.assertEqual(got, {"sources": []})
 
+    def test_a_retrieval_error_reply_stops_the_wait_after_one_probe(self):
+        # The shape `jsonToolError` builds for get_context's retrieval
+        # failure: the JSON payload as an embedded resource, then the prose.
+        payload = {"error": "Semantic search is unavailable: 401",
+                   "suggestions": ["check the key"], "sources": [],
+                   "retrieval": "error", "retrieval_reason": "provider-error"}
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps(payload)}},
+            {"type": "text", "text": "Semantic search is unavailable: 401"}]}
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        calls = []
+        real = rb.mcp_call
+
+        def counted(*args, **kw):
+            calls.append(1)
+            return real(*args, **kw)
+
+        with self.reply(result), \
+                mock.patch.object(rb, "mcp_call", counted), \
+                mock.patch.object(rb.time, "sleep", lambda s: None):
+            ready, said = rb.wait_retrieval_ready(a)
+        self.assertFalse(ready)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(said, rb.retrieval_error_message("provider-error"))
+
+    def test_an_error_reply_without_a_retrieval_error_still_raises(self):
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        result = {"isError": True, "content": [
+            {"type": "resource",
+             "resource": {"uri": "malloy://x", "mimeType": "application/json",
+                          "text": json.dumps({"error": "no such package",
+                                              "suggestions": [],
+                                              "sources": []})}},
+            {"type": "text", "text": "no such package"}]}
+        with self.reply(result), self.assertRaises(rb.McpToolError) as cm:
+            rb.retrieval_probe(a)
+        self.assertIn("no such package", str(cm.exception))
+
 
 class RowsGoldenInAFile(unittest.TestCase):
     """A `rows` golden may keep its rows in a CSV named by `golden.path`. Read
@@ -2269,12 +2351,22 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("q2", problems[0])
 
-    def test_the_preflight_skips_a_golden_that_will_not_be_scored(self):
-        for status in ("provisional", "invalid", "ambiguous", "verified_wrong"):
-            cases = [{"qid": "q1", "golden": self.G},
-                     {"qid": "q2", "golden": {"kind": "rows", "status": status,
-                                              "path": "gold/no.csv"}}]
-            self.assertEqual(rb.rows_golden_problems(cases, self.tmp), [], status)
+    def test_a_golden_withheld_from_the_judge_does_not_stop_the_run(self):
+        # golden_refusal() keeps these from the judge, so their file is never
+        # read for this run.
+        cases = [{"qid": f"q{i}", "golden": {"kind": "rows", "status": st,
+                                             "path": "gold/no.csv"}}
+                 for i, st in enumerate(("provisional", "invalid",
+                                         "ambiguous", "verified_wrong"))]
+        self.assertEqual(rb.rows_golden_problems(cases, self.tmp), [])
+
+    def test_only_a_run_that_judges_now_reads_golden_files(self):
+        ns = lambda **kw: argparse.Namespace(
+            **{"no_judge": False, "rebuild": False, "rejudge": False, **kw})
+        self.assertTrue(rb.renders_goldens(ns()))
+        self.assertFalse(rb.renders_goldens(ns(no_judge=True)))
+        self.assertFalse(rb.renders_goldens(ns(rebuild=True)))
+        self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
 
 
 if __name__ == "__main__":

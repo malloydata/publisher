@@ -909,23 +909,44 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
     result = envelope.get("result") or {}
+    texts = [t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                         for ch in result.get("content") or []) if t]
     if result.get("isError"):
-        # A tool error is an ordinary reply whose text is the message, not
-        # JSON. Parsing it below reported "Expecting value: line 1 column 1"
-        # and hid what the server actually said (for example a rejected enum
-        # value in the arguments).
-        said = " ".join(
-            t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
-                        for ch in result.get("content") or []) if t)
-        raise ValueError(
-            f"{tool} returned isError: {said[:500] or '(no message)'}")
-    for chunk in result.get("content") or []:
-        text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
-        if not text:
-            continue
+        # A tool error is an ordinary reply. Its text may be plain prose (an
+        # argument validation failure) or a JSON payload followed by prose
+        # (`jsonToolError`, which is how get_context reports a retrieval
+        # failure). Parsing the prose as JSON reported "Expecting value: line
+        # 1 column 1" and hid what the server said, so raise with the text,
+        # and carry the payload when there is one for a caller that reads it.
+        raise McpToolError(tool, " ".join(texts), _first_json(texts))
+    for text in texts:
         m = RESOURCE.search(text)
         return json.loads(m.group(1) if m else text)
     raise ValueError("tools/call returned no readable content")
+
+
+def _first_json(texts: list[str]) -> Any:
+    """The first text chunk that parses as JSON, else None."""
+    for text in texts:
+        m = RESOURCE.search(text)
+        try:
+            return json.loads(m.group(1) if m else text)
+        except ValueError:
+            continue
+    return None
+
+
+class McpToolError(ValueError):
+    """A `tools/call` reply with `isError: true`.
+
+    `payload` is the reply's JSON payload when it carried one (the
+    `{error, suggestions, ...}` object `jsonToolError` builds), else None.
+    """
+
+    def __init__(self, tool: str, said: str, payload: Any = None):
+        self.payload = payload
+        super().__init__(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
 
 
 class AuthRequired(Exception):
@@ -974,6 +995,14 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
+        raise
+    except McpToolError as e:
+        # get_context reports a retrieval-provider failure (a bad API key,
+        # say) as an error reply whose payload says `retrieval: "error"`.
+        # That is an answer the gate stops on, not a failed probe to retry.
+        # Any other error reply (an unknown package) stays a failed probe.
+        if isinstance(e.payload, dict) and e.payload.get("retrieval") == "error":
+            return retrieval_of(e.payload)
         raise
     return retrieval_of(payload)
 
@@ -1419,6 +1448,23 @@ def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
     ok = [c for c in hits if not c.get("error")]
     return next((c.get("givens") for c in reversed(ok or hits)), None)
+
+
+def queries_for_judge(att: dict[str, Any]) -> str:
+    """Every query the answerer ran, numbered, each with its givens.
+
+    Givens are an argument beside the text, so a query shown without them
+    reads as unfiltered next to rows that were filtered, and the judge can
+    fail a correct answer for it.
+    """
+    runs = [c for c in att.get("calls") or []
+            if c.get("tool") == "execute_query" and c.get("query")]
+    out = []
+    for i, q in enumerate(att.get("queries") or [], 1):
+        g = _givens_of(q, runs)
+        out.append(f"[{i}] {q}" + (f"\n    givens: {json.dumps(g, sort_keys=True)}"
+                                   if g else ""))
+    return "\n\n".join(out) or "(none)"
 
 
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
@@ -2707,27 +2753,33 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
 
 def rows_golden_problems(cases: list[dict[str, Any]],
                          set_dir: pathlib.Path) -> list[str]:
-    """One line per `rows` golden whose `path` cannot be read.
+    """One line per `rows` golden the judge will be shown whose `path` cannot
+    be read.
 
     Checked before any model call, so a missing or misplaced file stops the run
-    where it costs nothing instead of surfacing as a judge error per case.
-
-    A case whose golden is refused (provisional, invalid, ambiguous, verified
-    wrong) is never scored, so its file is not read: a missing CSV on one of
-    those must not stop the whole run.
+    where it costs nothing instead of surfacing as a judge error per case. A
+    golden `golden_refusal` withholds a verdict for is never rendered, so its
+    file is not this run's problem and does not stop it.
     """
     out = []
     for c in cases:
         g = c.get("golden") or {}
-        if g.get("kind") != "rows":
-            continue
-        if golden_refusal(g):
+        if g.get("kind") != "rows" or golden_refusal(g):
             continue
         try:
             golden_rows.load_rows(g, set_dir, c["qid"])
         except golden_rows.GoldenRowsError as exc:
             out.append(str(exc))
     return out
+
+
+def renders_goldens(a: argparse.Namespace) -> bool:
+    """Whether this run shows any golden to a judge.
+
+    `--no-judge` judges nothing, and a rebuild without `--rejudge` reuses the
+    saved verdicts, so neither reads a golden's file.
+    """
+    return not a.no_judge and (not a.rebuild or bool(a.rejudge))
 
 
 def golden_for_judge(golden: dict[str, Any] | None,
@@ -2925,8 +2977,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
             or "(nothing beyond the rubric)"),
         answer=(att["answer_text"] or "(the answerer returned no prose; judge "
                 "from the queries and the re-executed rows)"),
-        query="\n\n".join(f"[{i}] {q}" for i, q in
-                          enumerate(att.get("queries") or [], 1)) or "(none)",
+        query=queries_for_judge(att),
         prediction=prediction_for(case, att, a, art, reexec),
         model=model_src or "(model source unavailable)")
 
@@ -3010,6 +3061,44 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
             f"package into loadErrors. Fix: pass an --out outside any package, "
             f"or omit it for {cfg.workdir() / 'runs'}")
     return cfg
+
+
+def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
+                  served_identity: dict[str, Any]) -> dict[str, Any]:
+    """The ledger `attempt` event for one case's attempt."""
+    return ledger.event(
+        "attempt", qid=c["qid"], sample=None, phase=phase,
+        question_sha=question_sha(c),
+        submitted=att["submitted"],
+        final_query=att["final_query"],
+        final_query_source=att.get("final_query_source"),
+        # The runtime parameters the final query ran under.
+        # Without them a replay of final_query runs unscoped.
+        final_givens=att.get("final_givens"),
+        # The revision that actually answered. Documented
+        # as "package revision actually queried" and left
+        # None until now, so nothing could tell an attempt
+        # answered before a reload from one answered after.
+        servedRevision=served_identity.get("servedRevision"),
+        n_get_context=att["n_get_context"],
+        n_execute=att["n_execute"],
+        n_execute_errors=att["n_execute_errors"],
+        host_tool_uses=att["host_tool_uses"],
+        mcp_tool_uses=att.get("mcp_tool_uses"),
+        skills_invoked=att.get("skills_invoked") or [],
+        reported_calls=att["n_get_context"] + att["n_execute"],
+        contaminated=bool(att.get("breaches")),
+        contamination_reasons=att.get("breaches") or [],
+        input_tokens=att.get("input_tokens"),
+        output_tokens=att.get("output_tokens"),
+        cache_read_tokens=att.get("cache_read_tokens"),
+        cache_write_tokens=att.get("cache_write_tokens"),
+        cost_usd=att.get("cost_usd"),
+        num_turns=att.get("num_turns"),
+        wall_seconds=att.get("wall_seconds"),
+        answer_text=att.get("answer_text"),
+        run_error=att.get("error"),
+        transcriptPath=att["transcriptPath"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3516,7 +3605,8 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
-    unreadable = rows_golden_problems(cases, a.set_dir)
+    unreadable = (rows_golden_problems(cases, a.set_dir)
+                  if renders_goldens(a) else [])
     if unreadable:
         raise SystemExit(
             "a rows golden names a file the run cannot read, so the judge "
@@ -3699,35 +3789,7 @@ def main(argv: list[str] | None = None) -> int:
         qid = c["qid"]
         att = attempts[qid]
         base = {"qid": qid, "sample": None, "phase": a.phase}
-        events.append(ledger.event("attempt", **base,
-                      question_sha=question_sha(c),
-                      submitted=att["submitted"],
-                      final_query=att["final_query"],
-                      final_query_source=att.get("final_query_source"),
-                      # The revision that actually answered. Documented
-                      # as "package revision actually queried" and left
-                      # None until now, so nothing could tell an attempt
-                      # answered before a reload from one answered after.
-                      servedRevision=served_identity.get("servedRevision"),
-                      n_get_context=att["n_get_context"],
-                      n_execute=att["n_execute"],
-                      n_execute_errors=att["n_execute_errors"],
-                      host_tool_uses=att["host_tool_uses"],
-                      mcp_tool_uses=att.get("mcp_tool_uses"),
-                      skills_invoked=att.get("skills_invoked") or [],
-                      reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=bool(att.get("breaches")),
-                      contamination_reasons=att.get("breaches") or [],
-                      input_tokens=att.get("input_tokens"),
-                      output_tokens=att.get("output_tokens"),
-                      cache_read_tokens=att.get("cache_read_tokens"),
-                      cache_write_tokens=att.get("cache_write_tokens"),
-                      cost_usd=att.get("cost_usd"),
-                      num_turns=att.get("num_turns"),
-                      wall_seconds=att.get("wall_seconds"),
-                      answer_text=att.get("answer_text"),
-                      run_error=att.get("error"),
-                      transcriptPath=att["transcriptPath"]))
+        events.append(attempt_event(c, att, a.phase, served_identity))
         for call in att["calls"]:
             events.append(ledger.event("tool_call", **base, **call,
                                        traceId=None))
