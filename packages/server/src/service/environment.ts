@@ -330,13 +330,13 @@ export class Environment {
          since: number;
          location?: string;
          /**
-          * Resolves once the outermost load has finished, however it ended.
-          * Two loads of the same package started independently (a reinstall
-          * racing a reload) share this entry, so a waiter is released when the
-          * first of them finishes; the second's swap then replaces whatever
-          * the waiter wrote, and the next drift check rebinds it.
+          * Resolves once every load counted here has finished, however each
+          * ended. Loads of one package started independently (a reinstall
+          * racing a reload, a lazy load joined by an install) share the entry,
+          * so a waiter is released only when the last of them is done.
           */
          settled: Promise<void>;
+         settle: () => void;
       }
    > = new Map();
    /**
@@ -1985,29 +1985,28 @@ export class Environment {
       location?: string,
    ): Promise<T> {
       const current = this.loadsInFlight.get(packageName);
-      let markSettled!: () => void;
+      let settle = current?.settle;
       const settled =
          current?.settled ??
          new Promise<void>((resolve) => {
-            markSettled = resolve;
+            settle = resolve;
          });
       this.loadsInFlight.set(packageName, {
          count: (current?.count ?? 0) + 1,
          since: current?.since ?? Date.now(),
          location: location ?? current?.location,
          settled,
+         settle: settle!,
       });
       try {
          return await fn();
       } finally {
-         if (current === undefined) {
-            markSettled();
-         }
          const entry = this.loadsInFlight.get(packageName);
          if (entry !== undefined && entry.count > 1) {
             entry.count -= 1;
          } else {
             this.loadsInFlight.delete(packageName);
+            entry?.settle();
          }
       }
    }
@@ -3468,17 +3467,15 @@ export class Environment {
       // names only a new `manifestLocation` (the post-build rebind) must not
       // drop the `location` the package was installed from, which is what a
       // later reload reinstalls from, or the `resource` the orchestrator
-      // identifies the package by.
+      // identifies the package by. A null counts as omitted, as it does for
+      // `scope` above: a client that serializes unset fields as null must not
+      // blank them. An empty string is a value, and clears a description.
       _package.setPackageMetadata({
-         name: body.name !== undefined ? body.name : existing.name,
+         name: body.name != null ? body.name : existing.name,
          description:
-            body.description !== undefined
-               ? body.description
-               : existing.description,
-         resource:
-            body.resource !== undefined ? body.resource : existing.resource,
-         location:
-            body.location !== undefined ? body.location : existing.location,
+            body.description != null ? body.description : existing.description,
+         resource: body.resource != null ? body.resource : existing.resource,
+         location: body.location != null ? body.location : existing.location,
          explores,
          queryableSources,
          manifestLocation,
@@ -3511,8 +3508,8 @@ export class Environment {
 
       await this.writePackageManifest(packageName, {
          name: packageName,
-         description: body.description,
-         location: body.location,
+         description: body.description ?? undefined,
+         location: body.location ?? undefined,
          explores: normalizedExplores,
          queryableSources: body.queryableSources,
          manifestLocation: body.manifestLocation,

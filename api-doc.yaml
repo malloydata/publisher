@@ -3262,7 +3262,11 @@ components:
             and live-reloads them instead. The mount is chosen when the
             environment is first loaded from config, so adding `--watch-env`
             to a later boot needs `--init` to re-mount a package already
-            copied.
+            copied. On an update, a `location` equal to the one the package
+            was installed from, or is being installed from, is a metadata
+            update and nothing is fetched; a different one reinstalls the
+            package from it. To fetch the same location again, reload the
+            package (`GET …?reload=true`).
         scope:
           type: string
           enum:

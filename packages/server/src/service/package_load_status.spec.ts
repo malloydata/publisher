@@ -365,6 +365,161 @@ describe("Package.status: serving and loading", () => {
       expect(await patchOutcome).toBeInstanceOf(PackageNotFoundError);
    });
 
+   it("a PATCH sending null for a field leaves it alone, in memory and on disk", async () => {
+      // A client that serializes unset fields as null must not blank them:
+      // null counts as not mentioned, the rule `scope` already follows, and
+      // publisher.json gets no `description: null` either.
+      const env = await Environment.create("testEnv", envPath, []);
+      await writePackageDir(path.join(envPath, "pkg"), "first");
+      await env.addPackage("pkg");
+      await env.updatePackage("pkg", {
+         name: "pkg",
+         resource: "/api/v0/environments/testEnv/packages/pkg",
+         location: "gs://bucket/pkg.zip",
+      });
+
+      const after = await env.updatePackage("pkg", {
+         name: "pkg",
+         description: null as unknown as string,
+         resource: null as unknown as string,
+         location: null as unknown as string,
+         manifestLocation: null,
+      });
+
+      expect(after.name).toBe("pkg");
+      expect(after.description).toBe("first");
+      expect(after.resource).toBe("/api/v0/environments/testEnv/packages/pkg");
+      expect(after.location).toBe("gs://bucket/pkg.zip");
+      const onDisk = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, "pkg", "publisher.json"),
+            "utf-8",
+         ),
+      );
+      expect(onDisk.description).toBe("first");
+      expect(onDisk.location).toBe("gs://bucket/pkg.zip");
+
+      // An empty string is a value, and clears.
+      const cleared = await env.updatePackage("pkg", {
+         name: "pkg",
+         description: "",
+      });
+      expect(cleared.description).toBe("");
+   });
+
+   it("a same-location PATCH is never refused by the memory governor", async () => {
+      // The governor gates allocations of a new compiled copy. A metadata
+      // update allocates none, so back-pressure that refuses an install must
+      // let the orchestrator's rebind through, or a throttled replica could
+      // never pick up a new manifest.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      await env.installPackage("pkg", (stagingPath) =>
+         copyDir(fixture, stagingPath),
+      );
+      env.setMemoryGovernor({
+         isBackpressured: () => true,
+      } as unknown as PackageMemoryGovernor);
+
+      await expect(
+         env.installPackage("pkg", sinon.stub().resolves(undefined)),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      const updated = await env.updatePackage("pkg", {
+         name: "pkg",
+         description: "rebound under back-pressure",
+      });
+      expect(updated.description).toBe("rebound under back-pressure");
+   });
+
+   it("clears the loading marker after an install is rolled back", async () => {
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+
+      // A first install whose validation rejects the tree: the swap is rolled
+      // back, nothing is resident, and nothing is loading.
+      await expect(
+         env.installPackage(
+            "pkg",
+            (stagingPath) => copyDir(fixture, stagingPath),
+            () => "rejected by validation",
+         ),
+      ).rejects.toThrow("rejected by validation");
+      expect(env.describePackageStatus("pkg")).toEqual({
+         serving: false,
+         loading: false,
+      });
+      expect(
+         (await env.listPackages({ includeLoading: true })).map((p) => p.name),
+      ).not.toContain("pkg");
+
+      // The same rollback over a serving copy leaves that copy serving.
+      await env.installPackage("pkg", (stagingPath) =>
+         copyDir(fixture, stagingPath),
+      );
+      await expect(
+         env.installPackage(
+            "pkg",
+            (stagingPath) => copyDir(fixture, stagingPath),
+            () => "rejected by validation",
+         ),
+      ).rejects.toThrow("rejected by validation");
+      expect(env.describePackageStatus("pkg")).toEqual({
+         serving: true,
+         loading: false,
+      });
+   });
+
+   it("a waiting PATCH is released when the last load in flight finishes, not the first", async () => {
+      // Loads of one package started independently share the loading entry.
+      // Released on the first to finish, a PATCH would find nothing resident
+      // and answer 404 while the other is still downloading.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      const location = "gs://bucket/pkg___1.0.0.zip";
+
+      const firstDownload = deferred();
+      const first = env.installPackage(
+         "pkg",
+         async () => {
+            await firstDownload.promise;
+            throw new Error("first download failed");
+         },
+         undefined,
+         { location },
+      );
+      const secondDownload = deferred();
+      const second = env.installPackage(
+         "pkg",
+         async (stagingPath) => {
+            await secondDownload.promise;
+            await copyDir(fixture, stagingPath);
+         },
+         undefined,
+         { location },
+      );
+
+      let patchSettled = false;
+      const patch = env
+         .updatePackage("pkg", { name: "pkg", description: "patched" })
+         .finally(() => {
+            patchSettled = true;
+         });
+
+      firstDownload.resolve();
+      await expect(first).rejects.toThrow("first download failed");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(patchSettled).toBe(false);
+      expect(env.describePackageStatus("pkg").loading).toBe(true);
+
+      secondDownload.resolve();
+      await second;
+      const after = await patch;
+      expect(after.description).toBe("patched");
+   });
+
    it("remembers where a package was installed from, across a reload", async () => {
       // The reinstall decision compares a PATCH's `location` with the one the
       // package was installed from. That value has to survive the install

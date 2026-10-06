@@ -8,6 +8,7 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
+   ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
@@ -162,18 +163,22 @@ export class PackageController {
       // is set, route the reload through `installPackage` so that
       // download-then-load happens atomically; otherwise fall back to an
       // in-place reload of the existing on-disk content.
-      let location: string | undefined;
+      let resident: ApiPackage | undefined;
       try {
          const cached = await environment.getPackage(packageName, false);
-         location = cached.getPackageMetadata().location;
+         resident = cached.getPackageMetadata();
       } catch {
          // Not previously loaded, so there is nothing to reinstall from.
       }
-      if (location) {
-         // The re-fetched tree's own publisher.json does not carry the
-         // location it was fetched from, so the reinstall re-records it the
-         // way a publish does; otherwise the next PATCH naming the same
-         // location would read as a change and reinstall again.
+      const location = resident?.location;
+      if (resident && location) {
+         // The re-fetched tree's own publisher.json carries only what its
+         // author wrote. The location it was fetched from, and the metadata
+         // callers have since set on the served copy (the manifest binding
+         // above all, else the package would serve live until the next drift
+         // check; the description, policy and surface too) are re-applied
+         // inside the install's lock hold, so a reload changes the content and
+         // nothing else.
          const reinstalled = await environment.installPackage(
             packageName,
             (stagingPath) =>
@@ -184,7 +189,7 @@ export class PackageController {
                   stagingPath,
                ),
             undefined,
-            { location, update: { location } },
+            { location, update: residentMetadataToReapply(resident) },
          );
          return {
             metadata: reinstalled.getPackageMetadata(),
@@ -245,7 +250,11 @@ export class PackageController {
                   location: bodyLocation,
                   update: {
                      location: bodyLocation,
-                     ...(body.manifestLocation !== undefined
+                     // Only a manifest to bind. A fresh install serves live
+                     // already, so a null or empty value has nothing to
+                     // revert and would only recompile the package a second
+                     // time.
+                     ...(body.manifestLocation
                         ? { manifestLocation: body.manifestLocation }
                         : {}),
                   },
@@ -262,10 +271,18 @@ export class PackageController {
          // with the same message the response carries, so /status never says
          // more than the caller was told. A rejection of the package's own
          // content (4xx) is answered with its reason and is not recorded.
+         // An admission refusal under memory back-pressure is an answer to
+         // this request, not a failure of the package, and the caller places
+         // the package elsewhere; recorded here it would read as a load
+         // failure until this server next loaded that package, which it may
+         // never do.
          const answered = internalErrorToHttpError(error as Error, {
             log: false,
          });
-         if (answered.status >= 500) {
+         if (
+            answered.status >= 500 &&
+            !(error instanceof ServiceUnavailableError)
+         ) {
             environment.recordPackageAddFailure(
                packageName,
                answered.json.message,
@@ -338,11 +355,16 @@ export class PackageController {
       // update then queues on the package lock behind that install and lands
       // on the installed copy. A caller that wants the same location fetched
       // again reloads the package instead.
+      // The install in flight is asked first: while a reinstall from a new
+      // location runs, the resident copy still names the old one, and a
+      // repeated PATCH for the new location must wait for that install, not
+      // start a second. A location that is not a string (a client that
+      // serializes unset fields as null) names nothing to fetch.
       const installedFrom =
-         environment.peekPackage(packageName)?.getPackageMetadata().location ??
-         environment.installingFrom(packageName);
+         environment.installingFrom(packageName) ??
+         environment.peekPackage(packageName)?.getPackageMetadata().location;
       const reinstall =
-         body.location !== undefined &&
+         typeof body.location === "string" &&
          body.location !== "" &&
          body.location !== installedFrom;
       let result: ApiPackage;
@@ -438,4 +460,29 @@ export class PackageController {
          );
       }
    }
+}
+
+/**
+ * The metadata a reload re-applies to the re-fetched tree: everything the
+ * served copy carries that a caller can set through the API, and nothing the
+ * tree's own `publisher.json` is the source of. Fields the copy does not have
+ * are left out, so the update neither clears them nor writes nulls.
+ */
+function residentMetadataToReapply(resident: ApiPackage): ApiPackage {
+   const update: ApiPackage = {};
+   if (resident.location) update.location = resident.location;
+   if (resident.description !== undefined)
+      update.description = resident.description;
+   if (resident.resource !== undefined) update.resource = resident.resource;
+   if (resident.explores !== undefined) update.explores = resident.explores;
+   if (resident.queryableSources !== undefined)
+      update.queryableSources = resident.queryableSources;
+   if (resident.manifestLocation)
+      update.manifestLocation = resident.manifestLocation;
+   if (resident.scope != null) update.scope = resident.scope;
+   if (resident.materialization != null)
+      update.materialization = resident.materialization;
+   if (resident.queryMetadata != null)
+      update.queryMetadata = resident.queryMetadata;
+   return update;
 }
