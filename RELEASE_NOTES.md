@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
+
+`simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it
+passes to `git`. When Publisher clones a package or environment from a GitHub URL, the `git` child
+process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINAL_PROMPT`,
+`GIT_CONFIG_*` and the rest), or `SSH_ASKPASS`, `EDITOR`, `VISUAL` and `PAGER`. Proxy variables
+(`HTTPS_PROXY`, `NO_PROXY`), `SSL_CERT_FILE` and `HOME` still pass through, so settings in the
+server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
+`GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
+
 ## [Unreleased] - The Docker image is signed with cosign
 
 `ms2data/malloy-publisher` is now signed at release with Sigstore cosign (keyless, through GitHub Actions OIDC). Verify a release with:

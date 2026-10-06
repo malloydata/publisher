@@ -99,7 +99,7 @@
       "morgan": "^1.10.0",
       "node-cron": "^3.0.3",
       "recursive-readdir": "^2.2.3",
-      "simple-git": "^3.36.0",
+      "simple-git": "^4.0.2",
       "uuid": "^11.0.3",
       "winston": "^3.17.0"
    },
