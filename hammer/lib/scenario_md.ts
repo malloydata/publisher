@@ -2068,8 +2068,17 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   // than reading its table — the one prose a successful run
                   // carries.
                   if (step.cites) {
-                     const reasons = Object.values(entries)
-                        .map((e) => e.upstreamRecomputeReason ?? "")
+                     // The sources the scenario marked `(recomputed)`, when it
+                     // marked any; otherwise every entry.
+                     const marked = [...reuseEids.entries()]
+                        .filter(([, mode]) => mode === "recomputed")
+                        .map(([eid]) => eid);
+                     const reasons = (
+                        marked.length
+                           ? marked.map((eid) => entries[eid])
+                           : Object.values(entries)
+                     )
+                        .map((e) => e?.upstreamRecomputeReason ?? "")
                         .join("\n");
                      assert.includes(
                         `recompute reason cites "${step.cites}"`,

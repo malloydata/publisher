@@ -40,6 +40,7 @@ import {
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
+   upstreamReuseFromManifest,
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -5686,5 +5687,206 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.refresh).toBe("full");
          expect(upsert.called).toBe(false);
       });
+   });
+});
+
+describe("upstreamReuseFromManifest", () => {
+   const addressByName = { daily: "addr-daily", sites: "addr-sites" };
+   const builtEntries = {
+      "addr-daily": {
+         sourceEntityId: "addr-daily",
+         sourceName: "daily",
+         physicalTableName: "daily__g1",
+         storageDestinationName: "lake",
+      },
+   };
+
+   it("reused when every upstream's address is in the manifest the SQL was rendered with", () => {
+      const out = upstreamReuseFromManifest({
+         reached: ["daily", "sites"],
+         addressByName,
+         substituted: { "addr-daily": {}, "addr-sites": {} },
+         full: { "addr-daily": {}, "addr-sites": {} },
+         builtEntries: {},
+         tier: "colocated",
+      });
+      expect(out).toEqual({
+         fields: { upstreamReuse: "reused" },
+         inManifestOnly: [],
+         missing: [],
+      });
+   });
+
+   it("an entry handed over by reference counts, whatever it is called: the lookup is by address, never by name", () => {
+      // A thin reference carries no sourceName. By address it is present.
+      const out = upstreamReuseFromManifest({
+         reached: ["daily"],
+         addressByName,
+         substituted: { "addr-daily": { tableName: "daily__g1" } },
+         full: { "addr-daily": { tableName: "daily__g1" } },
+         builtEntries: {
+            "addr-daily": {
+               sourceEntityId: "addr-daily",
+               physicalTableName: "daily__g1",
+            },
+         },
+         tier: "colocated",
+      });
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a colocated build recomputes a storage-tier upstream and says which destination holds it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: ["daily"],
+         addressByName,
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "colocated",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'daily' is materialized in storage destination 'lake'/,
+      );
+   });
+
+   it("a storage build treats a storage-tier upstream as a parent to stack on, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: ["daily"],
+         addressByName,
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("an upstream in no manifest is missing, and the reason says what would have supplied it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: ["daily"],
+         addressByName,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /neither built in this run nor supplied by reference/,
+      );
+   });
+
+   it("a source with no stored upstream reports nothing", () => {
+      expect(
+         upstreamReuseFromManifest({
+            reached: [],
+            addressByName,
+            substituted: {},
+            full: {},
+            builtEntries: {},
+            tier: "colocated",
+         }).fields,
+      ).toEqual({});
+   });
+});
+
+describe("buildOneSource reports upstreamReuse from the manifest it substituted from", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   withQueryMetadataOn();
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   // The author model: `rollup` (the source being built) reads `daily`, a
+   // persist source over a table.
+   const modelDef = {
+      contents: {
+         orders: { sourceID: "orders@m", type: "table" },
+         daily: {
+            sourceID: "daily@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "orders@m" },
+         },
+         rollup: {
+            sourceID: "rollup@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "daily@m" },
+         },
+      },
+   };
+   const planFacts = {
+      persistNames: new Set(["daily", "rollup"]),
+      aliasesBySourceName: {},
+      addressByName: { daily: "addr-daily", rollup: "addr-rollup" },
+   };
+
+   async function build(
+      manifest: Manifest,
+      builtEntries: Record<string, unknown>,
+   ) {
+      const source = fakeSource({
+         name: "rollup",
+         sourceEntityId: "addr-rollup",
+         sql: "SELECT * FROM t",
+         modelDef,
+      });
+      const instruction: BuildInstruction = {
+         sourceEntityId: "addr-rollup",
+         materializedTableId: "mt-1",
+         physicalTableName: "rollup_mz",
+         realization: "COPY",
+      };
+      return (
+         ctx.service as unknown as {
+            buildOneSource: (...args: unknown[]) => Promise<{
+               upstreamReuse?: string;
+               upstreamRecomputeReason?: string;
+            }>;
+         }
+      ).buildOneSource(
+         source,
+         instruction,
+         { runSQL: sinon.stub().resolves(undefined) },
+         { duckdb: "dig" },
+         manifest,
+         {
+            getApiConnection: () => ({}),
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         builtEntries,
+         undefined,
+         undefined,
+         undefined,
+         planFacts,
+      );
+   }
+
+   it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {
+      const manifest = new Manifest();
+      manifest.update("addr-daily", { tableName: "daily__g1" });
+      const entry = await build(manifest, {
+         "addr-daily": {
+            sourceEntityId: "addr-daily",
+            physicalTableName: "daily__g1",
+            connectionName: "duckdb",
+         },
+      });
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
+   });
+
+   it("recomputed, with the reason, when the upstream is in no manifest", async () => {
+      const entry = await build(new Manifest(), {});
+      expect(entry.upstreamReuse).toBe("recomputed");
+      expect(entry.upstreamRecomputeReason).toMatch(
+         /'daily' is not in this build's manifest/,
+      );
    });
 });

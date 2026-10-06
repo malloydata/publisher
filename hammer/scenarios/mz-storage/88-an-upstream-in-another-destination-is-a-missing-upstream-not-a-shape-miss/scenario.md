@@ -93,3 +93,29 @@ so strict refuses — and the reason says where it is missing from.
   reference: daily
 
 cites: not materialized in destination 'far'
+
+## Mutate orders_pg.cxd_orders
+
+| order_id:int | order_date:date | amount:num |
+| ------------ | --------------- | ---------- |
+| 99           | 2026-01-03      | 1000       |
+
+## Publish (forceRefresh, sources=rollup)
+
+Rebuild `rollup` alone, non-strict. It cannot read `daily` from `far`, so it
+recomputes from the warehouse — and the rows say so. (Binding only `rollup`'s
+new manifest leaves `daily` serving live from here on, which is why the strict
+refusal above runs first: its `reference: daily` is enriched from the bound
+manifest, and after this step that manifest no longer holds `daily`.)
+
+expect upstreams: rollup -> recomputed
+
+## Query rollup (again)
+
+The recompute saw the 1000.
+
+Expect:
+
+| grand_total:num |
+| --------------- |
+| 1300            |

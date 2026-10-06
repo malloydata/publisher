@@ -1464,7 +1464,9 @@ function pipelineReferences(pipeline: unknown): unknown[] {
  * compile under. Order is kept and blank lines are dropped.
  */
 export function documentFlagLines(text: string): string[] {
+   // Block comments first, so a `##!` quoted inside one is not a flag.
    return text
+      .replace(/\/\*[\s\S]*?\*\//g, "")
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.startsWith("##!"));

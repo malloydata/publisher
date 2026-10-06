@@ -132,13 +132,94 @@ export interface ChainedPlanFacts {
    persistNames: ReadonlySet<string>;
    /** The names sharing one table, keyed by each of them (groupAliasesByName). */
    aliasesBySourceName: Record<string, string[]>;
+   /**
+    * Each name's content address — the key the compiler looks a table up by
+    * when it substitutes a manifest entry into a build's SQL. Absent for a
+    * source whose SQL could not be rendered.
+    */
+   addressByName: Record<string, string | undefined>;
 }
 
 /** A build with no plan to consult: nothing is known to be stored. */
 const NO_PLAN_FACTS: ChainedPlanFacts = {
    persistNames: new Set(),
    aliasesBySourceName: {},
+   addressByName: {},
 };
+
+/**
+ * How a build read the stored tables its source depends on, decided from the
+ * same lookup the compiler made: `getSQL` substitutes a manifest entry for a
+ * persist source when the manifest holds the source's content address, and
+ * inlines the source's definition otherwise. So an upstream was read from its
+ * table exactly when its address is in `substituted` — the manifest this
+ * build's SQL was rendered with — whatever the entry was called or where it
+ * came from (an entry handed over by reference carries no `sourceName`, and a
+ * lookup by name would call that a recompute).
+ *
+ * `inManifestOnly` are upstreams the full manifest holds but `substituted` does
+ * not: entries a `storage=` destination holds, which `manifestExcludingStorage`
+ * drops because a warehouse build cannot read them. For a `storage=` build they
+ * are the parents to stack on; for a colocated build they are recomputed.
+ * `missing` are upstreams no manifest holds — neither built in this run nor
+ * supplied by reference — which only a recompute can supply.
+ */
+export function upstreamReuseFromManifest(params: {
+   reached: readonly string[];
+   addressByName: Record<string, string | undefined>;
+   /** The manifest the compiler substituted from (storage entries excluded). */
+   substituted: Record<string, unknown>;
+   /** The run's whole manifest, storage entries included. */
+   full: Record<string, unknown>;
+   /** The run's entries so far, by id, for a storage entry's destination. */
+   builtEntries: Record<string, ManifestEntry>;
+   tier: "colocated" | "storage";
+}): {
+   fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
+   inManifestOnly: string[];
+   missing: string[];
+} {
+   const inManifestOnly: string[] = [];
+   const missing: string[] = [];
+   const reasons: string[] = [];
+   for (const name of params.reached) {
+      const address = params.addressByName[name];
+      if (address !== undefined && address in params.substituted) continue;
+      if (address !== undefined && address in params.full) {
+         inManifestOnly.push(name);
+         if (params.tier === "colocated") {
+            const destination =
+               params.builtEntries[address]?.storageDestinationName ??
+               "a storage destination";
+            reasons.push(
+               `'${name}' is materialized in storage destination ` +
+                  `'${destination}', which a warehouse build cannot read`,
+            );
+         }
+         continue;
+      }
+      missing.push(name);
+      reasons.push(
+         `'${name}' is not in this build's manifest (neither built in this ` +
+            `run nor supplied by reference)`,
+      );
+   }
+   const fields: Pick<
+      ManifestEntry,
+      "upstreamReuse" | "upstreamRecomputeReason"
+   > =
+      params.reached.length === 0
+         ? {}
+         : reasons.length === 0
+           ? { upstreamReuse: "reused" }
+           : {
+                upstreamReuse: "recomputed",
+                upstreamRecomputeReason:
+                   `persisted upstream ${reasons.join("; ")}; recomputed from ` +
+                   `its definition in the warehouse`,
+             };
+   return { fields, inManifestOnly, missing };
+}
 
 /**
  * Derive {@link ChainedPlanFacts} from the compiled plan.
@@ -168,6 +249,7 @@ function chainedPlanFacts(
    connectionDigests: Record<string, string>,
 ): ChainedPlanFacts {
    const planSources: { name: string; sourceEntityId?: string }[] = [];
+   const addressByName: Record<string, string | undefined> = {};
    for (const source of Object.values(sources)) {
       let sourceEntityId: string | undefined;
       try {
@@ -178,10 +260,14 @@ function chainedPlanFacts(
          // on its own path, and here it is a name with no table-mates.
       }
       planSources.push({ name: source.name, sourceEntityId });
+      if (!(source.name in addressByName)) {
+         addressByName[source.name] = sourceEntityId;
+      }
    }
    return {
       persistNames: new Set(planSources.map((s) => s.name)),
       aliasesBySourceName: groupAliasesByName(planSources),
+      addressByName,
    };
 }
 import type { ApiConnection } from "./model";
@@ -2964,56 +3050,35 @@ export class MaterializationService {
          connectionDigests,
       });
 
-      // Whether this source's persisted upstreams were read from their tables
-      // or recomputed inline, for the entry to report. A colocated build reads a
-      // same-tier upstream the manifest carries and inlines the rest: one that
-      // landed in a `storage=` destination, which a warehouse build cannot read,
-      // or one this run neither built nor was handed. Under strict the inline
-      // never runs — `getSQL` above has already refused the miss — so reaching
-      // here non-strict with an upstream absent IS the recompute, and the entry
-      // says so. The `storage=` branch decides its own answer below.
-      const upstreamReuse = (): Pick<
-         ManifestEntry,
-         "upstreamReuse" | "upstreamRecomputeReason"
-      > => {
-         const reached = reachedPersistedSources(
-            authorModelLiftContext(
-               persistSource._model?._modelDef,
-               () => undefined,
-            ),
-            persistSource.name,
-            (name) => planFacts.persistNames.has(name),
-         );
-         if (reached.persisted.length === 0) return {};
-         const byName = new Map(
-            Object.values(builtEntries)
-               .filter((e) => e.sourceName)
-               .map((e) => [e.sourceName as string, e]),
-         );
-         const recomputed = reached.persisted.flatMap((name) => {
-            // The entry for this name's TABLE: whichever of the names sharing
-            // it built the table is the one the manifest records.
-            const entry = (planFacts.aliasesBySourceName[name] ?? [name])
-               .map((alias) => byName.get(alias))
-               .find((e) => e !== undefined);
-            if (!entry)
-               return [`'${name}' was not materialized for this build`];
-            if (entry.storageDestinationName)
-               return [
-                  `'${name}' is materialized in storage destination ` +
-                     `'${entry.storageDestinationName}', which a warehouse build cannot read`,
-               ];
-            return [];
-         });
-         return recomputed.length === 0
-            ? { upstreamReuse: "reused" }
-            : {
-                 upstreamReuse: "recomputed",
-                 upstreamRecomputeReason:
-                    `persisted upstream ${recomputed.join("; ")}; ` +
-                    `recomputed from its definition in the warehouse`,
-              };
-      };
+      // Which stored tables this source reads, and whether the manifest the
+      // compiler substituted from holds each — decided once here, for both
+      // tiers, from the walk over the author model and the content addresses
+      // the compiler looks tables up by. Everything below that turns on a
+      // stored upstream reads this: the `storage=` branch's choice to stack on
+      // the parents, strict's refusal of an upstream nothing supplied, and the
+      // `upstreamReuse` the entry reports.
+      //
+      // `_model._modelDef` is the compiler's internal shape of the compiled
+      // model. Should a compiler bump take it away, the walk finds nothing, the
+      // build proceeds as a source with no stored upstream, and the entry
+      // carries no `upstreamReuse` — a visible gap, not a wrong answer.
+      const lift = authorModelLiftContext(
+         persistSource._model?._modelDef,
+         readAuthorFile,
+      );
+      const reached = reachedPersistedSources(
+         lift,
+         persistSource.name,
+         (name) => planFacts.persistNames.has(name),
+      );
+      const reuse = upstreamReuseFromManifest({
+         reached: reached.persisted,
+         addressByName: planFacts.addressByName,
+         substituted: buildManifest.entries,
+         full: manifest.buildManifest.entries,
+         builtEntries,
+         tier: isStorageBuild ? "storage" : "colocated",
+      });
 
       // Every statement of this source's build carries the same metadata, so the
       // warehouse's query history shows the staging CTAS, the drop and the rename
@@ -3037,18 +3102,30 @@ export class MaterializationService {
       // federation, and a captured authoritative schema for the serve transform.
       // Gated by the kill switch: when off, ignore a destination and do a colocated build.
       if (isStorageBuild) {
-         // Stack-on-the-parent detection: does the source's SQL change when storage upstreams
-         // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
-         // (inlined, the buildSQL above)? If so it reads a storage-materialized
-         // upstream, so it can be built by reading the parent's lake table
-         // ("stack on the parent") instead of recomputing from raw. The compare
-         // is graph-free and self-contained; a single-source build's two SQLs are
-         // identical, so it skips straight to the passthrough below.
-         const dependsOnStorageUpstream =
-            persistSource.getSQL({
-               buildManifest: manifest.buildManifest,
-               connectionDigests,
-            }) !== buildSQL;
+         // A stored upstream nothing supplied — neither built in this run nor
+         // handed over by reference — is one only a recompute can stand in for,
+         // and under strict that recompute is exactly what the orchestrator
+         // forbade. The warehouse build SQL above was rendered permissively
+         // (`strict: false`), so the refusal is made here, by name, rather than
+         // left to the compiler's strict miss. Non-strict, the build recomputes
+         // and the entry says so.
+         if (manifest.strict && reuse.missing.length > 0) {
+            recordChainedStorageBuild("strict_refused");
+            recordStorageBuildFailure(instruction.destination!);
+            throw new Error(
+               `Failed to materialize source '${persistSource.name}' into ` +
+                  `storage destination '${instruction.destination}': persisted ` +
+                  `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +
+                  `not in this build's manifest (neither built in this run nor ` +
+                  `supplied by reference), and strict upstreams forbid ` +
+                  `recomputing it from raw`,
+            );
+         }
+         // Stack on the parent when the source reads a stored upstream whose
+         // table a storage destination holds: the full manifest carries it and
+         // the warehouse manifest does not, so the build SQL above inlined it,
+         // and reading the parent's lake table instead is the chained build.
+         const dependsOnStorageUpstream = reuse.inManifestOnly.length > 0;
          // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
          // underlying column, including ones the source hides (`except:`, non-public
          // access modifiers). Query reachability is bounded by the declared
@@ -3072,6 +3149,9 @@ export class MaterializationService {
             buildSQL,
             builtEntries,
             dependsOnStorageUpstream,
+            // What the entry reports when the build does not stack on a parent:
+            // the manifest's answer for the upstreams the passthrough SQL read.
+            baseReuse: reuse.fields,
             queryMetadata: runOptions.queryMetadata,
             incremental,
             contentSourceEntityId,
@@ -3242,7 +3322,7 @@ export class MaterializationService {
          // The recurring warehouse cost of keeping this source materialized —
          // the debit against whatever the materialization saves on the read side.
          queryCostBytes: buildCostBytes ?? null,
-         ...upstreamReuse(),
+         ...reuse.fields,
       };
    }
 
@@ -3353,6 +3433,15 @@ export class MaterializationService {
       contentSourceEntityId?: string;
       /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
       planFacts?: ChainedPlanFacts;
+      /**
+       * The `upstreamReuse` fields for a build that does NOT stack on a parent,
+       * decided by the caller from the manifest the passthrough SQL was rendered
+       * with ({@link upstreamReuseFromManifest}).
+       */
+      baseReuse?: Pick<
+         ManifestEntry,
+         "upstreamReuse" | "upstreamRecomputeReason"
+      >;
    }): Promise<ManifestEntry> {
       const {
          persistSource,
@@ -3364,6 +3453,7 @@ export class MaterializationService {
          queryMetadata,
          incremental,
          planFacts = NO_PLAN_FACTS,
+         baseReuse = {},
       } = params;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -3714,9 +3804,11 @@ export class MaterializationService {
          ...refreshFields(
             result.refresh?.refresh ?? (lineage ? "full" : undefined),
          ),
-         // How a chained source's rows were computed, and why the parents were
-         // not read when they were not. A source with no persisted upstream has
-         // only one way to build and says nothing here.
+         // How this source's stored upstreams were read. A build that stacked
+         // on its parents, or declined to, answers for itself; one with no
+         // parent to stack on reports what the manifest said about the
+         // upstreams its passthrough SQL read. A source with no persisted
+         // upstream has only one way to build and says nothing here.
          ...(dependsOnStorageUpstream
             ? {
                  upstreamReuse: result.upstreamReuse ?? "recomputed",
@@ -3724,7 +3816,7 @@ export class MaterializationService {
                     ? { upstreamRecomputeReason }
                     : {}),
               }
-            : {}),
+            : baseReuse),
          // SCANNED, matching the colocated path above, which fills this from the
          // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
          // Reporting billed here would put two different quantities in one field,
@@ -3902,8 +3994,7 @@ export class MaterializationService {
             missing,
             `persisted upstream ${missing.map((n) => `'${n}'`).join(", ")} ` +
                `of '${persistSource.name}' is not materialized in destination ` +
-               `'${destinationName}' for this build (neither built in this run ` +
-               `nor supplied by reference)`,
+               `'${destinationName}' for this build`,
          );
       }
       // A path to the source warehouse — a table joined beside a stored parent,
@@ -3986,9 +4077,12 @@ export class MaterializationService {
          // destination cannot express. Infrastructure failures pass through.
          if (err instanceof MaterializationEligibilityError) {
             throw new ChainedShapeNotCarriedError(
-               `'${persistSource.name}' reads only stored upstreams ` +
-                  `(${reached.persisted.map((n) => `'${n}'`).join(", ")}) but ` +
-                  `could not be built over them: ${err.message}`,
+               `'${persistSource.name}' reaches only stored upstreams ` +
+                  `(${reached.persisted.map((n) => `'${n}'`).join(", ")}), but ` +
+                  `the build could not express it over them — a refinement ` +
+                  `declared on a stored upstream that the build does not ` +
+                  `re-declare, or a construct the destination's dialect lacks: ` +
+                  `${err.message}`,
             );
          }
          throw err;

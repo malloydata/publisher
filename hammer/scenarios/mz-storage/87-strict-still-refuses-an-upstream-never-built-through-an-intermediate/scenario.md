@@ -60,8 +60,11 @@ source: rollup is daily_wide -> {
 ## Build refused (orchestrated, strict, pkg=snb)
 
 `daily` is a persisted upstream of `rollup`, reached through `daily_wide`, and
-nothing in this build provides it. Strict refuses rather than recomputing it.
+nothing in this build provides it. Strict refuses rather than recomputing it,
+and the refusal names the upstream and says what would have supplied it. The
+cite is the refusal's own wording, not the compiler's manifest miss, so this
+pins that the refusal is decided from what the source reaches.
 
 - rollup -> snb_rollup__g1 @ lake
 
-cites: daily
+cites: 'daily' is not in this build's manifest (neither built in this run nor supplied by reference)
