@@ -157,6 +157,31 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    });
 
    /**
+    * A what-if dashboard that does not compile is still a dashboard, judged
+    * by its replacement text: a drill to it is not dangling. Read from disk,
+    * where the file does not exist, it was not registered and the drill was.
+    */
+   it("registers a what-if dashboard that does not compile, so a drill to it resolves", async () => {
+      const { problems } = await env.compileSource(
+         "dashboards-lint",
+         "dashboards/no_such_dashboard.malloy",
+         [
+            '## artifact { title="Now exists" }',
+            "source: broken is nonexistent_connection.table('nope')",
+            "",
+         ].join("\n"),
+         false,
+         undefined,
+         "package",
+      );
+      const joined = problems.map((p) => p.message).join("\n");
+
+      expect(joined).not.toContain('targets "no_such_dashboard"');
+      // The control: the other dangling drill is still reported.
+      expect(joined).toContain('targets "ghost"');
+   });
+
+   /**
     * The compiler diagnostics are what the caller asked for; the lint is
     * additional. It must neither swallow them nor be dropped because of them.
     */
