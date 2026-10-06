@@ -60,7 +60,7 @@ dimension: is_complete is status = 'complete'
 | `type: min` / `max` | `min(field)` / `max(field)` | Direct mapping |
 | `type: number` | Derived measure expression | Usually a ratio; use `nullif()` for division |
 | `type: list` | No direct equivalent | Flag for alternative approach |
-| `type: percentile` / `type: median` | No measure equivalent | Malloy has no percentile function, and a percentile measure cannot be expressed (`skill:malloy-gotchas-modeling`). Compute it as a query with the **Tier boundaries** pattern in `skill:malloy-discover`, or list it as a gap to raise with the user |
+| `type: percentile` / `type: median` | No measure form: Malloy has no `percentile` function | Compute the value with the two-stage query in `skill:malloy-discover` § Example Queries, and tell the user it is a query result, not a reusable measure |
 
 **Filtered measures:** `filters:` → Malloy `{ where: }` syntax:
 ```

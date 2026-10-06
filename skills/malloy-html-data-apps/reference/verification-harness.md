@@ -37,7 +37,7 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     query: resolve,
     // Placeholder shape ONLY. The real queryFull returns a Malloy result
     // *envelope* handed to `<malloy-render>` el.result (see
-    // skill:malloy-html-data-app-runtime), NOT { data: rows }. If any tile renders
+    // reference/runtime.md), NOT { data: rows }. If any tile renders
     // via <malloy-render>, make this fixture a real envelope or that tile breaks.
     queryFull: (m, q) => resolve(m, q).then((rows) => ({ data: rows })),
     setToken() {},
@@ -58,7 +58,7 @@ trap 'kill "$server" 2>/dev/null; rm -rf "$webroot"' EXIT   # always tear the se
 
 ## 2. Drive it in a REAL browser and assert on the rendered DOM
 
-**It must be a real browser engine. jsdom cannot verify this app, and it fails in the most dangerous possible way.** jsdom does not execute `<script type="module">` at all, and it reports no error for it - so a run comes back with no console errors, no error tiles and no stuck skeletons, which looks like a clean pass while *none of your code ran*. That is exactly the false green this document exists to prevent, and it is worse because `skill:malloy-html-data-app-runtime` requires the ES-module entry point that breaks it. jsdom also lacks `fetch` (the query promise rejects and boot hangs), `ResizeObserver` (chart libraries throw, and it surfaces as your own error state), and a 2D canvas.
+**It must be a real browser engine. jsdom cannot verify this app, and it fails in the most dangerous possible way.** jsdom does not execute `<script type="module">` at all, and it reports no error for it - so a run comes back with no console errors, no error tiles and no stuck skeletons, which looks like a clean pass while *none of your code ran*. That is exactly the false green this document exists to prevent, and it is worse because `reference/runtime.md` requires the ES-module entry point that breaks it. jsdom also lacks `fetch` (the query promise rejects and boot hangs), `ResizeObserver` (chart libraries throw, and it surfaces as your own error state), and a 2D canvas.
 
 Playwright is the example below. If it is not installed and cannot be fetched - which is common in agent sandboxes - use the CDP harness at the end of this file instead. It needs nothing but a browser you already have and a WebSocket.
 

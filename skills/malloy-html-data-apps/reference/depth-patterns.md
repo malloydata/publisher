@@ -4,7 +4,7 @@ SPDX-License-Identifier: MIT
 -->
 # Depth patterns
 
-> The mechanics behind the depth plan in `SKILL.md` §4. Read when building drill-down, cross-filtering, linkable state, or an entity drawer. Each pattern names the bug you get by skipping a part, because every one of these fails quietly rather than loudly.
+> The mechanics behind the depth plan in `reference/design.md` §4. Read when building drill-down, cross-filtering, linkable state, or an entity drawer. Each pattern names the bug you get by skipping a part, because every one of these fails quietly rather than loudly.
 
 ## Shared state with a subscriber bus
 

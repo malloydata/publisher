@@ -53,7 +53,7 @@ RUN_JSON = {
 EVENTS = [
     {"kind": "attempt", "qid": "q1", "sample": 1, "phase": "baseline",
      "submitted": True, "final_query": "run: x -> y", "answer_text": "42",
-     "contaminated": False},
+     "final_givens": {"region": "West"}, "contaminated": False},
     {"kind": "score", "qid": "q1", "sample": 1, "phase": "baseline",
      "verdict": "match", "outcome": "pass"},
 ]
@@ -142,6 +142,12 @@ class SourcesMatchTheCsvs(unittest.TestCase):
         self.assertEqual(row["reexec_attempted"], "4")
         self.assertEqual(row["reexec_failed"], "1")
 
+    def test_the_final_givens_are_shown_with_the_final_query(self):
+        head, first = self.rows("attempts")[:2]
+        row = dict(zip(head, first))
+        self.assertEqual(row["final_query"], "run: x -> y")
+        self.assertEqual(row["final_givens"], '{"region":"West"}')
+
     def test_a_run_without_the_new_fields_writes_them_empty_not_missing(self):
         # Older runs predate every one of them. The column must still exist, so
         # the model compiles, and read as null rather than as a value.
@@ -169,6 +175,37 @@ class SourcesMatchTheCsvs(unittest.TestCase):
                         "reexec_attempted"):
                 self.assertIn(col, row)
                 self.assertEqual(row[col], "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class RowsGoldenInAFile(unittest.TestCase):
+    """A rows golden kept in a CSV showed as unanswerable in the cases table."""
+
+    def test_the_cases_table_shows_the_rows_from_the_file(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            run, sset, out = tmp / "run1", tmp / "set", tmp / "pkg"
+            run.mkdir()
+            (sset / "gold").mkdir(parents=True)
+            (sset / "gold" / "q1.csv").write_text("region,total\nWest,12\n")
+            (run / "run.json").write_text(json.dumps(RUN_JSON))
+            (run / "events.jsonl").write_text(
+                "\n".join(json.dumps(e) for e in EVENTS) + "\n")
+            (sset / "set.json").write_text(json.dumps({"package": "x"}))
+            (sset / "cases.jsonl").write_text(json.dumps(
+                {"qid": "q1", "question": "q?",
+                 "golden": {"kind": "rows", "path": "gold/q1.csv"}}) + "\n")
+            p = subprocess.run(
+                [sys.executable, str(SCRIPT), "--run", str(run),
+                 "--set", str(sset), "--out", str(out), "--without-diagnosis"],
+                capture_output=True, text=True, timeout=300)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with (out / "data" / "cases.csv").open() as fh:
+                row = next(csv.DictReader(fh))
+            self.assertNotIn("unanswerable", row["golden_display"])
+            self.assertIn("1 rows", row["golden_display"])
+            self.assertIn("West", row["golden_value"])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

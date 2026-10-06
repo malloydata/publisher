@@ -58,4 +58,60 @@ describe("withSource", () => {
          reaches(doc("../storefront.malloy"), "orders", "storefront.malloy"),
       ).toBe(true);
    });
+
+   it("joins an exporter's existing import when a re-exporting model is the one credited", () => {
+      const next = withSource(
+         doc("../storefront.malloy"),
+         "regions",
+         "data_app.malloy",
+         "dashboards/x.malloy",
+         ["data_app.malloy", "storefront.malloy"],
+      );
+      expect(next).toEqual([
+         {
+            kind: "names",
+            names: ["orders", "regions"],
+            from: "../storefront.malloy",
+         },
+      ]);
+   });
+});
+
+describe("reaches, through a whole-file import", () => {
+   const whole = (from: string) => ({
+      imports: [{ kind: "all" as const, from }],
+      sources: [],
+   });
+
+   it("counts an import of the model that exports the source", () => {
+      expect(
+         reaches(whole("../storefront.malloy"), "orders", "storefront.malloy"),
+      ).toBe(true);
+   });
+
+   it("counts an import of any exporter, not only the one the catalog credits", () => {
+      const args = [
+         "orders",
+         "data_app.malloy",
+         "dashboards/x.malloy",
+      ] as const;
+      expect(reaches(whole("../storefront.malloy"), ...args)).toBe(false);
+      expect(
+         reaches(whole("../storefront.malloy"), ...args, [
+            "data_app.malloy",
+            "storefront.malloy",
+         ]),
+      ).toBe(true);
+   });
+
+   it("reads './../m.malloy' as '../m.malloy'", () => {
+      expect(
+         reaches(
+            whole("./../storefront.malloy"),
+            "orders",
+            "storefront.malloy",
+            "dashboards/x.malloy",
+         ),
+      ).toBe(true);
+   });
 });

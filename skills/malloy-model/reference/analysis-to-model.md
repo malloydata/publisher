@@ -83,5 +83,5 @@ Don't formalize too early. Good signals:
 - You've answered 3+ distinct questions and keep redefining the same measures
 - You find yourself copy-pasting dimensions or joins between queries
 - Someone else needs to use your analysis patterns
-- You want a notebook or dashboard that should survive data refreshes
+- You want a dashboard (or an existing notebook) that should survive data refreshes
 - You built something non-trivial (regex, window function, multi-step logic) that would be painful to recreate

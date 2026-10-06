@@ -1,6 +1,6 @@
 ---
 name: malloy-gotchas-modeling
-description: Common Malloy modeling mistakes, for writing source definitions, dimensions, measures or joins - reserved words, NULL checks, date functions, type casts, field management (extend except/accept/rename vs include public/internal/private), query-based source gotchas.
+description: Malloy modeling mistakes and compile-error fixes. Read before writing sources, dimensions, measures or joins, and when a .malloy file will not compile. Reserved words, NULLs, dates, field access.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -12,6 +12,28 @@ SPDX-License-Identifier: MIT
 > **Read this before writing Malloy code.** These patterns cause most modeling errors.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
+## When a Model Will Not Compile
+
+**Get the error.** Use an editor-diagnostics tool if your host has one. Otherwise run any query against the source with `execute_query` and read the error it returns; every host that can run Malloy can do this. Only ask the user to open the file in an editor when you know they have it open there.
+
+**Errors cascade.** Fix the FIRST error only, recompile, repeat; later errors are often caused by it. If the message is unclear, call `search_malloy_docs` with the message text.
+
+| Error | Fix |
+|-------|-----|
+| "Unknown field" | Check the typo, the source order, the wrong source, or a missing `import` |
+| "Can't use type string" | Cast it: `field::number` (see String Columns Need Casts) |
+| `Aggregate expressions are not allowed in `where:`; use `having:`` | Filter a measure with `having:` |
+| 20+ random errors | Backtick a reserved word (`` `date` ``, `` `hour` ``, `` `number` ``); see Reserved Words |
+| `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see Field Management) |
+| `IO Error: No files found that match the pattern "data/x.csv"` | A data-file path problem, not the model. See Relative Data-File Paths. The "not defined" errors under it are cascade |
+| "Can't find source X", or an import path error | The path is relative to the importing file: `import "orders.malloy"` from the same folder, `import "../orders.malloy"` from a subfolder. Subfolders are fine; do not move files to fix an import |
+| Circular imports | Source A imports B which imports A. Restructure to break the cycle |
+| `unexpected 'from'` | `from()` was removed. Write the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
+| Query-based source: "Can't find field" | The source query's `group_by` and `aggregate` fields must match what `extend {}` references; check imported sources exist |
+| "Cannot redefine 'X'" | See Cannot Redefine Query-Based Source Columns |
+| `sum(items.cost)` fails with `Join path is required for this calculation` | Over a `join_many` path write `items.cost.sum()`. Over a `join_one` path both compile: `sum(o.total)` counts each order once per base row, `o.total.sum()` once per order. Use the second for the joined source's own total |
+| `order_by` on a joined path fails | Alias the field in `group_by` (`yr is races.year`) and order by the alias |
 
 ## Reserved Words: Backtick Them
 
@@ -33,12 +55,14 @@ top, bottom, desc, asc, row, range, current, window, rank
 - `number`: only the bare word needs backticking; `account_number` is fine
 - `source`: reserved; use a different alias like `traffic_source`
 
-## NULL Checks: `is not null`, NOT `!= null`
+## NULL Checks: write `is not null`
 
 ```malloy
-// WRONG                             // RIGHT
+// AVOID (compiles with a warning)     // RIGHT
 dimension: is_sold is sold_at != null   dimension: is_sold is sold_at is not null
 ```
+
+`!= null` also compiles and returns the right rows (a null row comes back false), but the compiler warns `Use 'is not null' to check for NULL instead of '!= null'`. Write `is not null` to keep the file warning-free.
 
 ## Date Functions vs Properties
 
@@ -143,7 +167,9 @@ measure: median_x is percentile_cont!(x, 0.5)
 measure: median_x is sql_number("PERCENTILE_CONT(...) ...") { is_aggregate: true }
 ```
 
-**Ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
+**To see a median or any percentile as evidence** (for example before choosing a tier boundary), run the two-stage nearest-rank query in `skill:malloy-discover` § Example Queries. It is a query result you read, not a reusable measure.
+
+**For a measure, ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
 
 **`stddev` does work**, so reach for it when the question is about spread. It is a native Malloy aggregate rather than a raw-SQL escape, so unlike everything above it compiles both inline and as a `measure:`, and it is the sample standard deviation. `variance`, `stddev_samp`, and `stddev_pop` are not Malloy functions, and pushing them through `!` fails as a scalar exactly like `percentile_cont!`.
 
@@ -184,7 +210,7 @@ source: orders is conn.table('orders') include {
 
 ### When a `rename:` is needed: rename first, then `include {}`
 
-The usual reason is a collision inside `include {}`: a measure cannot share a name with a raw column, even one tagged `internal:`, and the compiler says so (`Cannot redefine 'revenue' 'revenue' is internal`). The fix is to rename the raw column out of the way, which frees the name for the measure. Order is what makes it work:
+The usual reason is a collision inside `include {}`: a measure cannot share a name with a raw column, even one tagged `internal:`, and the compiler says so (`Cannot redefine 'revenue'`). The fix is to rename the raw column out of the way, which frees the name for the measure. Order is what makes it work:
 
 ```malloy
 ##! experimental.access_modifiers
@@ -263,7 +289,7 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 | Looks like it needs SQL | Malloy equivalent |
 |---|---|
 | Multi-CTE pipeline | Stacked query-based sources: `source: a is t -> {...}`; `source: b is a -> {...}`; `source: c is b -> {...}` |
-| UNNEST / array column access | `array_column.each.field`: arrays auto-join as nested tables ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
+| UNNEST / array column access | An array of records is read by its field path: `group_by: ys.yr`, `aggregate: tv is ys.v.sum()`. An array of plain values is read with `.each` and nothing after it: `group_by: v is arr.each`. `arr.each.field` does not exist ([data types docs](https://docs.malloydata.dev/documentation/language/datatypes#array-access)) |
 | PIVOT (conditional aggregation) | Filtered aggregates: `aggregate: a is x.sum() { where: cat = 'a' }, b is x.sum() { where: cat = 'b' }` |
 | Window functions (any frame, including custom) | `calculate:` with `sum_cumulative`, `lag`, `lead`, `rank`, `row_number`, `avg_moving`, `first_value`, `last_value`: supports `partition_by:` and `order_by:` ([window functions docs](https://docs.malloydata.dev/documentation/language/functions#window-functions)) |
 | `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` | `sum_cumulative(x) - x` (cumulative-including-current minus current = cumulative-excluding-current) |
@@ -413,7 +439,7 @@ Two count-shaped numbers side by side, one filtered and one not; read as "701 of
 - **Keep the join as a population baseline** when comparing a row to the whole population is the intent (e.g. `energy_vs_decade`). Then every joined field's `#(doc)` must say it is a fixed population value that does not respond to filters, and count-shaped fields with no comparison purpose (like `decade_track_count`) should be `internal:`; they only invite the misreading.
 - **Compute the aggregate as a query-based source from the detail table** so it derives from one source of truth and the derivation is visible.
 
-This is the modeling-time consequence of ignoring `skill:malloy-scope`'s advice to skip pre-aggregated snapshot tables and compute fresh in Malloy instead.
+This is the modeling-time consequence of ignoring `skill:malloy-define`'s scope advice to skip pre-aggregated snapshot tables and compute fresh in Malloy instead.
 
 ## Thresholds Are Decisions, Not Syntax
 

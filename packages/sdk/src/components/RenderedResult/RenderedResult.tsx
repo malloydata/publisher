@@ -301,6 +301,18 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
       the border's job, and the border is already doing it. */
    box-shadow: none !important;
 }
+/* The strip of big-value cards as a grid, so cards share a width and the last one does not wrap
+   alone. The renderer's wrapping flex row sizes each card to its own text. The 250px floor is the
+   widest realistic value: it is nowrap at 32px in an overflow:visible card, so a narrower track
+   would spill it onto its neighbour. Embedded (a nested big_value) is left as the renderer draws it. */
+.malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+.malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   width: auto;
+   max-width: none;
+}
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
 }

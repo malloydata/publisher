@@ -231,7 +231,10 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        # Pinned to a commit: cosign-installer publishes no floating major tag
+        # (there is no `v4`), and this step installs the tool that signs the
+        # release, so it is pinned exactly rather than to a moving ref.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
 

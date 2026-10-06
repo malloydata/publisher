@@ -1,6 +1,6 @@
 ---
 name: malloy-define
-description: Propose a source plan and field definitions for a Malloy semantic model. Covers picking which sources to model and at what grain, then proposing the specific renames, dimensions, and measures per source, every proposal backed by querying the data.
+description: Propose scope, a source plan and field definitions for a Malloy model. Which tables and questions, which sources at what grain, then renames, dimensions and measures, each backed by querying data.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -9,16 +9,34 @@ SPDX-License-Identifier: MIT
 
 # Propose sources and definitions
 
-This skill covers two consecutive activities when building or extending a Malloy semantic model:
+This skill covers three consecutive activities when building or extending a Malloy semantic model:
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
+- **Propose scope**: which tables and which questions the model is for.
 - **Propose sources**: the architectural blueprint (which sources, what grain).
 - **Propose definitions**: the specific fields per base source (renames, dimensions, measures).
 
 Both happen in conversation. Propose, let the user confirm or adjust, then carry the confirmed plan forward into the actual `.malloy` model. There is no separate plan-file store: keep the source plan and field proposals in the conversation, and write the model itself when the user has confirmed. See your modeling workflow for the broader picture.
 
-Read the existing model first so you propose against what is really there. Use `get_context` with a plain-English description to inspect the current sources and fields and find the most relevant existing sources. Confirm the scope (which tables are in play) before proposing the source plan.
+Read the existing model first so you propose against what is really there. Use `get_context` with a plain-English description to inspect the current sources and fields and find the most relevant existing sources. Confirm the scope (below) before proposing the source plan.
+
+## Propose the analytical scope
+
+**When:** after you have read the package's sources and fields and looked at the data distributions. **Goal:** present what you found, recommend one analytical focus, and let the user pick. Query the data with `execute_query` for row counts and data-quality problems, and record the proposal and the user's decision in your modeling workflow's `modeling-notes.md`.
+
+**Scope is "which questions", not just "which tables".** A model aimed at recommendation looks different from one aimed at catalog analysis over the same tables. A single A/B/C question about table inclusion is the source-plan question asked too early.
+
+Present four things:
+
+1. **A table summary** with rows, columns, role and key relationships. Roles: **Fact** (events you measure: orders, sessions), **Dimension** (entities you slice by: customers, products), **Bridge** (many-to-many links: order_items, tags), **Operational** (ETL, staging, audit; not analytical).
+2. **2-3 analytical focuses**, each with the tables it covers (for example "Order Analysis: revenue, trends, product performance"), and **one recommendation with reasons**. Say what kind of model this is and what that rules out. A dataset of events supports trends over time. A dataset of entities with cumulative counters cannot do period-over-period analysis however well it is built ("release dates are 98% null, so this model cannot do calendar analysis"). The user should learn what the model will never answer before choosing.
+3. **Tables to skip, with reasons**: operational tables, staging copies of a table you model, and pre-aggregated summaries (compute fresh in Malloy; a pre-aggregated source ignores your filters, see `skill:malloy-gotchas-modeling`).
+4. **Options the user can answer in one word.** If your host has an `ask_user` tool, put the options in that card and nowhere else, with the evidence and your recommendation as prose. Otherwise give lettered one-line options (label, tables, key questions), mark the recommended one, and invite a mix ("A plus suppliers").
+
+Be opinionated: recommend one option clearly. With 20+ tables, group them by domain and focus on the most relevant cluster. Show evidence (row counts, relationship density) and flag data-quality problems you saw ("`orders` has about 3 percent duplicate rows on `order_id`").
+
+**After the user confirms,** restate the confirmed scope (connection and schema, tables in scope with row count and role, analytical focus in one line, deferred tables with reasons) and record it in `modeling-notes.md`. Then continue with the source plan.
 
 ## Propose a source plan
 
@@ -101,7 +119,7 @@ Present a table of proposed fields.
 | order_size | total buckets (data-driven) | Distribution: min $5, p25 $35, median $85, p75 $150, p95 $450, max $2,400. Proposed breaks at p25/p75: <$35, $35-$150, >$150 | nice-to-have |
 | is_returned | returned_at is not null | 8% of orders have non-null returned_at | nice-to-have |
 
-**Data-driven tiers:** For bucketed dimensions like `order_size`, always derive boundaries from the actual data distribution (percentiles, natural breaks, clustering). Query `min`, `max`, `p25`, `p50`, `p75`, `p95` and propose boundaries based on the distribution. Malloy has no percentile function; use the **Tier boundaries** query in `skill:malloy-discover`. Show the evidence so the user can confirm or adjust. Never use arbitrary hardcoded thresholds unless the user explicitly provides them.
+**Data-driven tiers:** For bucketed dimensions like `order_size`, always derive boundaries from the actual data distribution (percentiles, natural breaks, clustering). Query `min`, `max`, `p25`, `p50`, `p75`, `p95` and propose boundaries based on the distribution. Malloy has no `percentile` function; use the two-stage nearest-rank query in `skill:malloy-discover` § Example Queries. Show the evidence so the user can confirm or adjust. Never use arbitrary hardcoded thresholds unless the user explicitly provides them.
 
 **Measures:**
 
@@ -167,7 +185,7 @@ Once the definitions are confirmed, write them into the `.malloy` model (see you
 
 | Proposal Type | What to query first |
 |--------------|---------------------|
-| Dimension (bucketed) | Distribution: min, p25, median, p75, p95, max. Propose boundaries from natural breaks, not arbitrary values. |
+| Dimension (bucketed) | Distribution: min, p25, median, p75, p95, max (two-stage query in `skill:malloy-discover` § Example Queries; Malloy has no `percentile` function). Propose boundaries from natural breaks, not arbitrary values. |
 | Dimension (categorical) | Distinct values and frequencies. Show the actual categories and their counts. |
 | Measure (sum/avg) | Sample values: min, max, avg. Verify the column contains what you think (e.g., is `total` gross or net?). |
 | Measure (rate/ratio) | Query both numerator and denominator. Verify they make sense together. |
