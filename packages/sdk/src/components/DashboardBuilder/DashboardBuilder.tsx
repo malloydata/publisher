@@ -246,6 +246,16 @@ export function DashboardBuilder({
       ...(modelPath !== undefined ? { modelPath } : {}),
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
+   // The description is selected the way a tile is, and only one thing is:
+   // selecting a tile deselects it, and selecting it deselects the tile.
+   const [descriptionSelected, setDescriptionSelected] = useState(false);
+   useEffect(() => {
+      if (selected !== undefined) setDescriptionSelected(false);
+   }, [selected]);
+   const selectDescription = () => {
+      setSelected(undefined);
+      setDescriptionSelected(true);
+   };
    // Undo and redo point at the tile they changed: lit briefly, and scrolled to.
    const [flash, setFlash] = useState<string | undefined>(undefined);
    const stepping = useRef(false);
@@ -394,7 +404,10 @@ export function DashboardBuilder({
       () => ({
          // Escape drops the selection — unless the menu or the filter window is open, in which case the key is theirs and they close on it themselves.
          escape: () => {
-            if (!menu && !filterDialog) setSelected(undefined);
+            if (!menu && !filterDialog) {
+               setSelected(undefined);
+               setDescriptionSelected(false);
+            }
          },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
@@ -744,29 +757,40 @@ export function DashboardBuilder({
                   <Box sx={{ my: "-4px" }}>{actions}</Box>
                </Stack>
                {/* The description in a text block's box, styled as one is: the
-                same card, lifting on hover as a tile does, and taking a
-                selected tile's accent outline while it is being edited. */}
-               <TileCard
-                  sx={{
-                     minHeight: 72,
-                     outline: "2px solid transparent",
-                     outlineOffset: 2,
-                     transition: "outline-color 120ms, box-shadow 120ms",
-                     "&:hover": TILE_HOVER(theme),
-                     "&:focus-within": { outlineColor: theme.accent },
-                  }}
+                same card, lifting on hover as a tile does, and selected as a
+                tile is — one selection on the page, tile or description. */}
+               <Box
+                  aria-label="Description"
+                  aria-current={descriptionSelected}
+                  onPointerDown={selectDescription}
+                  onFocus={selectDescription}
                >
-                  <InlineMarkdown
-                     markdown={editor.document.description ?? ""}
-                     placeholder="Add a description"
-                     onCommit={(next) =>
-                        editor.update((draft) => {
-                           if (next.trim() === "") delete draft.description;
-                           else draft.description = next;
-                        })
-                     }
-                  />
-               </TileCard>
+                  <TileCard
+                     sx={{
+                        minHeight: 72,
+                        outline: `2px solid ${descriptionSelected ? theme.accent : "transparent"}`,
+                        outlineOffset: 2,
+                        transition: "outline-color 120ms, box-shadow 120ms",
+                        "&:hover": {
+                           ...TILE_HOVER(theme),
+                           ...(descriptionSelected && {
+                              outlineColor: theme.accent,
+                           }),
+                        },
+                     }}
+                  >
+                     <InlineMarkdown
+                        markdown={editor.document.description ?? ""}
+                        placeholder="Add a description"
+                        onCommit={(next) =>
+                           editor.update((draft) => {
+                              if (next.trim() === "") delete draft.description;
+                              else draft.description = next;
+                           })
+                        }
+                     />
+                  </TileCard>
+               </Box>
 
                {empty ? (
                   <>

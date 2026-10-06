@@ -72,6 +72,22 @@ const undo = () => fireEvent.click(button("Undo"));
 afterEach(cleanup);
 
 describe("click-to-edit text", () => {
+   it("selects the description or a tile, never both", async () => {
+      await mount();
+      const description = screen.getByLabelText("Description");
+      fireEvent.pointerDown(description);
+      expect(description.getAttribute("aria-current")).toBe("true");
+      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      expect(description.getAttribute("aria-current")).toBe("false");
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+      fireEvent.pointerDown(description);
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("false");
+   });
+
    it("opens on a click, commits on Enter, and is one undo step", async () => {
       await mount();
       editInline("By category", "Tile title", "Revenue");
