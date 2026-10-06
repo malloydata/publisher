@@ -20,7 +20,7 @@ const baseOf = (info: { project: { use: { baseURL?: string } } }) =>
    info.project.use.baseURL ?? "http://localhost:4000";
 
 const editing = (page: Page) =>
-   expect(page.getByText("Editing", { exact: true })).toBeVisible({
+   expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
       timeout: 60_000,
    });
 

@@ -383,11 +383,27 @@ export class InvalidArgumentError extends BadRequestError {}
  */
 export class CompileRefusedError extends BadRequestError {}
 
+/** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
+export class RenderTagRefusedError extends CompileRefusedError {}
+
+/** The restricted-construct gate could not parse the text, so it judged nothing: a refusal for a fragment, a plain compile problem for one tile of a document. */
+export class UnparseableTextError extends CompileRefusedError {
+   constructor(
+      message: string,
+      /** The parser's own words, which the message alone does not carry. */
+      readonly detail: string,
+   ) {
+      super(message);
+   }
+}
+
 /**
  * `lookup` is set where a name was looked up and missed. It carries the names
  * that do exist, so an MCP tool can tell the agent what to use instead. The
  * names stay out of the message because the message is also the REST 404 body,
  * and a REST caller may be scoped to one environment by the router in front.
+ * The MCP tools do put the names in their message, to any caller. That adds no
+ * disclosure: `list_packages` already names every loaded environment over MCP.
  */
 export class EnvironmentNotFoundError extends Error {
    constructor(

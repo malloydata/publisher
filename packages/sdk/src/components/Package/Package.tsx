@@ -46,7 +46,6 @@ import ContentTypeIcon, {
    type ContentType,
 } from "./ContentTypeIcon";
 import { AppDialog } from "../AppDialog";
-import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
@@ -69,13 +68,32 @@ const draftPrefix = (
 
 /** A served notebook opens by slug, like a dashboard; a `.malloynb` opens by path. */
 
+/** A dashboard or notebook the package page asks its host to open, and how. */
+export interface OpenDocumentRequest {
+   kind: DocumentKind;
+   slug: string;
+   /** `edit` for a document just created or a draft picked up; `view` otherwise. */
+   mode: "view" | "edit";
+}
+
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
+   /**
+    * Open a dashboard or notebook, to read or to edit. Where reading and
+    * editing live is the host's business, not the package page's, so a host
+    * with a builder of its own routes this. Absent, the page navigates to the
+    * Console's own routes: the document's, and `/edit` under it to edit.
+    */
+   onOpenDocument?: (
+      request: OpenDocumentRequest,
+      event?: React.MouseEvent,
+   ) => void;
    resourceUri: string;
 }
 
 export default function Package({
    onClickPackageFile,
+   onOpenDocument,
    resourceUri,
 }: PackageProps) {
    const { apiClients, server, mutable } = useServer();
@@ -87,6 +105,14 @@ export default function Package({
       });
    const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
+   const openDocument =
+      onOpenDocument ??
+      ((request: OpenDocumentRequest, event?: React.MouseEvent) => {
+         const to = `${documentRoute(environmentName, packageName, request.kind, request.slug)}${request.mode === "edit" ? "/edit" : ""}`;
+         // Without an event, called exactly as before this hook existed.
+         if (event) onClick(to, event);
+         else onClick(to);
+      });
 
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
    const [creating, setCreating] = useState<DocumentType | undefined>(
@@ -394,10 +420,6 @@ export default function Package({
          sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
          <Box sx={{ mb: 4 }}>
-            <BackLink
-               label={environmentName}
-               onClick={(event) => onClick(`/${environmentName}/`, event)}
-            />
             <Typography
                variant="h4"
                component="h1"
@@ -463,9 +485,11 @@ export default function Package({
                   setCreating(undefined);
                   for (const key of ["dashboards", "notebooks", "models"])
                      void queryClient.invalidateQueries({ queryKey: [key] });
-                  onClick(
-                     `${documentRoute(environmentName, packageName, created.kind, created.slug)}/edit`,
-                  );
+                  openDocument({
+                     kind: created.kind,
+                     slug: created.slug,
+                     mode: "edit",
+                  });
                }}
             />
          )}
@@ -535,19 +559,20 @@ export default function Package({
                            {...(artifact.secondary === undefined
                               ? {}
                               : { description: artifact.secondary })}
-                           rightLabel={KIND_BADGE[artifact.kind]}
                            onClick={(event) =>
-                              onClick(
-                                 artifact.slug === undefined
-                                    ? `/${environmentName}/${packageName}/${artifact.path}`
-                                    : documentRoute(
-                                         environmentName,
-                                         packageName,
-                                         artifact.kind,
-                                         artifact.slug,
-                                      ),
-                                 event,
-                              )
+                              artifact.slug === undefined
+                                 ? onClick(
+                                      `/${environmentName}/${packageName}/${artifact.path}`,
+                                      event,
+                                   )
+                                 : openDocument(
+                                      {
+                                         kind: artifact.kind,
+                                         slug: artifact.slug,
+                                         mode: "view",
+                                      },
+                                      event,
+                                   )
                            }
                         />
                      ))}
@@ -566,8 +591,12 @@ export default function Package({
                            label={draftSlug(locator)}
                            rightLabel={where}
                            onClick={(event) =>
-                              onClick(
-                                 `${documentRoute(environmentName, packageName, locator.type, draftSlug(locator))}/edit`,
+                              openDocument(
+                                 {
+                                    kind: locator.type,
+                                    slug: draftSlug(locator),
+                                    mode: "edit",
+                                 },
                                  event,
                               )
                            }
@@ -774,11 +803,6 @@ function PackageItemRow({
       />
    );
 }
-
-const KIND_BADGE: Record<DocumentKind, string> = {
-   dashboard: "Dashboard",
-   notebook: "Notebook",
-};
 
 interface ArtifactRow {
    kind: DocumentKind;

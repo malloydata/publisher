@@ -1,26 +1,28 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Button, Divider, Popover, Stack, Typography } from "@mui/material";
-import { useId } from "react";
+import AdsClickIcon from "@mui/icons-material/AdsClick";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import { Button, Popover, Stack, Typography } from "@mui/material";
+import { useEffect, useId, useRef } from "react";
 import { useDraft } from "./useDraft";
+import { dangerTextColor } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
-import { presetSpan } from "../Dashboard/DashboardGrid";
 import { ChartPicker } from "./ChartPicker";
 
 /**
  * A tile's own settings, on the tile: a popover off its menu button, so
- * editing it never means scrolling away from it. Its chart, width presets,
- * clickable cells and removal; its title and subtitle are edited on the tile. Its row is set by dragging it — a drop
+ * editing it never means scrolling away from it. Its chart, clickable cells
+ * and removal; its width is set by dragging its right edge; its title and subtitle are edited on the tile. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
- * strip under the header. Edits commit on close (`useDraft`).
+ * strip under the header. A chart pick commits at once, so the tile redraws
+ * under the open menu (`useDraft`'s `apply`).
  *
- * A text tile has only a width (when the grid has more than one column) and
- * Remove: its words are written on the tile itself.
+ * A text tile has only Remove: its words are written on the tile itself.
  */
 export interface TileMenuProps {
    anchor: HTMLElement | null;
@@ -32,8 +34,6 @@ export interface TileMenuProps {
    onRemove: () => void;
    /** Why removing is refused, shown beside a Remove that stays focusable; absent when it is allowed. */
    removeBlocked?: string;
-   /** The grid's width, which the width presets are fractions of. */
-   columns: number;
    /** Open the clickable-cells window for this tile's source. */
    onDrills: () => void;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
@@ -47,50 +47,6 @@ const customChart = (lines: string[] | undefined) =>
 const INHERITED_CHART =
    "This tile's view is declared on its source, so its chart is set in the model.";
 
-/** Width presets, as fractions of this grid. A tile's width is otherwise a column count, which cannot say "a third". */
-function WidthPresets({
-   columns,
-   colspan,
-   onPick,
-}: {
-   columns: number;
-   colspan: number | undefined;
-   onPick: (span: number) => void;
-}) {
-   const { theme } = usePublisherTheme();
-   return (
-      <Stack direction="row" sx={{ gap: 0.5, alignItems: "center" }}>
-         <Typography variant="caption" sx={{ color: theme.tileTitle, mr: 0.5 }}>
-            Width
-         </Typography>
-         {(
-            [
-               ["Full", 1],
-               ["½", 2],
-               ["⅓", 3],
-               ["¼", 4],
-            ] as const
-         ).map(([label, share]) => {
-            const span = presetSpan(columns, share);
-            const active = (colspan ?? 1) === span;
-            return (
-               <Button
-                  key={label}
-                  size="small"
-                  variant={active ? "contained" : "outlined"}
-                  aria-label={`Width ${label}`}
-                  aria-pressed={active}
-                  onClick={() => onPick(span)}
-                  sx={{ minWidth: 40, px: 1 }}
-               >
-                  {label}
-               </Button>
-            );
-         })}
-      </Stack>
-   );
-}
-
 export function TileMenu({
    anchor,
    tile,
@@ -98,13 +54,12 @@ export function TileMenu({
    onCommit,
    onRemove,
    removeBlocked,
-   columns,
    onDrills,
    view,
 }: TileMenuProps) {
    const removeReasonId = useId();
    const { theme } = usePublisherTheme();
-   const { draft, patch, close, discard } = useDraft(
+   const { draft, apply, close, discard } = useDraft(
       tile,
       anchor !== null,
       onCommit,
@@ -115,11 +70,24 @@ export function TileMenu({
    const editable =
       query !== undefined && query.declaration.kind !== "inherited";
    // The draft is a query tile whenever the controls that call this are shown.
-   const patchQuery = (change: (t: QueryTile) => void) =>
-      patch((t) => {
+   // Committed at once, so the tile redraws in the new chart while the menu is
+   // still open rather than when it closes.
+   const applyQuery = (change: (t: QueryTile) => void) =>
+      apply((t) => {
          if (isQueryTile(t)) change(t);
       });
-   const originalChart = tile && isQueryTile(tile) ? tile.chart : undefined;
+   // The chart as the menu opened on it: each pick commits, so the tile prop
+   // moves with them, and "back to where it started" means where the menu
+   // started.
+   const openedChart = useRef<QueryTile["chart"]>(undefined);
+   const opened = anchor !== null;
+   useEffect(() => {
+      if (opened)
+         openedChart.current =
+            tile && isQueryTile(tile) ? tile.chart : undefined;
+      // Only on opening: the tile changes under every pick.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [opened]);
 
    return (
       <Popover
@@ -141,18 +109,6 @@ export function TileMenu({
                      : `Text · ${draft.name}`}
                </Typography>
 
-               {!query && columns > 1 && (
-                  <WidthPresets
-                     columns={columns}
-                     colspan={draft.colspan}
-                     onPick={(span) =>
-                        patch((t) => {
-                           t.colspan = span;
-                        })
-                     }
-                  />
-               )}
-
                {query && editable && (
                   <>
                      <ChartPicker
@@ -163,8 +119,8 @@ export function TileMenu({
                            ? { disabledReason: customChart(query.chartLines) }
                            : {})}
                         onChange={(next) =>
-                           patchQuery((t) => {
-                              const was = originalChart;
+                           applyQuery((t) => {
+                              const was = openedChart.current;
                               // Back to where it started is no edit, so the draft must not differ from the tile.
                               if (next === (was ?? "default")) {
                                  if (was === undefined) delete t.chart;
@@ -181,17 +137,6 @@ export function TileMenu({
                            })
                         }
                      />
-                     {columns > 1 && (
-                        <WidthPresets
-                           columns={columns}
-                           colspan={query.colspan}
-                           onPick={(span) =>
-                              patchQuery((t) => {
-                                 t.colspan = span;
-                              })
-                           }
-                        />
-                     )}
                   </>
                )}
                {query && !editable && (
@@ -218,17 +163,18 @@ export function TileMenu({
                      single place to go. Everything else here is editable.
                   </Typography>
                )}
-               <Divider />
                <Stack direction="row" sx={{ justifyContent: "space-between" }}>
                   {editable ? (
                      <Button
                         size="small"
+                        startIcon={<AdsClickIcon />}
+                        aria-haspopup="dialog"
                         onClick={() => {
                            close();
                            onDrills();
                         }}
                      >
-                        Drill-through…
+                        Drill
                      </Button>
                   ) : (
                      <span />
@@ -236,24 +182,28 @@ export function TileMenu({
                   <Button
                      color="error"
                      size="small"
+                     startIcon={<DeleteOutlineIcon />}
                      // aria-disabled, not disabled, so the reason stays reachable by keyboard.
                      aria-disabled={removeBlocked !== undefined || undefined}
                      aria-describedby={
                         removeBlocked !== undefined ? removeReasonId : undefined
                      }
                      disableRipple={removeBlocked !== undefined}
-                     sx={
-                        removeBlocked !== undefined
+                     sx={(muiTheme) => ({
+                        // The host's destructive red (its error palette's
+                        // deeper shade), so a host themes it rather than this.
+                        color: dangerTextColor(muiTheme),
+                        ...(removeBlocked !== undefined
                            ? { opacity: 0.5, cursor: "default" }
-                           : undefined
-                     }
+                           : {}),
+                     })}
                      onClick={() => {
                         if (removeBlocked !== undefined) return;
                         discard();
                         onRemove();
                      }}
                   >
-                     Remove tile
+                     Delete
                   </Button>
                </Stack>
                {removeBlocked !== undefined && (

@@ -23,7 +23,6 @@ source: a is scoped_orders extend {
 
 const mount = async (
    options: {
-      onExit?: () => void;
       onSave?: (source: string) => Promise<void> | void;
       onDirtyChange?: (dirty: boolean) => void;
    } = {},
@@ -33,7 +32,6 @@ const mount = async (
       <DashboardBuilder
          source={SOURCE}
          document={document}
-         {...(options.onExit ? { onExit: options.onExit } : {})}
          {...(options.onSave ? { onSave: options.onSave } : {})}
          {...(options.onDirtyChange
             ? { onDirtyChange: options.onDirtyChange }
@@ -56,53 +54,16 @@ const type = (field: HTMLElement, value: string) =>
 afterEach(cleanup);
 
 describe("DashboardBuilder: an open inline draft", () => {
-   it("asks before exiting with a typed, uncommitted markdown draft", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      type(openDescription(), "Half-typed");
-      fireEvent.click(button("Close"));
-      expect(screen.getByRole("dialog")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("exits at once when the open markdown field is unchanged", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      openDescription();
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
-   it("asks when the markdown draft is one the writer would refuse", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      type(openDescription(), "# not ok\n|##");
-      expect(screen.getByText(/would close the text early/)).toBeDefined();
-      fireEvent.click(button("Close"));
-      expect(screen.getByRole("dialog")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
-   });
-
-   it("does not ask after the draft is committed and saved", async () => {
-      const onExit = mock(() => {});
+   it("is clean again once the committed draft is saved, and stays open", async () => {
+      const onDirtyChange = mock((_dirty: boolean) => {});
       const onSave = mock(async (_source: string) => {});
-      await mount({ onExit, onSave });
+      await mount({ onSave, onDirtyChange });
       type(openDescription(), "Committed");
       fireEvent.click(button("Done"));
-      fireEvent.click(button("Save changes"));
-      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(button("Saved")).toBeDefined());
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
-   it("does not ask after Cancel drops the draft", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      type(openDescription(), "Dropped");
-      fireEvent.click(button("Cancel"));
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(onDirtyChange.mock.calls.at(-1)?.[0]).toBe(false);
    });
 
    it("reports the draft through onDirtyChange, and clears it on Cancel", async () => {
@@ -133,25 +94,12 @@ describe("DashboardBuilder: an open inline draft", () => {
       }
    });
 
-   it("Save and exit commits the open markdown draft into the saved file", async () => {
-      const onExit = mock(() => {});
+   it("Save commits the open markdown draft into the saved file, and stays open", async () => {
       const onSave = mock(async (_source: string) => {});
-      await mount({ onExit, onSave });
+      await mount({ onSave });
       type(openDescription(), "Kept words");
-      fireEvent.click(button("Close"));
-      fireEvent.click(button("Save and exit"));
-      await waitFor(() => expect(onExit).toHaveBeenCalledTimes(1));
-      expect(onSave).toHaveBeenCalledTimes(1);
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
       expect(onSave.mock.calls[0]?.[0]).toContain("Kept words");
-   });
-
-   it("asks before exiting with a typed, uncommitted title", async () => {
-      const onExit = mock(() => {});
-      await mount({ onExit, onSave: async () => {} });
-      fireEvent.click(screen.getByText("By category"));
-      type(screen.getByLabelText("Tile title"), "Renamed");
-      fireEvent.click(button("Close"));
-      expect(screen.getByRole("dialog")).toBeDefined();
-      expect(onExit).not.toHaveBeenCalled();
    });
 });

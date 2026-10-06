@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { isStrictName } from "./malloyText";
+import { isStrictName } from "../../utils/malloyText";
 import {
    acceptsField,
    kindForFieldType,

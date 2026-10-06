@@ -39,13 +39,49 @@ describe("buildVegaThemeOverride", () => {
       expect(cfg.title.font).toBe("Roboto Mono");
    });
 
-   it("uses the resolved foreground + axisFaint values (no mode branch)", () => {
+   it("uses the resolved foreground, axis and gridline values (no mode branch)", () => {
       const dark = resolveTheme([], "dark");
       const cfg = buildVegaThemeOverride(dark)("bar") as {
          axis: { labelColor: string; gridColor: string };
       };
       expect(cfg.axis.labelColor).toBe(dark.foreground);
-      expect(cfg.axis.gridColor).toBe(dark.axisFaint);
+      expect(cfg.axis.gridColor).toBe(dark.gridline);
+   });
+
+   it("routes palette.axis, gridline and chartText to their Vega slots", () => {
+      const t = resolveTheme(
+         [
+            {
+               palette: {
+                  axis: { light: "#111111" },
+                  gridline: { light: "#222222" },
+                  chartText: { light: "#333333" },
+               },
+            },
+         ],
+         "light",
+      );
+      const cfg = buildVegaThemeOverride(t)("bar") as {
+         title: { color: string };
+         axis: {
+            labelColor: string;
+            titleColor: string;
+            domainColor: string;
+            tickColor: string;
+            gridColor: string;
+         };
+         legend: { labelColor: string; titleColor: string };
+         header: { labelColor: string; titleColor: string };
+      };
+      expect(cfg.axis.domainColor).toBe("#111111");
+      expect(cfg.axis.tickColor).toBe("#111111");
+      expect(cfg.axis.gridColor).toBe("#222222");
+      expect(cfg.axis.labelColor).toBe("#333333");
+      expect(cfg.axis.titleColor).toBe("#333333");
+      expect(cfg.legend.labelColor).toBe("#333333");
+      expect(cfg.legend.titleColor).toBe("#333333");
+      expect(cfg.title.color).toBe("#333333");
+      expect(cfg.header.labelColor).toBe("#333333");
    });
 
    it("returns the same config across chart types in v1", () => {

@@ -9,7 +9,7 @@ import extract from "extract-zip";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import simpleGit, { type SimpleGitProgressEvent } from "simple-git";
+import { simpleGit, type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {

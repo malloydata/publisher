@@ -344,6 +344,35 @@ npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored tok
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
 (`DOCKERHUB_TOKEN`, `PYPI_TOKEN`); npm does not.
 
+### Docker image signing
+
+`docker-image.yml`'s `merge` job signs the published manifest list with cosign, keyless, after
+`imagetools create` pushes it, then verifies the signature before the job ends. Things that are not
+obvious from the YAML:
+
+- **The digest comes from `imagetools create --metadata-file`, not from a tag.** A signature binds to
+  one digest; resolving `:latest` or the version tag afterwards would sign whatever the tag points at
+  by then.
+- **The certificate names `docker-image.yml`, not `release.yml`.** Fulcio's subject for GitHub
+  Actions is `job_workflow_ref`, the reusable workflow, so the identity a consumer verifies is
+  `https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main`.
+  Renaming or moving `docker-image.yml` changes that identity and breaks every consumer pinned to
+  it; treat the filename as a public contract.
+- **`id-token: write` has to be granted twice.** The `merge` job requests it and `release.yml`'s
+  `publish-docker` job must grant it, since a called workflow cannot hold more than its caller
+  grants. Dropping it from the caller fails `publish-docker` before any job starts.
+- **One signature covers the attestations.** The manifest list references each platform image and
+  its BuildKit SBOM and provenance attestation manifests by digest, so signing the list binds all of
+  them. The attestations themselves are not separately signed.
+- **A signing failure fails the release after the tags are already pushed.** The image is public
+  but unsigned, and `gh-release` does not run. Re-run the failed jobs: `imagetools create` re-pushes
+  the same list from the same platform digests and the signing steps run again. A Sigstore outage
+  (Fulcio or Rekor) shows up here the same way.
+- **The `@refs/heads/main` in the identity is what makes a branch dispatch distinguishable.**
+  `release.yml` has no ref guard (see *Hardening that is not in place yet*), so a release dispatched
+  from a branch is signed with that branch's ref. The in-workflow verify accepts any ref and prints
+  the identity it found; consumers pinning `@refs/heads/main` reject the branch-built image.
+
 ### Rules that bite (not guessable from the YAML)
 
 The first two rules below are npm's behaviour, not ours, and they drive a one-way-door decision, so

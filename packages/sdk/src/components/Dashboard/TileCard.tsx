@@ -8,12 +8,20 @@ import {
    type SxProps,
    type Theme,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
 /** `card` is a dashboard tile's panel; `none` is a notebook's bare flow. */
 export type TileChrome = "card" | "none";
+
+/**
+ * The least a carded tile is drawn at, by kind: a query tile holds a spinner
+ * and then a result, so it keeps room for one; a text tile holds a line or two
+ * of prose and is no taller than its text needs, past a floor that keeps a
+ * one-word tile from reading as a sliver. A bare (`none`) tile has no floor.
+ */
+export const TILE_MIN_HEIGHT = { query: 120, text: 72 } as const;
 
 /**
  * The card a dashboard tile sits in, and nothing else — so the builder, which
@@ -46,19 +54,26 @@ export type TileChrome = "card" | "none";
 export function TileCard({
    borderless = false,
    chrome = "card",
+   kind = "query",
    sx,
+   cardRef,
    children,
 }: {
    borderless?: boolean;
+   /** What the tile holds, which sets its {@link TILE_MIN_HEIGHT}. */
+   kind?: keyof typeof TILE_MIN_HEIGHT;
    /** `none` drops the card entirely, for a document that reads top to bottom. */
    chrome?: TileChrome;
    sx?: SxProps<Theme>;
+   /** The card's element, for a caller that watches where it is on the page. */
+   cardRef?: Ref<HTMLDivElement>;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
    const bare = borderless || chrome === "none";
    return (
       <Paper
+         ref={cardRef}
          elevation={0}
          data-chrome={chrome}
          sx={[
@@ -71,7 +86,7 @@ export function TileCard({
                display: "flex",
                flexDirection: "column",
                minWidth: 0,
-               minHeight: chrome === "none" ? 0 : 120,
+               minHeight: chrome === "none" ? 0 : TILE_MIN_HEIGHT[kind],
                p:
                   chrome === "none"
                      ? 0

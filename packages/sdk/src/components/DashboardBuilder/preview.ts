@@ -11,7 +11,7 @@ import {
    type LocalGiven,
    type QueryTile,
 } from "./document";
-import { malloyPath } from "./malloyText";
+import { malloyPath } from "../../utils/malloyText";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and

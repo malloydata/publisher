@@ -8,7 +8,12 @@ import type {
    ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { isNotebookModelPath, notebookReaderProblem } from "./notebook";
+import { compileDocument, type CompiledDocument } from "./compile_document";
+import {
+   claimsToBeANotebook,
+   isNotebookModelPath,
+   notebookReaderProblem,
+} from "./notebook";
 import { isDashboardModelPath } from "./dashboard";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
@@ -29,6 +34,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    CompileRefusedError,
+   RenderTagRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -37,6 +43,7 @@ import {
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
+   UnparseableTextError,
    WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
@@ -47,7 +54,10 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { assertNoRestrictedConstructs } from "./compile_restriction";
+import {
+   assertNoRenderTags,
+   assertNoRestrictedConstructs,
+} from "./compile_restriction";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -186,12 +196,13 @@ let compileRefusalsCounter: Counter | null = null;
 /**
  * Append-scope compile refusals, by reason.
  *
- * Both reasons answer 4xx or 5xx on the same endpoint, so without the label a
+ * The reasons answer 4xx or 5xx on the same endpoint, so without the label a
  * dependency outage and a caller sending forbidden text are one indistinguishable
  * spike -- and the one that needs paging looks like the one that does not.
  * `restricted_construct` is the caller's text; `base_model_load_failed` is the
  * named model failing to load, which includes the schema-fetch case that answers
- * 503.
+ * 503. `render_tag` is a document carrying a URL-producing render tag or markup
+ * in a label, also the caller's text but a different fix than a data root.
  */
 function getCompileRefusalsCounter(): Counter {
    if (compileRefusalsCounter) return compileRefusalsCounter;
@@ -212,6 +223,7 @@ function getCompileRefusalsCounter(): Counter {
 export function resetAdmissionTelemetryForTesting(): void {
    queryAdmissionRejectionsCounter = null;
    packageAdmissionRejectionsCounter = null;
+   compileRefusalsCounter = null;
 }
 
 /**
@@ -597,7 +609,11 @@ export class Environment {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-   ): Promise<{ problems: TaggedLogMessage[]; sql?: string }> {
+   ): Promise<{
+      problems: TaggedLogMessage[];
+      sql?: string;
+      document?: CompiledDocument;
+   }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
       if (!COMPILE_SCOPES.includes(scope)) {
@@ -790,37 +806,46 @@ export class Environment {
                hasExactGateModel = true;
             }
          }
-         if (gateModel && hasExactGateModel && source !== undefined) {
-            // Only the authorize gate (the *who* axis) applies to /compile.
-            // The query boundary (`explores`/`queryableSources`, the *what*
-            // axis) deliberately does NOT: compile is the authoring loop
-            // (validate -> save -> reload), and gating it made a curated
-            // package un-authorable — a QA session (HANDOFF CR-5) had every
-            // per-file compile 404 with "Query target is not queryable" the
-            // moment `queryableSources: "declared"` was set. The boundary is
-            // discovery curation, not access control (the skills say so
-            // outright); the accepted trade is that /compile can reveal a
-            // non-exported source's schema (and, with includeSql, SQL) —
-            // sources whose confidentiality matters are gated by
-            // `#(authorize)`, which still applies here in full.
-            await denyHiddenAsNotQueryable(
-               () => {
-                  gateModel.assertQueryBoundaryEarly(
-                     undefined,
-                     undefined,
-                     source,
-                  );
-               },
-               () =>
-                  gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                     // File and package scope compile the whole file (or, at
-                     // package scope with a source, the whole replacement) —
-                     // a locked name that is not the statement Malloy runs
-                     // must not refuse it, and its joins are author joins.
-                     wholeFile: scope !== "append",
-                  }),
-            );
-         }
+         // A document is gated cell by cell and tile by tile below, so one
+         // restricted cell does not refuse the cells the caller may read.
+         const documentCandidate =
+            scope === "append" &&
+            source !== undefined &&
+            claimsToBeANotebook(source);
+         const runEarlyGate = async (): Promise<void> => {
+            if (gateModel && hasExactGateModel && source !== undefined) {
+               // Only the authorize gate (the *who* axis) applies to /compile.
+               // The query boundary (`explores`/`queryableSources`, the *what*
+               // axis) deliberately does NOT: compile is the authoring loop
+               // (validate -> save -> reload), and gating it made a curated
+               // package un-authorable — a QA session (HANDOFF CR-5) had every
+               // per-file compile 404 with "Query target is not queryable" the
+               // moment `queryableSources: "declared"` was set. The boundary is
+               // discovery curation, not access control (the skills say so
+               // outright); the accepted trade is that /compile can reveal a
+               // non-exported source's schema (and, with includeSql, SQL) —
+               // sources whose confidentiality matters are gated by
+               // `#(authorize)`, which still applies here in full.
+               await denyHiddenAsNotQueryable(
+                  () => {
+                     gateModel.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        source,
+                     );
+                  },
+                  () =>
+                     gateModel.assertAuthorizedForText(source, givens ?? {}, {
+                        // File and package scope compile the whole file (or, at
+                        // package scope with a source, the whole replacement) —
+                        // a locked name that is not the statement Malloy runs
+                        // must not refuse it, and its joins are author joins.
+                        wholeFile: scope !== "append",
+                     }),
+               );
+            }
+         };
+         if (!documentCandidate) await runEarlyGate();
 
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
@@ -1108,6 +1133,48 @@ export class Environment {
             return { problems };
          }
 
+         // The model the append-scope fragment is judged against, loaded once for the gate and for a document.
+         let appendBase: ReturnType<Runtime["loadModel"]> | undefined;
+
+         // Counted here rather than inside the gate so every reason shares one instrument and one label set; only a refusal is counted, since anything else the gate rethrows is an infrastructure failure.
+         const countRefusal = (error: unknown): void => {
+            // An unparseable tile is a compile problem for the document, not a refusal.
+            if (
+               error instanceof CompileRefusedError &&
+               !(error instanceof UnparseableTextError)
+            ) {
+               getCompileRefusalsCounter().add(1, {
+                  environment: this.environmentName,
+                  reason:
+                     error instanceof RenderTagRefusedError
+                        ? "render_tag"
+                        : "restricted_construct",
+               });
+            }
+         };
+         const refuseConstructs = async (
+            baseModel: MalloyModel,
+            text: string,
+            renderTags: boolean,
+         ): Promise<void> => {
+            try {
+               await assertNoRestrictedConstructs(runtime, baseModel, text, {
+                  renderTags,
+               });
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
+         const refuseRenderTags = (text: string): void => {
+            try {
+               assertNoRenderTags(text);
+            } catch (error) {
+               countRefusal(error);
+               throw error;
+            }
+         };
+
          // Containment for caller-submitted fragments. Scope "append" is the
          // one scope whose text is a FRAGMENT checked against a curated model
          // rather than a file the author owns, so it has no legitimate need to
@@ -1137,9 +1204,8 @@ export class Environment {
             // error carries no evidence either way.
             let baseModel: MalloyModel;
             try {
-               baseModel = await runtime
-                  .loadModel(pathToFileURL(modelPath))
-                  .getModel();
+               appendBase = runtime.loadModel(pathToFileURL(modelPath));
+               baseModel = await appendBase.getModel();
             } catch (error) {
                // Three different failures arrive here and they are not one
                // answer. Refusing uniformly would tell a caller their text was
@@ -1192,38 +1258,116 @@ export class Environment {
                      `"${modelName}" could not be loaded to check it against.`,
                );
             }
-            try {
-               // The fragment ALONE, against the compiled base model. The
-               // concatenation the real compile runs cannot be passed here:
-               // `extendModel` judges text as an extension of a model that
-               // already holds those declarations, so feeding it the model's
-               // own text yields `Cannot redefine` for every source in the file
-               // and aborts before the appended fragment is ever classified --
-               // which is a bypass rather than a stricter check.
-               //
-               // What closes the continuation hole instead is the gate refusing
-               // when it could not parse what it was given (see
-               // assertNoRestrictedConstructs). A continuation fragment is a
-               // syntax error on its own, and that is now a refusal rather than
-               // silence read as approval.
-               await assertNoRestrictedConstructs(
-                  runtime,
-                  baseModel,
-                  source ?? "",
-               );
-            } catch (error) {
-               // Counted here rather than inside the gate so both reasons share
-               // one instrument and one label set. Only the refusal is counted:
-               // anything else the gate rethrows is an infrastructure failure it
-               // deliberately does not convert into a caller-facing verdict.
-               if (error instanceof CompileRefusedError) {
-                  getCompileRefusalsCounter().add(1, {
-                     environment: this.environmentName,
-                     reason: "restricted_construct",
-                  });
-               }
-               throw error;
+            // The fragment ALONE, against the compiled base model. The
+            // concatenation the real compile runs cannot be passed here:
+            // `extendModel` judges text as an extension of a model that
+            // already holds those declarations, so feeding it the model's
+            // own text yields `Cannot redefine` for every source in the file
+            // and aborts before the appended fragment is ever classified --
+            // which is a bypass rather than a stricter check.
+            //
+            // What closes the continuation hole instead is the gate refusing
+            // when it could not parse what it was given (see
+            // assertNoRestrictedConstructs). A continuation fragment is a
+            // syntax error on its own, and that is now a refusal rather than
+            // silence read as approval.
+            // A document's whole-text gate runs on the text that compiles, after the per-cell access phase.
+            if (!documentCandidate) {
+               await refuseConstructs(baseModel, source ?? "", false);
             }
+         }
+
+         if (documentCandidate && source !== undefined) {
+            const gate = gateModel;
+            const exact = hasExactGateModel;
+            const base = appendBase;
+            if (!base) throw new Error("append base model was not loaded");
+            const baseModel = await base.getModel();
+            // Syntactic and cheap, so it runs ahead of the cell reader; the compile-based gate runs once access is settled.
+            refuseRenderTags(source);
+            const result = await compileDocument({
+               base,
+               source,
+               modelName,
+               gates: {
+                  text: (text) =>
+                     gate && exact
+                        ? denyHiddenAsNotQueryable(
+                             () => {
+                                gate.assertQueryBoundaryEarly(
+                                   undefined,
+                                   undefined,
+                                   text,
+                                );
+                             },
+                             () =>
+                                gate.assertAuthorizedForText(
+                                   text,
+                                   givens ?? {},
+                                ),
+                          )
+                        : Promise.resolve(),
+                  compiled: (runnable) =>
+                     gate
+                        ? denyHiddenAsNotQueryable(
+                             () => gate.assertCompiledTargetQueryable(runnable),
+                             () =>
+                                exact
+                                   ? gate.assertAuthorizedForRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     )
+                                   : gate.assertAuthorizedFromCompiledRunnable(
+                                        runnable,
+                                        givens ?? {},
+                                     ),
+                          )
+                        : Promise.resolve(),
+                  constructs: (text) => refuseConstructs(baseModel, text, true),
+                  document: (text) => refuseConstructs(baseModel, text, false),
+                  nameVisible: (query, definitions) => {
+                     gate?.assertTextNameVisible(query, definitions);
+                  },
+                  boundaryCompiled: async (
+                     runnable,
+                     compiledSource,
+                     query,
+                     definitions,
+                  ) => {
+                     gate?.assertQueryBoundaryCompiled(
+                        compiledSource,
+                        query,
+                        definitions,
+                     );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
+                        runnable,
+                     );
+                  },
+                  boundary: async (query, definitions) => {
+                     gate?.assertQueryBoundaryEarly(
+                        undefined,
+                        undefined,
+                        query,
+                        definitions,
+                     );
+                     await gate?.assertDocumentJoinsQueryable(
+                        `${definitions}\n${query}`,
+                     );
+                  },
+               },
+            });
+            if (result) {
+               return {
+                  problems: result.problems.map((problem) => ({
+                     ...problem,
+                  })) as TaggedLogMessage[],
+                  ...(result.document && { document: result.document }),
+               };
+            }
+            // Not a readable document after all, so the ordinary compile runs and the whole text is judged as one.
+            await refuseConstructs(baseModel, source, false);
+            await runEarlyGate();
          }
 
          // Attempt to compile

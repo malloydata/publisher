@@ -47,6 +47,24 @@ describe("readChartAnnotations", () => {
       expect(t?.palette?.tableHeader).toEqual({ dark: "#94a3b8" });
    });
 
+   it("extracts the chrome colour keys (border, axis, chartText, ...)", () => {
+      const tag = parse([
+         '# theme.palette.border.light = "#e5e7eb"',
+         '# theme.palette.cardBorder.dark = "#374151"',
+         '# theme.palette.axis.light = "#9ca3af"',
+         '# theme.palette.gridline.light = "#f3f4f6"',
+         '# theme.palette.chartText.dark = "#d1d5db"',
+         '# theme.palette.value.light = "#111111"',
+      ]);
+      const p = readChartAnnotations(tag)?.palette;
+      expect(p?.border).toEqual({ light: "#e5e7eb" });
+      expect(p?.cardBorder).toEqual({ dark: "#374151" });
+      expect(p?.axis).toEqual({ light: "#9ca3af" });
+      expect(p?.gridline).toEqual({ light: "#f3f4f6" });
+      expect(p?.chartText).toEqual({ dark: "#d1d5db" });
+      expect(p?.value).toEqual({ light: "#111111" });
+   });
+
    it("ignores theme keys with the wrong type without throwing", () => {
       const tag = parse([
          "# theme.palette.series = 42",

@@ -18,7 +18,7 @@ import { GivenInput } from "./GivenInput";
  * the clear (x) affordance is showing, so each test below asserts on it.
  */
 
-const clearButtons = () => screen.queryAllByLabelText("clear value");
+const clearButtons = () => screen.queryAllByLabelText("Clear value");
 
 describe("GivenInput: unset vs. explicit override", () => {
    it("unset shows the model default as a placeholder and offers no revert", () => {
@@ -580,7 +580,7 @@ describe("GivenInput: a date value the codec cannot read", () => {
          <GivenInput given={DATE} value="last month" onChange={onChange} />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
 
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
@@ -616,7 +616,7 @@ describe("GivenInput: a date value the codec cannot read", () => {
       render(<GivenInput given={DATE} value={undefined} onChange={() => {}} />);
       expect(screen.queryAllByText(/Not a date/)).toHaveLength(0);
       expect(
-         screen.queryAllByRole("button", { name: "clear value" }),
+         screen.queryAllByRole("button", { name: "Clear value" }),
       ).toHaveLength(0);
    });
 });
@@ -636,7 +636,7 @@ describe("GivenInput: a number value the control cannot show", () => {
    it("offers a revert", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<GivenInput given={NUM} value="lots" onChange={onChange} />);
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
 
@@ -669,7 +669,7 @@ describe("GivenInput: a boolean value the control cannot show", () => {
    it("offers a revert", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<GivenInput given={FLAG} value="yes" onChange={onChange} />);
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
 

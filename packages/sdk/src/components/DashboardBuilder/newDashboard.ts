@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { annotationTextProblem } from "./annotationText";
-import { isBareName } from "./malloyText";
+import { isBareName } from "../../utils/malloyText";
 
 /**
  * A new dashboard file, the way the builder would have written it: the

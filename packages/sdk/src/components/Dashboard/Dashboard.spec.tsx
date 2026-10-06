@@ -11,7 +11,6 @@
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import {
    cacheKeys,
    clearCache,
@@ -45,23 +44,6 @@ const getModel = mock(
       _versionId?: string,
    ) => pending<{ data: CompiledModel }>(),
 );
-
-// Stubbed rather than let "Explore from here" reach the real ModelExplorer:
-// that pulls in the lazy-loaded, WASM-backed `@malloydata/malloy-explorer`,
-// which is not this file's business. Only what the dashboard hands it matters
-// here, so the stub just records its props.
-const exploreDialogProps = mock(
-   (_props: { open: boolean; startingGivens?: Record<string, string> }) => {},
-);
-mock.module("../Model/ModelExplorerDialog", () => ({
-   ModelExplorerDialog: (props: {
-      open: boolean;
-      startingGivens?: Record<string, string>;
-   }) => {
-      exploreDialogProps(props);
-      return null as ReactNode;
-   },
-}));
 
 mockServerProvider({
    dashboards: { getDashboard },
@@ -98,7 +80,6 @@ beforeEach(() => {
    executeQueryModel.mockImplementation(() => pending());
    getModel.mockReset();
    getModel.mockImplementation(() => pending());
-   exploreDialogProps.mockClear();
 });
 
 describe("the manifest fetch", () => {
@@ -240,7 +221,7 @@ describe("the version reaches what the manifest drives", () => {
       expect(v2[0]).not.toContain("CA");
    });
 
-   it("opens 'Explore from here' with the dashboard's current values", async () => {
+   it("offers no Explore button on a tile", async () => {
       getDashboard.mockImplementation(() =>
          Promise.resolve({
             data: {
@@ -250,20 +231,10 @@ describe("the version reaches what the manifest drives", () => {
             },
          }),
       );
-      getModel.mockImplementation(() =>
-         Promise.resolve({ data: { sourceInfos: [] } }),
-      );
 
       render(dashboardAt(), { wrapper: serverWrapper });
 
-      fireEvent.change(await screen.findByLabelText("REGION"), {
-         target: { value: "CA" },
-      });
-      fireEvent.click(await screen.findByRole("button", { name: /Explore/ }));
-
-      await waitFor(() => expect(exploreDialogProps).toHaveBeenCalled());
-      const lastCall = exploreDialogProps.mock.calls.at(-1)?.[0];
-      expect(lastCall?.open).toBe(true);
-      expect(lastCall?.startingGivens).toEqual({ REGION: "CA" });
+      await screen.findByLabelText("REGION");
+      expect(screen.queryByRole("button", { name: /^Explore / })).toBeNull();
    });
 });

@@ -60,6 +60,8 @@ test.describe("builder chart type", () => {
       await expect(
          page.getByText("Preview appears after you Save"),
       ).toHaveCount(0);
+      // A tile runs once it is near the screen: bring the last one near.
+      await queryTiles(page).last().scrollIntoViewIfNeeded();
       await expect(page.locator("[data-malloy-render-as]")).toHaveCount(3, {
          timeout: 60_000,
       });
