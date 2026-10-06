@@ -266,14 +266,11 @@ export function upstreamReuseFromManifest(params: {
    for (const { name, sourceID } of params.reached) {
       const address = params.addressBySourceId[sourceID];
       if (address !== undefined && address === params.rootAddress) continue;
+      // No address: its SQL could not be rendered, so if this build read it the
+      // build's own render would have failed first. Reached but unread; not an
+      // upstream to report on.
+      if (address === undefined) continue;
       upstreams++;
-      if (address === undefined) {
-         reasons.push(
-            `'${name}' has no content address (its SQL could not be rendered), ` +
-               `so its table could not be looked up`,
-         );
-         continue;
-      }
       if (address in params.substituted) continue;
       if (address in params.full) {
          inManifestOnly.push(name);
@@ -282,8 +279,8 @@ export function upstreamReuseFromManifest(params: {
                params.builtEntries[address]?.storageDestinationName ??
                "a storage destination";
             reasons.push(
-               `'${name}' is materialized in storage destination ` +
-                  `'${destination}', which a warehouse build cannot read`,
+               `persisted upstream '${name}' is materialized in storage ` +
+                  `destination '${destination}', which a warehouse build cannot read`,
             );
          }
          continue;
@@ -294,8 +291,8 @@ export function upstreamReuseFromManifest(params: {
    for (const { name } of params.compilerMissing) {
       missing.push(name);
       reasons.push(
-         `'${name}' is not in this build's manifest (neither built in this ` +
-            `run nor supplied by reference)`,
+         `persisted upstream '${name}' is not in this build's manifest ` +
+            `(neither built in this run nor supplied by reference)`,
       );
    }
    if (params.sqlInlinesStored && reasons.length === 0) {
@@ -317,20 +314,34 @@ export function upstreamReuseFromManifest(params: {
            : {
                 upstreamReuse: "recomputed",
                 upstreamRecomputeReason:
-                   `persisted upstream ${reasons.join("; ")}; recomputed from ` +
-                   `its definition in the warehouse`,
+                   `${reasons.join("; ")}; recomputed from its definition in ` +
+                   `the warehouse`,
              };
    return { fields, inManifestOnly, missing };
 }
 
-/** The `sourceID` a compiler strict manifest miss names, or undefined for any other error. */
-export function strictMissSourceId(err: unknown): string | undefined {
+/**
+ * A compiler strict manifest miss, recognized by its `code` — the contract —
+ * with the `sourceID` it names read from the message when the message has the
+ * shape core writes today. The code alone makes it a miss; a message core has
+ * reworded yields a miss of an unnamed source rather than no miss at all, so
+ * strict still refuses and non-strict still recomputes (with a generic
+ * reason) instead of the build failing on an error nobody classified. The
+ * real-compiler spec pins the current wording; the id belongs on the error
+ * object, which is asked of core.
+ */
+export function strictMissSourceId(
+   err: unknown,
+): { sourceID?: string } | undefined {
    const e = err as { code?: unknown; message?: unknown } | null;
    if (e?.code !== "runtime-manifest-strict-miss") return undefined;
-   if (typeof e.message !== "string") return undefined;
-   return /Persisted source '([^']+)' not found in manifest/.exec(
-      e.message,
-   )?.[1];
+   const sourceID =
+      typeof e.message === "string"
+         ? /Persisted source '([^']+)' not found in manifest/.exec(
+              e.message,
+           )?.[1]
+         : undefined;
+   return { sourceID };
 }
 
 /**
@@ -356,9 +367,16 @@ function compilerMissingUpstream(
       });
       return [];
    } catch (err) {
-      const sourceID = strictMissSourceId(err);
-      if (sourceID === undefined) throw err;
-      return [{ name: sourceNameById.get(sourceID) ?? sourceID, sourceID }];
+      const miss = strictMissSourceId(err);
+      if (miss === undefined) throw err;
+      const sourceID = miss.sourceID ?? "";
+      // A reason names a source, never the server's path to its model file.
+      const name =
+         sourceNameById.get(sourceID) ??
+         (sourceID
+            ? sourceID.split("@")[0]
+            : "a persisted source the SQL reads");
+      return [{ name, sourceID }];
    }
 }
 
@@ -3251,32 +3269,67 @@ export class MaterializationService {
       // is a persist source the SQL reads that nothing supplied — the recompute
       // strict refuses — named by the compiler rather than inferred from
       // declared joins.
+      //
+      // Both renders are the classification's, not the build's: a colocated
+      // build's SQL is already in hand and runs regardless. So on that path a
+      // render that fails leaves the entry without `upstreamReuse` (logged)
+      // rather than failing a warehouse build that was never in question; a
+      // storage build keeps failing on it, as its compare always has, because
+      // the stack-on-parent decision needs the answer. Neither render runs
+      // when nothing was excluded from the build manifest — no stored table
+      // the compiler could inline differently — and the strict render is
+      // skipped for a strict colocated build, whose build SQL was itself
+      // rendered strictly a moment ago.
       const fullForCompiler = manifestForCompiler(
          manifest.buildManifest,
          planFacts,
       );
-      const sqlInlinesStored =
-         persistSource.getSQL({
-            buildManifest: { ...fullForCompiler, strict: false },
-            connectionDigests,
-         }) !== buildSQL;
-      const compilerMissing = compilerMissingUpstream(
-         persistSource,
-         fullForCompiler,
-         connectionDigests,
-         lift.sourceNameById,
-      );
-      const reuse = upstreamReuseFromManifest({
-         reached: reached.persisted,
-         addressBySourceId: planFacts.addressBySourceId,
-         substituted: buildManifest.entries,
-         full: manifest.buildManifest.entries,
-         builtEntries,
-         tier: isStorageBuild ? "storage" : "colocated",
-         sqlInlinesStored,
-         compilerMissing,
-         rootAddress: instruction.sourceEntityId,
-      });
+      const excludedSomething =
+         Object.keys(reducedManifest.entries).length !==
+         Object.keys(manifest.buildManifest.entries).length;
+      let sqlInlinesStored = false;
+      let compilerMissing: { name: string; sourceID: string }[] = [];
+      let classified = true;
+      try {
+         if (excludedSomething) {
+            sqlInlinesStored =
+               persistSource.getSQL({
+                  buildManifest: { ...fullForCompiler, strict: false },
+                  connectionDigests,
+               }) !== buildSQL;
+         }
+         if (isStorageBuild || !manifest.strict) {
+            compilerMissing = compilerMissingUpstream(
+               persistSource,
+               fullForCompiler,
+               connectionDigests,
+               lift.sourceNameById,
+            );
+         }
+      } catch (err) {
+         if (isStorageBuild) throw err;
+         classified = false;
+         logger.warn(
+            "Could not classify a colocated build's stored upstreams; the entry carries no upstreamReuse",
+            {
+               sourceName: persistSource.name,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
+      const reuse = classified
+         ? upstreamReuseFromManifest({
+              reached: reached.persisted,
+              addressBySourceId: planFacts.addressBySourceId,
+              substituted: buildManifest.entries,
+              full: manifest.buildManifest.entries,
+              builtEntries,
+              tier: isStorageBuild ? "storage" : "colocated",
+              sqlInlinesStored,
+              compilerMissing,
+              rootAddress: instruction.sourceEntityId,
+           })
+         : { fields: {}, inManifestOnly: [], missing: [] };
 
       // Every statement of this source's build carries the same metadata, so the
       // warehouse's query history shows the staging CTAS, the drop and the rename
@@ -3357,6 +3410,7 @@ export class MaterializationService {
             incremental,
             contentSourceEntityId,
             planFacts,
+            lift,
          });
       }
 
@@ -3634,6 +3688,8 @@ export class MaterializationService {
       contentSourceEntityId?: string;
       /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
       planFacts?: ChainedPlanFacts;
+      /** The author-model lift context `buildOneSource` built for this source. */
+      lift?: ReturnType<typeof authorModelLiftContext>;
       /**
        * The `upstreamReuse` fields for a build that does NOT stack on a parent,
        * decided by the caller from the manifest the passthrough SQL was rendered
@@ -3655,6 +3711,10 @@ export class MaterializationService {
          incremental,
          planFacts = NO_PLAN_FACTS,
          baseReuse = {},
+         lift = authorModelLiftContext(
+            params.persistSource._model?._modelDef,
+            readAuthorFile,
+         ),
       } = params;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -3753,6 +3813,7 @@ export class MaterializationService {
                physicalTableName,
                planFacts,
                instruction.sourceEntityId,
+               lift,
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
@@ -4137,11 +4198,8 @@ export class MaterializationService {
       planFacts: ChainedPlanFacts,
       /** The content address being built; a walk stop sharing it is this source's own table. */
       rootAddress: string,
+      lift: ReturnType<typeof authorModelLiftContext>,
    ): Promise<StorageBuildResult> {
-      const lift = authorModelLiftContext(
-         persistSource._model?._modelDef,
-         readAuthorFile,
-      );
       // Rebind every upstream materialized into THIS destination, under every
       // name that is that table: an entry names only the source that built it,
       // and a rename of it (`source: x is daily`) is the same table under another

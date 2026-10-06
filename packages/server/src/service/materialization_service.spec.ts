@@ -5839,7 +5839,7 @@ describe("upstreamReuseFromManifest", () => {
       expect(out.missing).toEqual([]);
       expect(out.fields.upstreamReuse).toBe("recomputed");
       expect(out.fields.upstreamRecomputeReason).toMatch(
-         /inlines a stored table reached through a refinement declared on a stored upstream/,
+         /^the build SQL inlines a stored table reached through a refinement declared on a stored upstream/,
       );
    });
 
@@ -5857,7 +5857,10 @@ describe("upstreamReuseFromManifest", () => {
       expect(out.fields.upstreamReuse).toBe("recomputed");
    });
 
-   it("an upstream with no content address is recomputed, not missing: nothing to refuse on", () => {
+   it("an upstream with no content address is reached but unread: not missing, not a reason, not reported", () => {
+      // Its SQL could not be rendered, so a build that read it would have
+      // failed on its own render; the compiler's strict render is the oracle
+      // for what the SQL reads, and it says nothing about this one.
       const out = upstreamReuseFromManifest({
          reached: [{ name: "given", sourceID: "given@m" }],
          addressBySourceId: { ...addressBySourceId, "given@m": undefined },
@@ -5868,12 +5871,7 @@ describe("upstreamReuseFromManifest", () => {
          sqlInlinesStored: false,
          compilerMissing: [],
       });
-      expect(out.missing).toEqual([]);
-      expect(out.inManifestOnly).toEqual([]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
-      expect(out.fields.upstreamRecomputeReason).toMatch(
-         /'given' has no content address/,
-      );
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
    });
 
    it("two models' same-named sources resolve by id, not by name", () => {
@@ -5991,7 +5989,18 @@ describe("strictMissSourceId", () => {
          ),
          { code: "runtime-manifest-strict-miss" },
       );
-      expect(strictMissSourceId(miss)).toBe("counts@file:///m.malloy");
+      expect(strictMissSourceId(miss)).toEqual({
+         sourceID: "counts@file:///m.malloy",
+      });
+      // The code is the contract: a reworded message is still a miss, of an
+      // unnamed source.
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("manifest has no entry"), {
+               code: "runtime-manifest-strict-miss",
+            }),
+         ),
+      ).toEqual({ sourceID: undefined });
       expect(
          strictMissSourceId(
             new Error("Persisted source 'x' not found in manifest"),

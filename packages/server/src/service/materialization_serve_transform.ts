@@ -1622,15 +1622,39 @@ export function documentFlagLines(text: string): string[] {
  * and the chained build (the intermediates it carries), so both read ONE view
  * of the model.
  */
-export function authorModelLiftContext(
-   modelDef: unknown,
-   readFile: (url: string) => string | undefined,
-): {
+export type AuthorModelLiftContext = {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
    sourceNameById: Map<string, string>;
    liftText: (location: SourceLocation) => string | undefined;
    fileText: (url: string) => string | undefined;
-} {
+};
+
+/**
+ * One context per compiled model: a compiled `ModelDef` is immutable, and the
+ * files it was compiled from are what they were when it was — a republish
+ * compiles a new one. Without this a run rebuilt the context, and re-read the
+ * author files, once or twice per persist source.
+ */
+const liftContextByModel = new WeakMap<object, AuthorModelLiftContext>();
+
+export function authorModelLiftContext(
+   modelDef: unknown,
+   readFile: (url: string) => string | undefined,
+): AuthorModelLiftContext {
+   const cacheable = modelDef !== null && typeof modelDef === "object";
+   if (cacheable) {
+      const cached = liftContextByModel.get(modelDef);
+      if (cached) return cached;
+   }
+   const built = buildAuthorModelLiftContext(modelDef, readFile);
+   if (cacheable) liftContextByModel.set(modelDef, built);
+   return built;
+}
+
+function buildAuthorModelLiftContext(
+   modelDef: unknown,
+   readFile: (url: string) => string | undefined,
+): AuthorModelLiftContext {
    type Def = DerivedSourceDef & { sourceID?: unknown };
    const md = modelDef as
       | {
