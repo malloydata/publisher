@@ -123,8 +123,8 @@ offer today.
 
 Rows reaching parity leave the table: a gap list that carries what is no longer
 missing stops being a list of what to do next. Verified and removed 2026-09-15,
-each against the code and the test that holds it: **sizing aids** (width presets
-on the tile's menu, the arrow-key nudge, column guides while dragging), **add / remove a tile** (from the package catalog, both through the
+each against the code and the test that holds it: **sizing aids** (the tile's right edge,
+dragged or stepped with the arrow keys, column guides while dragging), **add / remove a tile** (from the package catalog, both through the
 diff), **filter declaration** (a control declared on the dashboard, written to
 the file), **filter-to-tile binding** (per-tile field and comparison, including
 untick), and **observability** (the `DashboardEvent` union and the Console's
@@ -248,7 +248,7 @@ the reader to find.
    A control's starting value is edited where the control is, in the filter
    window, rather than in this popover — the same place its binding and
    comparison are set, so one control is one dialog.
-5. **Drill authoring.** "Drill-through" on a tile's menu (`DrillDialog`): every dimension the
+5. **Drill authoring.** "Drill" on a tile's menu (`DrillDialog`): every dimension the
    tile's source declares in this file, with its destinations and the control a
    click sets. The builder writes the `# drill` tag, never the dimension — a
    dimension no view groups by is a dead drill, and views are the author's. This
@@ -267,8 +267,9 @@ the reader to find.
 8. **Export.** Dropped 2026-09-15: the file goes into the package, so handing
    a copy back had no audience left. CSV and PNG per tile are not started, and
    a file export can come back with them if it is asked for.
-9. **Sizing aids.** Width presets, the arrow-key nudge and the column guides
-   shipped; run-on-load is `autorun`. The one-click "set every tile to one
+9. **Sizing aids.** A tile's width is set at its right edge — dragged, or focused
+   and stepped with the arrow keys — with column guides while dragging (the menu's
+   width presets were dropped 2026-10 for the edge); run-on-load is `autorun`. The one-click "set every tile to one
    width" was built and then **dropped 2026-09-15** (Kyle): with four presets a
    click away on the tile that needs them, a bar button that rewrote every tile
    at once earned neither its space nor its undo entry. **Deferred** with the

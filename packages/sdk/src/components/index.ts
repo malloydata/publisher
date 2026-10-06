@@ -15,7 +15,7 @@ export { NarrowEditGate } from "./NarrowEditGate";
 // The Console's palette, and the two maps drawn from it. Exported so a host
 // paints its own chrome — the Publisher app's theme included — from the same
 // hues rather than picking a near-miss beside them.
-export { PALETTE, SURFACE_TINT } from "./styles";
+export { MONO_FONT_FAMILY, PALETTE, SURFACE_TINT } from "./styles";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";

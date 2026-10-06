@@ -868,13 +868,15 @@ import { DashboardEditor } from "@malloy-publisher/sdk/builder";
 </ServerProvider>;
 ```
 
-The editor saves in place and draws no way out of itself: leaving is the host's. Draw your own exit
+The editor saves in place and, by default, draws no way out of itself: leaving is the host's. Draw your own exit
 (the Console's is the **View** button in its header) and guard it, along with the host's other ways
 out (a nav link, the browser's Back, closing the tab), by tracking `onDirtyChange`, which reports
 whether anything is unsaved (an open text edit counts, and it reports `false` when the editor
 unmounts), and blocking navigation while it is `true`. The Console's `DashboardEditPage` does this
-with a router blocker and a `beforeunload` listener. The lower-level `DashboardBuilder` takes no
-`onExit` either; a host mounting it passes `onSave` and guards its own exit the same way.
+with a router blocker and a `beforeunload` listener. A host that would rather the editor drew its
+own way out passes `onExit`: the toolbar then shows **Close** after Save, and Close on unsaved work
+asks first (save, discard, or keep editing) before calling it. `DashboardBuilder` takes the same
+optional `onExit`.
 
 Hosts can use the other exports of `@malloy-publisher/sdk/builder` too. `NotebookEditor` is a thin
 wrapper over `DashboardEditor` with `kind="notebook"` (`DashboardEditor` also takes a `path` and a
