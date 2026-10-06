@@ -87,6 +87,7 @@ import {
    withholdUnreproducibleCallerScopedJoins,
    documentFlagsForLifts,
    authorRefinementsFor,
+   reachedPersistedSources,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -6911,10 +6912,29 @@ export class Model {
     * fails.
     */
    private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
-      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const lift = this.authorModelLift();
+      const { contents, sourceNameById, liftText } = lift;
+      // Only what a query against this model can name — its namespace — and
+      // what those sources derive from. The lift context also holds the
+      // model's hidden dependencies (sources an import brought in without
+      // naming them), so a base reached through an import is still carried
+      // when a namespace source needs it; one nothing in the namespace
+      // reaches is not a candidate, and cannot withhold the shape.
+      const namespace = Object.keys(
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+      const candidateNames = new Set(namespace);
+      for (const name of namespace) {
+         for (const reached of reachedPersistedSources(lift, name, () => false)
+            .visited) {
+            candidateNames.add(reached);
+         }
+      }
       return liftDerivedSources({
          contents,
          sourceNameById,
+         candidateNames,
          // Bases a lift may extend: the FRESH bindings it is handed.
          shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
          // Candidates are excluded against EVERY binding, including the ones

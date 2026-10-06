@@ -662,6 +662,14 @@ export interface DerivedLiftContext {
     * build binds no alias for an extension, so it is the lift or nothing.
     */
    carryPersistExtensions?: boolean;
+   /**
+    * The names a lift may be chosen from. When given, a derived source not in
+    * it is never a candidate, though it stays in `contents` as a base another
+    * candidate may extend. The serve path uses it to lift only what a query
+    * against the model can name — its namespace and what that derives from —
+    * so a hidden dependency the model never exposes cannot fail the shape.
+    */
+   candidateNames?: ReadonlySet<string>;
 }
 
 /** The subset of a compiled source definition this reads. */
@@ -748,6 +756,7 @@ export function liftDerivedSources(
    const pending = Object.entries(ctx.contents).filter(
       ([name, def]) =>
          derivedFrom(def) !== undefined &&
+         (ctx.candidateNames === undefined || ctx.candidateNames.has(name)) &&
          !(ctx.boundSourceNames ?? ctx.shapeSourceNames).has(name) &&
          // A source that is itself a build target is never a lift candidate,
          // however it came to be one — `persistent` is true for a plain
@@ -1108,6 +1117,60 @@ export function buildServeShapeModelForBindings(
 export const NEVER_THINNED: readonly string[] = ["filter"];
 
 /**
+ * The refinement kinds each tier keeps, richest first: everything a source
+ * declares, then without views, then without joins, then only the kinds that
+ * change rows ({@link NEVER_THINNED}). One ladder for the serve shape and the
+ * chained build, so a parent's table is read the same way wherever it is
+ * read, and thinned the same way when a declaration will not compile over
+ * the virtual base.
+ */
+export const REFINEMENT_TIER_KINDS: ReadonlyArray<ReadonlySet<string>> = [
+   new Set([...NEVER_THINNED, "join", "dimension", "measure", "view"]),
+   new Set([...NEVER_THINNED, "join", "dimension", "measure"]),
+   new Set([...NEVER_THINNED, "dimension", "measure"]),
+   new Set(NEVER_THINNED),
+];
+
+/**
+ * Run `attempt` over `bindings` thinned to each tier in turn, richest first,
+ * until one succeeds. A tier that keeps the same refinements as the one before
+ * it is skipped (nothing to retry); an error `retryOn` does not recognize
+ * passes through at once (infrastructure, not shape); when every tier fails,
+ * the last tier's error is the one thrown — the shape the floor could not
+ * carry. The floor keeps {@link NEVER_THINNED}, so no tier reads a parent
+ * unfiltered.
+ */
+export async function buildOverTiers<T>(
+   bindings: ServeBinding[],
+   tiers: ReadonlyArray<ReadonlySet<string>>,
+   attempt: (parents: ServeBinding[]) => Promise<T>,
+   retryOn: (err: unknown) => boolean,
+): Promise<T> {
+   let previous: string | undefined;
+   let lastError: unknown;
+   let attempted = false;
+   for (const keep of tiers) {
+      const parents = bindings.map((b) => ({
+         ...b,
+         refinements: (b.refinements ?? []).filter((r) => keep.has(r.kind)),
+      }));
+      const shape = parents
+         .map((p) => (p.refinements ?? []).map((r) => r.kind).join("/"))
+         .join("|");
+      if (attempted && shape === previous) continue;
+      previous = shape;
+      attempted = true;
+      try {
+         return await attempt(parents);
+      } catch (err) {
+         if (!retryOn(err)) throw err;
+         lastError = err;
+      }
+   }
+   throw lastError;
+}
+
+/**
  * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
  * and whether pre-aggregation groups are carried.
  */
@@ -1130,12 +1193,7 @@ export function buildServeShapeTiers(
 ): ServeShapeTier[] {
    const always = [...NEVER_THINNED];
    // Richest first; each keeps fewer optional kinds than the last.
-   const keepKinds: Array<ReadonlySet<string>> = [
-      new Set([...always, "join", "dimension", "measure", "view"]),
-      new Set([...always, "join", "dimension", "measure"]),
-      new Set([...always, "dimension", "measure"]),
-      new Set(always),
-   ];
+   const keepKinds: Array<ReadonlySet<string>> = [...REFINEMENT_TIER_KINDS];
    const hasGroups = rollupGroups.length > 0;
    return [
       // Richest, with groups.

@@ -22,6 +22,9 @@ import {
    liftDerivedSources,
    missingPersistedTables,
    reachedPersistedSources,
+   type SourceRefinement,
+   REFINEMENT_TIER_KINDS,
+   buildOverTiers,
    authorModelLiftContext,
    documentFlagsForLifts,
    type DerivedSourceLift,
@@ -1811,6 +1814,136 @@ describe("reachedPersistedSources through an import", () => {
       expect(raw.raw).toBe(true);
       expect(raw.rawLeaves).toEqual(["weekly"]);
       expect(JSON.stringify(raw)).not.toContain("file:///");
+   });
+});
+
+describe("buildOverTiers", () => {
+   const retryOn = (e: unknown) => e instanceof MaterializationEligibilityError;
+   const binding = (refinements: SourceRefinement[]): ServeBinding => ({
+      sourceName: "daily",
+      destinationName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "daily__m",
+      schema: [{ name: "total", type: "DOUBLE" }],
+      refinements,
+   });
+   const all: SourceRefinement[] = [
+      { kind: "filter", code: "total > 60" },
+      {
+         kind: "join",
+         name: "r",
+         keyword: "join_one",
+         text: "r is regions on true",
+         dependsOn: "regions",
+      },
+      { kind: "dimension", name: "big", code: "total > 150" },
+      { kind: "view", name: "v", text: "v is { group_by: r.name }" },
+   ];
+
+   it("tries each distinct tier, richest first, and returns the first that succeeds", async () => {
+      const seen: string[][] = [];
+      const out = await buildOverTiers(
+         [binding(all)],
+         REFINEMENT_TIER_KINDS,
+         async ([p]) => {
+            const kinds = (p.refinements ?? []).map((r) => r.kind);
+            seen.push(kinds);
+            if (kinds.includes("view")) {
+               throw new MaterializationEligibilityError({
+                  message: "undefined r",
+               });
+            }
+            return kinds.join(",");
+         },
+         retryOn,
+      );
+      expect(out).toBe("filter,join,dimension");
+      expect(seen).toEqual([
+         ["filter", "join", "dimension", "view"],
+         ["filter", "join", "dimension"],
+      ]);
+   });
+
+   it("every tier keeps the filter, and the floor's error is the one thrown", async () => {
+      const seen: string[][] = [];
+      await expect(
+         buildOverTiers(
+            [binding(all)],
+            REFINEMENT_TIER_KINDS,
+            async ([p]) => {
+               const kinds = (p.refinements ?? []).map((r) => r.kind);
+               seen.push(kinds);
+               throw new MaterializationEligibilityError({
+                  message: `tier ${seen.length}`,
+               });
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("tier 4");
+      expect(seen.every((k) => k.includes("filter"))).toBe(true);
+      expect(seen[seen.length - 1]).toEqual(["filter"]);
+   });
+
+   it("skips a tier that changes nothing, and passes an unrecognized error through at once", async () => {
+      let attempts = 0;
+      await expect(
+         buildOverTiers(
+            [binding([{ kind: "filter", code: "total > 60" }])],
+            REFINEMENT_TIER_KINDS,
+            async () => {
+               attempts++;
+               throw new MaterializationEligibilityError({ message: "no" });
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("no");
+      expect(attempts).toBe(1);
+      attempts = 0;
+      await expect(
+         buildOverTiers(
+            [binding(all)],
+            REFINEMENT_TIER_KINDS,
+            async () => {
+               attempts++;
+               throw new Error("connection refused");
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("connection refused");
+      expect(attempts).toBe(1);
+   });
+});
+
+describe("liftDerivedSources candidateNames", () => {
+   it("lifts only the named candidates, leaving the rest as bases", () => {
+      const loc = {
+         url: "file:///m.malloy",
+         range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 4 },
+         },
+      };
+      const contents = {
+         daily: persistedDef("daily", "orders"),
+         hidden_wide: { ...queryDef("hidden_wide", "daily"), location: loc },
+         public_wide: { ...queryDef("public_wide", "daily"), location: loc },
+      };
+      const ctx = {
+         ...modelCtx(contents),
+         shapeSourceNames: new Set(["daily"]),
+         liftText: () => "x is daily -> { select: * }",
+      } as Parameters<typeof liftDerivedSources>[0];
+      expect(
+         liftDerivedSources(ctx)
+            .map((l) => l.sourceName)
+            .sort(),
+      ).toEqual(["hidden_wide", "public_wide"]);
+      expect(
+         liftDerivedSources({
+            ...ctx,
+            candidateNames: new Set(["public_wide"]),
+         }).map((l) => l.sourceName),
+      ).toEqual(["public_wide"]);
    });
 });
 

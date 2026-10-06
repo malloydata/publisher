@@ -118,7 +118,8 @@ import {
    type ServeShapeGiven,
    documentFlagsForLifts,
    authorRefinementsFor,
-   NEVER_THINNED,
+   buildOverTiers,
+   REFINEMENT_TIER_KINDS,
 } from "./materialization_serve_transform";
 
 /**
@@ -3481,6 +3482,7 @@ export class MaterializationService {
                sourceSQL: buildSQL,
             }),
             manifest,
+            upstreamReuse: reuse.fields,
          });
          if (applied) return applied;
       }
@@ -3623,6 +3625,16 @@ export class MaterializationService {
       instruction: BuildInstruction;
       target: DeltaTarget;
       manifest: Manifest;
+      /**
+       * How the source read its stored upstreams, from the classification the
+       * full build made (see {@link upstreamReuseFromManifest}). A delta or a
+       * skip reads the same upstreams the rebuild would, and an absent field
+       * reads as "no persisted upstream", so the entry carries it either way.
+       */
+      upstreamReuse: Pick<
+         ManifestEntry,
+         "upstreamReuse" | "upstreamRecomputeReason"
+      >;
    }): Promise<ManifestEntry | undefined> {
       const { context, lineage, persistSource, instruction, target } = params;
       const sourceEntityId = instruction.sourceEntityId;
@@ -3660,6 +3672,7 @@ export class MaterializationService {
          physicalTableName: lineage.physicalTableName,
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
+         ...params.upstreamReuse,
          rowCount: null,
          buildDurationMs: outcome.durationMs ?? null,
          // The delta script runs through applyDeltaScript rather than a single
@@ -4408,35 +4421,24 @@ export class MaterializationService {
             partitionColumns: partitionColumnsForBuild(persistSource),
             environmentPath: environment.getEnvironmentPath(),
          });
-      // The parents' refinements, in two tiers, as the serve shape thins them:
-      // everything the source declares first, and when that does not compile,
-      // only the kinds that change rows (`NEVER_THINNED`: the extend-block
-      // `where:`). The optional kinds are emitted optimistically — a dimension
-      // or view on the parent that reads a join to a source this destination
-      // cannot bind names an alias the model does not declare — and the
-      // downstream usually reads none of them; a downstream that does fails
-      // on the thinned tier too, and strict refuses it as not carried. The
-      // filter is never thinned, so no tier reads a parent unfiltered.
-      const thinned = upstreams.map((b) => ({
-         ...b,
-         refinements: (b.refinements ?? []).filter((r) =>
-            NEVER_THINNED.includes(r.kind),
-         ),
-      }));
-      const canThin = upstreams.some(
-         (b, i) =>
-            (b.refinements ?? []).length !==
-            (thinned[i].refinements ?? []).length,
-      );
+      // The parents' refinements, in the serve shape's tiers
+      // (`REFINEMENT_TIER_KINDS`): everything the source declares first, then
+      // without views, then without joins, then only the kinds that change
+      // rows (the extend-block `where:`). The optional kinds are emitted
+      // optimistically — a dimension or view on the parent that reads a join
+      // to a source this destination cannot bind names an alias the model
+      // does not declare — and a tier is retried only on a compile-time
+      // eligibility error, before anything is written. A downstream that
+      // reads a thinned kind fails on every lower tier too, and strict refuses
+      // it as not carried. The filter is never thinned, so no tier reads a
+      // parent unfiltered.
       try {
-         try {
-            return await buildOver(upstreams);
-         } catch (err) {
-            if (!(err instanceof MaterializationEligibilityError) || !canThin) {
-               throw err;
-            }
-            return await buildOver(thinned);
-         }
+         return await buildOverTiers(
+            upstreams,
+            REFINEMENT_TIER_KINDS,
+            buildOver,
+            (err) => err instanceof MaterializationEligibilityError,
+         );
       } catch (err) {
          // The model reached only stored parents (checked above), so a shape
          // failure here is one the build could not carry, not one the
