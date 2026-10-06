@@ -124,7 +124,8 @@ export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   const offerHidden = environmentStore.mcpIncludeHiddenFilesAndSources === true;
+   const offerHidden =
+      environmentStore.mcpIncludeHiddenFilesAndSources === true;
    mcpServer.tool(
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,

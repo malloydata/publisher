@@ -671,16 +671,32 @@ source: track_analysis is tracks extend {
             }
             throw new Error("expected the query to be refused");
          };
+         // A direct name is denied before compile. An alias (`source: a is
+         // helper extend {}`) is denied only after compile, by the backstop,
+         // so it is the case that fails if the count check moves ahead of it.
          for (const target of ["helper", "no_such_source"]) {
-            const once = await answerFor(`run: ${target} -> { aggregate: c }`);
-            const twice = await answerFor(
-               `run: customers -> { aggregate: total }\nrun: ${target} -> { aggregate: c }`,
-            );
-            expect(once).toBeInstanceOf(NotQueryableError);
-            expect(twice).not.toBeInstanceOf(BadRequestError);
-            expect(twice.constructor).toBe(once.constructor);
-            expect(twice.message).toBe(once.message);
+            for (const last of [
+               `run: ${target} -> { aggregate: c }`,
+               `source: a is ${target} extend {}\nrun: a -> { aggregate: c }`,
+            ]) {
+               const once = await answerFor(last);
+               const twice = await answerFor(
+                  `run: customers -> { aggregate: total }\n${last}`,
+               );
+               expect(once).not.toBeInstanceOf(BadRequestError);
+               expect(twice).not.toBeInstanceOf(BadRequestError);
+               expect(twice.constructor).toBe(once.constructor);
+               expect(twice.message).toBe(once.message);
+            }
          }
+         expect(
+            await answerFor("run: helper -> { aggregate: c }"),
+         ).toBeInstanceOf(NotQueryableError);
+         expect(
+            await answerFor(
+               "source: a is helper extend {}\nrun: a -> { aggregate: c }",
+            ),
+         ).toBeInstanceOf(OffSurfaceError);
 
          // All-curated multi-statement passes the boundary, then is refused as
          // more than one `run:`. The two denials above stay 404s rather than

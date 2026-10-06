@@ -54,6 +54,7 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import {
    AccessDeniedError,
    BadRequestError,
+   InvalidArgumentError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -638,8 +639,8 @@ async function runStatementCount(runnable: {
  * Malloy runs only the LAST `run:` of a text and drops the rest without a word,
  * so a caller that sends several would silently lose every answer but one.
  */
-function multipleRunStatementsError(count: number): BadRequestError {
-   return new BadRequestError(
+function multipleRunStatementsError(count: number): InvalidArgumentError {
+   return new InvalidArgumentError(
       `The query has ${count} run: statements; only one runs per call, so the ` +
          "others would be ignored. Send each as its own request. (source: and " +
          "query: definitions before a single run: are fine.)",

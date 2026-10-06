@@ -14,13 +14,14 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { BadRequestError } from "../errors";
+import { BadRequestError, InvalidArgumentError } from "../errors";
 import { Model } from "./model";
 
-const TEST_DIR = path.join(os.tmpdir(), "single-run-statement-tests");
+const TEST_DIR = mkdtempSync(path.join(os.tmpdir(), "single-run-statement-"));
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
 const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
 const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");
@@ -123,7 +124,9 @@ describe("an ad-hoc query with more than one run: statement", () => {
             "run: widgets -> { group_by: region }\n" +
             "run: widgets -> { group_by: name }",
       );
-      expect(error).toBeInstanceOf(BadRequestError);
+      // InvalidArgumentError, so MCP says to change the query rather than
+      // offering the generic Malloy syntax and connection suggestions.
+      expect(error).toBeInstanceOf(InvalidArgumentError);
       expect((error as Error).message).toBe(
          "The query has 3 run: statements; only one runs per call, so the " +
             "others would be ignored. Send each as its own request. (source: " +
