@@ -12,6 +12,7 @@ import {
    FormHelperText,
    IconButton,
    InputAdornment,
+   InputLabel,
    MenuItem,
    Slider,
    Stack,
@@ -25,7 +26,7 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
@@ -46,6 +47,7 @@ import {
    isPlainFilterList,
    TIME_PRESETS,
 } from "./filterValue";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
@@ -148,6 +150,8 @@ export function GivenInput({
    optionsFailed,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
+   const labelId = useId();
+   const { theme: publisherTheme } = usePublisherTheme();
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
@@ -486,26 +490,37 @@ export function GivenInput({
       // to show when it does not.
       return (
          <FormControl fullWidth>
-            {/* A slider is the one control with no box around it, so it has to
-                borrow the outlined inputs' metrics to sit in a row with them:
-                their content is inset 14px and their field is 42px tall, and
-                a control that matches both puts its helper text on the same
-                line as its neighbours'. Left to itself the label started at
-                the column edge and the helper sat 10px lower than the rest,
-                which is most of what made a mixed control row look crooked. */}
+            {/* Drawn as an outlined field, label notched into its edge, so it
+                sits in a row of selects and date pickers as one of them. It is
+                a bordered Box rather than an OutlinedInput: a real input would
+                add a textbox role beside the handles' own, and the label names
+                a group, not either handle. The notch is the label's own opaque
+                background, as the Console themes its fields. The box is taller
+                than a text field (readout, track and min/max captions), so a
+                neighbour's helper line sits under its own box, not level. */}
+            <InputLabel
+               shrink
+               id={labelId}
+               sx={{ bgcolor: "background.paper", px: 0.5 }}
+            >
+               {label}
+            </InputLabel>
             <Box
-               sx={{
-                  height: SLIDER_FIELD_HEIGHT,
+               role="group"
+               aria-labelledby={labelId}
+               sx={(theme) => ({
+                  border: publisherTheme.cardBorder,
+                  borderRadius: 2,
                   px: `${INPUT_CONTENT_INSET}px`,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-               }}
+                  pt: 1.25,
+                  pb: 0.75,
+                  minHeight: SLIDER_FIELD_HEIGHT,
+                  transition: "border-color 120ms ease-in",
+                  "&:hover": { borderColor: theme.palette.text.secondary },
+                  "&:focus-within": { borderColor: theme.palette.text.primary },
+               })}
             >
                <Stack direction="row" alignItems="center" spacing={1}>
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                     {label}
-                  </Typography>
                   <Typography
                      variant="body2"
                      sx={{ fontWeight: "fontWeightMedium" }}
@@ -589,6 +604,14 @@ export function GivenInput({
                      onChange(Array.isArray(next) ? next[0] : next);
                   }}
                />
+               <Stack direction="row" justifyContent="space-between">
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMin}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMax}
+                  </Typography>
+               </Stack>
             </Box>
             {helperNode && (
                <FormHelperText sx={{ mx: `${INPUT_CONTENT_INSET}px` }}>
