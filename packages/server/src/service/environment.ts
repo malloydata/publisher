@@ -46,6 +46,7 @@ import {
    UnparseableTextError,
    WriteRolledBackError,
    WriteVerifyError,
+   PackageAdmissionRefusedError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -2360,7 +2361,7 @@ export class Environment {
          environment: this.environmentName,
          reason,
       });
-      throw new ServiceUnavailableError(
+      throw new PackageAdmissionRefusedError(
          `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MAX_MEMORY_BYTES), or raise PUBLISHER_MAX_MEMORY_BYTES if you have headroom.`,
       );
    }

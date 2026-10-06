@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
 import type { components } from "../api";
-import { BadRequestError, ServiceUnavailableError } from "../errors";
+import {
+   BadRequestError,
+   PackageAdmissionRefusedError,
+   ServiceUnavailableError,
+} from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
 
@@ -717,7 +721,7 @@ describe("PackageController.addPackage manifestLocation", () => {
       const recordPackageAddFailure = sinon.stub();
       const refused = sinon
          .stub()
-         .rejects(new ServiceUnavailableError("under memory pressure"));
+         .rejects(new PackageAdmissionRefusedError("under memory pressure"));
       const refusing = addPackageController({
          installPackage: refused,
          recordPackageAddFailure,
@@ -730,6 +734,9 @@ describe("PackageController.addPackage manifestLocation", () => {
       ).rejects.toBeInstanceOf(ServiceUnavailableError);
       expect(recordPackageAddFailure.called).toBe(false);
 
+      // Any other 5xx is the server's own problem and is recorded, including
+      // a worker-pool failure that is also a ServiceUnavailableError: its
+      // message carries the cause (an errno) an operator has to fix.
       const failing = addPackageController({
          installPackage: sinon.stub().rejects(new Error("bucket unreachable")),
          recordPackageAddFailure,
@@ -741,6 +748,24 @@ describe("PackageController.addPackage manifestLocation", () => {
          }),
       ).rejects.toThrow("bucket unreachable");
       expect(recordPackageAddFailure.calledOnce).toBe(true);
+
+      const workerPool = addPackageController({
+         installPackage: sinon
+            .stub()
+            .rejects(
+               new ServiceUnavailableError(
+                  "Package-load worker pool unavailable: EACCES: permission denied",
+               ),
+            ),
+         recordPackageAddFailure,
+      });
+      await expect(
+         workerPool.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(recordPackageAddFailure.calledTwice).toBe(true);
    });
 
    it("a publish with a location binds the body's manifestLocation as part of the install", async () => {

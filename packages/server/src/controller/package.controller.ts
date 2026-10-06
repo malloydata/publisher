@@ -8,7 +8,7 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
-   ServiceUnavailableError,
+   PackageAdmissionRefusedError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
@@ -275,13 +275,14 @@ export class PackageController {
          // this request, not a failure of the package, and the caller places
          // the package elsewhere; recorded here it would read as a load
          // failure until this server next loaded that package, which it may
-         // never do.
+         // never do. Every other 5xx, a worker-pool failure included, is
+         // recorded: that one carries the cause an operator has to fix.
          const answered = internalErrorToHttpError(error as Error, {
             log: false,
          });
          if (
             answered.status >= 500 &&
-            !(error instanceof ServiceUnavailableError)
+            !(error instanceof PackageAdmissionRefusedError)
          ) {
             environment.recordPackageAddFailure(
                packageName,
