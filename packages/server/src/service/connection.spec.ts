@@ -22,6 +22,7 @@ import {
    buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
+   EnvironmentPooledPostgresConnection,
    resolveProxiedTls,
    testConnectionConfig,
    isExpiredCredentialError,
@@ -2132,6 +2133,56 @@ describe("connection integration tests", () => {
                   );
                } finally {
                   await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should say a query gave up waiting for a free session on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               class OneSessionShortWait extends EnvironmentPooledPostgresConnection {
+                  protected poolLimits() {
+                     return { max: 1, connectionTimeoutMillis: 200 };
+                  }
+               }
+               const connection = new OneSessionShortWait({
+                  name: "pg_wait",
+                  host: process.env.POSTGRES_TEST_HOST,
+                  port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+                  username: process.env.POSTGRES_TEST_USER,
+                  password: process.env.POSTGRES_TEST_PASSWORD,
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
+               });
+               const waitedOut =
+                  /timeout exceeded when trying to connect\n\[malloy-publisher\] No free session on connection 'pg_wait' \(limit 1 per process\) within 0.2 s/;
+               const one =
+                  "SELECT row_to_json(t) AS row FROM (SELECT 1 AS v) t";
+               try {
+                  await connection.getPool();
+                  const holding = connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                  await expect(connection.runSQL(one)).rejects.toThrow(
+                     waitedOut,
+                  );
+                  const drain = async () => {
+                     for await (const _row of connection.runSQLStream(one)) {
+                        // drain
+                     }
+                  };
+                  await expect(drain()).rejects.toThrow(waitedOut);
+                  await holding;
+               } finally {
+                  await connection.close();
                }
             },
             { timeout: 30000 },
