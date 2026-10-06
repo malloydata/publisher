@@ -6826,7 +6826,15 @@ export class Model {
          rollupGroups,
          this.serveShapeGivens(),
          derived,
-         documentFlagsForLifts(derived, this.authorModelLift()),
+         // The flags of every file whose text the shape carries: a lift's
+         // declaration, and a bound source's re-emitted views and joins.
+         documentFlagsForLifts(
+            [
+               ...bindings.map((b) => ({ sourceName: b.sourceName })),
+               ...derived,
+            ],
+            this.authorModelLift(),
+         ),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
