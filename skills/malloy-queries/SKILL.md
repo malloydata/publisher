@@ -95,7 +95,7 @@ run: source -> {
 
 ## Field Paths and Joins
 
-**Use the joins the model declares.** Every query is rooted on one source, and you reach a joined source's fields by a dotted path within the query body (for example `stores.region`). Never write `join_one` or `join_many` in a query, and never invent a join key. If the field you need is on a source the model does not join, say so and ask the user to add the join to the model.
+**Use the joins the model declares.** When you answer a question over a published model, every query is rooted on one source, and you reach a joined source's fields by a dotted path within the query body (for example `stores.region`). Do not write `join_one` or `join_many` in an answer query, and never invent a join key. (A join written in a query does compile, and model files and notebooks use them; the rule is that an answer uses the joins the model declares.) If the field you need is on a source the model does not join, say so and ask the user to add the join to the model.
 
 The `->` operator separates a **source** from a **view** (query transformation). It does NOT navigate between joined sources.
 

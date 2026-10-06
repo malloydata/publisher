@@ -2442,7 +2442,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
 - scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
 - Read warnings and any error/stale field before trusting a number or calling data absent.
-- A source's joins list is complete: empty means none declared. Never write a join; tell the user.
+- A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
 - Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
