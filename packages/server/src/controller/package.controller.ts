@@ -170,6 +170,10 @@ export class PackageController {
          // Not previously loaded, so there is nothing to reinstall from.
       }
       if (location) {
+         // The re-fetched tree's own publisher.json does not carry the
+         // location it was fetched from, so the reinstall re-records it the
+         // way a publish does; otherwise the next PATCH naming the same
+         // location would read as a change and reinstall again.
          const reinstalled = await environment.installPackage(
             packageName,
             (stagingPath) =>
@@ -179,6 +183,8 @@ export class PackageController {
                   location,
                   stagingPath,
                ),
+            undefined,
+            { location, update: { location } },
          );
          return {
             metadata: reinstalled.getPackageMetadata(),

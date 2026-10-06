@@ -7,7 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import sinon from "sinon";
 
-import { ServiceUnavailableError } from "../errors";
+import { PackageNotFoundError, ServiceUnavailableError } from "../errors";
 import { Environment } from "./environment";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -303,6 +303,66 @@ describe("Package.status: serving and loading", () => {
          ),
       );
       expect(onDisk.description).toBe("first");
+   });
+
+   it("a metadata PATCH during a first install's download waits for the install and lands on it", async () => {
+      // The download runs before the install takes the package lock, so a
+      // PATCH in that window finds no resident copy and a free lock. It is
+      // meant for the copy being installed; answering 404 instead would read
+      // to an orchestrator as the package having gone, which is the very
+      // signal this status work exists to stop sending.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      const location = "gs://bucket/pkg___1.0.0.zip";
+
+      const download = deferred();
+      const install = env.installPackage(
+         "pkg",
+         async (stagingPath) => {
+            await download.promise;
+            await copyDir(fixture, stagingPath);
+         },
+         undefined,
+         { location, update: { location } },
+      );
+      expect(env.describePackageStatus("pkg").serving).toBe(false);
+
+      let patchSettled = false;
+      const patch = env
+         .updatePackage("pkg", { name: "pkg", description: "patched" })
+         .finally(() => {
+            patchSettled = true;
+         });
+      // Nothing to apply it to yet, so it is pending, not a 404.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(patchSettled).toBe(false);
+
+      download.resolve();
+      await install;
+      const after = await patch;
+      expect(after.description).toBe("patched");
+      expect(after.location).toBe(location);
+      expect(env.describePackageStatus("pkg")).toEqual({
+         serving: true,
+         loading: false,
+      });
+   });
+
+   it("a metadata PATCH during a first install that then fails answers 404", async () => {
+      const env = await Environment.create("testEnv", envPath, []);
+      const download = deferred();
+      const install = env.installPackage("pkg", async () => {
+         await download.promise;
+         throw new Error("download failed");
+      });
+      const patchOutcome = env.updatePackage("pkg", { name: "pkg" }).then(
+         () => undefined,
+         (err: unknown) => err,
+      );
+      download.resolve();
+      await expect(install).rejects.toThrow("download failed");
+      expect(await patchOutcome).toBeInstanceOf(PackageNotFoundError);
    });
 
    it("remembers where a package was installed from, across a reload", async () => {

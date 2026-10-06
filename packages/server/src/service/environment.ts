@@ -325,7 +325,19 @@ export class Environment {
     */
    private loadsInFlight: Map<
       string,
-      { count: number; since: number; location?: string }
+      {
+         count: number;
+         since: number;
+         location?: string;
+         /**
+          * Resolves once the outermost load has finished, however it ended.
+          * Two loads of the same package started independently (a reinstall
+          * racing a reload) share this entry, so a waiter is released when the
+          * first of them finishes; the second's swap then replaces whatever
+          * the waiter wrote, and the next drift check rebinds it.
+          */
+         settled: Promise<void>;
+      }
    > = new Map();
    /**
     * Configured packages that failed to load, keyed by name, with the reason.
@@ -1973,14 +1985,24 @@ export class Environment {
       location?: string,
    ): Promise<T> {
       const current = this.loadsInFlight.get(packageName);
+      let markSettled!: () => void;
+      const settled =
+         current?.settled ??
+         new Promise<void>((resolve) => {
+            markSettled = resolve;
+         });
       this.loadsInFlight.set(packageName, {
          count: (current?.count ?? 0) + 1,
          since: current?.since ?? Date.now(),
          location: location ?? current?.location,
+         settled,
       });
       try {
          return await fn();
       } finally {
+         if (current === undefined) {
+            markSettled();
+         }
          const entry = this.loadsInFlight.get(packageName);
          if (entry !== undefined && entry.count > 1) {
             entry.count -= 1;
@@ -3336,6 +3358,15 @@ export class Environment {
 
    public async updatePackage(packageName: string, body: ApiPackage) {
       assertSafePackageName(packageName);
+      // An install downloads before it takes the package lock, so a PATCH
+      // that arrives during a first install's download finds no resident
+      // copy and a free lock. It is meant for the copy being installed, so
+      // it waits for that install to finish and is then applied to it; if
+      // the install failed, the lookup below answers 404 as it would for any
+      // package that is not here.
+      if (!this.packages.has(packageName)) {
+         await this.loadsInFlight.get(packageName)?.settled;
+      }
       return this.withPackageLock(packageName, () =>
          this._updatePackageLocked(packageName, body),
       );

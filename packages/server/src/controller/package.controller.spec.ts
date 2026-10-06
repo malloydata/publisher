@@ -565,6 +565,44 @@ describe("PackageController.updatePackage reinstall decision", () => {
    });
 });
 
+describe("PackageController.reloadPackage", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("a reload from the install location re-records that location on the reinstalled copy", async () => {
+      // The re-fetched tree's publisher.json carries no `location`, so a
+      // reinstall that does not write it back leaves the next same-location
+      // PATCH reading as a change, and reinstalling again.
+      const location = "gs://bucket/pkg___1.0.0.zip";
+      const cached = { getPackageMetadata: () => ({ name: "pkg", location }) };
+      const reinstalled = {
+         getPackageMetadata: () => ({ name: "pkg", location }),
+      };
+      const getPackage = sinon.stub().resolves(cached);
+      const installPackage = sinon.stub().resolves(reinstalled);
+      const environmentStore = {
+         getEnvironment: sinon.stub().resolves({ getPackage, installPackage }),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+      sinon
+         .stub(
+            controller as unknown as { downloadInto: () => Promise<void> },
+            "downloadInto",
+         )
+         .resolves();
+
+      const result = await controller.reloadPackage("env", "pkg");
+
+      expect(result.mode).toBe("reinstalled");
+      expect(installPackage.calledOnce).toBe(true);
+      expect(installPackage.firstCall.args[3]).toEqual({
+         location,
+         update: { location },
+      });
+   });
+});
+
 describe("PackageController.addPackage manifestLocation", () => {
    afterEach(() => {
       sinon.restore();
