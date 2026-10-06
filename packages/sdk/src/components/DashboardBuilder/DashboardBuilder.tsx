@@ -177,6 +177,8 @@ export interface DashboardBuilderProps {
    modelPath?: string;
    /** The document is held as text, which the server reads by its tags rather than its folder: the tag always carries `kind=`. */
    explicitKind?: boolean;
+   /** Set for a document held as text: the sources it sees without an `import`. A tile on one of them adds no import. */
+   visibleSources?: readonly string[];
    /**
     * Why "Add filter" is off, or absent when it is on. A document kept as bare
     * text has no `given:` of its own to write, so only the model's givens can
@@ -212,6 +214,7 @@ export function DashboardBuilder({
    replaces,
    modelPath,
    explicitKind,
+   visibleSources,
    addFilterDisabledReason,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
@@ -222,6 +225,7 @@ export function DashboardBuilder({
       ...(replaces !== undefined ? { replaces } : {}),
       ...(modelPath !== undefined ? { modelPath } : {}),
       ...(explicitKind ? { explicitKind } : {}),
+      ...(visibleSources ? { visibleSources } : {}),
    });
    const gridBox = useRef<HTMLDivElement>(null);
    const {
@@ -272,6 +276,7 @@ export function DashboardBuilder({
       notebook,
       columns,
       modelPath,
+      textHeld: visibleSources !== undefined,
       selectTile,
       deselectTile,
    });
