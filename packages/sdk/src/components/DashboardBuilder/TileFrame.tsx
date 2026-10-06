@@ -301,7 +301,10 @@ export function TileFrame({
                      }}
                      sx={{
                         position: "absolute",
-                        bottom: "-12px",
+                        // Centred in the gap below the tile, not on its edge: on
+                        // a one-line notebook text tile, an edge-centred button
+                        // covered the middle of the text it sits under.
+                        bottom: `-${GRID_GAP_PX / 2 + 12}px`,
                         left: "50%",
                         transform: "translateX(-50%)",
                         width: 24,
