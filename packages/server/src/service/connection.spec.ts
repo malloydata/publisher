@@ -2023,15 +2023,7 @@ describe("connection integration tests", () => {
                   return;
                }
 
-               // Regression test for the registry fallthrough building an
-               // unpooled, uncapped PostgresConnection for a plain (non-
-               // proxied) Postgres connection: pg.Pool's own default (max:
-               // 10) applied regardless of what the caller asked for, and a
-               // failed query never closed its session at all.
-               // buildEnvironmentPostgresConnection routes this case through
-               // EnvironmentPooledPostgresConnection instead; this asserts
-               // both that it is pooled at all, and that the pool's real,
-               // resolved size is the server-owned cap, not pg's default.
+               // The pool's resolved options, not just the constructor arguments.
                const config = buildPlainPostgresConfig();
 
                try {
@@ -2040,26 +2032,17 @@ describe("connection integration tests", () => {
                         "pg_pooled",
                      );
                   expect(connection.isPool()).toBe(true);
-                  // isPool() narrows to Malloy's generic PooledConnection,
-                  // which has no getPool(); the concrete runtime type built
-                  // by buildEnvironmentPostgresConnection is
-                  // PooledPostgresConnection, which does.
+                  // isPool() narrows to a type without getPool().
                   const pooled =
                      connection as unknown as PooledPostgresConnection;
                   const pool = await pooled.getPool();
-                  // The actual defect: without the buildClientConfig
-                  // override, this reads 10 (pg's own default) no matter
-                  // what the caller passed.
                   expect(pool.options.max).toBe(5);
                   expect(pool.options.maxUses).toBe(1);
                   expect(pool.options.application_name).toBe(
                      "malloy-publisher",
                   );
 
-                  // Prove the pool is real, not just correctly configured: a
-                  // live query against the actual test container. Wrapped in
-                  // row_to_json because runSQL de-JSONs each row via
-                  // row.row (see introspection_sql.ts's own note on this).
+                  // runSQL de-JSONs each row via row.row.
                   const result = await connection.runSQL(
                      "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
                   );
@@ -2081,11 +2064,8 @@ describe("connection integration tests", () => {
                   return;
                }
 
-               // streamSqlWithBudget stops reading a stream as soon as a cap is
-               // exceeded, so each overflow is an early exit from the stream.
-               // A slot that an early exit fails to return is never returned,
-               // and the pool holds 5, so the sixth overflow is the first to
-               // wait on a free slot.
+               // Each overflow stops its stream early; one more than the pool size
+               // shows that every early stop returns its slot.
                const config = buildPlainPostgresConfig();
                try {
                   const connection =
@@ -2134,11 +2114,8 @@ describe("connection integration tests", () => {
                   return;
                }
 
-               // The connection SQL endpoint runs arbitrary SQL. A SET or an
-               // open BEGIN from one caller must not change how the next
-               // caller's query resolves tables or runs. In a fresh session's
-               // implicit transaction now() equals statement_timestamp(); in
-               // a transaction left open by an earlier caller it does not.
+               // now() equals statement_timestamp() only outside a transaction left
+               // open by an earlier query.
                const config = buildPlainPostgresConfig();
                const probe =
                   "SELECT row_to_json(t) AS row FROM (SELECT current_setting('search_path') AS search_path, now() = statement_timestamp() AS own_txn) t";
