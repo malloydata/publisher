@@ -39,6 +39,12 @@
 #   package.json  "basic-ftp": "^5.3.1", "protobufjs": "^7.5.5"
 #     In range for every parent; they only move the lockfile. Retire at the next
 #     refresh that resolves those versions without them.
+#   package.json  "proxy-addr": "^2.0.8"
+#     express 4 and 5 both declare a range that admits it, so this only moves the
+#     lockfile. Retire at the next refresh that resolves 2.0.8 without it.
+#   package.json and examples/data-app/package.json  "seroval": "^1.6.2", "seroval-plugins": "^1.6.2"
+#     solid-js 1.9.15 still pins `~1.5.4`, and the fix is 1.6.2. Retire when a solid-js
+#     release moves its range to 1.6 or later.
 #   package.json  "axios": "^1.20.0"
 #     @malloydata/db-trino 0.0.432 reaches trino-client 0.2.8, which exact-pins axios
 #     1.11.0; fixes for its advisories run to 1.20.0. Retire when the workspace moves

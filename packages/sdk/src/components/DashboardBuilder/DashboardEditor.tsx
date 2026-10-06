@@ -138,7 +138,7 @@ export interface TextSourceOptions {
    /** Givens the host sets itself: no control is shown for them. */
    hiddenGivens?: readonly string[];
    /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
-   givens?: Record<string, string>;
+   givens?: Record<string, GivenValue>;
 }
 
 /** A compile with no readable document: no manifest, but the text still opens. */

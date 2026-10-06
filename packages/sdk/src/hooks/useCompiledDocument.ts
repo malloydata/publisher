@@ -12,7 +12,7 @@ export interface CompiledDocumentSpec {
    modelPath: string;
    source: string;
    /** The values the host sets for the givens a source's gate reads; a gate sent none of its givens denies, so every tile would come back `restricted`. */
-   givens?: Record<string, string>;
+   givens?: Record<string, unknown>;
 }
 
 /**
