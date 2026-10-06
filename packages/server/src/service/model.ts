@@ -4784,8 +4784,12 @@ export class Model {
       modelPath: string,
       modelType: ModelType,
       error: Error,
+      // The text that failed, when it is not the file on disk: a package
+      // compile's what-if replacement. Without it, a reader of this model's
+      // text judges the saved file instead of the edit.
+      sourceText?: string,
    ): Model {
-      return new Model(
+      const model = new Model(
          packageName,
          modelPath,
          {} as DataStyles,
@@ -4798,6 +4802,8 @@ export class Model {
          undefined,
          error,
       );
+      model.compiledSourceText = sourceText;
+      return model;
    }
 
    /** Look up the deserialized error helper for callers (e.g. Package.create). */
@@ -5027,7 +5033,9 @@ export class Model {
 
    /**
     * The model file's text as this model's compile read it, or undefined when there is
-    * none (a `.malloynb`, a compile failure, or an unreadable file).
+    * none (a `.malloynb`, a compile failure, or an unreadable file). A compile
+    * failure does carry text when it is a package compile's what-if
+    * replacement, because that text is not on disk to fall back to.
     *
     * The only safe input for slicing a `DocumentLocation` out of: the ranges in
     * {@link getModelDef}'s IR index THIS text. Callers must not fall back to

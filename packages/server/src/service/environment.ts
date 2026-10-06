@@ -1031,6 +1031,9 @@ export class Environment {
                   pkg.getMalloyConfig(),
                   outcome,
                   boundManifestEntries,
+                  source === undefined
+                     ? undefined
+                     : { modelPath: modelName, source },
                );
             for (const compiled of outcome.models) {
                if (compiled.problems) {

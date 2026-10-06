@@ -829,6 +829,13 @@ export class Package {
          malloyConfig: MalloyConfig;
          buildManifest?: BuildManifest["entries"];
          compile?: boolean;
+         /**
+          * The what-if text a package-scope compile was given. A model that
+          * fails to compile is kept as a placeholder, and without this the
+          * placeholder carries no text, so a reader of it judges the saved
+          * file instead of the edit.
+          */
+         replacement?: { modelPath: string; source: string };
       },
       onCompileError: "throw" | "placeholder",
       afterHydrate?: (
@@ -850,6 +857,9 @@ export class Package {
             sm.modelPath,
             sm.modelType,
             err,
+            sm.modelPath === ctx.replacement?.modelPath
+               ? ctx.replacement.source
+               : undefined,
          );
       for (const sm of outcome.models) {
          if (sm.compilationError) {
@@ -938,10 +948,11 @@ export class Package {
     * every warning that needs the build plan or a bound manifest (storage,
     * persist, materialization, collision), which only a real load computes.
     *
-    * With a replacement source, the hydrated models already reflect it. One
-    * lint input is still read from disk: a dashboard file that failed to
-    * compile carries no text back, so `claimsToBeADashboard` reads the saved
-    * copy to decide whether it is a dashboard at all.
+    * With a replacement source, the hydrated models already reflect it. A
+    * replacement that fails to compile carries no text back from the worker, so
+    * its placeholder is handed the replacement text, and discovery decides from
+    * that whether it is a dashboard (and so whether a drill to it resolves)
+    * rather than reading the saved file.
     */
    public static async lintWorkerOutcome(
       environmentName: string,
@@ -950,6 +961,7 @@ export class Package {
       malloyConfig: MalloyConfig,
       outcome: LoadPackageOutcome,
       buildManifest?: BuildManifest["entries"],
+      replacement?: { modelPath: string; source: string },
    ): Promise<{
       renderTagWarnings: ApiPackageWarning[];
       dashboardWarnings: ApiPackageWarning[];
@@ -962,6 +974,7 @@ export class Package {
             malloyConfig,
             buildManifest,
             compile: true,
+            replacement,
          },
          "placeholder",
       );
@@ -2977,12 +2990,19 @@ export class Package {
     * negative hides a real broken dashboard, which is still worse than either.
     * Never throws: an unreadable file is simply not a dashboard.
     */
-   private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
+   private async claimsToBeADashboard(
+      model: Model,
+      modelPath: string,
+   ): Promise<boolean> {
       try {
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         // The text the compile read first: a package compile's replacement is
+         // not on disk, and the saved file would answer for the old text.
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
       } catch {
          return false;
@@ -3009,10 +3029,13 @@ export class Package {
                : untagged;
          }
          if (!model.getCompilationError()) return untagged;
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         // Compiled text first, as in claimsToBeADashboard.
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return claimsToBeANotebook(source)
             ? documentKind(modelPath, artifactKindInText(source))
             : untagged;
@@ -3165,7 +3188,10 @@ export class Package {
             // be read from a model that did not compile, so it is read from the
             // source text, a heuristic used ONLY on this already-broken path.
             const error = model.getCompilationError();
-            if (!error || !(await this.claimsToBeADashboard(modelPath))) {
+            if (
+               !error ||
+               !(await this.claimsToBeADashboard(model, modelPath))
+            ) {
                // Reached with no facts AND no compile error to show, so the
                // branch above drops the file. If it claims to be a dashboard,
                // that is one disappearing with nothing said, which is the case
@@ -3190,7 +3216,10 @@ export class Package {
                // short-circuits before calling it again. Do not "simplify" it
                // away; that reinstates a second `readFile` per uncompilable
                // non-dashboard.
-               if (!error && (await this.claimsToBeADashboard(modelPath))) {
+               if (
+                  !error &&
+                  (await this.claimsToBeADashboard(model, modelPath))
+               ) {
                   logger.warn("Dashboard file produced no facts and no error", {
                      packageName: this.packageName,
                      ...during,
