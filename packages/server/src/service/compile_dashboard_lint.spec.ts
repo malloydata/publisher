@@ -360,7 +360,7 @@ describe("compile_model, package scope: curation findings", () => {
             model: "dashboards/hidden.malloy",
             message:
                "The load-time checks could not read this model (simulated " +
-               "hydration failure), so its render-tag findings are unknown " +
+               "hydration failure), so its render-tag and dashboard findings are unknown " +
                "rather than clean.",
          } as (typeof problems)[number],
       ]);

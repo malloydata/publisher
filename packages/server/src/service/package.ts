@@ -910,7 +910,7 @@ export class Package {
                model: sm.modelPath,
                message:
                   `The load-time checks could not read this model ` +
-                  `(${errMessage(hydrateErr)}), so its render-tag findings ` +
+                  `(${errMessage(hydrateErr)}), so its render-tag and dashboard findings ` +
                   `are unknown rather than clean.`,
                severity: "warn",
             });
