@@ -8,6 +8,8 @@ import type {
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
@@ -101,17 +103,77 @@ import {
 import { storageDeltaTarget } from "./incremental_storage";
 import { escapeSQL } from "./connection";
 import {
+   authorModelLiftContext,
    buildChainedStorageBuildModel,
    buildVirtualMap,
    deriveServeBindings,
+   documentFlagLines,
+   groupAliasesByName,
+   liftDerivedSources,
+   missingPersistedTables,
+   reachedPersistedSources,
    type ServeBinding,
    type SourceLocation,
-   sliceSourceRange,
 } from "./materialization_serve_transform";
+
+/**
+ * What a build needs to know from the plan about stored tables, to tell which
+ * of the sources a downstream reaches are stored and whether their tables are
+ * at hand. Both are the PLAN's facts, not a definition's: `#@ persist` is
+ * inherited and `extend` never changes the SQL, so a plain extension or a rename
+ * of a persisted source is a persist source too and shares the base's table,
+ * and nothing on a definition says which name wrote the annotation (the
+ * compiler copies the base's notes onto an extension). A stored table is a
+ * content address, and every name whose SQL hashes to it is that table —
+ * which is what `aliasesBySourceName` records.
+ */
+export interface ChainedPlanFacts {
+   /** Every persist source's name, inheritors and renames included. */
+   persistNames: ReadonlySet<string>;
+   /** The names sharing one table, keyed by each of them (groupAliasesByName). */
+   aliasesBySourceName: Record<string, string[]>;
+}
+
+/** A build with no plan to consult: nothing is known to be stored. */
+const NO_PLAN_FACTS: ChainedPlanFacts = {
+   persistNames: new Set(),
+   aliasesBySourceName: {},
+};
+
+function chainedPlanFacts(
+   sources: Record<string, PersistSource>,
+   connectionDigests: Record<string, string>,
+): ChainedPlanFacts {
+   const planSources: { name: string; sourceEntityId?: string }[] = [];
+   for (const source of Object.values(sources)) {
+      let sourceEntityId: string | undefined;
+      try {
+         sourceEntityId = computeSourceEntityId(source, connectionDigests);
+      } catch {
+         // A source whose SQL cannot be rendered (an unbound parameter, a
+         // given) has no address to group by; the eligibility gate refuses it
+         // on its own path, and here it is a name with no table-mates.
+      }
+      planSources.push({ name: source.name, sourceEntityId });
+   }
+   return {
+      persistNames: new Set(planSources.map((s) => s.name)),
+      aliasesBySourceName: groupAliasesByName(planSources),
+   };
+}
 import type { ApiConnection } from "./model";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
+
+/** An author model file's text by `file:` URL, or undefined when unreadable. */
+function readAuthorFile(url: string): string | undefined {
+   try {
+      return readFileSync(fileURLToPath(url), "utf8");
+   } catch {
+      return undefined;
+   }
+}
 import {
    quoteRenameTarget,
    quoteManifestTablePath,
@@ -1932,6 +1994,9 @@ export class MaterializationService {
       sourcesRefused: number;
    }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
+      // Computed once for the run: a chained build asks it for every source it
+      // reaches, and the answer is the plan's, not the run's.
+      const planFacts = chainedPlanFacts(sources, connectionDigests);
 
       // Index instructions by sourceID (the stable per-source handle) so the
       // build no longer recomputes the sourceEntityId to find an instruction.
@@ -2446,6 +2511,7 @@ export class MaterializationService {
                      // caller-assigned identity: the ledger is keyed by it so a
                      // boundary can never be read against different SQL.
                      sourceEntityId,
+                     planFacts,
                   );
                   // Stamp what this table was built FOR, here rather than inside
                   // buildOneSource, because this is the scope that holds the
@@ -2834,6 +2900,9 @@ export class MaterializationService {
       // (It used to be part of the ledger's key, which gave the same guarantee for
       // free but made a boundary un-findable across a package's versions.)
       contentSourceEntityId?: string,
+      // Which names the plan holds as stored tables, and which share one. The
+      // default knows nothing, which only the test seams rely on.
+      planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -2871,6 +2940,57 @@ export class MaterializationService {
          buildManifest,
          connectionDigests,
       });
+
+      // Whether this source's persisted upstreams were read from their tables
+      // or recomputed inline, for the entry to report. A colocated build reads a
+      // same-tier upstream the manifest carries and inlines the rest: one that
+      // landed in a `storage=` destination, which a warehouse build cannot read,
+      // or one this run neither built nor was handed. Under strict the inline
+      // never runs — `getSQL` above has already refused the miss — so reaching
+      // here non-strict with an upstream absent IS the recompute, and the entry
+      // says so. The `storage=` branch decides its own answer below.
+      const upstreamReuse = (): Pick<
+         ManifestEntry,
+         "upstreamReuse" | "upstreamRecomputeReason"
+      > => {
+         const reached = reachedPersistedSources(
+            authorModelLiftContext(
+               persistSource._model?._modelDef,
+               () => undefined,
+            ),
+            persistSource.name,
+            (name) => planFacts.persistNames.has(name),
+         );
+         if (reached.persisted.length === 0) return {};
+         const byName = new Map(
+            Object.values(builtEntries)
+               .filter((e) => e.sourceName)
+               .map((e) => [e.sourceName as string, e]),
+         );
+         const recomputed = reached.persisted.flatMap((name) => {
+            // The entry for this name's TABLE: whichever of the names sharing
+            // it built the table is the one the manifest records.
+            const entry = (planFacts.aliasesBySourceName[name] ?? [name])
+               .map((alias) => byName.get(alias))
+               .find((e) => e !== undefined);
+            if (!entry)
+               return [`'${name}' was not materialized for this build`];
+            if (entry.storageDestinationName)
+               return [
+                  `'${name}' is materialized in storage destination ` +
+                     `'${entry.storageDestinationName}', which a warehouse build cannot read`,
+               ];
+            return [];
+         });
+         return recomputed.length === 0
+            ? { upstreamReuse: "reused" }
+            : {
+                 upstreamReuse: "recomputed",
+                 upstreamRecomputeReason:
+                    `persisted upstream ${recomputed.join("; ")}; ` +
+                    `recomputed from its definition in the warehouse`,
+              };
+      };
 
       // Every statement of this source's build carries the same metadata, so the
       // warehouse's query history shows the staging CTAS, the drop and the rename
@@ -2932,6 +3052,7 @@ export class MaterializationService {
             queryMetadata: runOptions.queryMetadata,
             incremental,
             contentSourceEntityId,
+            planFacts,
          });
       }
 
@@ -3098,6 +3219,7 @@ export class MaterializationService {
          // The recurring warehouse cost of keeping this source materialized —
          // the debit against whatever the materialization saves on the read side.
          queryCostBytes: buildCostBytes ?? null,
+         ...upstreamReuse(),
       };
    }
 
@@ -3206,6 +3328,8 @@ export class MaterializationService {
       incremental?: IncrementalRunContext;
       /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
       contentSourceEntityId?: string;
+      /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
+      planFacts?: ChainedPlanFacts;
    }): Promise<ManifestEntry> {
       const {
          persistSource,
@@ -3216,6 +3340,7 @@ export class MaterializationService {
          dependsOnStorageUpstream,
          queryMetadata,
          incremental,
+         planFacts = NO_PLAN_FACTS,
       } = params;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -3289,6 +3414,9 @@ export class MaterializationService {
 
       const startTime = performance.now();
       let result;
+      // Set when stacking on the parents was declined and the recompute below
+      // ran instead, so the entry can say so and why.
+      let upstreamRecomputeReason: string | undefined;
 
       // Stack on the parent: a source that reads a storage-materialized
       // upstream is built by reading the parent's STORED lake table instead of
@@ -3309,6 +3437,7 @@ export class MaterializationService {
                builtEntries,
                environment,
                physicalTableName,
+               planFacts,
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
@@ -3328,7 +3457,22 @@ export class MaterializationService {
             // recompute-from-raw writes to the SAME destination and fails the same
             // way, and metering it as `inline_fallback` files an outage in the same
             // bucket as a legitimate shape miss.
-            if (!(err instanceof MaterializationEligibilityError)) {
+            // Strict's line runs between what the build was HANDED and what it
+            // can EXPRESS. A persisted upstream it cannot see, or a shape over
+            // stored upstreams it could not carry, would both be built by
+            // recomputing tables the orchestrator pinned — refused. A downstream
+            // that reaches the source warehouse has no build over the parents at
+            // all, so the recompute is the only build there is, and strict
+            // permits it — reported, on the entry and the counter, because the
+            // rows then come from the warehouse at this build's time rather than
+            // from the parents' snapshots.
+            const pinnedRecompute =
+               err instanceof ChainedUpstreamMissingError ||
+               err instanceof ChainedShapeNotCarriedError;
+            if (
+               !pinnedRecompute &&
+               !(err instanceof MaterializationEligibilityError)
+            ) {
                recordChainedStorageBuild("infra_failure");
                recordStorageBuildFailure(destinationName);
                throw new Error(
@@ -3336,7 +3480,7 @@ export class MaterializationService {
                      `into storage destination '${destinationName}': ${safeDetail}`,
                );
             }
-            if (manifest.strict) {
+            if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
                throw new Error(
@@ -3346,13 +3490,17 @@ export class MaterializationService {
                      `recomputing it from raw: ${safeDetail}`,
                );
             }
-            recordChainedStorageBuild("inline_fallback");
+            recordChainedStorageBuild(
+               manifest.strict ? "strict_shape_fallback" : "inline_fallback",
+            );
+            upstreamRecomputeReason = safeDetail;
             logger.warn(
                "Chained storage build could not reuse the parent table; " +
                   "recomputing the upstream from raw",
                {
                   sourceName: persistSource.name,
                   destinationName,
+                  strict: manifest.strict,
                   reason: safeDetail,
                },
             );
@@ -3543,6 +3691,17 @@ export class MaterializationService {
          ...refreshFields(
             result.refresh?.refresh ?? (lineage ? "full" : undefined),
          ),
+         // How a chained source's rows were computed, and why the parents were
+         // not read when they were not. A source with no persisted upstream has
+         // only one way to build and says nothing here.
+         ...(dependsOnStorageUpstream
+            ? {
+                 upstreamReuse: result.upstreamReuse ?? "recomputed",
+                 ...(upstreamRecomputeReason
+                    ? { upstreamRecomputeReason }
+                    : {}),
+              }
+            : {}),
          // SCANNED, matching the colocated path above, which fills this from the
          // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
          // Reporting billed here would put two different quantities in one field,
@@ -3658,19 +3817,32 @@ export class MaterializationService {
       builtEntries: Record<string, ManifestEntry>,
       environment: BuildEnvironment,
       physicalTableName: string,
+      planFacts: ChainedPlanFacts,
    ): Promise<StorageBuildResult> {
-      // Rebind every upstream materialized into THIS destination. A parent in a
-      // DIFFERENT destination is absent here, so the downstream def fails to
-      // compile against the rebind model and the caller falls back — cross-catalog
-      // parent reuse is out of scope for the spike.
-      // No aliases, and the consequence is a scope boundary rather than a
-      // compile problem: two aliases are two DISTINCT names on one handle, which
-      // is what the serve path emits and compiles. What passing none means is
-      // that a chained downstream reading the EXTENSION's name finds it absent
-      // from the rebind model and falls back to recomputing its upstream from
-      // raw. Correct-but-slower, and out of scope here; the serve path is where
-      // an alias has to resolve.
-      const upstreams: ServeBinding[] = deriveServeBindings(builtEntries, {})
+      const lift = authorModelLiftContext(
+         persistSource._model?._modelDef,
+         readAuthorFile,
+      );
+      // Rebind every upstream materialized into THIS destination, under every
+      // name that is that table: an entry names only the source that built it,
+      // and a rename of it (`source: x is daily`) is the same table under another
+      // name, so it is bound to the same handle, as the serve path binds it. An
+      // EXTENSION of a parent is the same table too, but with refinements the
+      // table does not hold, so it is not bound here — it is carried below as a
+      // lift over its base, which re-declares what it adds. A parent in a
+      // DIFFERENT destination is absent here, and reported as missing below.
+      const aliasesForBinding: Record<string, string[]> = {};
+      for (const [name, aliases] of Object.entries(
+         planFacts.aliasesBySourceName,
+      )) {
+         aliasesForBinding[name] = aliases.filter(
+            (alias) => typeof lift.contents[alias]?.extends !== "string",
+         );
+      }
+      const upstreams: ServeBinding[] = deriveServeBindings(
+         builtEntries,
+         aliasesForBinding,
+      )
          .filter((b) => b.destinationName === destinationName)
          // A rollup is never an upstream: nothing can reference one, because its
          // name is synthesized and appears in no model file. Inert if left in —
@@ -3683,35 +3855,121 @@ export class MaterializationService {
          // rollups now reports "no materialized upstream is available" instead of
          // proceeding and failing later on a compile against an absent parent.
          .filter((b) => b.origin !== "preaggregate");
+      // Which stored tables the downstream reads, directly or through the
+      // sources between them, by the names it reaches them under. One whose
+      // table is absent from this destination's parents is a table this build
+      // cannot see — neither built here nor referenced, or built into another
+      // destination. That is the dispatch miss strict refuses, and it is named
+      // here, by source, before any compile: the compiler would report only
+      // "undefined object", which reads the same for a missing parent and for a
+      // warehouse table.
+      const reached = reachedPersistedSources(
+         lift,
+         persistSource.name,
+         (name) => planFacts.persistNames.has(name),
+      );
+      const present = new Set(upstreams.map((b) => b.sourceName));
+      const missing = missingPersistedTables(
+         reached.persisted,
+         planFacts.aliasesBySourceName,
+         present,
+      );
+      if (missing.length > 0) {
+         throw new ChainedUpstreamMissingError(
+            missing,
+            `persisted upstream ${missing.map((n) => `'${n}'`).join(", ")} ` +
+               `of '${persistSource.name}' is not materialized in destination ` +
+               `'${destinationName}' for this build (neither built in this run ` +
+               `nor supplied by reference)`,
+         );
+      }
+      // A path to the source warehouse — a table joined beside a stored parent,
+      // a SQL source — is one no stored table stands in for, so no build over
+      // the parents exists and the recompute is the only build there is. Decided
+      // here, from the model, rather than left to the compile: the compiler
+      // would say only "undefined object", and the caller needs to know this
+      // was a shape the destination cannot express rather than one the build
+      // could not carry, because strict treats the two differently.
+      if (reached.raw) {
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' reads the source warehouse ` +
+               `(${reached.rawLeaves.join(", ")}) through ` +
+               `${reached.rawVia.map((n) => `'${n}'`).join(", ")}, which no ` +
+               `stored table can stand in for`,
+         });
+      }
       if (upstreams.length === 0) {
-         throw new MaterializationEligibilityError({
-            message:
-               "no materialized upstream is available in this destination to build on",
-         });
+         throw new ChainedShapeNotCarriedError(
+            "no materialized upstream is available in this destination to build on",
+         );
       }
-      const downstreamDefText = this.liftDownstreamDefText(persistSource);
+      const downstreamDefText = this.liftDownstreamDefText(
+         persistSource,
+         lift.liftText,
+      );
       if (!downstreamDefText) {
-         throw new MaterializationEligibilityError({
-            message:
-               "could not recover the downstream source definition text from the model",
-         });
+         throw new ChainedShapeNotCarriedError(
+            "could not recover the downstream source definition text from the model",
+         );
       }
+      // The sources between the downstream and its parents, each carried only
+      // when everything it names is already in the model: a parent, or an
+      // intermediate carried before it. An extension of a parent is one of
+      // them: by design it inherits `#@ persist` and reads the parent's table,
+      // so here it is the parent's rebound virtual source plus the refinements
+      // the extension adds.
+      const derived = liftDerivedSources({
+         contents: lift.contents,
+         sourceNameById: lift.sourceNameById,
+         shapeSourceNames: present,
+         liftText: lift.liftText,
+         carryPersistExtensions: true,
+      });
+      // The `##!` flags of every file whose declarations this model carries.
+      const flagFiles = new Set<string>();
+      for (const name of [
+         persistSource.name,
+         ...derived.map((d) => d.sourceName),
+      ]) {
+         const url = lift.contents[name]?.location?.url;
+         if (url) flagFiles.add(url);
+      }
+      const documentFlags = [...flagFiles]
+         .flatMap((url) => documentFlagLines(lift.fileText(url) ?? ""))
+         .filter((line, i, all) => all.indexOf(line) === i);
       const transientModel = buildChainedStorageBuildModel({
          upstreams,
          downstreamName: persistSource.name,
          downstreamDefText,
          destinationName,
+         derived,
+         documentFlags,
       });
-      return buildDownstreamIntoStorage({
-         destinationName,
-         destinationConnection,
-         transientModel,
-         downstreamName: persistSource.name,
-         virtualMap: buildVirtualMap(upstreams),
-         physicalTableName,
-         partitionColumns: partitionColumnsForBuild(persistSource),
-         environmentPath: environment.getEnvironmentPath(),
-      });
+      try {
+         return await buildDownstreamIntoStorage({
+            destinationName,
+            destinationConnection,
+            transientModel,
+            downstreamName: persistSource.name,
+            virtualMap: buildVirtualMap(upstreams),
+            physicalTableName,
+            partitionColumns: partitionColumnsForBuild(persistSource),
+            environmentPath: environment.getEnvironmentPath(),
+         });
+      } catch (err) {
+         // The model reached only stored parents (checked above), so a shape
+         // failure here is one the build could not carry, not one the
+         // destination cannot express. Infrastructure failures pass through.
+         if (err instanceof MaterializationEligibilityError) {
+            throw new ChainedShapeNotCarriedError(
+               `'${persistSource.name}' reads only stored upstreams ` +
+                  `(${reached.persisted.map((n) => `'${n}'`).join(", ")}) but ` +
+                  `could not be built over them: ${err.message}`,
+            );
+         }
+         throw err;
+      }
    }
 
    /**
@@ -3725,18 +3983,12 @@ export class MaterializationService {
     */
    private liftDownstreamDefText(
       persistSource: PersistSource,
+      liftText: (location: SourceLocation) => string | undefined,
    ): string | undefined {
       const location = (
          persistSource._explore as unknown as { location?: SourceLocation }
       ).location;
-      if (!location?.url?.startsWith("file:")) return undefined;
-      let text: string;
-      try {
-         text = readFileSync(fileURLToPath(location.url), "utf8");
-      } catch {
-         return undefined;
-      }
-      return sliceSourceRange(text, location.range);
+      return location ? liftText(location) : undefined;
    }
 
    // ==================== CANCELLATION ====================

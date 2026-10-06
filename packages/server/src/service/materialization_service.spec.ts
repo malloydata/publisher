@@ -8,6 +8,8 @@ import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
    BadRequestError,
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -3881,10 +3883,19 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      stackOnParent: "ok" | "throw" | "infra";
+      /**
+       * What the stack-on-parent seam does: builds (`ok`); finds the downstream
+       * REACHES the warehouse, so no build over the parents exists (`raw`);
+       * could not CARRY a shape that reads only stored parents (`uncarried`);
+       * finds a persisted upstream MISSING from the destination; or fails on
+       * infrastructure.
+       */
+      stackOnParent: "ok" | "raw" | "uncarried" | "missing" | "infra";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
+      upstreamReuse?: string;
+      upstreamRecomputeReason?: string;
    }> {
       const source = fakeSource({
          name: "monthly",
@@ -3918,29 +3929,53 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
+            upstreamReuse?: string;
+            upstreamRecomputeReason?: string;
          }>;
       };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
-      svc.buildDownstreamViaParents =
-         opts.stackOnParent === "ok"
-            ? sinon.stub().resolves({
-                 storageDestinationName: "lake",
-                 schema: [
-                    { name: "order_month", type: "DATE" },
-                    { name: "monthly_total", type: "DOUBLE" },
-                 ],
-              })
-            : opts.stackOnParent === "infra"
-              ? // An outage, not a modelling limit: a plain Error, as a failed
-                // ATTACH or CTAS would throw.
-                sinon.stub().rejects(new Error("IO Error: destination is down"))
-              : // A shape limit: the downstream cannot be expressed over its
-                // rebound parents.
-                sinon.stub().rejects(
-                   new MaterializationEligibilityError({
-                      message: "uncarried parent",
-                   }),
-                );
+      const seam: Record<typeof opts.stackOnParent, sinon.SinonStub> = {
+         ok: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // An outage, not a modelling limit: a plain Error, as a failed ATTACH
+         // or CTAS would throw.
+         infra: sinon
+            .stub()
+            .rejects(new Error("IO Error: destination is down")),
+         // The downstream reads the warehouse through a non-persisted source:
+         // nothing stored stands in for that, so no build over the parents exists.
+         raw: sinon.stub().rejects(
+            new MaterializationEligibilityError({
+               message:
+                  "'monthly' reads the source warehouse (regions) through 'daily_regional'",
+            }),
+         ),
+         // Every upstream is stored and present, yet the build could not carry
+         // the shape over them: a limit of the carrying, not of the source.
+         uncarried: sinon
+            .stub()
+            .rejects(
+               new ChainedShapeNotCarriedError(
+                  "'monthly' reads only stored upstreams ('daily') but could not be built over them: Reference to undefined object 'r'",
+               ),
+            ),
+         // A dispatch miss: a persisted upstream this build cannot see.
+         missing: sinon
+            .stub()
+            .rejects(
+               new ChainedUpstreamMissingError(
+                  ["daily"],
+                  "persisted upstream 'daily' of 'monthly' is not materialized in destination 'lake' for this build",
+               ),
+            ),
+      };
+      svc.buildDownstreamViaParents = seam[opts.stackOnParent];
       return svc.buildOneSourceIntoStorage({
          persistSource: source,
          instruction,
@@ -3961,37 +3996,113 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       });
    }
 
-   it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
+   it("stacks on the parent: builds by reading it and the entry says so", async () => {
       const entry = await callInto({ strict: false, stackOnParent: "ok" });
       expect(entry.storageDestinationName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("strict + cannot stack on the parent: refuses loudly instead of recomputing from raw", async () => {
+   it("strict + a persisted upstream the build cannot see: refuses, naming it, instead of recomputing from raw", async () => {
+      // The orchestrator meant to pin that upstream; recomputing it here would
+      // rebuild a table it did not ask for. The refusal carries the upstream's
+      // name so the dispatch, not the model, is what gets fixed.
       await expect(
-         callInto({ strict: true, stackOnParent: "throw" }),
-      ).rejects.toThrow(/strict upstreams forbid/i);
+         callInto({ strict: true, stackOnParent: "missing" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*persisted upstream 'daily'/is,
+      );
    });
 
-   it("non-strict + an INFRA failure fails rather than recomputing from raw", async () => {
+   it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
+      // No build over the parents exists for this source, so the recompute is
+      // the only build there is and strict permits it. Only the parent-reuse
+      // seam is stubbed, so the recompute runs for real and fails for its own
+      // reason (no destination file) — the proof it was reached, since the two
+      // paths report differently: "chained source" from the stack-on-parent
+      // path, "source" from the single-source recompute.
+      await expect(
+         callInto({ strict: true, stackOnParent: "raw" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("strict + a shape over stored upstreams the build could not carry: refuses rather than recomputing them", async () => {
+      // Every upstream was handed to the build; recomputing them would rebuild
+      // pinned tables because of a limit in the carrying, which is not the
+      // source's doing and not a licence strict grants.
+      await expect(
+         callInto({ strict: true, stackOnParent: "uncarried" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*could not be built over them/is,
+      );
+   });
+
+   it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
+      for (const stackOnParent of ["missing", "uncarried"] as const) {
+         await expect(
+            callInto({ strict: false, stackOnParent }),
+         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      }
+   });
+
+   it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
       // Recompute-from-raw writes to the same destination, so retrying an outage
       // there just fails again — and metering it as a fallback files the outage
       // under the same label as a legitimate shape miss. Only a shape failure is
       // a reason to try the other path.
-      await expect(
-         callInto({ strict: false, stackOnParent: "infra" }),
-      ).rejects.toThrow(/Failed to materialize chained source/i);
+      for (const strict of [false, true]) {
+         await expect(
+            callInto({ strict, stackOnParent: "infra" }),
+         ).rejects.toThrow(/Failed to materialize chained source/i);
+      }
    });
 
-   it("non-strict + a SHAPE failure falls through to recompute-from-raw", async () => {
-      // Only the parent-reuse seam is stubbed, so the recompute runs for real and
-      // fails for its own reason (no destination file). That is the proof it was
-      // reached: the two paths report differently — the chained path says
-      // "chained source", the single-source recompute says "source". A shape
-      // failure must reach the second; an infra failure must not.
+   it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
       await expect(
-         callInto({ strict: false, stackOnParent: "throw" }),
+         callInto({ strict: false, stackOnParent: "raw" }),
       ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   describe("telemetry", () => {
+      let harness: MetricsHarness;
+      beforeEach(async () => {
+         harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+      });
+      afterEach(async () => {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      });
+      const COUNTER = "publisher_storage_chained_build_total";
+
+      it("meters each rung under its own outcome", async () => {
+         await callInto({ strict: false, stackOnParent: "ok" });
+         await callInto({ strict: true, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: false, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "missing" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "uncarried" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "infra" }).catch(
+            () => undefined,
+         );
+         for (const [outcome, n] of [
+            ["parent_reuse", 1],
+            ["strict_shape_fallback", 1],
+            ["inline_fallback", 1],
+            ["strict_refused", 2],
+            ["infra_failure", 1],
+         ] as const) {
+            expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
+         }
+      });
    });
 });
 
