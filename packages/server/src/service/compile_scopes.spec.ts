@@ -425,7 +425,7 @@ query: x is sales -> by_n
          const result = await compilePackage();
          expect(result.status).toBe("error");
          expect(
-            warnSpy.mock.calls.map(([message]) => message as string),
+            warnSpy.mock.calls.map(([message]) => String(message)),
          ).not.toContain("Model compilation failed during reload");
       } finally {
          warnSpy.mockRestore();
