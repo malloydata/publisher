@@ -257,36 +257,53 @@ jobs:
 
       # Split into two bun-test invocations (two processes). The unit specs
       # under src/ use `mock.module(...)` to stub out `StorageManager` and
-      # other modules; Bun does not scope those mocks to a single file —
-      # they persist in the process-wide module cache and poison any later
-      # spec that imports the real module. Running integration specs (which
-      # import src/server.ts and expect the real StorageManager) in a
-      # separate process avoids the carry-over.
-      - name: Run unit tests
+      # other modules; Bun does not scope those mocks to a single file: they
+      # persist in the process-wide module cache and poison any later spec
+      # that imports the real module. Running integration specs (which import
+      # src/server.ts and expect the real StorageManager) in a separate
+      # process avoids the carry-over.
+      #
+      # The two processes run at the same time. They share no state: the
+      # integration servers own packages/server's publisher.db and
+      # publisher_data/, and every unit spec that touches storage uses a temp
+      # directory or a directory of its own under the working directory. Each
+      # process loads Malloy and DuckDB once, as it would alone, so running
+      # them side by side takes about as long as the longer of the two rather
+      # than their sum (271s down to 146s locally). Splitting further does not
+      # pay: `bun test --parallel` reloads those modules for every file and
+      # made the unit suite slower, not faster.
+      #
+      # The unit suite runs in the background into a log that is printed once
+      # both have finished, so the two outputs do not interleave; the step
+      # fails if either suite does.
+      #
+      # TODO: Remove the integration retry once we clone the samples and mount
+      # them for CI. The suite boots a real server which clones
+      # `malloy-samples` from GitHub on startup; that clone occasionally fails
+      # on hosted runners with transient git/disk errors (`fetch-pack: invalid
+      # index-pack output`). A retry is cheaper and less invasive than wrapping
+      # the clone in server code.
+      - name: Run unit and integration tests
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
-        run: bun run --cwd packages/server test:unit --serial
-        shell: bash
-
-      - name: Run integration tests
-        env:
-          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
-        # TODO: Remove this retry logic once we clone the samples and mount them for CI.
-        # Retry up to 3 times. The suite boots a real server which clones
-        # `malloy-samples` from GitHub on startup; that clone occasionally
-        # fails on hosted runners with transient git/disk errors
-        # (`fetch-pack: invalid index-pack output`). A retry is cheaper and
-        # less invasive than wrapping the clone in server code.
         run: |
-          attempt=1
-          max_attempts=3
-          until bun run --cwd packages/server test:integration --serial; do
-            status=$?
-            if [ "$attempt" -ge "$max_attempts" ]; then
-              echo "Integration tests failed after $attempt attempts."
-              exit "$status"
+          unit_log="$RUNNER_TEMP/server-unit-tests.log"
+          bun run --cwd packages/server test:unit --serial > "$unit_log" 2>&1 &
+          unit_pid=$!
+
+          integration_status=1
+          for attempt in 1 2 3; do
+            if bun run --cwd packages/server test:integration --serial; then
+              integration_status=0
+              break
             fi
-            echo "Integration tests failed on attempt $attempt; retrying..."
-            attempt=$((attempt + 1))
+            echo "Integration tests failed on attempt $attempt."
           done
+
+          if wait "$unit_pid"; then unit_status=0; else unit_status=$?; fi
+          echo "===== Unit tests (ran alongside the integration tests above) ====="
+          cat "$unit_log"
+
+          echo "unit tests exit $unit_status, integration tests exit $integration_status"
+          [ "$unit_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
         shell: bash
