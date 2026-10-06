@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { parseAnnotation } from "@malloydata/malloy-tag";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 
 const resultWith = (...values: string[]) =>
@@ -26,13 +27,41 @@ const annotationsOf = (result: string) =>
    ).schema.fields[0].annotations.map((a) => a.value);
 
 describe("dropValueUrlTags", () => {
-   it("removes an image tag and keeps the other properties on the line", () => {
+   it("removes an image tag and keeps the other properties on the line, as the renderer reads them", () => {
       const out = annotationsOf(
          dropValueUrlTags(resultWith('# image { height=40px } label="Pic"\n')),
       );
       expect(out).toHaveLength(1);
-      expect(out[0]).not.toContain("image");
-      expect(out[0]).toContain("Pic");
+      const tag = parseAnnotation(out[0]).tag;
+      expect(tag.has("image")).toBe(false);
+      expect(tag.text("label")).toBe("Pic");
+   });
+
+   it("leaves a well-formed empty line when an image tag was the only property", () => {
+      const out = annotationsOf(dropValueUrlTags(resultWith("# image\n")));
+      expect(out).toHaveLength(1);
+      expect(out[0]).not.toContain("# #");
+      expect(parseAnnotation(out[0]).log).toEqual([]);
+   });
+
+   it("drops a line that reads the environment, whatever else it carries", () => {
+      for (const line of [
+         "# image=@env.HOME\n",
+         "# image { alt=@env.HOME }\n",
+         "# link { url_template=@env.X }\n",
+         '# label="<img src=x>" x=@env.X\n',
+         "#|\nimage=@env.X\n|#\n",
+      ]) {
+         expect(annotationsOf(dropValueUrlTags(resultWith(line)))).toEqual([
+            "",
+         ]);
+      }
+   });
+
+   it("drops a line the tag parser rejects, since the renderer may read it differently", () => {
+      expect(
+         annotationsOf(dropValueUrlTags(resultWith("# image {\n"))),
+      ).toEqual([""]);
    });
 
    it("removes a link tag and its url_template", () => {

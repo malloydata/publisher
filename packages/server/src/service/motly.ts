@@ -41,7 +41,7 @@ import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
  * "MOTLY but dropped for `@env.`" in order to report the second, and a second
  * copy of the route rule is how these drift.
  */
-function onMotlyRoute(text: string): boolean {
+export function onMotlyRoute(text: string): boolean {
    const afterSigil = text.replace(/^##?\|?/, "");
    // `[ \t\r\n]` rather than `\s`, matching Malloy's separator class exactly.
    // JS `\s` is wider (U+00A0, \f, \v, U+2000, U+3000 and more), so a stray
@@ -159,7 +159,7 @@ export function hasEnvReference(annotation: string): boolean {
  * the same 630KB source in 14ms while the tag parser takes 7.49s. Filed
  * separately.
  */
-const MAX_ANNOTATION_CHARS = 8_192;
+export const MAX_ANNOTATION_CHARS = 8_192;
 
 export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} characters and was not parsed`;
 
@@ -194,7 +194,7 @@ export const ENV_REFERENCE_DROPPED =
  * we reach only through `@malloydata/malloy-tag`. A dependency bump that pulls
  * an older parser brings the pollution back, and `given.spec.ts` will fail.
  */
-function parseBounded(texts: readonly string[]): {
+export function parseBounded(texts: readonly string[]): {
    tag: Tag | undefined;
    messages: string[];
 } {

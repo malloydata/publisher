@@ -55,13 +55,17 @@ function cleanAnnotation(value: string): string {
    const text = value.trim();
    // A route other than the plain MOTLY one (`#(docs)`, `#"`, `#!`) and a `##` note are never drawn as tags.
    if (!/^#(?:\||[ \t\r\n]|$)/.test(text)) return value;
-   let tag: Tag;
+   // The renderer hydrates `@env.` and may read a line this parser rejects, so neither can be inspected: the line goes.
+   if (text.includes("@env.")) return "";
+   let parsed: ReturnType<typeof parseAnnotation>;
    try {
-      tag = parseAnnotation(text.replaceAll("@env.", "@x.")).tag;
+      parsed = parseAnnotation(text);
    } catch {
-      return value;
+      return "";
    }
-   return strip(tag) ? `# ${tag.toString()}\n` : value;
+   if (parsed.log.length > 0) return "";
+   // `toString()` already carries the `# ` prefix.
+   return strip(parsed.tag) ? `${parsed.tag.toString()}\n` : value;
 }
 
 function clean(node: unknown): void {

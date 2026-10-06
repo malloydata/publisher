@@ -285,6 +285,15 @@ run: open_src -> { aggregate: c }
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
 
+      it("refuses a definition cell whose render tag reads the environment, which hides the tag from a plain parse", async () => {
+         await expect(
+            compile(
+               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
+               { ROLE: "analyst" },
+            ),
+         ).rejects.toBeInstanceOf(CompileRefusedError);
+      });
+
       it("leaves an ordinary tile's givens exactly as they were", async () => {
          const result = await compile(
             `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,

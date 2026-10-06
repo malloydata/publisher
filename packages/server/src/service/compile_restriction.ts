@@ -3,10 +3,15 @@
 
 import type { LogMessage, Model, Runtime } from "@malloydata/malloy";
 import { Malloy, MalloyError, MalloyTranslator } from "@malloydata/malloy";
-import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
-import type { ParseTree } from "antlr4ts/tree/ParseTree";
+import type { Tag } from "@malloydata/malloy-tag";
 import { CompileRefusedError, UnparseableTextError } from "../errors";
-import { hasEnvReference, motlyAnnotations, tagText } from "./motly";
+import {
+   hasEnvReference,
+   MAX_ANNOTATION_CHARS,
+   onMotlyRoute,
+   parseBounded,
+   tagText,
+} from "./motly";
 
 /**
  * Construct containment for caller-submitted `/compile` text.
@@ -75,7 +80,7 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * Malloy passes annotations through verbatim and the renderer reads them with
  * the MOTLY tag parser, so this reads them the same way: the fragment is
  * PARSED (no schema, no connection, so the answer cannot depend on whether the
- * data exists), every `#` and `#|` annotation is collected from the parse tree,
+ * data exists), every `#` and `#|` annotation is collected from its lexer tokens,
  * and each is parsed as MOTLY. Quoting, backticks, escapes, blocks and a field
  * named `link` used as a value all fall out of that, which a text match cannot
  * promise. Only the single-hash forms are field tags; `##` notes describe the
@@ -85,37 +90,106 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
  * axis label measured through `innerHTML`, pivot headers). Those are the
  * renderer's to fix, and a host content-security-policy is the backstop.
  */
-const FIELD_ANNOTATION = /^#(?!#)/;
 const HTML_START = /<[A-Za-z!/]/;
 
-/** The text of every single-hash annotation in `source`, collected from its parse. */
-function fieldAnnotationTexts(source: string): string[] {
+interface FragmentScan {
+   /** Every single-hash annotation, a `#|` block's body included, as the lexer captured it. */
+   annotations: string[];
+   /** Names a field list excepts, and names a dimension, measure, join or rename declares. */
+   excepted: Set<string>;
+   declared: Set<string>;
+}
+
+const DECLARING = new Set([
+   "DIMENSION",
+   "MEASURE",
+   "JOIN_ONE",
+   "JOIN_MANY",
+   "JOIN_CROSS",
+   "RENAME",
+]);
+
+/** The name an identifier token spells, backticks removed. */
+function nameOf(text: string): string {
+   return text.startsWith("`") ? text.slice(1, -1) : text;
+}
+
+/** Scan the fragment's lexer tokens: no schema and no connection, so the answer cannot depend on the data. */
+function scanFragment(source: string): FragmentScan {
    const url = "internal://render-tag-scan.malloy";
    const translator = new MalloyTranslator(url, null, {
       urls: { [url]: source },
    });
    const parsed = translator.parseStep.step(translator).parse;
-   const found: string[] = [];
-   const walk = (node: ParseTree) => {
-      if (node.constructor.name === "AnnotationContext") {
-         const text = node.text;
-         // A block's closer is not part of its content; text after a missing one is, so it is scanned too.
-         if (FIELD_ANNOTATION.test(text)) {
-            found.push(text.replace(/\n[ \t]*\|#\s*$/, "\n"));
-         }
-         return;
-      }
-      for (let i = 0; i < node.childCount; i++) walk(node.getChild(i));
+   const scan: FragmentScan = {
+      annotations: [],
+      excepted: new Set(),
+      declared: new Set(),
    };
-   if (parsed?.root) walk(parsed.root as ParseTree);
-   return found;
+   if (!parsed) return scan;
+   // Symbolic names, not numeric types or parse-tree class names, so a Malloy upgrade or a minified build cannot silently blind the scan.
+   const vocabulary = (
+      parsed.tokenStream as unknown as {
+         tokenSource: { vocabulary: { getSymbolicName(type: number): string } };
+      }
+   ).tokenSource.vocabulary;
+   const tokens = parsed.tokenStream.getTokens().map((token) => ({
+      name: vocabulary.getSymbolicName(token.type) ?? "",
+      text: token.text ?? "",
+   }));
+   let mode: "except" | "declare" | undefined;
+   let block: string | undefined;
+   const closeBlock = () => {
+      if (block !== undefined) scan.annotations.push(block);
+      block = undefined;
+   };
+   for (let i = 0; i < tokens.length; i++) {
+      const { name, text } = tokens[i];
+      if (name === "BLOCK_ANNOTATION_BEGIN") {
+         closeBlock();
+         block = text;
+         continue;
+      }
+      if (name === "BLOCK_ANNOTATION_TEXT") {
+         if (block !== undefined) block += text;
+         continue;
+      }
+      if (name === "BLOCK_ANNOTATION_END") {
+         closeBlock();
+         continue;
+      }
+      closeBlock();
+      if (name === "ANNOTATION") {
+         // `##` notes describe the model and are never drawn; a block's closer is not content.
+         if (/^#(?!#)/.test(text)) scan.annotations.push(text);
+         continue;
+      }
+      if (name === "EXCEPT") mode = "except";
+      else if (DECLARING.has(name)) mode = "declare";
+      else if (/^[a-z_]+:$/.test(text)) mode = undefined;
+      else if (
+         mode === "except" &&
+         (name === "IDENTIFIER" || name === "BQ_STRING")
+      ) {
+         scan.excepted.add(nameOf(text));
+      } else if (
+         mode === "declare" &&
+         (name === "IDENTIFIER" || name === "BQ_STRING") &&
+         tokens[i + 1]?.name === "IS"
+      ) {
+         scan.declared.add(nameOf(text));
+      }
+   }
+   closeBlock();
+   return scan;
 }
 
 /** The first property in `tag` that is a URL-producing render tag, or markup in a `label`. */
 function offendingTag(tag: Tag): string | undefined {
    for (const [name, child] of tag.entries()) {
       if (child.deleted) continue;
-      if (name === "image" || name === "link") return `# ${name}`;
+      if (name === "image" || name === "link")
+         return `the render tag \`# ${name}\``;
       if (name === "label") {
          const label = tagText(tag, "label");
          if (label !== undefined && HTML_START.test(label)) {
@@ -131,29 +205,41 @@ function offendingTag(tag: Tag): string | undefined {
    return undefined;
 }
 
-/** The refusal for a fragment that writes a render tag turning a value into a URL or markup, if it does. */
+/**
+ * The refusal for a fragment that writes a render tag turning a value into a URL or markup, reads
+ * the server's environment from an annotation, or re-points a model field by excepting and redeclaring a column.
+ */
 function renderTagRefusal(source: string): string | undefined {
-   for (const text of fieldAnnotationTexts(source)) {
-      // An env reference is hydrated from the server's environment by the parser; it is neutralized, not read.
-      const safe = hasEnvReference(text)
-         ? text.replaceAll("@env.", "@x.")
-         : text;
+   const scan = scanFragment(source);
+   for (const text of scan.annotations) {
       // `#(docs)`, `#"` and the other routes are prose or another namespace, not render tags.
-      if (motlyAnnotations([safe]).length === 0) continue;
-      let tag: Tag;
-      try {
-         tag = parseAnnotation(safe).tag;
-      } catch {
-         continue;
+      if (!onMotlyRoute(text)) continue;
+      // The parser hydrates `@env.` from the server's environment; reading it, or neutralizing it, would hide the tag it sits beside.
+      if (hasEnvReference(text)) {
+         return "an annotation reads the server's environment (`@env.`), which a fragment may not do";
       }
-      const found = offendingTag(tag);
+      const parsed = parseBounded([text]);
+      // A tag the parser rejects is one the renderer may still read differently, so it fails closed.
+      if (parsed.messages.length > 0 || !parsed.tag) {
+         return `an annotation does not parse as a tag, or exceeds ${MAX_ANNOTATION_CHARS} characters`;
+      }
+      const found = offendingTag(parsed.tag);
       if (found) {
          return (
-            `the submitted text writes ${found === "HTML in a `# label`" ? found : `the render tag \`${found}\``}, ` +
+            `the submitted text writes ${found}, ` +
             `which the viewer's browser would load or draw as markup. Fix: define the field in the ` +
             `model file itself, where a modeler owns what it links to.`
          );
       }
+   }
+   const shadowed = [...scan.excepted].filter((name) =>
+      scan.declared.has(name),
+   );
+   if (shadowed.length > 0) {
+      return (
+         `the submitted text excepts and then declares \`${shadowed[0]}\`, which would re-point every ` +
+         `model field derived from it, tags included. Fix: give the new field another name.`
+      );
    }
    return undefined;
 }
