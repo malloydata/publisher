@@ -3,6 +3,7 @@
 
 import { Box, Stack, Typography } from "@mui/material";
 import type { ReactNode } from "react";
+import { BARE_DESCRIPTION_MARGIN_PX } from "../Dashboard/DashboardGrid";
 import { TileCard, type TileChrome } from "../Dashboard/TileCard";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { InlineMarkdown } from "./InlineMarkdown";
@@ -38,7 +39,8 @@ export function BuilderHeader({
          <Stack direction="row" sx={{ alignItems: "center", gap: 2 }}>
             <Typography
                variant="h5"
-               sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}
+               // The host theme's h5 weight, as the reader's title takes it.
+               sx={{ flex: 1, minWidth: 0 }}
             >
                <InlineText
                   value={editor.document.title}
@@ -69,13 +71,22 @@ export function BuilderHeader({
             aria-current={descriptionSelected}
             onPointerDown={selectDescription}
             onFocus={selectDescription}
+            sx={
+               chrome === "none"
+                  ? { my: `${BARE_DESCRIPTION_MARGIN_PX}px` }
+                  : undefined
+            }
          >
             <TileCard
                chrome={chrome}
                kind="text"
                sx={{
+                  // Anchors the ring a bare description draws around itself.
+                  position: "relative",
+                  overflow: "visible",
                   ...selectionSx(theme, {
                      selected: descriptionSelected,
+                     bare: chrome === "none",
                   }),
                }}
             >

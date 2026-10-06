@@ -17,7 +17,13 @@ import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { Prose } from "../Prose";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
+import {
+   DashboardGrid,
+   BARE_DESCRIPTION_MARGIN_PX,
+   DEFAULT_COLUMNS,
+   GRID_GAP_PX,
+   NOTEBOOK_GAP_PX,
+} from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import type { DashboardEventHandler } from "./telemetry";
@@ -270,6 +276,7 @@ export function DashboardView({
                tiles={tiles}
                columns={columns}
                minTilePx={MIN_TILE_PX}
+               rowGapPx={chrome === "none" ? NOTEBOOK_GAP_PX : GRID_GAP_PX}
                // Position too, not the expression alone: `tiles=[…]` can repeat
                // one, which is a typo rather than a request for two identical
                // panels, and keying on the expression made the duplicate warn
@@ -405,7 +412,17 @@ export function DashboardProse({
       <Stack sx={{ gap: 2 }}>
          {/* No explicit weight: the host theme's h5 weight applies. */}
          <Typography variant="h5">{title}</Typography>
-         {description && <TextTile markdown={description} chrome={chrome} />}
+         {description && (
+            <Box
+               sx={
+                  chrome === "none"
+                     ? { my: `${BARE_DESCRIPTION_MARGIN_PX}px` }
+                     : undefined
+               }
+            >
+               <TextTile markdown={description} chrome={chrome} />
+            </Box>
+         )}
       </Stack>
    );
 }

@@ -5,7 +5,11 @@ import { DragDropProvider } from "@dnd-kit/react";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, Button } from "@mui/material";
 import type { ReactNode, RefObject } from "react";
-import { DashboardGrid } from "../Dashboard/DashboardGrid";
+import {
+   DashboardGrid,
+   GRID_GAP_PX,
+   NOTEBOOK_GAP_PX,
+} from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import {
    isQueryTile,
@@ -104,6 +108,7 @@ export function BuilderGrid({
                <DashboardGrid
                   tiles={entries}
                   columns={columns}
+                  rowGapPx={chrome === "none" ? NOTEBOOK_GAP_PX : GRID_GAP_PX}
                   keyOf={(entry) =>
                      entry.kind === "gap"
                         ? gapId(entry.after)
@@ -120,6 +125,7 @@ export function BuilderGrid({
                            selected={index === selected}
                            flash={tileKey(each) === flash}
                            menuOpen={menuIndex === index}
+                           bare={chrome === "none"}
                            {...(notebook && canAdd
                               ? {
                                    onInsertAfter: () => openAdd(index + 1),

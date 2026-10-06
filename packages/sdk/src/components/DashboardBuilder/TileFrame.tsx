@@ -9,7 +9,11 @@ import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
-import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
+import {
+   BARE_RING_OFFSET_PX,
+   GRID_GAP_PX,
+   NOTEBOOK_GAP_PX,
+} from "../Dashboard/DashboardGrid";
 import {
    TileCard,
    TileHeading,
@@ -38,6 +42,7 @@ export function TileFrame({
    selected,
    flash = false,
    menuOpen,
+   bare = false,
    onInsertAfter,
    onSelect,
    onOpenMenu,
@@ -55,6 +60,12 @@ export function TileFrame({
    flash?: boolean;
    /** Whether this tile's menu is open, which keeps its button showing. */
    menuOpen: boolean;
+   /**
+    * The tile has no card (a notebook's): its ring is drawn clear of the
+    * content and its menu sits on the ring's top edge, so neither touches the
+    * text, and the tile reads where the reader draws it.
+    */
+   bare?: boolean;
    /** Offers a "+" on the bottom edge that adds a tile after this one; set where tiles stack in one column. */
    onInsertAfter?: () => void;
    onSelect: () => void;
@@ -117,7 +128,7 @@ export function TileFrame({
                   // a scrollbar — still wins over its own
                   // pixels.
                   cursor: "grab",
-                  ...selectionSx(theme, { selected, flash }),
+                  ...selectionSx(theme, { selected, flash, bare }),
                   // The edge handle and menu are invisible
                   // until wanted, and wanted is: the pointer
                   // over the tile, or the tile selected. A
@@ -187,10 +198,15 @@ export function TileFrame({
                   }}
                   sx={{
                      position: "absolute",
-                     // Inside the card's corner, clear of its edge, at the
-                     // card's own inner padding.
-                     top: "8px",
-                     right: "8px",
+                     // Inside a card's corner, clear of its edge. A bare tile
+                     // has no corner to sit in, so the menu straddles the top
+                     // of its ring, clear of the text under it.
+                     top: bare ? `${-(BARE_RING_OFFSET_PX + 13)}px` : "8px",
+                     right: bare ? 0 : "8px",
+                     ...(bare && {
+                        border: theme.cardBorder,
+                        borderRadius: 1,
+                     }),
                      // A 24px hit target at least, whatever the glyph.
                      width: 28,
                      height: 24,
@@ -304,7 +320,7 @@ export function TileFrame({
                         // Centred in the gap below the tile, not on its edge: on
                         // a one-line notebook text tile, an edge-centred button
                         // covered the middle of the text it sits under.
-                        bottom: `-${GRID_GAP_PX / 2 + 12}px`,
+                        bottom: `-${(bare ? NOTEBOOK_GAP_PX : GRID_GAP_PX) / 2 + 12}px`,
                         left: "50%",
                         transform: "translateX(-50%)",
                         width: 24,
@@ -343,24 +359,54 @@ export const SELECTION_RING_PX = 4;
  */
 export const selectionSx = (
    theme: ResolvedTheme,
-   { selected, flash = false }: { selected: boolean; flash?: boolean },
-): SystemStyleObject<Theme> => ({
-   borderRadius: 1,
-   outline: `2px solid ${selected ? theme.accent : "transparent"}`,
-   outlineOffset: 2,
-   ...(flash && {
-      outlineColor: theme.accent,
-      boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
-   }),
-   transition: `outline-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`,
-   ...reducedMotionSx,
-   "&:hover": {
-      outlineColor: selected
-         ? theme.accent
-         : theme.cardBorder.replace(/^1px solid /, ""),
-      boxShadow: theme.shadow.lift,
-   },
-});
+   {
+      selected,
+      flash = false,
+      bare = false,
+   }: { selected: boolean; flash?: boolean; bare?: boolean },
+): SystemStyleObject<Theme> => {
+   const ring = selected || flash ? theme.accent : "transparent";
+   const hoverRing = selected
+      ? theme.accent
+      : theme.cardBorder.replace(/^1px solid /, "");
+   const transition = `outline-color ${MOTION_FAST}, border-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`;
+   if (bare)
+      // Bare content has no padding of its own, so the ring stands off it by
+      // the clear space a card's text has, without moving the text from where
+      // the reader draws it. Drawn as its own layer rather than an offset
+      // outline: an outline's corners grow by the offset, and the ring would
+      // read rounder than every card on the page. No lift: there is no
+      // surface to lift, only the ring.
+      return {
+         borderRadius: 1,
+         "&::before": {
+            content: '""',
+            position: "absolute",
+            inset: `${-BARE_RING_OFFSET_PX}px`,
+            borderRadius: 1,
+            border: `2px solid ${ring}`,
+            pointerEvents: "none",
+            transition,
+            ...reducedMotionSx,
+         },
+         "&:hover::before": { borderColor: hoverRing },
+      };
+   // A card carries its own padding, so its ring hugs its edge.
+   return {
+      borderRadius: 1,
+      outline: `2px solid ${ring}`,
+      outlineOffset: 2,
+      ...(flash && {
+         boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
+      }),
+      transition,
+      ...reducedMotionSx,
+      "&:hover": {
+         outlineColor: hoverRing,
+         boxShadow: theme.shadow.lift,
+      },
+   };
+};
 
 /**
  * No host-supplied tile: say what this one will run, so the surface is still

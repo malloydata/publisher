@@ -121,6 +121,12 @@ function ProseLink({
 
 const STYLES: Record<ProseVariant, SxProps<Theme>> = {
    document: {
+      // Flush at both ends, as a caption is: the space around a block of
+      // prose is the layout's (the gap between tiles), not its first and last
+      // paragraph's, so a text tile's top lines up with a chart tile's title.
+      // markdown-to-jsx wraps two or more blocks in a div, and returns one bare.
+      "& > :first-child, & > div:only-child > :first-child": { mt: 0 },
+      "& > :last-child, & > div:only-child > :last-child": { mb: 0 },
       "& h1, & h2, & h3, & h4, & h5, & h6": {
          fontWeight: "fontWeightMedium",
          color: "text.primary",

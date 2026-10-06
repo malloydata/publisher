@@ -24,6 +24,24 @@ export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
 export const GRID_GAP_PX = 16;
 
 /**
+ * The space between a notebook's tiles, which stack in one column with no card
+ * around them: wider than a dashboard's gap so the reading flow breathes, and
+ * so the builder's selection ring, drawn {@link BARE_RING_OFFSET_PX} clear of
+ * a bare tile, never meets the next tile's.
+ */
+export const NOTEBOOK_GAP_PX = 40;
+
+/** How far a bare (uncarded) tile's selection ring sits from its content. */
+export const BARE_RING_OFFSET_PX = 12;
+
+/**
+ * The space above and below a notebook's description, in both modes: a bare
+ * description's ring in the builder is {@link BARE_RING_OFFSET_PX} clear of
+ * its text, and needs the room to stay clear of the title and the filters.
+ */
+export const BARE_DESCRIPTION_MARGIN_PX = BARE_RING_OFFSET_PX + 8;
+
+/**
  * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
  * it to start a fresh row.
  *
@@ -95,6 +113,7 @@ export function DashboardGrid<T extends GridTile>({
    keyOf,
    renderTile,
    minTilePx,
+   rowGapPx = GRID_GAP_PX,
 }: {
    tiles: readonly T[];
    /** Track count — `# dashboard { columns=N }`, or {@link DEFAULT_COLUMNS}. */
@@ -112,6 +131,8 @@ export function DashboardGrid<T extends GridTile>({
     * builder assumes an unset colspan is one column.
     */
    minTilePx?: number;
+   /** The space between rows; a notebook's is {@link NOTEBOOK_GAP_PX}. */
+   rowGapPx?: number;
 }) {
    const ref = useRef<HTMLDivElement>(null);
    const [width, setWidth] = useState(0);
@@ -140,7 +161,8 @@ export function DashboardGrid<T extends GridTile>({
                xs: "1fr",
                md: `repeat(${columns}, minmax(0, 1fr))`,
             },
-            gap: `${GRID_GAP_PX}px`,
+            columnGap: `${GRID_GAP_PX}px`,
+            rowGap: `${rowGapPx}px`,
          }}
       >
          {tiles.map((tile, index) => (
