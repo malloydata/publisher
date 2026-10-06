@@ -42,6 +42,7 @@
       "malloy-queries",
       "malloy-charts",
       "malloy-notebooks",
+      "malloy-dashboards",
       "malloy-source-unreachable",
       "malloy-analysis-report"
     ],
