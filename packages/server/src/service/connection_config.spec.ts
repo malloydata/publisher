@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateKeyPairSync } from "crypto";
 import { components } from "../api";
+import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
@@ -663,23 +664,187 @@ describe("SSH proxy validation", () => {
       }
    });
 
-   it("rejects sslmode set on a non-proxied connection (silent-ignore footgun)", () => {
-      const conn: ApiConnection = {
-         name: "pg-direct",
-         type: "postgres",
-         postgresConnection: {
-            host: "db.example.com",
-            port: 5432,
-            databaseName: "mydb",
-            userName: "user",
-            password: "pass",
-            sslmode: "verify-ca",
-         },
-      };
-      expect(() => assembleEnvironmentConnections([conn])).toThrow(
-         "only supported for proxied connections",
+   const directPg = (
+      extra: Partial<components["schemas"]["PostgresConnection"]>,
+   ): ApiConnection => ({
+      name: "pg-direct",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.example.com",
+         port: 5432,
+         databaseName: "mydb",
+         userName: "user",
+         password: "pass",
+         ...extra,
+      },
+   });
+
+   it("applies a direct connection's own sslmode to its connectionString", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         directPg({ sslmode: "no-verify" }),
+      ]);
+      expect(pojo.connections["pg-direct"].connectionString).toBe(
+         "postgresql://user:pass@db.example.com:5432/mydb?sslmode=no-verify",
       );
    });
+
+   it("prefers a direct connection's sslmode over the deployment PGSSLMODE", () => {
+      const prior = process.env.PGSSLMODE;
+      process.env.PGSSLMODE = "require";
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            directPg({ sslmode: "disable" }),
+         ]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://user:pass@db.example.com:5432/mydb?sslmode=disable",
+         );
+      } finally {
+         if (prior === undefined) delete process.env.PGSSLMODE;
+         else process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("falls back to the deployment PGSSLMODE when a direct connection sets none", () => {
+      const prior = process.env.PGSSLMODE;
+      process.env.PGSSLMODE = "require";
+      try {
+         const { pojo } = assembleEnvironmentConnections([directPg({})]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://user:pass@db.example.com:5432/mydb?sslmode=require",
+         );
+      } finally {
+         if (prior === undefined) delete process.env.PGSSLMODE;
+         else process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("leaves a direct connection on its individual fields when neither sslmode nor PGSSLMODE is set", () => {
+      const prior = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+      try {
+         const { pojo } = assembleEnvironmentConnections([directPg({})]);
+         expect(pojo.connections["pg-direct"].connectionString).toBeUndefined();
+      } finally {
+         if (prior !== undefined) process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("pins verify-ca on a direct connection to the CA bundle with libpq-compatible parsing", () => {
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      // Any readable file satisfies the config-load check; this one always exists.
+      process.env.NODE_EXTRA_CA_CERTS = __filename;
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            directPg({ sslmode: "verify-ca" }),
+         ]);
+         const url = new URL(
+            pojo.connections["pg-direct"].connectionString as string,
+         );
+         expect(url.searchParams.get("sslmode")).toBe("verify-ca");
+         expect(url.searchParams.get("uselibpqcompat")).toBe("true");
+         expect(url.searchParams.get("sslrootcert")).toBe(__filename);
+      } finally {
+         if (prior === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("rejects verify-ca on a direct connection when no CA bundle is readable", () => {
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ sslmode: "verify-ca" }),
+            ]),
+         ).toThrow(
+            "Connection 'pg-direct' uses sslmode 'verify-ca' but no readable CA bundle is available",
+         );
+      } finally {
+         if (prior !== undefined) process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("rejects an unsupported sslmode on a direct connection", () => {
+      expect(() =>
+         assembleEnvironmentConnections([
+            directPg({ sslmode: "require" as never }),
+         ]),
+      ).toThrow(
+         "Connection 'pg-direct' has unsupported sslmode 'require' (expected disable | no-verify | verify-ca | verify-full).",
+      );
+   });
+
+   it("ignores sslmode alongside a connectionString, and warns that it did", () => {
+      const warn = spyOn(logger, "warn");
+      try {
+         const conn: ApiConnection = {
+            name: "pg-direct",
+            type: "postgres",
+            postgresConnection: {
+               connectionString: "postgresql://u:p@db.example.com/mydb",
+               sslmode: "no-verify",
+            },
+         };
+         const { pojo } = assembleEnvironmentConnections([conn]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://u:p@db.example.com/mydb",
+         );
+         expect(warn).toHaveBeenCalledWith(
+            "Connection 'pg-direct' sets both postgresConnection.sslmode and connectionString; " +
+               "sslmode is ignored and the connectionString's own sslmode applies.",
+         );
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("keeps a proxied connection's sslmode off the real-host connectionString", () => {
+      const prior = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            {
+               ...validSshProxy,
+               postgresConnection: {
+                  ...validSshProxy.postgresConnection!,
+                  sslmode: "no-verify",
+               },
+            },
+         ]);
+         expect(
+            pojo.connections[validSshProxy.name!].connectionString,
+         ).toBeUndefined();
+      } finally {
+         if (prior !== undefined) process.env.PGSSLMODE = prior;
+      }
+   });
+
+   // 2147483647 is Postgres's own ceiling for statement_timeout (an int, in
+   // ms); above it the session SET fails on every pool acquire.
+   it.each([0, -1, 1.5, "5000; DROP TABLE users", 2147483648, 1e21])(
+      "rejects statementTimeoutMilliseconds %p",
+      (value) => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ statementTimeoutMilliseconds: value as never }),
+            ]),
+         ).toThrow(
+            `Connection 'pg-direct' has an invalid statementTimeoutMilliseconds ${JSON.stringify(value)} (expected an integer from 1 to 2147483647).`,
+         );
+      },
+   );
+
+   it.each([1, 30000, 2147483647])(
+      "accepts statementTimeoutMilliseconds %p",
+      (value) => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ statementTimeoutMilliseconds: value }),
+            ]),
+         ).not.toThrow();
+      },
+   );
 
    it("rejects a proxied database name with URI-reserved characters", () => {
       const conn: ApiConnection = {
