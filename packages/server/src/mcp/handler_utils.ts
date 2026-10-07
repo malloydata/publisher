@@ -8,6 +8,7 @@ import {
    BadRequestError,
    ConnectionAuthError,
    ConnectionFailedError,
+   UnconfiguredConnectionError,
    ConnectionNotFoundError,
    InvalidArgumentError,
    PackageNotFoundError,
@@ -124,6 +125,18 @@ export function classifyToolError(
          suggestions: [
             "The query and the model are fine. Do not rewrite them.",
             "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof UnconfiguredConnectionError) {
+      // The model names a connection this environment does not have. Nothing
+      // the agent can change in the query fixes that, and a retry fails the
+      // same way.
+      return {
+         message: `${error.message}. The model for ${identifier} uses a connection this environment does not have, so the query never ran.`,
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
          ],
       } satisfies ErrorDetails;
    }

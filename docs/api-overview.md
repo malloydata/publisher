@@ -83,20 +83,25 @@ The response's `result` field is a JSON string, so parse it; with `"compactJson"
 plain row objects, without it the full Malloy result envelope with type metadata. `givens` rides on
 either shape to supply model-declared [runtime parameters](givens.md).
 
-A query that fails tells you whose problem it is. Branch on `reason`, not on the message:
+A query that fails tells you whose problem it is. A 5xx means this server failed; a 4xx means the
+problem is the request, the model, or the customer's database or configuration. Branch on
+`reason`, not on the message:
 
 - **400 with no `reason`:** the request or the query was rejected before it ran. When Malloy
   rejected the query, `problems` lists its diagnostics. Fix what the message names.
 - **400 with `reason: QUERY_EXECUTION_FAILED`:** the query compiled, and the database ran it and
   rejected it (a type mismatch, a division by zero, a permission on a table). The message carries
   the database's text. Fix the query or the model.
-- **422 with `reason: CONNECTION_AUTH_FAILED`:** the database rejected the connection's
-  credentials, so the query never ran. The query is fine, and retrying fails the same way until
-  whoever configures the connection fixes its user, password, key or token.
-- **502 with `reason: CONNECTION_FAILED`:** the database could not be reached, so the query never
-  ran. The query is fine; do not rewrite it. Retry once, then report the connection. The body
-  carries a generic message, because the driver's text can name an internal host; it is in the
-  server log.
+- **424 with a connection `reason`:** the connection could not be used, so the query never ran.
+  The query is fine; do not rewrite it.
+  - `CONNECTION_FAILED`: the database could not be reached. Retry once, then report it.
+  - `CONNECTION_AUTH_FAILED`: the database rejected the connection's credentials. Retrying fails
+    the same way until its user, password, key or token is fixed.
+  - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
+    one deleted after the package was loaded.
+
+  For the first two the body carries a fixed message, because the driver's text can name a host
+  or a user; it is in the server log.
 
 ## Live API explorer
 

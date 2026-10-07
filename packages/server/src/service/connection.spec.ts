@@ -31,7 +31,10 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   UnconfiguredConnectionError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -3172,5 +3175,39 @@ describe("redactTestFailure", () => {
    it("leaves a failure carrying no credential untouched", () => {
       const msg = "getaddrinfo ENOTFOUND db.internal";
       expect(redactTestFailure(msg, config)).toBe(msg);
+   });
+});
+
+describe("environment connection lookup for a connection the environment does not have", () => {
+   it("raises UnconfiguredConnectionError with Malloy's message, and still resolves a configured one", async () => {
+      // The staging case: a model loaded while `bq_demo` existed, then the
+      // connection was deleted. Malloy's own lookup throws a plain Error.
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "present",
+               type: "postgres",
+               postgresConnection: { host: "127.0.0.1", userName: "x" },
+            },
+         ],
+         "/tmp",
+      );
+      try {
+         const missing = await config.malloyConfig.connections
+            .lookupConnection("bq_demo")
+            .then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+         expect(missing).toBeInstanceOf(UnconfiguredConnectionError);
+         expect((missing as Error).message).toBe(
+            'No connection named "bq_demo" found in config',
+         );
+         expect(
+            await config.malloyConfig.connections.lookupConnection("present"),
+         ).toBeDefined();
+      } finally {
+         await config.releaseConnections();
+      }
    });
 });

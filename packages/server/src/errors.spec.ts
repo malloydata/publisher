@@ -16,6 +16,7 @@ import {
    isConnectionFailure,
    isCredentialRejection,
    QueryExecutionError,
+   UnconfiguredConnectionError,
    TableNotFoundError,
    internalErrorToHttpError,
    ModelCompilationError,
@@ -29,15 +30,15 @@ import {
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
-   it("maps ConnectionAuthError to 422 with a fixed message and no driver text", () => {
+   it("maps ConnectionAuthError to 424 with a fixed message and no driver text", () => {
       const { status, json } = internalErrorToHttpError(
          new ConnectionAuthError(
             'password authentication failed for user "analytics"',
          ),
       );
-      expect(status).toBe(422);
+      expect(status).toBe(424);
       expect(json).toEqual({
-         code: 422,
+         code: 424,
          message:
             "The database rejected the connection's credentials. Check the connection's user, password, key or token.",
          reason: "CONNECTION_AUTH_FAILED",
@@ -249,15 +250,28 @@ describe("internalErrorToHttpError", () => {
 });
 
 describe("connection failure vs a rejected query", () => {
-   it("maps ConnectionFailedError to 502 with reason CONNECTION_FAILED and no driver text", () => {
+   it("maps ConnectionFailedError to 424 with reason CONNECTION_FAILED and no driver text", () => {
+      // 4xx: a customer's database being down is not Credible failing.
       const { status, json } = internalErrorToHttpError(
          new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
       );
-      expect(status).toBe(502);
+      expect(status).toBe(424);
       expect(json).toEqual({
-         code: 502,
-         message: "Upstream connection error.",
+         code: 424,
+         message: "The database for this connection could not be reached.",
          reason: "CONNECTION_FAILED",
+      });
+   });
+
+   it("maps UnconfiguredConnectionError to 424 with reason CONNECTION_NOT_FOUND", () => {
+      const { status, json } = internalErrorToHttpError(
+         new UnconfiguredConnectionError("bq_demo"),
+      );
+      expect(status).toBe(424);
+      expect(json).toEqual({
+         code: 424,
+         message: 'No connection named "bq_demo" found in config',
+         reason: "CONNECTION_NOT_FOUND",
       });
    });
 

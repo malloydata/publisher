@@ -13,8 +13,9 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // Generalizing is decided per branch, not by status class -- 501, 503 and 504
 // are 5xx and still return their messages. Every 4xx returns its message
 // because a client error names what the caller must change, with one
-// exception: the 422 for rejected credentials, whose driver text can name a
-// user or an account, returns a fixed message saying what to check. The 5xx branches
+// exception: the 424s for an unreachable database and for rejected
+// credentials return a fixed message, because their driver text can name a
+// host, a user or an account. The 5xx branches
 // that return theirs do so because the message is one this server composed (a
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
@@ -45,6 +46,8 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // traceparent.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
+const GENERIC_UNREACHABLE_MESSAGE =
+   "The database for this connection could not be reached.";
 const GENERIC_AUTH_MESSAGE =
    "The database rejected the connection's credentials. Check the connection's user, password, key or token.";
 
@@ -136,17 +139,20 @@ export function logInternalFailure(
  */
 export type ErrorReason =
    | "TABLE_NOT_FOUND"
-   // On a 502: the database could not be reached, so the query never ran. The
+   // On a 424: the database could not be reached, so the query never ran. The
    // query and the model are fine, and rewriting either will not help.
    | "CONNECTION_FAILED"
    // On a 400: the database ran the query and rejected it (a type mismatch, a
    // division by zero, a permission on a table). Distinct from a Malloy
    // compile error, which carries `problems` instead.
    | "QUERY_EXECUTION_FAILED"
-   // On a 422: the database rejected the connection's credentials (a wrong
+   // On a 424: the database rejected the connection's credentials (a wrong
    // password, an invalid key, an expired token). The query never ran, and
    // whoever configures the connection has to fix it.
-   | "CONNECTION_AUTH_FAILED";
+   | "CONNECTION_AUTH_FAILED"
+   // On a 424: the model names a connection the environment does not have,
+   // usually one deleted after the package was loaded.
+   | "CONNECTION_NOT_FOUND";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -297,17 +303,28 @@ export function isCredentialRejection(error: unknown): boolean {
 }
 
 /**
- * The error to answer with when a driver failure is about reaching the
- * database rather than about the statement: rejected credentials (422) or an
- * unreachable database (502). Undefined for anything else, which keeps the
- * status its route gave it.
+ * The error to answer with when a failure is about the connection rather than
+ * the statement: rejected credentials, an unreachable database, or a
+ * connection the environment does not have. All three are 424. Undefined for
+ * anything else, which keeps the status its route gave it.
  *
  * Credentials are checked first, because mysql2 also marks a rejected login
  * `fatal`, which on its own reads as an unusable connection.
  */
 export function databaseAccessFailure(
    error: unknown,
-): ConnectionAuthError | ConnectionFailedError | undefined {
+):
+   | ConnectionAuthError
+   | ConnectionFailedError
+   | UnconfiguredConnectionError
+   | undefined {
+   if (
+      error instanceof ConnectionAuthError ||
+      error instanceof ConnectionFailedError ||
+      error instanceof UnconfiguredConnectionError
+   ) {
+      return error;
+   }
    const message = error instanceof Error ? error.message : String(error);
    if (isCredentialRejection(error)) return new ConnectionAuthError(message);
    if (isConnectionFailure(error)) return new ConnectionFailedError(message);
@@ -418,10 +435,17 @@ export function internalErrorToHttpError(
       return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
       // The driver's text can name the user, the account or the host, so it
-      // is logged and the body says only what to fix. warn, like the 502: a
-      // misconfigured connection is the caller's to fix, not our fault.
+      // is logged and the body says only what to fix. warn: a misconfigured
+      // connection is the customer's to fix, not our fault.
       logInternal("Connection credentials rejected", error, "warn");
-      return httpError(422, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
+      return httpError(424, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
+   } else if (error instanceof ConnectionFailedError) {
+      // Checked ahead of ConnectionError, which it extends. Same logging, but
+      // a 424: a customer's database being down is not Credible failing.
+      logInternal("Database unreachable", error, "warn");
+      return httpError(424, GENERIC_UNREACHABLE_MESSAGE, "CONNECTION_FAILED");
+   } else if (error instanceof UnconfiguredConnectionError) {
+      return httpError(424, error.message, "CONNECTION_NOT_FOUND");
    } else if (error instanceof UnsupportedCatalogFormatError) {
       return httpError(422, error.message);
    } else if (error instanceof MaterializationEligibilityError) {
@@ -448,15 +472,11 @@ export function internalErrorToHttpError(
       // and wants its own change; a table path that names nothing already took
       // that route (see TableNotFoundError, 404). Until then a caller who needs
       // the driver's text gets it from the logs, by traceparent.
-      const reason =
-         error instanceof ConnectionFailedError
-            ? "CONNECTION_FAILED"
-            : undefined;
       if (error.callerSafe) {
-         return httpError(502, error.message, reason);
+         return httpError(502, error.message);
       }
       logInternal("Upstream connection error", error, "warn");
-      return httpError(502, GENERIC_UPSTREAM_MESSAGE, reason);
+      return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof MaterializationConflictError) {
@@ -651,18 +671,37 @@ export class ConnectionError extends Error {
 
 /**
  * The database could not be reached: the connection was refused, reset or
- * timed out, or the server closed it. The query never ran, so it maps to 502
+ * timed out, or the server closed it. The query never ran, so it maps to 424
  * with `reason: CONNECTION_FAILED`, not to the 400 a rejected query gets.
  *
- * Raised only where {@link isConnectionFailure} recognized the driver's error.
- * The message is the driver's, so it is logged and generalized like any other
- * ConnectionError: it can name an internal host and port.
+ * 4xx, not 5xx, by the rule this server follows: 5xx means Credible itself
+ * failed, and a customer's database being down is not that. It also keeps a
+ * warehouse outage off the router's error budget, and out of the router's 503
+ * handling, which would rerun the query on another worker against the same
+ * database.
  *
- * Not a 503. A router treats a worker's 503 as "this worker is overloaded" and
- * sends the query to another worker, which would run it again against the same
- * unreachable database.
+ * Raised only where {@link isConnectionFailure} recognized the driver's error.
+ * The message is the driver's, so it is logged and generalized: it can name an
+ * internal host and port.
  */
 export class ConnectionFailedError extends ConnectionError {}
+
+/**
+ * A model names a connection the environment does not have, usually because
+ * it was deleted after the package was loaded. Raised by the environment's
+ * connection lookup when Malloy's own lookup fails for a name the environment
+ * does not configure, with Malloy's message. Maps to 424 with
+ * `reason: CONNECTION_NOT_FOUND`.
+ *
+ * Distinct from {@link ConnectionNotFoundError}, the 404 a connection route
+ * answers for a name the caller typed: here the caller named nothing, and
+ * nothing a retry elsewhere would fix.
+ */
+export class UnconfiguredConnectionError extends Error {
+   constructor(name: string, options?: { cause?: unknown }) {
+      super(`No connection named "${name}" found in config`, options);
+   }
+}
 
 /**
  * A storage destination was named but is not configured on the
@@ -681,7 +720,7 @@ export class DestinationNotFoundError extends Error {
 /**
  * The database rejected the connection's credentials: a wrong password, an
  * invalid key, an expired token. Raised where {@link isCredentialRejection}
- * recognized the driver's error. Maps to 422 with
+ * recognized the driver's error. Maps to 424 with
  * `reason: CONNECTION_AUTH_FAILED`: the query never ran, and the fix is the
  * connection's configuration, not the query and not a retry.
  */

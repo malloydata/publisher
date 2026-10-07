@@ -53,6 +53,7 @@ import {
 import {
    ConnectionNotFoundError,
    TableNotFoundError,
+   UnconfiguredConnectionError,
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
@@ -2591,7 +2592,27 @@ export function buildEnvironmentMalloyConfig(
          return {
             lookupConnection: async (name?: string): Promise<Connection> => {
                const metadata = getMetadataForLookup(assembled.metadata, name);
-               const connection = await resolveConnection(name, metadata);
+               let connection: Connection;
+               try {
+                  connection = await resolveConnection(name, metadata);
+               } catch (error) {
+                  // A model can name a connection the environment no longer
+                  // has: deleted after the package was loaded, so the cached
+                  // model still points at it. Malloy says so with a plain
+                  // Error; raise the typed one, so the query answers 424
+                  // CONNECTION_NOT_FOUND rather than a 400 that blames it.
+                  // Checked after the lookup fails, not before, so any name
+                  // Malloy resolves on its own still resolves.
+                  if (
+                     name !== undefined &&
+                     !Object.hasOwn(assembled.pojo.connections, name)
+                  ) {
+                     throw new UnconfiguredConnectionError(name, {
+                        cause: error,
+                     });
+                  }
+                  throw error;
+               }
                // Pin every environment-level DuckDB session against implicit
                // auto-install (policy-driven) at this one exit — independent of
                // the attach paths, so the guarantee holds even if a resolution

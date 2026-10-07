@@ -422,7 +422,10 @@ export class ConnectionController {
          // above never see them and the blanket rewrap this replaces turned them
          // all into 502s.
          const classified = classifyDriverFailure(error);
-         if (!(classified instanceof ConnectionError)) {
+         if (
+            classified instanceof TableNotFoundError ||
+            classified instanceof InvalidArgumentError
+         ) {
             // A caller's bad reference, not a fault: warn, so a mistyped path
             // cannot fill the error log while it is being typed.
             logger.warn("table not resolvable", {
@@ -432,6 +435,8 @@ export class ConnectionController {
             });
             throw classified;
          }
+         // A connection problem is logged once, at warn, where it is mapped.
+         if (databaseAccessFailure(classified)) throw classified;
          logger.error("fetchTableSchema error", {
             error,
             tableKey,

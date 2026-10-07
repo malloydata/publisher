@@ -21,19 +21,31 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] - A database that cannot be reached answers 502, and rejected credentials 422, not 400 or 500
+## [Unreleased] - A connection that cannot be used answers 424, not 400 or 500
 
-When the database behind a query could not be reached (the connection was refused, reset or timed out, or the server closed it), the query route answered 400 with `Query execution failed: <driver text>`. That read as "fix your query" to every caller, and the driver text could name an internal host and port.
+When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had failed (500 on schema listing). The driver text could also name an internal host, port or user.
 
-It now answers **502** with `reason: CONNECTION_FAILED` and the generic message `Upstream connection error.` The driver's text goes to the server log at `warn`. The same holds for a notebook cell, for `sqlQuery` and `sqlTemporaryTable`, and for listing a connection's schemas and tables, which answered 500 before. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
+The rule now: **5xx means Publisher failed; 4xx means the request, the model, or the customer's database or configuration.** A connection that cannot be used answers **424** with a `reason`, on the query route, notebook cells, `sqlQuery`, `sqlTemporaryTable`, `sqlSource`, the table lookup, and schema and table listing:
 
-When the database **rejects the connection's credentials** (a wrong password, an invalid key-pair JWT, an expired OAuth token), the same routes answer **422** with `reason: CONNECTION_AUTH_FAILED` and a fixed message saying to check the connection's user, password, key or token. The query route answered 400 for this and schema listing 500. It is recognized from the driver's code: a Postgres SQLSTATE in class `28`, MySQL `ER_ACCESS_DENIED_ERROR`, Snowflake login codes `390100`, `390144`, `390195` and `390318`, and the `BigQueryAuthenticationError` Malloy's BigQuery driver raises.
+| `reason`                 | Meaning                                                                                                      | Body                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `CONNECTION_FAILED`      | the database could not be reached: refused, reset, timed out, or closed by the server                        | fixed message                                  |
+| `CONNECTION_AUTH_FAILED` | the database rejected the connection's credentials                                                           | fixed message                                  |
+| `CONNECTION_NOT_FOUND`   | the model names a connection the environment does not have, usually one deleted after the package was loaded | `No connection named "<name>" found in config` |
+
+The driver's text for the first two goes to the server log at `warn`. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
 
 A query the database ran and rejected (a type mismatch, a division by zero, a permission on a table) is still a 400 with the database's text, and now carries `reason: QUERY_EXECUTION_FAILED`.
 
-**If you branch on the old 400**, branch on `reason` instead: `CONNECTION_FAILED` means retry or report the connection, and `QUERY_EXECUTION_FAILED` means change the query. Do not answer a 502 here by sending the query to another server; it reaches the same database.
+**If you branch on the old 400 or 500**, branch on `reason` instead. `sqlQuery`, `sqlTemporaryTable` and `sqlSource` still answer 502 for a driver failure that is none of these.
 
-Publisher recognizes an unreachable database from the driver's error code: Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others) on the error or its `cause`, a Postgres connection SQLSTATE (class `08`, `57P01`-`57P03`), and MySQL's `fatal` flag. Some connection failures arrive with no code, so they are matched by message, from its start: node-pg's `Connection terminated unexpectedly`, and on MySQL `Can't add new command when connection is in closed state`, `Connection lost: The server closed the connection.`, and a Node socket error such as `read ECONNRESET`. MySQL needs these because Malloy's MySQL driver keeps only the text of a query error. A failure that matches none of these keeps its old status.
+How each is recognized, from the driver's own fields on the error and its `cause`:
+
+- **Unreachable:** Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others), a Postgres SQLSTATE in class `08` or `57P01`-`57P03`, or MySQL's `fatal` flag. Some failures arrive with no code and are matched from the start of the message: node-pg's `Connection terminated unexpectedly`, and on MySQL `Can't add new command when connection is in closed state`, `Connection lost: The server closed the connection.` and a Node socket error such as `read ECONNRESET`, because Malloy's MySQL driver keeps only the text of a query error.
+- **Credentials:** a Postgres SQLSTATE in class `28`, MySQL `ER_ACCESS_DENIED_ERROR`, Snowflake login codes `390100`, `390144`, `390195` and `390318`, and the `BigQueryAuthenticationError` Malloy's BigQuery driver raises.
+- **Missing connection:** Publisher's connection lookup, when Malloy's lookup fails for a name the environment does not configure.
+
+A failure that matches none of these keeps its old status.
 
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
