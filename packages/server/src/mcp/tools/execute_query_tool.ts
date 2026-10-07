@@ -188,6 +188,9 @@ export function registerExecuteQueryTool(
             // than the protocol a query arrived over.
             const queryMetadataInput = {
                environment: environmentName,
+               // The version that answered (latest when none was named), as
+               // the HTTP query route tags it. Undefined when unversioned.
+               version: pkg.getVersionId(),
                // Minted here because the envelope below returns it.
                correlationId: mintCorrelationId(),
                // The package owns its manifest, so the least-specific

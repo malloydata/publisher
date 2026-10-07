@@ -865,6 +865,42 @@ describe("Environment versions under concurrency and failure", () => {
       expect(fed).toContain("1.1.0");
    });
 
+   it("reads a shared version's bindings again once it is findable, so a run starting as it loads cannot miss it", async () => {
+      env.setVersionRegistry(memoryRegistry());
+      await publish("1.0.0", 1);
+      // 1.0.0 leaves memory when 1.1.0 becomes latest.
+      await publish("1.1.0", 2);
+      const loadedAtEachRead: string[][] = [];
+      env.setStorageBindingResolver(async () => {
+         loadedAtEachRead.push(env.getLoadedVersionIds("sales"));
+         return {};
+      });
+
+      await env.getPackage("sales", false, { versionId: "1.0.0" });
+
+      // Read once before it is findable, and again after: a run that recorded
+      // its rebuild in between is seen by the second read, and a run that
+      // records after it finds 1.0.0 among the loaded versions.
+      expect(loadedAtEachRead[0]).not.toContain("1.0.0");
+      expect(loadedAtEachRead.at(-1)).toContain("1.0.0");
+   });
+
+   it("refuses a malformed version on the lifecycle calls with 400, before reading the registry", async () => {
+      env.setVersionRegistry(memoryRegistry());
+      await publish("1.0.0", 1);
+      for (const call of [
+         () => env.setLatestVersion("sales", "v1"),
+         () => env.setVersionArchiveStatus("sales", "v1", "archive"),
+         () => env.setVersionManifest("sales", "v1", null),
+      ]) {
+         const error = await call().catch((e: unknown) => e);
+         expect(error).toBeInstanceOf(PackageVersionError);
+         expect((error as PackageVersionError).reason).toBe(
+            "VERSION_ID_INVALID",
+         );
+      }
+   });
+
    it("refuses to publish a version into a package watch mode mounts in place", async () => {
       const source = path.join(rootDir, "watched-source");
       await writePackage(source, "0.0.1", 1);

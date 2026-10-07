@@ -354,6 +354,22 @@ export type NewPackageVersion = Omit<
 >;
 
 /**
+ * Refuse a requested version that is not a semantic version, with 400
+ * VERSION_ID_INVALID, so a malformed value is told apart from a version the
+ * package does not have (404). Every route that takes a version checks it.
+ */
+export function assertVersionIdFormat(
+   packageName: string,
+   versionId: string,
+): void {
+   if (isSemver(versionId)) return;
+   throw new PackageVersionError(
+      "VERSION_ID_INVALID",
+      `"${versionId}" is not a semantic version, so it names no version of package ${packageName}. Send a version such as 1.2.0, with build metadata percent-encoded (+ as %2B).`,
+   );
+}
+
+/**
  * The window onto the version registry an environment needs, bound to its
  * own database row by the EnvironmentStore (see `setVersionRegistry`). Kept
  * narrow so the environment holds no repository and knows no database id.
@@ -369,7 +385,8 @@ export interface VersionRegistry {
    ensurePackage(packageName: string, description?: string): Promise<boolean>;
    /**
     * Remove a package row that {@link ensurePackage} created for a publish
-    * that then failed before recording any version.
+    * that then failed before recording any version. The row only: rows keyed
+    * by the package's name (versions, runs) are left as they are.
     */
    discardPackage(packageName: string): Promise<void>;
    /** Throws DuplicatePackageVersionError when the version exists. */
@@ -2636,6 +2653,9 @@ export class Environment {
     */
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
+      // Bind what the store holds even when it is nothing, clearing what was
+      // bound before: for a second read, whose answer replaces the first.
+      options: { replace?: boolean } = {},
    ): Promise<void> {
       if (!this.storageBindingResolver) return;
       // Host-authoritative: a bound manifestLocation means bindManifest already
@@ -2648,21 +2668,21 @@ export class Environment {
             packageName,
             ownedVersionOf(pkg),
          );
-         if (Object.keys(rawEntries).length === 0) return;
+         if (!options.replace && Object.keys(rawEntries).length === 0) return;
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
             `local store (package ${packageName})`,
          );
          // Colocated: restore regardless of PERSIST_STORAGE_MODE (v0 path, not
          // gated by the storage kill switch).
-         if (Object.keys(tableNameManifest).length > 0) {
+         if (options.replace || Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);
          }
          // Storage=: only meaningful when the tier is not off (serve routing to
          // the external store requires it). Ships dark otherwise.
          if (
             getPersistStorageMode() !== "off" &&
-            Object.keys(storageEntries).length > 0
+            (options.replace || Object.keys(storageEntries).length > 0)
          ) {
             pkg.bindStorageServeBindings(storageEntries);
          }
@@ -2675,6 +2695,21 @@ export class Environment {
             },
          );
       }
+   }
+
+   /**
+    * Read a version's shared bindings again once it is in the package map.
+    * A `scope: package` run records the shared tables it is about to rebuild,
+    * then rebinds the versions it finds loaded. A version that read the store
+    * before that record and entered the map after that rebind was missed by
+    * both, and would serve a table the run is rebuilding. Read here, after
+    * the version is findable, the store already has the record, or the run's
+    * rebind will find the version. Versions that own their tables share none.
+    */
+   private async settleSharedBindings(pkg: Package): Promise<void> {
+      if (pkg.getVersionId() === undefined) return;
+      if (ownedVersionOf(pkg) !== undefined) return;
+      await this.rebindServeBindingsFromLocalStore(pkg, { replace: true });
    }
 
    /**
@@ -2820,12 +2855,7 @@ export class Environment {
       assertSafePackageName(packageName);
       // Checked before anything is looked up, so a caller can tell a value it
       // got wrong from a version that does not exist.
-      if (versionId && !isSemver(versionId)) {
-         throw new PackageVersionError(
-            "VERSION_ID_INVALID",
-            `"${versionId}" is not a semantic version, so it names no version of package ${packageName}. Send a version such as 1.2.0, with build metadata percent-encoded (+ as %2B).`,
-         );
-      }
+      if (versionId) assertVersionIdFormat(packageName, versionId);
       const index = this.packageVersions.get(packageName);
       if (!index) {
          if (versionId) {
@@ -3170,6 +3200,7 @@ export class Environment {
       const latest = this.packageVersions.get(slot.name)?.latest ?? null;
       pkg.setVersion(version.version, latest);
       this.packages.set(slot.key, pkg);
+      await this.settleSharedBindings(pkg);
       // The load hook builds the package's retrieval index, which is keyed by
       // package name, so only the version a nameless request reaches feeds it.
       if (latest === version.version) this.notifyPackageLoaded(pkg);
@@ -3625,6 +3656,7 @@ export class Environment {
          await this.bindManifestIfConfigured(pkg);
          await this.rebindServeBindingsFromLocalStore(pkg);
          this.packages.set(key, pkg);
+         await this.settleSharedBindings(pkg);
       });
       this.setPackageStatus(packageName, PackageStatus.SERVING);
       this.clearPackageLoadFailure(packageName);
@@ -3775,8 +3807,7 @@ export class Environment {
     * shared semver pattern accepts) go to the later publish, so for those the
     * order does decide. Each server keeps its own registry, so under
     * on-publish promotion two servers that take such a pair in opposite
-    * orders disagree; an orchestrator that needs them to agree sets `latest`
-    * itself (`versionPromotion: explicit`).
+    * orders can disagree on `latest`.
     */
    private async promoteOnPublish(
       packageName: string,
@@ -3834,6 +3865,8 @@ export class Environment {
       packageName: string,
       versionId: string,
    ): Promise<{ index: PackageVersionIndex; version: PackageVersion }> {
+      // 400 for a malformed value, before the registry is read.
+      assertVersionIdFormat(packageName, versionId);
       await this.refreshPackageVersions(packageName);
       const index = this.packageVersions.get(packageName);
       const version = index?.versions.get(versionId);

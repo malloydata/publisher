@@ -267,6 +267,12 @@ describe("published package versions", () => {
       expect(((await bad.json()) as { reason?: string }).reason).toBe(
          "VERSION_ID_INVALID",
       );
+      // The versions route too, whose version is a path segment.
+      const badPath = await fetch(api(`/packages/${PKG}/versions/v1`));
+      expect(badPath.status).toBe(400);
+      expect(((await badPath.json()) as { reason?: string }).reason).toBe(
+         "VERSION_ID_INVALID",
+      );
 
       // The Referer is incidental, so its malformed version falls back to
       // latest rather than refusing every asset the page loads.

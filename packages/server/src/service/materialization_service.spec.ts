@@ -4879,6 +4879,96 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
    });
 
+   describe("a version's run under scope: package", () => {
+      type VersionedRun = RunBuildInternals & {
+         deriveSelfInstructions: sinon.SinonStub;
+         rebindLoadedVersions: sinon.SinonStub;
+      };
+
+      /** latest (1.1.0) about to rebuild the shared table `summary`. */
+      function versionedRun(): VersionedRun {
+         setPackage(ctx.environmentStore, {
+            getVersionId: () => "1.1.0",
+            getPackageMetadata: () => ({ scope: "package" }),
+         });
+         const svc = stubEngine() as VersionedRun;
+         svc.deriveSelfInstructions = sinon.stub().returns({
+            instructions: [makeInstruction({ physicalTableName: "summary" })],
+            carried: {},
+            refused: {},
+         });
+         svc.rebindLoadedVersions = sinon.stub().resolves();
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               id: "mat-1",
+               metadata: { mode: "auto", versionId: "1.1.0", scope: "package" },
+            }),
+         );
+         return svc;
+      }
+
+      const run = (svc: VersionedRun) =>
+         svc.runBuild(
+            "mat-1",
+            "my-env",
+            "pkg",
+            {
+               sourceNames: undefined,
+               forceRefresh: true,
+               buildInstructions: undefined,
+               version: "1.1.0",
+            } as Parameters<RunBuildInternals["runBuild"]>[3],
+            new AbortController().signal,
+         );
+
+      const marking = () =>
+         ctx.repository.updateMaterialization
+            .getCalls()
+            .find(
+               (c) =>
+                  (c.args[1] as { metadata?: Record<string, unknown> })
+                     ?.metadata?.rebuildingTables !== undefined,
+            );
+
+      it("records the shared tables it rebuilds, then rebinds the other versions, before it builds anything", async () => {
+         const svc = versionedRun();
+         await run(svc);
+
+         const mark = marking();
+         // Merged into the metadata the run was created with.
+         expect(mark?.args[1].metadata).toEqual({
+            mode: "auto",
+            versionId: "1.1.0",
+            scope: "package",
+            rebuildingTables: ["summary"],
+         });
+         const build = svc.executeInstructedBuild.firstCall;
+         expect(mark!.calledBefore(build)).toBe(true);
+         // The other loaded versions drop the table from now on, while it is
+         // rebuilt, rather than once the run commits.
+         const before = svc.rebindLoadedVersions.firstCall;
+         expect(before.args).toEqual(["my-env", "pkg", "1.1.0"]);
+         expect(before.calledAfter(mark!)).toBe(true);
+         expect(before.calledBefore(build)).toBe(true);
+      });
+
+      it("rebinds the other versions again when the build fails, keeping the record", async () => {
+         const svc = versionedRun();
+         svc.executeInstructedBuild.rejects(new Error("warehouse went away"));
+
+         await expect(run(svc)).rejects.toThrow("warehouse went away");
+
+         expect(marking()).toBeDefined();
+         expect(svc.commitManifest.called).toBe(false);
+         expect(svc.rebindLoadedVersions.callCount).toBe(2);
+         expect(
+            svc.rebindLoadedVersions.secondCall.calledAfter(
+               svc.executeInstructedBuild.firstCall,
+            ),
+         ).toBe(true);
+      });
+   });
+
    it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
       // A refused source binds no table, and the manifest is what a
       // strict-schema caller parses, so the list rides the free-form metadata.
