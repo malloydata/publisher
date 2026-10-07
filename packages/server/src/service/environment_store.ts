@@ -1479,18 +1479,21 @@ export class EnvironmentStore {
       await fs.promises.mkdir(uploadDocsPath, { recursive: true });
    }
 
-   public async listEnvironments(skipInitializationCheck: boolean = false) {
+   public async listEnvironments(
+      skipInitializationCheck: boolean = false,
+      options: { includeLoading?: boolean } = {},
+   ) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
       }
       return Promise.all(
          Array.from(this.environments.values()).map((environment) =>
-            environment.serialize(),
+            environment.serialize(options),
          ),
       );
    }
 
-   public async getStatus() {
+   public async getStatus(options: { includeLoading?: boolean } = {}) {
       // Surface the memory governor's back-pressure as a "throttled"
       // operational state so the control plane can stop routing new package
       // loads/queries to a throttled worker. Draining takes precedence: a
@@ -1523,7 +1526,7 @@ export class EnvironmentStore {
          version: SERVER_VERSION,
       };
 
-      const environments = await this.listEnvironments(true);
+      const environments = await this.listEnvironments(true, options);
 
       await Promise.all(
          environments.map(async (environment) => {

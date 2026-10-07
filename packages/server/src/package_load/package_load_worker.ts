@@ -78,6 +78,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
+   installRecordPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import {
@@ -455,12 +456,38 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
  * root holds an `index.malloy` and declares no `explores` takes its surface
  * from that file. See {@link resolveExplores}.
  */
+/** The install location the server recorded for the package, if any. */
+async function readInstallRecord(
+   packagePath: string,
+): Promise<string | undefined> {
+   try {
+      const raw = await fs.promises.readFile(
+         installRecordPath(
+            path.dirname(packagePath),
+            path.basename(packagePath),
+         ),
+         "utf8",
+      );
+      const record: unknown = JSON.parse(raw);
+      const location =
+         typeof record === "object" && record !== null
+            ? (record as { location?: unknown }).location
+            : undefined;
+      return typeof location === "string" && location !== ""
+         ? location
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
 ): Promise<{
    name?: string;
    description?: string;
+   location?: string;
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
@@ -474,6 +501,7 @@ async function readPackageMetadata(
    let parsed: {
       name?: string;
       description?: string;
+      location?: unknown;
       explores?: string[];
       queryableSources?: unknown;
       manifestLocation?: unknown;
@@ -536,6 +564,12 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
+      // Where the package was installed from, from the server's own record
+      // outside the package directory (see Environment.writePackageManifest).
+      // Nothing inside the tree is read as one, neither a `location` in
+      // publisher.json nor a record file shipped with the content: a reload
+      // re-fetches from this value, so only the server may set it.
+      location: await readInstallRecord(packagePath),
       explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
