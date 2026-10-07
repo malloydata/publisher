@@ -37,6 +37,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -45,6 +46,7 @@ import {
    getDuckLakeTargetFileSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
+   getPostgresPoolMax,
 } from "../config";
 import {
    catalogFormatRangeForEngine,
@@ -52,6 +54,7 @@ import {
 } from "../ducklake_version";
 import {
    ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
    TableNotFoundError,
    UnsupportedCatalogFormatError,
 } from "../errors";
@@ -64,6 +67,7 @@ import {
 } from "../path_safety";
 import {
    assembleEnvironmentConnections,
+   buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
@@ -2319,6 +2323,92 @@ function buildProxiedPostgresConnection(
    });
 }
 
+// One query per session, so session state (SET, SET ROLE, an open BEGIN) from
+// arbitrary SQL never reaches the next caller.
+const POSTGRES_POOL_MAX_USES = 1;
+
+// pg-pool's error for a caller that waited connectionTimeoutMillis for a free
+// session. A connect that itself times out fails with a different message.
+const PG_POOL_WAIT_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
+
+/**
+ * `PooledPostgresConnection` whose pool options reach `pg.Pool`. The base
+ * `buildClientConfig` drops `poolMin`/`poolMax`, so pg-pool's default size
+ * applies regardless of what the constructor is given.
+ */
+export class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
+   // Per-process cap on open sessions (PUBLISHER_POSTGRES_POOL_MAX). pg-pool
+   // applies the timeout to waiting for a free session as well as to connecting.
+   protected poolLimits(): { max: number; connectionTimeoutMillis: number } {
+      return { max: getPostgresPoolMax(), connectionTimeoutMillis: 30_000 };
+   }
+
+   // getPool() passes this result to `new Pool(...)`, so it is a PoolConfig.
+   protected buildClientConfig(
+      cfg: Parameters<PooledPostgresConnection["buildClientConfig"]>[0],
+   ): PoolConfig {
+      const base = super.buildClientConfig(cfg);
+      return {
+         ...base,
+         ...this.poolLimits(),
+         maxUses: POSTGRES_POOL_MAX_USES,
+         // Identifies these sessions in the database's pg_stat_activity.
+         application_name: "malloy-publisher",
+      };
+   }
+
+   // The base class runs every pool checkout through withTlsHint, so this is
+   // where a query that gave up waiting for a free session is reclassified.
+   protected async withTlsHint<T>(op: () => Promise<T>): Promise<T> {
+      try {
+         return await super.withTlsHint(op);
+      } catch (err) {
+         if (
+            err instanceof Error &&
+            err.message === PG_POOL_WAIT_TIMEOUT_MESSAGE
+         ) {
+            const { max, connectionTimeoutMillis } = this.poolLimits();
+            const waitSeconds = connectionTimeoutMillis / 1000;
+            logger.warn("Postgres connection pool exhausted", {
+               connection: this.name,
+               poolMax: max,
+               waitSeconds,
+               remedy:
+                  "fewer concurrent queries on this connection, or raise PUBLISHER_POSTGRES_POOL_MAX",
+            });
+            throw new ConnectionPoolExhaustedError(
+               `Connection '${this.name}' has no free database session: this server opens at most ${max} at a time for it, and none came free within ${waitSeconds} s. Retry once fewer queries are running on this connection.`,
+            );
+         }
+         throw err;
+      }
+   }
+}
+
+function buildEnvironmentPostgresConnection(
+   metadata: EnvironmentConnectionMetadata,
+): EnvironmentPooledPostgresConnection {
+   const name = metadata.apiConnection.name!;
+   const pg = metadata.apiConnection.postgresConnection;
+   if (!pg) {
+      throw new Error(
+         `Connection '${name}' has type 'postgres' but no postgresConnection config.`,
+      );
+   }
+   // buildPostgresConnectionString applies the deployment's PGSSLMODE and
+   // returns undefined when there is nothing to apply, in which case pg falls
+   // back to the individual fields.
+   return new EnvironmentPooledPostgresConnection({
+      name,
+      connectionString: buildPostgresConnectionString(pg),
+      host: pg.host,
+      port: pg.port,
+      username: pg.userName,
+      password: pg.password,
+      databaseName: pg.databaseName,
+   });
+}
+
 function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
@@ -2420,6 +2510,10 @@ export function buildEnvironmentMalloyConfig(
    const proxyConnectionCache = new Map<
       string,
       Promise<PooledPostgresConnection>
+   >();
+   const postgresConnectionCache = new Map<
+      string,
+      Promise<EnvironmentPooledPostgresConnection>
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
@@ -2581,6 +2675,29 @@ export function buildEnvironmentMalloyConfig(
                return connection;
             }
 
+            // Plain (non-proxied) Postgres, which would otherwise fall through
+            // to the registry's unpooled PostgresConnection.
+            if (metadata?.apiConnection.type === "postgres") {
+               let connectionPromise = postgresConnectionCache.get(name!);
+               if (!connectionPromise) {
+                  connectionPromise = Promise.resolve(
+                     buildEnvironmentPostgresConnection(metadata),
+                  );
+                  postgresConnectionCache.set(name!, connectionPromise);
+                  // Evict a rejected build so a later lookup can retry.
+                  connectionPromise.catch(() => {
+                     if (
+                        postgresConnectionCache.get(name!) === connectionPromise
+                     ) {
+                        postgresConnectionCache.delete(name!);
+                     }
+                  });
+               }
+               const connection = await connectionPromise;
+               await attachOnce(connection, metadata);
+               return connection;
+            }
+
             const connection = await base.lookupConnection(name);
             if (metadata) {
                await attachOnce(connection, metadata);
@@ -2620,6 +2737,7 @@ export function buildEnvironmentMalloyConfig(
             ...snowflakeJwtCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
+            ...postgresConnectionCache.values(),
          ];
          const closeResults = await Promise.allSettled([
             malloyConfig.shutdown("close"),
@@ -2640,6 +2758,7 @@ export function buildEnvironmentMalloyConfig(
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
+         postgresConnectionCache.clear();
          proxyEndpoints.clear();
 
          const failures = [...closeResults, ...endpointResults].filter(

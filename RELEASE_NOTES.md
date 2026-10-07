@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - Server: plain Postgres connections cap their open sessions
+
+A plain (non-proxied) Postgres connection used to open a new database session for every query with no limit, so concurrent queries across a fleet could exhaust a role's `CONNECTION LIMIT`. It now runs through a pool that holds at most 5 open sessions per connection per process. Each query still gets a fresh session that is closed when it finishes, so session state (`SET`, `SET ROLE`, an open `BEGIN`) never carries over to another caller.
+
+- **New setting.** `PUBLISHER_POSTGRES_POOL_MAX` sets the cap (default `5`). Across a fleet the ceiling is roughly the cap times the pods serving the environment, so size it against the role's `CONNECTION LIMIT`.
+- **New failure mode.** When every session is busy, a query waits up to 30 s for one and then fails with HTTP 502 and a message saying the connection had no free session. It never reached the database, so retrying once other queries finish is safe. The same condition is logged as `Postgres connection pool exhausted`.
+- **New `application_name`.** These sessions show up as `malloy-publisher` in the database's `pg_stat_activity`.
+
 ## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
 
 A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.

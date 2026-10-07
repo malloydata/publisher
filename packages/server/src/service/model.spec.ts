@@ -8,6 +8,7 @@ import sinon from "sinon";
 
 import {
    BadRequestError,
+   ConnectionPoolExhaustedError,
    ModelNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
@@ -499,6 +500,43 @@ describe("service/model", () => {
                   { region: "EU" },
                ),
             ).rejects.toThrow(BadRequestError);
+
+            sinon.restore();
+         });
+
+         it("passes an exhausted connection pool through as its own 502 error, not a 400", async () => {
+            const exhausted = new ConnectionPoolExhaustedError(
+               "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+            );
+            const runnableStub = {
+               getPreparedResult: sinon.stub().rejects(exhausted),
+               run: sinon.stub(),
+            };
+            const modelMaterializer = {
+               loadQuery: sinon.stub().returns(runnableStub),
+               loadRestrictedQuery: sinon.stub().returns(runnableStub),
+            };
+
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               modelMaterializer as any,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               { contents: {}, exports: [], queryList: [] } as any,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            const thrown = await model
+               .getQueryResults(undefined, undefined, "run: orders -> summary")
+               .catch((e: unknown) => e);
+            expect(thrown).toBe(exhausted);
 
             sinon.restore();
          });
