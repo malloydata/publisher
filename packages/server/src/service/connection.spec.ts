@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { PooledPostgresConnection } from "@malloydata/db-postgres";
 import {
    afterAll,
    afterEach,
@@ -22,6 +23,7 @@ import {
    buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
+   EnvironmentPooledPostgresConnection,
    resolveProxiedTls,
    testConnectionConfig,
    isExpiredCredentialError,
@@ -32,7 +34,12 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   ConnectionPoolExhaustedError,
+   PayloadTooLargeError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import {
    startClosingListener,
    type ClosingListener,
@@ -1995,6 +2002,238 @@ describe("connection integration tests", () => {
                }
             }
          });
+
+         const buildPlainPostgresConfig = () =>
+            buildEnvironmentMalloyConfig(
+               [
+                  {
+                     name: "pg_pooled",
+                     type: "postgres",
+                     postgresConnection: {
+                        host: process.env.POSTGRES_TEST_HOST,
+                        port: parseInt(
+                           process.env.POSTGRES_TEST_PORT || "5432",
+                        ),
+                        userName: process.env.POSTGRES_TEST_USER!,
+                        password: process.env.POSTGRES_TEST_PASSWORD!,
+                        databaseName: process.env.POSTGRES_TEST_DATABASE,
+                     },
+                  },
+               ],
+               testEnvironmentPath,
+            );
+
+         it(
+            "should resolve a plain environment-level Postgres connection as pooled and capped",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // The pool's resolved options, not just the constructor arguments.
+               const config = buildPlainPostgresConfig();
+
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  expect(connection.isPool()).toBe(true);
+                  // isPool() narrows to a type without getPool().
+                  const pooled =
+                     connection as unknown as PooledPostgresConnection;
+                  const pool = await pooled.getPool();
+                  expect(pool.options.max).toBe(5);
+                  expect(pool.options.maxUses).toBe(1);
+                  expect(pool.options.application_name).toBe(
+                     "malloy-publisher",
+                  );
+
+                  // runSQL de-JSONs each row via row.row.
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                  );
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should size a plain Postgres connection's pool from PUBLISHER_POSTGRES_POOL_MAX",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
+               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.options.max).toBe(3);
+               } finally {
+                  await config.releaseConnections();
+                  if (previous === undefined) {
+                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
+                  } else {
+                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
+                  }
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should keep a plain Postgres connection usable after more row-cap overflows than its pool size",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // Each overflow stops its stream early; one more than the pool size
+               // shows that every early stop returns its slot.
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  if (!isStreamingConnection(connection)) {
+                     throw new Error(
+                        "Expected a streaming Postgres connection",
+                     );
+                  }
+                  const manyRows =
+                     "SELECT row_to_json(t) AS row FROM (SELECT generate_series(1, 1000) AS n) t";
+                  for (let i = 0; i < 6; i++) {
+                     await expect(
+                        streamSqlWithBudget(
+                           connection,
+                           manyRows,
+                           { rowLimit: 11 },
+                           { maxRows: 10, maxBytes: 0 },
+                        ),
+                     ).rejects.toBeInstanceOf(PayloadTooLargeError);
+                  }
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.totalCount - pool.idleCount).toBe(0);
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 42 AS answer) t",
+                  );
+                  expect(result.rows).toEqual([{ answer: 42 }]);
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should not carry one query's session state into the next query on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // now() equals statement_timestamp() only outside a transaction left
+               // open by an earlier query.
+               const config = buildPlainPostgresConfig();
+               const probe =
+                  "SELECT row_to_json(t) AS row FROM (SELECT current_setting('search_path') AS search_path, now() = statement_timestamp() AS own_txn) t";
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const before = (await connection.runSQL(probe)).rows[0];
+                  await connection.runSQL("SET search_path TO no_such_schema");
+                  await connection.runSQL("BEGIN");
+                  const after = (await connection.runSQL(probe)).rows[0];
+                  expect(after).toEqual(before);
+                  expect(after).toEqual(
+                     expect.objectContaining({ own_txn: true }),
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should fail a query that waited out a full pool with ConnectionPoolExhaustedError on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               class OneSessionShortWait extends EnvironmentPooledPostgresConnection {
+                  protected poolLimits() {
+                     return { max: 1, connectionTimeoutMillis: 200 };
+                  }
+               }
+               const connection = new OneSessionShortWait({
+                  name: "pg_wait",
+                  host: process.env.POSTGRES_TEST_HOST,
+                  port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+                  username: process.env.POSTGRES_TEST_USER,
+                  password: process.env.POSTGRES_TEST_PASSWORD,
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
+               });
+               const waitedOut =
+                  "Connection 'pg_wait' has no free database session: this server opens at most 1 at a time for it, and none came free within 0.2 s. Retry once fewer queries are running on this connection.";
+               const expectExhausted = async (run: Promise<unknown>) => {
+                  const thrown = await run.catch((e: unknown) => e);
+                  expect(thrown).toBeInstanceOf(ConnectionPoolExhaustedError);
+                  expect((thrown as Error).message).toBe(waitedOut);
+               };
+               const one =
+                  "SELECT row_to_json(t) AS row FROM (SELECT 1 AS v) t";
+               try {
+                  await connection.getPool();
+                  const holding = connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                  await expectExhausted(connection.runSQL(one));
+                  const drain = async () => {
+                     for await (const _row of connection.runSQLStream(one)) {
+                        // drain
+                     }
+                  };
+                  await expectExhausted(drain());
+                  await holding;
+               } finally {
+                  await connection.close();
+               }
+            },
+            { timeout: 30000 },
+         );
 
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");

@@ -807,7 +807,12 @@ export class ConnectionController {
                   { maxRows, maxBytes },
                );
             } catch (error) {
-               if (error instanceof PayloadTooLargeError) throw error;
+               // Already classified, with a message written for the caller.
+               if (
+                  error instanceof PayloadTooLargeError ||
+                  error instanceof ConnectionError
+               )
+                  throw error;
                // If runWithQueryTimeout is about to wrap this in a
                // QueryTimeoutError (because the timer fired), the
                // ConnectionError we'd throw here is discarded — the
@@ -830,6 +835,8 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
+            // Already classified, with a message written for the caller.
+            if (error instanceof ConnectionError) throw error;
             throw new ConnectionError((error as Error).message);
          }
       }, getQueryTimeoutMs());
@@ -922,6 +929,7 @@ export class ConnectionController {
             // will convert this to QueryTimeoutError on its own
             // — don't bury the reason in ConnectionError.
             if (signal.aborted) throw error;
+            if (error instanceof ConnectionError) throw error;
             throw new ConnectionError((error as Error).message);
          }
       }, getQueryTimeoutMs());
