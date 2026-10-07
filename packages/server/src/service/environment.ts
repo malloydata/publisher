@@ -353,6 +353,22 @@ export type NewPackageVersion = Omit<
 >;
 
 /**
+ * Refuse a requested version that is not a semantic version, with 400
+ * VERSION_ID_INVALID, so a malformed value is told apart from a version the
+ * package does not have (404). Every route that takes a version checks it.
+ */
+export function assertVersionIdFormat(
+   packageName: string,
+   versionId: string,
+): void {
+   if (isSemver(versionId)) return;
+   throw new PackageVersionError(
+      "VERSION_ID_INVALID",
+      `"${versionId}" is not a semantic version, so it names no version of package ${packageName}. Send a version such as 1.2.0, with build metadata percent-encoded (+ as %2B).`,
+   );
+}
+
+/**
  * The window onto the version registry an environment needs, bound to its
  * own database row by the EnvironmentStore (see `setVersionRegistry`). Kept
  * narrow so the environment holds no repository and knows no database id.
@@ -368,7 +384,8 @@ export interface VersionRegistry {
    ensurePackage(packageName: string, description?: string): Promise<boolean>;
    /**
     * Remove a package row that {@link ensurePackage} created for a publish
-    * that then failed before recording any version.
+    * that then failed before recording any version. The row only: rows keyed
+    * by the package's name (versions, runs) are left as they are.
     */
    discardPackage(packageName: string): Promise<void>;
    /** Throws DuplicatePackageVersionError when the version exists. */
@@ -2702,12 +2719,7 @@ export class Environment {
       assertSafePackageName(packageName);
       // Checked before anything is looked up, so a caller can tell a value it
       // got wrong from a version that does not exist.
-      if (versionId && !isSemver(versionId)) {
-         throw new PackageVersionError(
-            "VERSION_ID_INVALID",
-            `"${versionId}" is not a semantic version, so it names no version of package ${packageName}. Send a version such as 1.2.0, with build metadata percent-encoded (+ as %2B).`,
-         );
-      }
+      if (versionId) assertVersionIdFormat(packageName, versionId);
       const index = this.packageVersions.get(packageName);
       if (!index) {
          if (versionId) {
@@ -3591,8 +3603,7 @@ export class Environment {
     * shared semver pattern accepts) go to the later publish, so for those the
     * order does decide. Each server keeps its own registry, so under
     * on-publish promotion two servers that take such a pair in opposite
-    * orders disagree; an orchestrator that needs them to agree sets `latest`
-    * itself (`versionPromotion: explicit`).
+    * orders can disagree on `latest`.
     */
    private async promoteOnPublish(
       packageName: string,

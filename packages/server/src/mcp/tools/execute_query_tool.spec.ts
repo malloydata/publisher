@@ -60,6 +60,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
+               getVersionId: () => undefined,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -105,6 +106,8 @@ function storeCapturingMetadata(
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
+               // The version that answered, which the query is tagged with.
+               getVersionId: () => "1.2.0",
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -313,6 +316,14 @@ describe("execute_query per-query metadata", () => {
 
       expect(captured()?.environment).toBe("env");
       expect(captured()?.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+
+   it("tags the query with the version that answered", async () => {
+      const { store, captured } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      await handler(args);
+
+      expect(captured()?.version).toBe("1.2.0");
    });
 
    it("asks the model for the compact shape, which its envelope is built from", async () => {

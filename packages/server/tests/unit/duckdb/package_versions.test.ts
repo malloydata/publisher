@@ -285,6 +285,24 @@ describe("package versions registry (real connection)", () => {
          ).toHaveLength(1);
       });
 
+      it("deleting only a package's record leaves the rows keyed by its name", async () => {
+         const sales = await repo.createPackage({
+            environmentId,
+            name: "sales",
+            manifestPath: "",
+         });
+         await repo.createPackageVersion(
+            newVersion(environmentId, "sales", "1.0.0"),
+         );
+
+         await repo.deletePackageRecord(sales.id);
+
+         expect(await repo.getPackageByName(environmentId, "sales")).toBeNull();
+         expect(
+            await repo.listPackageVersions(environmentId, "sales"),
+         ).toHaveLength(1);
+      });
+
       it("deleting an environment deletes its versions before the environment row", async () => {
          await repo.createPackage({
             environmentId,

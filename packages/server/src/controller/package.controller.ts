@@ -14,6 +14,7 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
+import { assertVersionIdFormat } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
 import type { PackageVersion } from "../storage/DatabaseInterface";
 
@@ -410,6 +411,8 @@ export class PackageController {
       packageName: string,
       versionId: string,
    ): Promise<ApiPackageVersion> {
+      // A malformed value is 400, as on every route that takes a version.
+      assertVersionIdFormat(packageName, versionId);
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
