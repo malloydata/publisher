@@ -53,6 +53,7 @@ import {
    Environment,
    PackageStatus,
    isVersionOwnedRun,
+   withoutUnsettledRebuilds,
    type VersionLifecycleEvent,
    type VersionRegistry,
 } from "./environment";
@@ -998,16 +999,28 @@ export class EnvironmentStore {
                                        ? { version }
                                        : undefined,
                                  );
-                              const latest = runs.find(
+                              // The package's shared runs never include a
+                              // version-owned one: see isVersionOwnedRun.
+                              const shared =
+                                 version !== undefined
+                                    ? runs
+                                    : runs.filter((m) => !isVersionOwnedRun(m));
+                              const at = shared.findIndex(
                                  (m) =>
                                     m.status === "MANIFEST_FILE_READY" &&
-                                    m.manifest?.entries &&
-                                    // The package's shared runs never include
-                                    // a version-owned one: see isVersionOwnedRun.
-                                    (version !== undefined ||
-                                       !isVersionOwnedRun(m)),
+                                    m.manifest?.entries,
                               );
-                              return latest?.manifest?.entries ?? {};
+                              if (at === -1) return {};
+                              const entries =
+                                 shared[at].manifest?.entries ?? {};
+                              // Newest first, so every run before `at` is newer
+                              // and has not committed.
+                              return version !== undefined
+                                 ? entries
+                                 : withoutUnsettledRebuilds(
+                                      entries,
+                                      shared.slice(0, at),
+                                   );
                            },
                         );
 

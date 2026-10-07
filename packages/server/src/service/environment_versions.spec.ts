@@ -7,7 +7,11 @@ import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import type { PackageVersion } from "../storage/DatabaseInterface";
-import { Environment, type VersionRegistry } from "./environment";
+import {
+   Environment,
+   type VersionRegistry,
+   withoutUnsettledRebuilds,
+} from "./environment";
 import { Package } from "./package";
 import { hashPackageTree } from "./package_content_hash";
 
@@ -830,6 +834,37 @@ describe("Environment versions under concurrency and failure", () => {
       expect((await compiled).sql).toContain("SELECT 11");
    });
 
+   it("still unloads the old latest and feeds the new one when it retries a move whose re-read failed", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      await publish("1.0.0", 1);
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.1.0", 2),
+         { sourceLocation: "/src/sales-1.1", promotion: "explicit" },
+      );
+      const fed: string[] = [];
+      env.setPackageLoadedHook((pkg) => fed.push(pkg.getVersionId() ?? ""));
+      // The pointer moves, then reading the registry back fails once.
+      const listVersions = registry.listVersions;
+      let reads = 0;
+      registry.listVersions = async (name) => {
+         reads++;
+         if (reads === 2) throw new Error("registry blip");
+         return listVersions(name);
+      };
+      await expect(env.setLatestVersion("sales", "1.1.0")).rejects.toThrow(
+         "registry blip",
+      );
+      registry.listVersions = listVersions;
+      expect(registry.latest.get("sales")).toBe("1.1.0");
+
+      await env.setLatestVersion("sales", "1.1.0");
+
+      expect(await loadedVersions()).toEqual(["1.1.0"]);
+      expect(fed).toContain("1.1.0");
+   });
+
    it("refuses to publish a version into a package watch mode mounts in place", async () => {
       const source = path.join(rootDir, "watched-source");
       await writePackage(source, "0.0.1", 1);
@@ -841,5 +876,39 @@ describe("Environment versions under concurrency and failure", () => {
       expect(
          (await fs.lstat(path.join(envPath, "sales"))).isSymbolicLink(),
       ).toBe(true);
+   });
+});
+
+describe("withoutUnsettledRebuilds", () => {
+   const entries = {
+      a: {
+         sourceEntityId: "a",
+         physicalTableName: "summary",
+         connectionName: "wh",
+      },
+      b: {
+         sourceEntityId: "b",
+         physicalTableName: "stable",
+         connectionName: "wh",
+      },
+   };
+
+   it("drops the tables a newer run recorded it was rebuilding", () => {
+      expect(
+         Object.keys(
+            withoutUnsettledRebuilds(entries, [
+               { metadata: { rebuildingTables: ["summary"] } },
+            ]),
+         ),
+      ).toEqual(["b"]);
+   });
+
+   it("keeps everything when no newer run recorded a rebuild", () => {
+      expect(
+         withoutUnsettledRebuilds(entries, [
+            { metadata: { mode: "auto" } },
+            { metadata: null },
+         ]),
+      ).toBe(entries);
    });
 });

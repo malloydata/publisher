@@ -450,6 +450,13 @@ environmentStore.setVersionLifecycleHook((environmentName, event) => {
       );
    });
 });
+// A reclaim that a crash or a failed drop cut short is started again here,
+// since only an archive starts one otherwise. Off the startup path.
+void environmentStore.finishedInitialization
+   .then(() => materializationService.reclaimArchivedVersions())
+   .catch((error) =>
+      logger.warn("Failed to sweep archived versions for reclaim", { error }),
+   );
 /**
  * Construct and start the standalone materialization scheduler from environment
  * config, or return null when the feature is disabled

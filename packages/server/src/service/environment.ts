@@ -421,6 +421,43 @@ export function isVersionOwnedRun(m: {
    return m.version !== null && m.metadata?.scope === "version";
 }
 
+/**
+ * Where a run records, before it builds anything, the package's shared tables
+ * it is about to rebuild: a run of one version of a `scope: package` package
+ * rebuilds them in place, one source at a time, under the names every version
+ * reads. Replaced, with the rest of the metadata, when the run commits.
+ */
+export const REBUILDING_TABLES_KEY = "rebuildingTables";
+
+/**
+ * `entries` (the newest committed shared run's) minus every table a NEWER run
+ * set out to rebuild without committing. Such a table may already hold what
+ * that run's definition builds, and if the run failed, it keeps holding it, so
+ * `entries` can no longer say what is in it. Dropped, the table serves live
+ * for every version and is rebuilt by the next run instead of reused on a
+ * guess. A run that commits replaces its marker, and becomes the newest
+ * committed run itself.
+ */
+export function withoutUnsettledRebuilds(
+   entries: Record<string, ManifestEntry>,
+   newerRuns: { metadata: Record<string, unknown> | null }[],
+): Record<string, ManifestEntry> {
+   const unsettled = new Set<string>();
+   for (const run of newerRuns) {
+      const tables = run.metadata?.[REBUILDING_TABLES_KEY];
+      if (!Array.isArray(tables)) continue;
+      for (const table of tables) {
+         if (typeof table === "string") unsettled.add(table);
+      }
+   }
+   if (unsettled.size === 0) return entries;
+   return Object.fromEntries(
+      Object.entries(entries).filter(
+         ([, entry]) => !unsettled.has(entry.physicalTableName),
+      ),
+   );
+}
+
 /** A version was archived or unarchived; `version` is its row after the change. */
 export interface VersionLifecycleEvent {
    packageName: string;
@@ -2740,6 +2777,11 @@ export class Environment {
    }
 
    /** Whether the package has published versions (and so no unversioned slot). */
+   /** Every package that has published versions, archived ones included. */
+   public listVersionedPackageNames(): string[] {
+      return [...this.packageVersions.keys()];
+   }
+
    public isVersionedPackage(packageName: string): boolean {
       return this.packageVersions.has(packageName);
    }
@@ -3819,6 +3861,12 @@ export class Environment {
       assertSafePackageName(packageName);
       const registry = this.requireVersionRegistry();
       return this.withPackageLock(packageName, async () => {
+         // What this process last served as latest, read before the registry
+         // is: a request that moved the pointer and then failed to re-read it
+         // left this behind, and its retry must still unload that version and
+         // feed the new one to the retrieval index.
+         const servedBefore =
+            this.packageVersions.get(packageName)?.latest ?? null;
          const { index, version } = await this.requirePublishedVersionLocked(
             packageName,
             versionId,
@@ -3829,18 +3877,25 @@ export class Environment {
                `Version ${versionId} of package ${packageName} is archived, so it cannot be latest. Unarchive it first.`,
             );
          }
-         const previous = index.latest;
          // Load the target before the pointer moves, so a version that cannot
          // load never becomes what every nameless request reaches.
          // Through getPackage, so memory admission applies as to any load.
          const target = this.resolveSlot(packageName, versionId);
          await this.getPackage(packageName, false, { versionId });
-         let moved = previous === versionId;
+         // Swapped from the value read under this lock. Every writer of
+         // latest in this process holds the lock, so the first swap succeeds;
+         // a writer that does not (a registry shared with another process)
+         // makes it fail, and the swap is retried from what that writer left,
+         // which is then the version this request displaced.
+         let displaced = index.latest;
+         let moved = displaced === versionId;
          for (let attempt = 0; !moved && attempt < 5; attempt++) {
-            const current = await registry.getLatest(packageName);
-            moved =
-               current === versionId ||
-               (await registry.setLatest(packageName, current, versionId));
+            if (await registry.setLatest(packageName, displaced, versionId)) {
+               moved = true;
+               break;
+            }
+            displaced = await registry.getLatest(packageName);
+            moved = displaced === versionId;
          }
          if (!moved) {
             throw new Error(
@@ -3848,8 +3903,14 @@ export class Environment {
             );
          }
          await this.refreshPackageVersions(packageName);
-         if (previous !== versionId) {
-            if (previous) await this.unloadVersionSlot(packageName, previous);
+         const before = new Set(
+            [displaced, servedBefore].filter(
+               (v): v is string => v !== null && v !== versionId,
+            ),
+         );
+         for (const old of before)
+            await this.unloadVersionSlot(packageName, old);
+         if (before.size > 0) {
             // The target loaded above while it was not yet latest, so it has
             // not fed the package's retrieval index; it does now.
             const loaded = this.packages.get(target.key);
@@ -3858,7 +3919,7 @@ export class Environment {
          logger.info("Moved a package's latest version", {
             environmentName: this.environmentName,
             packageName,
-            from: previous,
+            from: displaced === versionId ? servedBefore : displaced,
             to: versionId,
          });
          return this.packageVersions

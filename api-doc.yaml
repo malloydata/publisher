@@ -3349,9 +3349,10 @@ components:
       properties:
         manifestLocation:
           type: ["string", "null"]
+          minLength: 1
           description: >-
             URI (gs:// or s3://) of the build manifest to bind, or null to clear
-            the binding and serve live.
+            the binding and serve live. An empty string is refused with 400.
       required:
         - manifestLocation
 

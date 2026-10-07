@@ -276,6 +276,12 @@ export interface MaterializationListOptions {
     * package. Omitted, every run of the package is listed.
     */
    version?: string | null;
+   /**
+    * With `version`, also the runs that predate the package's versions
+    * (`version` null): built before its first versioned publish, they are the
+    * package's shared runs, which every version's listing shows.
+    */
+   includeUnversioned?: boolean;
 }
 
 export interface Materialization {

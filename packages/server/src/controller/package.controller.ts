@@ -531,8 +531,11 @@ export class PackageController {
          versionId,
          archiveStatus,
          {
-            // Asked under the package lock, after the latest check, so the
-            // answer is never stale by the time the archive commits.
+            // Asked under the package lock, after the latest check. A run of
+            // the version can still start after the answer (creating one does
+            // not take the package lock); it then either finds the version
+            // archived when it loads, or builds and is reclaimed when it
+            // settles, so the cost is at most one wasted build.
             isBuilding: check
                ? () => check(environmentName, packageName, versionId)
                : undefined,

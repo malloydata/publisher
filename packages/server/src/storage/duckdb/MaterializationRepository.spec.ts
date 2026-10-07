@@ -179,3 +179,61 @@ describe("MaterializationRepository cascade deletes are records-only", () => {
       expect(runCalls[0].params).toEqual(["env-1", "pkg-a"]);
    });
 });
+
+describe("MaterializationRepository list by version (real DuckDB)", () => {
+   const ENV_ID = "env-ver";
+   const PKG = "pkg-a";
+   const dbs: DuckDBConnection[] = [];
+
+   afterEach(async () => {
+      while (dbs.length) await dbs.pop()!.close();
+   });
+
+   async function repoWithRuns(): Promise<MaterializationRepository> {
+      const db = new DuckDBConnection(":memory:");
+      dbs.push(db);
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         `INSERT INTO environments (id, name, path, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?)`,
+         [ENV_ID, "ver-env", "/tmp/ver-env", "2026-01-01", "2026-01-01"],
+      );
+      // A run from before the package's first versioned publish (version
+      // NULL), then one run each of 1.0.0 and 1.1.0.
+      for (const [id, version, day] of [
+         ["legacy", null, "2026-01-01"],
+         ["v1", "1.0.0", "2026-01-02"],
+         ["v11", "1.1.0", "2026-01-03"],
+      ] as const) {
+         await db.run(
+            `INSERT INTO materializations
+               (id, environment_id, package_name, status, active_key, version, metadata, manifest, created_at, updated_at)
+             VALUES (?, ?, ?, 'MANIFEST_FILE_READY', NULL, ?, NULL, NULL, ?, ?)`,
+            [id, ENV_ID, PKG, version, day, day],
+         );
+      }
+      return new MaterializationRepository(db);
+   }
+
+   const ids = (runs: { id: string }[]) => runs.map((r) => r.id);
+
+   it("lists only the named version's runs", async () => {
+      const repo = await repoWithRuns();
+      expect(ids(await repo.list(ENV_ID, PKG, { version: "1.0.0" }))).toEqual([
+         "v1",
+      ]);
+   });
+
+   it("adds the runs from before the package's versions when asked", async () => {
+      const repo = await repoWithRuns();
+      expect(
+         ids(
+            await repo.list(ENV_ID, PKG, {
+               version: "1.1.0",
+               includeUnversioned: true,
+            }),
+         ),
+      ).toEqual(["v11", "legacy"]);
+   });
+});

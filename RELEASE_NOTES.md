@@ -32,6 +32,9 @@ The rest of the `versions` routes, and materializations that know which version 
 - **No route answers 501 for a `versionId` any more.** A package with no versions answers 404 `VERSION_NOT_FOUND` for one, everywhere.
 - **`/status`** lists every version a package holds, loaded or not: an unloaded one (the version that stopped being `latest`, an archived one) has `loaded: false` and its `archiveStatus`. It also reports `packageVersioning` and `versionPromotion`. An orchestrator reconciling from `/status` needs both: without the first, an unloaded version looks gone, and without the second it cannot tell which servers take native versions.
 - **Archiving while a build of that version runs** answers 409 with a new `reason`, `VERSION_BUILDING`.
+- **Shared tables while `latest` rebuilds them.** Under `scope: "package"`, the other loaded versions serve a shared table live from the moment `latest`'s run starts rebuilding it, and keep doing so if the run fails or is stopped, rather than reading rows `latest`'s definition built.
+- **Reclaim retries.** A `scope: "version"` table that could not be dropped keeps its run, marked `FAILED`, and the reclaim runs again at the next archive and at every server start.
+- **Runs from before versioning stay listed.** A version's materialization list includes the runs from before the package's first versioned publish, and each is reachable by id under any version.
 - **Disk.** A published version's files are never deleted while its package exists, archived or not: [the sizing section](docs/package-versions.md#disk-growth) says how much that is.
 
 ## [Unreleased] — Package versions: publish immutable versions, and read any of them
