@@ -5,7 +5,11 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
-import { getExtensionFetchPolicy } from "../config";
+import {
+   ALLOW_DUCKDB_SETUP_SQL_ENV,
+   getExtensionFetchPolicy,
+   isDuckdbSetupSqlAllowed,
+} from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import {
@@ -158,7 +162,8 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 }
 
 // NOTE: This narrows the environment-author API surface (it rejects securityPolicy,
-// allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
+// allowedDirectories, etc., and admits setupSQL only behind
+// PUBLISHER_ALLOW_DUCKDB_SETUP_SQL). It is NOT a filesystem isolation
 // boundary: attachedDatabases[].path is not normalized or constrained to stay
 // under the environment root, and DuckDB's local-file access is unchanged.
 // Adversarial filesystem isolation is an explicit non-goal here: DuckDB
@@ -186,7 +191,18 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
    const setupSQL = connection.duckdbConnection.setupSQL;
    const hasSetupSQL =
       typeof setupSQL === "string" && setupSQL.trim().length > 0;
-   if (hasSetupSQL && getExtensionFetchPolicy() === "local-only") {
+   if (!hasSetupSQL) return;
+   // Every path that builds a connection passes through here: config load,
+   // create and update, and the connection test, which runs setupSQL without
+   // storing anything. Refusing here covers all of them.
+   if (!isDuckdbSetupSqlAllowed()) {
+      throw new Error(
+         `setupSQL on DuckDB connection "${connection.name}" is disabled in this deployment. ` +
+            `setupSQL runs arbitrary DuckDB statements on the server when the connection is set up. ` +
+            `Fix: set the environment variable ${ALLOW_DUCKDB_SETUP_SQL_ENV}=true to enable it.`,
+      );
+   }
+   if (getExtensionFetchPolicy() === "local-only") {
       throw new Error(
          `setupSQL is not allowed on DuckDB connection "${connection.name}" when EXTENSION_FETCH_POLICY is "local-only".`,
       );

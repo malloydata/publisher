@@ -6011,7 +6011,8 @@ components:
         DuckDB database connection configuration. Exposes data-source intent,
         attached foreign databases, and optional setup SQL for initialization
         (e.g. ATTACH commands for external lakehouses), subject to Publisher policy
-        (refused under EXTENSION_FETCH_POLICY=local-only).
+        (setup SQL must be enabled with PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true and
+        is refused under EXTENSION_FETCH_POLICY=local-only).
       properties:
         setupSQL:
           type: string
@@ -6019,6 +6020,7 @@ components:
             Optional initialization SQL script executed against the DuckDB
             session upon connection (e.g. ATTACH commands for external lakehouses).
             Multiple statements must be separated by a semicolon and newline (;\n).
+            Refused unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
         attachedDatabases:
           type: array
           items:

@@ -1152,17 +1152,61 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
 
 describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+   const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+
+   const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) {
+         delete process.env[name];
+      } else {
+         process.env[name] = value;
+      }
+   };
 
    afterEach(() => {
-      if (originalPolicy === undefined) {
-         delete process.env.EXTENSION_FETCH_POLICY;
-      } else {
-         process.env.EXTENSION_FETCH_POLICY = originalPolicy;
-      }
+      restore("EXTENSION_FETCH_POLICY", originalPolicy);
+      restore("PUBLISHER_ALLOW_DUCKDB_SETUP_SQL", originalAllow);
+   });
+
+   const withSetupSQL = (): ApiConnection => ({
+      name: "my_duckdb",
+      type: "duckdb",
+      duckdbConnection: {
+         setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca;",
+      },
+   });
+
+   it("refuses setupSQL unless PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is set", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(
+         /setupSQL on DuckDB connection "my_duckdb" is disabled in this deployment\..*PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true/,
+      );
+   });
+
+   it("refuses setupSQL when PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is false", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "false";
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(/is disabled in this deployment/);
+   });
+
+   it("rejects a misspelled PUBLISHER_ALLOW_DUCKDB_SETUP_SQL rather than reading it as off", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "ture";
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(/Invalid value for PUBLISHER_ALLOW_DUCKDB_SETUP_SQL/);
    });
 
    it("accepts a DuckDB connection with setupSQL, sets metadata, and passes setupSQL to POJO", () => {
       delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
       const conn: ApiConnection = {
          name: "my_duckdb",
          type: "duckdb",
@@ -1188,17 +1232,13 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
       );
    });
 
-   it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only", () => {
+   it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
       process.env.EXTENSION_FETCH_POLICY = "local-only";
-      const conn: ApiConnection = {
-         name: "my_duckdb",
-         type: "duckdb",
-         duckdbConnection: {
-            setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca;",
-         },
-      };
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
 
-      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(
          /setupSQL is not allowed on DuckDB connection "my_duckdb" when EXTENSION_FETCH_POLICY is "local-only"/i,
       );
    });
