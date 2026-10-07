@@ -1784,7 +1784,9 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(
+               /must provide either attachedDatabases or non-empty setupSQL/,
+            );
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
@@ -1792,11 +1794,11 @@ describe("connection integration tests", () => {
                createEnvironmentConnections(
                   [
                      {
-                        name: "duckdb_with_setup_sql",
+                        name: "duckdb_with_unsupported_field",
                         type: "duckdb",
                         duckdbConnection: {
                            attachedDatabases: [],
-                           setupSQL: "INSTALL httpfs",
+                           customUnsupportedField: "invalid",
                         },
                      } as unknown as ApiConnection,
                   ],
@@ -2438,6 +2440,64 @@ describe("connection integration tests", () => {
 
          expect(result.status).toBe("failed");
          expect(result.errorMessage).toContain("name is required");
+      });
+
+      // The connection test is unauthenticated and stores nothing, so it is
+      // where an unscreened setupSQL would run first. The marker file is the
+      // proof: setupSQL either ran (file present) or it did not.
+      describe("DuckDB setupSQL opt-in", () => {
+         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let dir: string;
+
+         beforeEach(async () => {
+            dir = await fs.mkdtemp(path.join(os.tmpdir(), "setupsql-gate-"));
+         });
+
+         afterEach(async () => {
+            if (originalAllow === undefined) {
+               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            } else {
+               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
+            }
+            await fs.rm(dir, { recursive: true, force: true });
+         });
+
+         const markerConfig = (marker: string): ApiConnection => ({
+            name: "setup_sql_gate",
+            type: "duckdb",
+            duckdbConnection: {
+               setupSQL: `COPY (SELECT 1 AS ran) TO '${marker}'`,
+            },
+         });
+
+         const exists = (file: string) =>
+            fs.access(file).then(
+               () => true,
+               () => false,
+            );
+
+         it("refuses setupSQL without running it when the opt-in is unset", async () => {
+            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain(
+               "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true",
+            );
+            expect(await exists(marker)).toBe(false);
+         });
+
+         it("runs setupSQL when the opt-in is set", async () => {
+            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("ok");
+            expect(await exists(marker)).toBe(true);
+         });
       });
 
       // These specs drive real attach failures offline: nothing can listen on

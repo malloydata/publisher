@@ -39,7 +39,7 @@ const KNOWN_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
    TrinoConnection: ["password", "peakaKey"],
    DatabricksConnection: ["token", "oauthClientSecret"],
    MysqlConnection: ["password"],
-   DuckdbConnection: [],
+   DuckdbConnection: ["setupSQL"],
    MotherDuckConnection: ["accessToken"],
    DucklakeConnection: [],
    PublisherConnection: ["accessToken"],

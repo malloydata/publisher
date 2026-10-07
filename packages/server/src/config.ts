@@ -1123,6 +1123,26 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
    );
 };
 
+export const ALLOW_DUCKDB_SETUP_SQL_ENV = "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL";
+
+/**
+ * Whether environment-authored DuckDB connections may carry `setupSQL`. Off
+ * unless set.
+ *
+ * `setupSQL` runs arbitrary DuckDB statements when a session is set up:
+ * `COPY ... TO` a host path, `CREATE PERSISTENT SECRET` into the secret
+ * directory every DuckDB instance in the process reads, `INSTALL`/`LOAD` of
+ * community extensions. That is more than the query path can reach, and it
+ * comes from connection config, which Malloy's restricted mode never sees. It
+ * belongs only on a deployment whose connection authors are trusted with the
+ * host.
+ *
+ * Throws on an unrecognised value (see parseBoolEnv), so a misspelled opt-in
+ * fails the config load instead of reading as off.
+ */
+export const isDuckdbSetupSqlAllowed = (): boolean =>
+   parseBoolEnv(ALLOW_DUCKDB_SETUP_SQL_ENV) === true;
+
 /**
  * Where an `s3` connection may select `provider: credential_chain` — host-resolved
  * credentials rather than a configured key pair.
