@@ -33,7 +33,11 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { PayloadTooLargeError, UnsupportedCatalogFormatError } from "../errors";
+import {
+   ConnectionPoolExhaustedError,
+   PayloadTooLargeError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import { EnvironmentStore } from "./environment_store";
 
@@ -2054,6 +2058,39 @@ describe("connection integration tests", () => {
          );
 
          it(
+            "should size a plain Postgres connection's pool from PUBLISHER_POSTGRES_POOL_MAX",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
+               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.options.max).toBe(3);
+               } finally {
+                  await config.releaseConnections();
+                  if (previous === undefined) {
+                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
+                  } else {
+                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
+                  }
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
             "should keep a plain Postgres connection usable after more row-cap overflows than its pool size",
             async () => {
                if (!hasPostgresCredentials()) {
@@ -2139,7 +2176,7 @@ describe("connection integration tests", () => {
          );
 
          it(
-            "should say a query gave up waiting for a free session on a plain Postgres connection",
+            "should fail a query that waited out a full pool with ConnectionPoolExhaustedError on a plain Postgres connection",
             async () => {
                if (!hasPostgresCredentials()) {
                   console.log(
@@ -2162,7 +2199,12 @@ describe("connection integration tests", () => {
                   databaseName: process.env.POSTGRES_TEST_DATABASE,
                });
                const waitedOut =
-                  /timeout exceeded when trying to connect\n\[malloy-publisher\] No free session on connection 'pg_wait' \(limit 1 per process\) within 0.2 s/;
+                  "Connection 'pg_wait' has no free database session: this server opens at most 1 at a time for it, and none came free within 0.2 s. Retry once fewer queries are running on this connection.";
+               const expectExhausted = async (run: Promise<unknown>) => {
+                  const thrown = await run.catch((e: unknown) => e);
+                  expect(thrown).toBeInstanceOf(ConnectionPoolExhaustedError);
+                  expect((thrown as Error).message).toBe(waitedOut);
+               };
                const one =
                   "SELECT row_to_json(t) AS row FROM (SELECT 1 AS v) t";
                try {
@@ -2171,15 +2213,13 @@ describe("connection integration tests", () => {
                      "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
                   );
                   await new Promise((resolve) => setTimeout(resolve, 100));
-                  await expect(connection.runSQL(one)).rejects.toThrow(
-                     waitedOut,
-                  );
+                  await expectExhausted(connection.runSQL(one));
                   const drain = async () => {
                      for await (const _row of connection.runSQLStream(one)) {
                         // drain
                      }
                   };
-                  await expect(drain()).rejects.toThrow(waitedOut);
+                  await expectExhausted(drain());
                   await holding;
                } finally {
                   await connection.close();
