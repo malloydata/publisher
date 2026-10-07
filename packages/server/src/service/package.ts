@@ -899,7 +899,8 @@ export class Package {
          } catch (hydrateErr) {
             // A load and a reload fail on this, as they always have. A compile
             // keeps going: one model that will not hydrate costs that model's
-            // findings, not every other file's.
+            // findings, not every other file's. The finding is an error, since
+            // the reload this compile previews would fail on it.
             if (!ctx.compile) throw hydrateErr;
             logger.warn("Model hydration failed during compile", {
                packageName,
@@ -912,7 +913,7 @@ export class Package {
                   `The load-time checks could not read this model ` +
                   `(${errMessage(hydrateErr)}), so its render-tag and dashboard findings ` +
                   `are unknown rather than clean.`,
-               severity: "warn",
+               severity: "error",
             });
             models.set(
                sm.modelPath,

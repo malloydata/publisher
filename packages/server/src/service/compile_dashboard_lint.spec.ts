@@ -356,7 +356,7 @@ describe("compile_model, package scope: curation findings", () => {
       ).toEqual([
          {
             code: "render-tag",
-            severity: "warn",
+            severity: "error",
             model: "dashboards/hidden.malloy",
             message:
                "The load-time checks could not read this model (simulated " +
