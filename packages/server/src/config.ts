@@ -10,6 +10,7 @@ import {
    DEFAULT_MAX_CONCURRENT_QUERIES,
    DEFAULT_MAX_QUERY_ROWS,
    DEFAULT_MAX_RESPONSE_BYTES,
+   DEFAULT_POSTGRES_POOL_MAX,
    DEFAULT_QUERY_ROW_LIMIT,
    DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
@@ -1069,6 +1070,24 @@ export const getMaxConcurrentQueries = (): number => {
    if (raw < 0) {
       throw new Error(
          `PUBLISHER_MAX_CONCURRENT_QUERIES must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the cap on open database sessions for one plain (non-proxied)
+ * Postgres connection in this process. Reads `PUBLISHER_POSTGRES_POOL_MAX`;
+ * falls back to {@link DEFAULT_POSTGRES_POOL_MAX} when unset or empty.
+ * Loud-failure on bad input, including `0`, which would leave the pool unable
+ * to open a session at all.
+ */
+export const getPostgresPoolMax = (): number => {
+   const raw = parseIntEnv("PUBLISHER_POSTGRES_POOL_MAX");
+   if (raw === undefined) return DEFAULT_POSTGRES_POOL_MAX;
+   if (raw < 1) {
+      throw new Error(
+         `PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got ${raw})`,
       );
    }
    return raw;

@@ -139,5 +139,12 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
  * memory budgets should lower it.
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
+/**
+ * Default cap on open database sessions for one plain (non-proxied) Postgres
+ * connection in one publisher process. Override at startup via
+ * `PUBLISHER_POSTGRES_POOL_MAX`. Kept small because a role's CONNECTION LIMIT
+ * is shared by every pod serving the environment.
+ */
+export const DEFAULT_POSTGRES_POOL_MAX = 5;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";

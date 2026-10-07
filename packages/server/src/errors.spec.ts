@@ -7,6 +7,7 @@ import {
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
+   ConnectionPoolExhaustedError,
    InvalidArgumentError,
    TableNotFoundError,
    internalErrorToHttpError,
@@ -149,6 +150,16 @@ describe("internalErrorToHttpError", () => {
       // client (a 502 message can name the internal host or leak a driver oracle).
       expect(json.code).toBe(502);
       expect(json.message).not.toContain("upstream broken");
+   });
+
+   it("maps ConnectionPoolExhaustedError to 502 with its own message", () => {
+      const message =
+         "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.";
+      const { status, json } = internalErrorToHttpError(
+         new ConnectionPoolExhaustedError(message),
+      );
+      expect(status).toBe(502);
+      expect(json).toEqual({ code: 502, message });
    });
 
    it("falls through to 500 for unrecognized errors with a generic body", () => {

@@ -7,6 +7,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
    InvalidArgumentError,
    PackageNotFoundError,
    ModelNotFoundError,
@@ -116,6 +117,17 @@ export function classifyToolError(
       return {
          message: error.message,
          suggestions: [...BACK_PRESSURE_SUGGESTIONS],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ConnectionPoolExhaustedError) {
+      // Transient: the query never reached the database because every session
+      // this server may open for the connection was busy.
+      return {
+         message: error.message,
+         suggestions: [
+            "Retry shortly; this clears as other queries on the connection finish.",
+            "If it persists, run fewer queries at once on this connection, or ask the operator to raise PUBLISHER_POSTGRES_POOL_MAX.",
+         ],
       } satisfies ErrorDetails;
    }
    if (error instanceof ResponseUnserializableError) {
