@@ -7,7 +7,8 @@ import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import type { PackageVersion } from "../storage/DatabaseInterface";
-import { Environment } from "./environment";
+import { Environment, type VersionRegistry } from "./environment";
+import { hashPackageTree } from "./package_content_hash";
 
 function version(
    packageName: string,
@@ -148,5 +149,133 @@ describe("Environment.resolveSlot", () => {
 
    it("refuses a package name that is not a safe path segment", () => {
       expect(() => env.resolveSlot("../escape")).toThrow();
+   });
+});
+
+/** An in-memory registry with the behaviour the environment relies on. */
+function memoryRegistry(): VersionRegistry & {
+   rows: PackageVersion[];
+   latest: Map<string, string | null>;
+} {
+   const rows: PackageVersion[] = [];
+   const latest = new Map<string, string | null>();
+   return {
+      rows,
+      latest,
+      listAllVersions: async () => [...rows],
+      listVersions: async (name) => rows.filter((r) => r.packageName === name),
+      getLatest: async (name) => latest.get(name) ?? null,
+      ensurePackage: async (name) => {
+         if (!latest.has(name)) latest.set(name, null);
+      },
+      createVersion: async (v) => {
+         const row = version(v.packageName, v.version, { ...v });
+         rows.push(row);
+         return row;
+      },
+      setLatest: async (name, expected, next) => {
+         if ((latest.get(name) ?? null) !== expected) return false;
+         latest.set(name, next);
+         return true;
+      },
+      updateVersion: async (id, updates) => {
+         const row = rows.find((r) => r.id === id);
+         if (!row) throw new Error("no such version");
+         Object.assign(row, updates);
+         return row;
+      },
+   };
+}
+
+describe("Environment versions from the registry", () => {
+   let rootDir: string;
+   let envPath: string;
+   let env: Environment;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-vreg-"));
+      envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   /** A package tree on disk whose model answers `n`. */
+   async function writeTree(dir: string, n: number): Promise<void> {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: "sales", version: "1.0.0" }),
+      );
+      await fs.writeFile(
+         path.join(dir, "report.malloy"),
+         `source: report is duckdb.sql("SELECT ${n} as n")\n`,
+      );
+   }
+
+   it("resolves the versions a registry already holds, as after a restart", async () => {
+      const registry = memoryRegistry();
+      registry.rows.push(version("sales", "1.0.0"), version("sales", "1.1.0"));
+      registry.latest.set("sales", "1.1.0");
+      env.setVersionRegistry(registry);
+
+      await env.loadPackageVersions();
+
+      expect(env.isVersionedPackage("sales")).toBe(true);
+      expect(env.resolveSlot("sales").version?.version).toBe("1.1.0");
+      expect(env.resolveSlot("sales", "1.0.0").key).toBe("sales@1.0.0");
+   });
+
+   it("fetches a registered version's missing tree again, and serves it when it hashes to what was published", async () => {
+      const source = path.join(rootDir, "source");
+      await writeTree(source, 1);
+      const registry = memoryRegistry();
+      registry.rows.push(
+         version("sales", "1.0.0", {
+            sourceLocation: source,
+            contentHash: await hashPackageTree(source),
+         }),
+      );
+      registry.latest.set("sales", "1.0.0");
+      env.setVersionRegistry(registry, async (location, target) => {
+         await fs.cp(location, target, { recursive: true });
+      });
+      await env.loadPackageVersions();
+
+      const pkg = await env.getPackage("sales");
+      expect(pkg.getVersionId()).toBe("1.0.0");
+      expect(pkg.getPackagePath()).toBe(
+         path.join(path.resolve(envPath), "sales", "1.0.0"),
+      );
+   });
+
+   it("refuses to serve a re-fetched tree whose content changed since publish", async () => {
+      const source = path.join(rootDir, "source");
+      await writeTree(source, 1);
+      const registry = memoryRegistry();
+      registry.rows.push(
+         version("sales", "1.0.0", {
+            sourceLocation: source,
+            contentHash: "0".repeat(64),
+         }),
+      );
+      registry.latest.set("sales", "1.0.0");
+      env.setVersionRegistry(registry, async (location, target) => {
+         await fs.cp(location, target, { recursive: true });
+      });
+      await env.loadPackageVersions();
+
+      await expect(env.getPackage("sales")).rejects.toThrow(
+         "content there has changed since it was published",
+      );
+      expect(
+         await fs
+            .stat(path.join(envPath, "sales", "1.0.0"))
+            .then(() => true)
+            .catch(() => false),
+      ).toBe(false);
    });
 });

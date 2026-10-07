@@ -49,7 +49,11 @@ import {
 } from "../path_safety";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
-import { Environment, PackageStatus } from "./environment";
+import {
+   Environment,
+   PackageStatus,
+   type VersionRegistry,
+} from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -580,6 +584,128 @@ export class EnvironmentStore {
    }
 
    /**
+    * Give an Environment its window onto the version registry, and the means to
+    * fetch a version's tree again from its location. The environment's database
+    * id is looked up per call rather than captured, because an environment
+    * added at runtime is written to the database after it is created.
+    */
+   private bindVersionRegistry(env: Environment): void {
+      const environmentName = env.getEnvironmentName();
+      const repository = () => this.storageManager.getRepository();
+      const environmentId = async (): Promise<string> => {
+         const row = await repository().getEnvironmentByName(environmentName);
+         if (!row) {
+            throw new Error(
+               `Environment "${environmentName}" is not in the database`,
+            );
+         }
+         return row.id;
+      };
+      const registry: VersionRegistry = {
+         listAllVersions: async () => {
+            const row =
+               await repository().getEnvironmentByName(environmentName);
+            return row
+               ? repository().listPackageVersionsByEnvironment(row.id)
+               : [];
+         },
+         listVersions: async (packageName) =>
+            repository().listPackageVersions(
+               await environmentId(),
+               packageName,
+            ),
+         getLatest: async (packageName) =>
+            (
+               await repository().getPackageByName(
+                  await environmentId(),
+                  packageName,
+               )
+            )?.latestVersion ?? null,
+         ensurePackage: async (packageName, description) => {
+            const id = await environmentId();
+            if (await repository().getPackageByName(id, packageName)) return;
+            await repository().createPackage({
+               environmentId: id,
+               name: packageName,
+               description,
+               manifestPath: "",
+            });
+         },
+         createVersion: async (version) =>
+            repository().createPackageVersion({
+               ...version,
+               environmentId: await environmentId(),
+            }),
+         setLatest: async (packageName, expected, next) =>
+            repository().setPackageLatestVersion(
+               await environmentId(),
+               packageName,
+               expected,
+               next,
+            ),
+         updateVersion: (id, updates) =>
+            repository().updatePackageVersion(id, updates),
+      };
+      env.setVersionRegistry(registry, (location, targetPath, packageName) =>
+         this.downloadPackageInto(
+            environmentName,
+            packageName,
+            location,
+            targetPath,
+         ),
+      );
+   }
+
+   /**
+    * Fetch a package from `packageLocation` into `targetPath`, by the scheme
+    * the location names. What a publish runs against its staging directory,
+    * and what restores a published version whose tree is missing.
+    */
+   public async downloadPackageInto(
+      environmentName: string,
+      packageName: string,
+      packageLocation: string,
+      targetPath: string,
+   ): Promise<void> {
+      const isCompressedFile = packageLocation.endsWith(".zip");
+      if (
+         packageLocation.startsWith("https://") ||
+         packageLocation.startsWith("git@")
+      ) {
+         await this.downloadGitHubDirectory(packageLocation, targetPath);
+      } else if (packageLocation.startsWith("gs://")) {
+         await this.downloadGcsDirectory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      } else if (packageLocation.startsWith("s3://")) {
+         await this.downloadS3Directory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      }
+
+      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
+         // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
+         // so we need to mount them on the right place. `path.isAbsolute` is
+         // what catches a Windows drive-letter path (`D:\pkgs\sales`), which no
+         // other branch here claims either — without it the install stages
+         // nothing and the swap fails with a bare ENOENT rename. Same pairing
+         // as isLocalPath.
+         await this.mountLocalDirectory(
+            packageLocation,
+            targetPath,
+            environmentName,
+            packageName,
+         );
+      }
+   }
+
+   /**
     * Snapshot of the environments currently held in memory. Used by the
     * standalone materialization scheduler to sweep loaded packages without
     * touching the database or triggering loads.
@@ -817,6 +943,7 @@ export class EnvironmentStore {
                            this.memoryGovernor,
                         );
                         this.attachPackageLoadedHook(environmentInstance);
+                        this.bindVersionRegistry(environmentInstance);
                         // Re-establish serve routing when a package loads, from
                         // its latest successful materialization — so serving
                         // survives a restart, not only a fresh build. The full
@@ -850,6 +977,10 @@ export class EnvironmentStore {
                               PackageStatus.SERVING,
                            );
                         });
+                        // Before anything loads a package: a versioned
+                        // package's directory holds only version trees, so it
+                        // must resolve through its versions, not as one tree.
+                        await environmentInstance.loadPackageVersions();
 
                         this.environments.set(
                            dbEnvironment.name,
@@ -1487,13 +1618,16 @@ export class EnvironmentStore {
       await fs.promises.mkdir(uploadDocsPath, { recursive: true });
    }
 
-   public async listEnvironments(skipInitializationCheck: boolean = false) {
+   public async listEnvironments(
+      skipInitializationCheck: boolean = false,
+      options: { everyLoadedVersion?: boolean } = {},
+   ) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
       }
       return Promise.all(
          Array.from(this.environments.values()).map((environment) =>
-            environment.serialize(),
+            environment.serialize(options),
          ),
       );
    }
@@ -1531,7 +1665,11 @@ export class EnvironmentStore {
          version: SERVER_VERSION,
       };
 
-      const environments = await this.listEnvironments(true);
+      // Every loaded version, not only `latest`: an orchestrator reconciles what
+      // this server serves from this list (see ServerStatus in api-doc.yaml).
+      const environments = await this.listEnvironments(true, {
+         everyLoadedVersion: true,
+      });
 
       await Promise.all(
          environments.map(async (environment) => {
@@ -1763,6 +1901,7 @@ export class EnvironmentStore {
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
       this.attachPackageLoadedHook(newEnvironment);
+      this.bindVersionRegistry(newEnvironment);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;

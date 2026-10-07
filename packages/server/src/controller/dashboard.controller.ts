@@ -92,12 +92,13 @@ export class DashboardController {
    public async listDashboards(
       environmentName: string,
       packageName: string,
+      versionId?: string,
    ): Promise<ApiDashboard[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       return p.listDashboards();
    }
 
@@ -105,12 +106,13 @@ export class DashboardController {
       environmentName: string,
       packageName: string,
       dashboardName: string,
+      versionId?: string,
    ): Promise<ApiDashboardManifest> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       const dashboard = p.getDashboard(dashboardName);
       if (!dashboard) {
          throw new DashboardNotFoundError(

@@ -96,6 +96,7 @@ import {
    booleanParamOr400,
    optionalBooleanParamOr400,
    setCollectionReloadError,
+   versionIdParam,
 } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
@@ -620,6 +621,48 @@ relative to <code>public/</code> and does not include it.</p>
 <code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code>. <a href="/">Publisher home</a> lists what
 this server has.</p>`;
 
+/**
+ * The published version a static file is served from: the request's own
+ * `?versionId=`, else the one its page was opened at.
+ *
+ * A data app's page carries `?versionId=` (its `resource` says so), but the
+ * scripts, styles and images it loads by relative URL do not: the browser
+ * resolves `./app.js` against the page's path and drops the query. Without the
+ * fallback a page opened at an older version would load the `latest` version's
+ * assets. The Referer is honored only when it names the same environment and
+ * package, so a page elsewhere cannot steer which version another package's
+ * files come from.
+ *
+ * Only a package with published versions is pinned. For one without, the
+ * version is ignored rather than refused: a proxy in front of this server can
+ * resolve the version itself and serve each one as its own package, then
+ * forward the page's query string untouched (Credible's router does), and
+ * refusing that would 404 every page it serves.
+ */
+function staticVersionIdOf(
+   req: express.Request,
+   environment: { isVersionedPackage(name: string): boolean },
+): string | undefined {
+   if (!environment.isVersionedPackage(req.params.packageName)) {
+      return undefined;
+   }
+   const own = versionIdParam(req);
+   if (own !== undefined) return own;
+   const referer = req.get("referer");
+   if (!referer) return undefined;
+   let url: URL;
+   try {
+      url = new URL(referer);
+   } catch {
+      return undefined;
+   }
+   const prefix =
+      `/environments/${encodeURIComponent(req.params.environmentName)}` +
+      `/packages/${encodeURIComponent(req.params.packageName)}/`;
+   if (!url.pathname.startsWith(prefix)) return undefined;
+   return url.searchParams.get("versionId") || undefined;
+}
+
 async function serveFromPackage(
    req: express.Request,
    res: express.Response,
@@ -630,7 +673,9 @@ async function serveFromPackage(
          req.params.environmentName,
          false,
       );
-      const pkg = await environment.getPackage(req.params.packageName, false);
+      const pkg = await environment.getPackage(req.params.packageName, false, {
+         versionId: staticVersionIdOf(req, environment),
+      });
       // Only the package's public/ directory is web-served. Models, data, and
       // the publisher.json manifest live outside it and are never reachable
       // through this route. This single directory boundary is the whole
@@ -781,6 +826,7 @@ const DATA_APPS_DEPTH_CAP = 3;
 type DataAppItem = {
    resource: string;
    packageName: string;
+   versionId?: string;
    path: string;
    title: string;
    fit?: "viewport";
@@ -813,6 +859,10 @@ async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
+   // The published version listed from, or undefined for an unversioned
+   // package. A versioned app's `resource` carries it, so the link keeps
+   // opening this version after `latest` moves.
+   versionId?: string,
 ): Promise<DataAppItem[]> {
    const fs = await import("fs/promises");
    const out: DataAppItem[] = [];
@@ -901,8 +951,13 @@ async function listPackageDataApps(
                // ignore; fall back to relative path as title
             }
             out.push({
-               resource: `/environments/${environmentName}/packages/${packageName}/${rel}`,
+               resource:
+                  `/environments/${environmentName}/packages/${packageName}/${rel}` +
+                  (versionId !== undefined
+                     ? `?versionId=${encodeURIComponent(versionId)}`
+                     : ""),
                packageName,
+               ...(versionId !== undefined ? { versionId } : {}),
                path: rel,
                title,
                fit,
@@ -988,10 +1043,6 @@ app.use(drainingGuard);
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/data-apps`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const environment = await environmentStore.getEnvironment(
             req.params.environmentName,
@@ -1000,11 +1051,13 @@ app.get(
          const pkg = await environment.getPackage(
             req.params.packageName,
             false,
+            { versionId: versionIdParam(req) },
          );
          const dataApps = await listPackageDataApps(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
+            pkg.getVersionId(),
          );
          res.json(dataApps);
       } catch (error) {
@@ -1108,17 +1161,19 @@ let sseConnectionCount = 0;
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       const env = req.params.environmentName;
       const pkg = req.params.packageName;
       try {
          assertSafePackageName(env);
          assertSafePackageName(pkg);
          const environment = await environmentStore.getEnvironment(env, false);
-         await environment.getPackage(pkg, false); // 404 if missing
+         // 404 if missing, and 404/410 for a version that is unknown or
+         // archived. A published version never changes, so its stream carries
+         // no `changed` event; it is accepted so a data app can send it on
+         // every call.
+         await environment.getPackage(pkg, false, {
+            versionId: versionIdParam(req),
+         });
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1415,16 +1470,13 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.listSchemas(
                req.params.environmentName,
                req.params.connectionName,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1438,10 +1490,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.listTables(
@@ -1450,6 +1498,7 @@ app.get(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1463,10 +1512,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.getTable(
@@ -1475,6 +1520,7 @@ app.get(
                req.params.schemaName,
                req.params.tablePath,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1512,10 +1558,6 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
@@ -1523,6 +1565,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1572,10 +1615,6 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.getConnectionQueryData(
@@ -1588,6 +1627,7 @@ app.post(
                   queryMetadata: req.body?.queryMetadata,
                   queryClass: req.body?.queryClass,
                },
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1622,10 +1662,6 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
@@ -1633,6 +1669,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1646,10 +1683,6 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       if (req.query.reload !== undefined) {
          setCollectionReloadError(
             res,
@@ -1659,6 +1692,13 @@ app.get(
       }
 
       try {
+         if (versionIdParam(req) !== undefined) {
+            // The list describes each package as a nameless request sees it;
+            // a package's own versions are at …/packages/{name}/versions.
+            throw new BadRequestError(
+               "The package list takes no versionId. List one package's versions at …/packages/{packageName}/versions.",
+            );
+         }
          res.status(200).json(
             await packageController.listPackages(req.params.environmentName),
          );
@@ -1690,10 +1730,6 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       const reload = booleanParamOr400(req, res, "reload");
       if (reload === undefined) {
          return;
@@ -1704,6 +1740,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                reload,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1751,19 +1788,46 @@ app.delete(
    },
 );
 
-// Package versions (api-doc.yaml, the `versions` tag). The contract lands ahead
-// of the implementation, so until a route's handler ships it answers 501, the
-// same answer a `versionId` gets on the routes that declare one.
-const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
-   setVersionIdError(res);
+// Package versions (api-doc.yaml, the `versions` tag).
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions`,
-   versionsNotImplemented,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await packageController.listPackageVersions(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
 );
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
-   versionsNotImplemented,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await packageController.getPackageVersion(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.versionId,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
 );
+// The lifecycle routes land ahead of their handlers, so until then they answer
+// 501, the same answer a `versionId` gets where it is not implemented yet.
+const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
+   setVersionIdError(res);
 app.patch(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
    versionsNotImplemented,
@@ -1780,11 +1844,6 @@ app.put(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -1797,7 +1856,10 @@ app.get(
             await modelController.listModels(
                req.params.environmentName,
                req.params.packageName,
-               { includeHiddenFilesAndSources },
+               {
+                  includeHiddenFilesAndSources,
+                  versionId: versionIdParam(req),
+               },
             ),
          );
       } catch (error) {
@@ -1811,11 +1873,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -1831,7 +1888,10 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
-               { includeHiddenFilesAndSources },
+               {
+                  includeHiddenFilesAndSources,
+                  versionId: versionIdParam(req),
+               },
             ),
          );
       } catch (error) {
@@ -1852,11 +1912,13 @@ app.put(
    // behind it.
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
+         if (versionIdParam(req) !== undefined) {
+            // A published version is immutable, so a write cannot name one.
+            throw new BadRequestError(
+               "A write cannot name a versionId: a published version is immutable.",
+            );
+         }
          // Express stores wildcard matches in params['0'].
          const result = await dashboardController.putDashboardSource(
             req.params.environmentName,
@@ -1891,16 +1953,12 @@ app.put(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          res.status(200).json(
             await dashboardController.listDashboards(
                req.params.environmentName,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1914,17 +1972,13 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          res.status(200).json(
             await dashboardController.getDashboard(
                req.params.environmentName,
                req.params.packageName,
                req.params.dashboardName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1938,16 +1992,12 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          res.status(200).json(
             await modelController.listNotebooks(
                req.params.environmentName,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -1964,11 +2014,6 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          const cellIndex = parseInt(req.params.cellIndex, 10);
          if (isNaN(cellIndex)) {
@@ -2021,6 +2066,7 @@ app.get(
             filterParams,
             bypassFilters,
             givens,
+            versionIdParam(req),
          );
          setFilterDeprecationHeaders(res, {
             filterParams,
@@ -2038,11 +2084,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
@@ -2051,6 +2092,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                notebookPath,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -2065,10 +2107,6 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.body.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -2132,16 +2170,12 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/databases`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
       try {
          res.status(200).json(
             await databaseController.listDatabases(
                req.params.environmentName,
                req.params.packageName,
+               versionIdParam(req),
             ),
          );
       } catch (error) {
@@ -2159,10 +2193,6 @@ app.post(
    // left to pin the shared event loop unbounded.
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          // Express stores wildcard matches in params['0'], so nested model
          // paths (models in subdirectories) compile just like they query.
@@ -2177,6 +2207,7 @@ app.post(
             // invalid value is rejected by compileSource with a 400 naming
             // the valid set, never silently consumed.
             req.body.scope ?? "append",
+            versionIdParam(req),
          );
          res.status(200).json(result);
       } catch (error) {

@@ -22,6 +22,7 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+      versionId?: string,
    ): Promise<{
       status: string;
       problems: TaggedLogMessage[];
@@ -44,6 +45,7 @@ export class CompileController {
          includeSql,
          givens,
          scope,
+         versionId,
       );
 
       // Determine overall status based on presence of errors

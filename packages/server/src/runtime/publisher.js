@@ -49,10 +49,25 @@
          return s;
       }
    }
+   // One query parameter of the page's own URL, or undefined. Read by hand,
+   // not with URLSearchParams, so the runtime also loads where that is not
+   // defined; `+` is a space, as in any query string.
+   function queryParam(name) {
+      var match = (location.search || "").match(
+         new RegExp("[?&]" + name + "=([^&#]*)"),
+      );
+      return match && match[1]
+         ? safeDecode(match[1].replace(/\+/g, " "))
+         : undefined;
+   }
    var ctx = pathMatch
       ? {
            environment: safeDecode(pathMatch[1]),
            package: safeDecode(pathMatch[2]),
+           // A page opened at a published version (`?versionId=`) queries that
+           // version, so it keeps answering from the models it shipped with
+           // after the package's `latest` moves on.
+           versionId: queryParam("versionId"),
         }
       : {};
 
@@ -73,7 +88,12 @@
                "/environments/<env>/packages/<pkg>/... or pass { environment, package } in opts.",
          );
       }
-      return { env: env, pkg: pkg };
+      // The page's own version applies only to its own package; a query
+      // aimed elsewhere gets that package's latest unless it names one.
+      var samePackage = env === ctx.environment && pkg === ctx.package;
+      var versionId =
+         (opts && opts.versionId) || (samePackage ? ctx.versionId : undefined);
+      return { env: env, pkg: pkg, versionId: versionId };
    }
 
    async function rawQuery(modelPath, malloyQuery, opts, compactJson) {
@@ -100,6 +120,7 @@
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
       if (opts.givens) body.givens = opts.givens;
+      if (target.versionId) body.versionId = target.versionId;
 
       var headers = Object.assign(
          { "content-type": "application/json" },
@@ -332,6 +353,8 @@
    // --- SSE live reload --------------------------------------------------
    function setUpLiveReload() {
       if (!ctx.environment || !ctx.package) return;
+      // A published version never changes, so there is nothing to reload.
+      if (ctx.versionId) return;
       if (typeof EventSource === "undefined") return;
       var url =
          apiBase +

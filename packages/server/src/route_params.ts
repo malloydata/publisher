@@ -96,3 +96,23 @@ export function setCollectionReloadError(
    );
    res.status(status).json(json);
 }
+
+/**
+ * The `versionId` query parameter: the published version a request names, or
+ * undefined when it names none (the package's `latest`, or an unversioned
+ * package). Given more than once, it is refused rather than resolved to either
+ * value, the same rule the boolean params follow. Its format is checked where
+ * it resolves, against the versions the package has.
+ */
+export function versionIdParam(
+   req: Pick<Request, "query">,
+): string | undefined {
+   const raw = req.query.versionId;
+   if (raw === undefined || raw === "") return undefined;
+   if (typeof raw !== "string") {
+      throw new BadRequestError(
+         "versionId must be given once, as a single version such as 1.2.0.",
+      );
+   }
+   return raw;
+}

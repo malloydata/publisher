@@ -35,6 +35,7 @@ describe("PackageController.addPackage explores validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -89,6 +90,7 @@ describe("PackageController.addPackage explores validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -124,6 +126,7 @@ describe("PackageController.addPackage explores validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -167,6 +170,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -210,6 +214,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -258,6 +263,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -290,6 +296,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -341,6 +348,7 @@ describe("PackageController.updatePackage explores validation", () => {
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
+         serverRootPath: "/nonexistent/publisher-root",
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -384,7 +392,7 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const metadata = { name: "pkg", resource: "/pkg" };
       const _package = { getPackageMetadata: () => metadata };
       const getPackage = sinon.stub().resolves(_package);
-      const environment = { getPackage };
+      const environment = { getPackage, isVersionedPackage: () => false };
       const getEnvironment = sinon.stub().resolves(environment);
       const environmentStore = {
          getEnvironment,

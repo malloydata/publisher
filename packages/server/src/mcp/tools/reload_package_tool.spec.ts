@@ -41,6 +41,7 @@ function storeReturning(
    return {
       getEnvironment: async () =>
          ({
+            isVersionedPackage: () => false,
             getPackage: async (_pkg: string, reload: boolean) => {
                calls?.push(reload);
                return { getPackageMetadata: () => metadata } as never;
@@ -63,6 +64,7 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
       store: {
          getEnvironment: async () =>
             ({
+               isVersionedPackage: () => false,
                getPackage: async () =>
                   ({
                      getPackageMetadata: () => ({
@@ -179,6 +181,7 @@ describe("reload_package tool", () => {
       const handler = captureHandler({
          getEnvironment: async () =>
             ({
+               isVersionedPackage: () => false,
                getPackage: async () => {
                   throw new Error("'nonexistent_status_field' is not defined");
                },

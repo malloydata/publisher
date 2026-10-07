@@ -216,16 +216,15 @@ describe("Dashboard discovery (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("501s a versionId, which the whole API reserves but does not implement", async () => {
-      // Publisher has no package versioning. Every route declaring `versionId`
-      // rejects it outright, and 501 is what the spec documents for that — the
-      // caller asked for a feature the server does not have, which is not an
-      // internal failure.
+   it("404s a versionId on a package that has no published versions", async () => {
+      // This package was loaded from a directory, so it is one unversioned slot.
+      // Naming a version it never published is refused rather than answered
+      // from its only tree, with the reason a caller can branch on.
       for (const sub of ["/dashboards", "/dashboards/overview"]) {
-         const res = await fetch(apiUrl(`${sub}?versionId=v1`));
-         expect(res.status).toBe(501);
-         expect(((await res.json()) as { message?: string }).message).toContain(
-            "Version IDs not implemented",
+         const res = await fetch(apiUrl(`${sub}?versionId=1.0.0`));
+         expect(res.status).toBe(404);
+         expect(((await res.json()) as { reason?: string }).reason).toBe(
+            "VERSION_NOT_FOUND",
          );
       }
    });

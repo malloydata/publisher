@@ -57,10 +57,8 @@ describe("package versions, before they are implemented", () => {
       }
    });
 
-   it("answers 501 on every versions route", async () => {
+   it("answers 501 on the versions routes that change a version", async () => {
       const json = { "Content-Type": "application/json" };
-      await expect501(await fetch(pkgUrl("/versions")));
-      await expect501(await fetch(pkgUrl("/versions/1.0.0")));
       await expect501(
          await fetch(pkgUrl("/versions/1.0.0"), {
             method: "PATCH",
@@ -84,24 +82,44 @@ describe("package versions, before they are implemented", () => {
       );
    });
 
-   it("answers 501 for a versionId on the routes that newly declare one", async () => {
+   it("lists no versions for a package that has none", async () => {
+      const list = await fetch(pkgUrl("/versions"));
+      expect(list.status).toBe(200);
+      expect(await list.json()).toEqual([]);
+      const one = await fetch(pkgUrl("/versions/1.0.0"));
+      expect(one.status).toBe(404);
+      expect(((await one.json()) as { reason?: string }).reason).toBe(
+         "VERSION_NOT_FOUND",
+      );
+   });
+
+   it("refuses a versionId the package never published, on the routes that newly declare one", async () => {
       for (const sub of [
          "/data-apps",
          "/events",
          "/connections/duckdb/schemas",
-         "/materializations",
       ]) {
-         await expect501(await fetch(pkgUrl(`${sub}?versionId=1.0.0`)));
+         const res = await fetch(pkgUrl(`${sub}?versionId=1.0.0`));
+         expect(res.status).toBe(404);
+         expect(((await res.json()) as { reason?: string }).reason).toBe(
+            "VERSION_NOT_FOUND",
+         );
       }
-      await expect501(
-         await fetch(pkgUrl("/models/report.malloy/compile?versionId=1.0.0"), {
+      const compiled = await fetch(
+         pkgUrl("/models/report.malloy/compile?versionId=1.0.0"),
+         {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                source: "query: q is report -> { select: n }",
             }),
-         }),
+         },
       );
+      expect(compiled.status).toBe(404);
+   });
+
+   it("answers 501 for a versionId on the materialization routes", async () => {
+      await expect501(await fetch(pkgUrl("/materializations?versionId=1.0.0")));
       // create-materialization carries it in the body (see api-doc.yaml).
       await expect501(
          await fetch(pkgUrl("/materializations"), {

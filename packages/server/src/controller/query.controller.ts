@@ -69,6 +69,16 @@ export class QueryController {
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }
+      const versionId: unknown = metadata?.versionId;
+      if (
+         versionId !== undefined &&
+         versionId !== null &&
+         typeof versionId !== "string"
+      ) {
+         throw new BadRequestError(
+            "versionId must be a single version, such as 1.2.0.",
+         );
+      }
 
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -80,7 +90,9 @@ export class QueryController {
       // package-load admission gate, so this is the only thing protecting
       // query traffic on a hot pod.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: versionId || undefined,
+      });
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -114,10 +126,10 @@ export class QueryController {
                      request: requestMetadata,
                      queryClass,
                      environment: environmentName,
-                     // Always undefined today: the route 501s any versionId
-                     // before this runs. Wired so that lifting that rejection
-                     // is the whole change.
-                     version: metadata?.versionId,
+                     // The version that answered, not the one asked for: a
+                     // request naming none is served by `latest`, and the
+                     // query is tagged with that. Undefined when unversioned.
+                     version: p.getVersionId(),
                      // Minted here because this is the boundary that returns
                      // it; a path with nowhere to put it does not mint one.
                      correlationId: mintCorrelationId(),

@@ -196,6 +196,15 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
 export class Package {
    private environmentName: string;
    private packageName: string;
+   /**
+    * The published version this instance serves, and the package's `latest`
+    * as of the last change to it; both undefined for an unversioned package.
+    * Set by the owning Environment ({@link setVersion}), which owns the version
+    * index; surfaced through {@link getPackageMetadata} only when set, so an
+    * unversioned package's metadata is unchanged.
+    */
+   private versionId: string | undefined;
+   private latestVersion: string | null | undefined;
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
@@ -1313,6 +1322,12 @@ export class Package {
       const metadata: ApiPackage = {
          ...this.packageMetadata,
          name: this.packageName,
+         ...(this.versionId !== undefined
+            ? {
+                 versionId: this.versionId,
+                 latestVersion: this.latestVersion ?? null,
+              }
+            : {}),
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
@@ -3856,6 +3871,27 @@ export class Package {
 
    public setName(name: string) {
       this.packageName = name;
+   }
+
+   /** Mark this instance as serving a published version (see {@link versionId}). */
+   public setVersion(versionId: string, latestVersion: string | null): void {
+      this.versionId = versionId;
+      this.latestVersion = latestVersion;
+   }
+
+   /** The published version this instance serves, or undefined if unversioned. */
+   public getVersionId(): string | undefined {
+      return this.versionId;
+   }
+
+   /**
+    * Replace the manifest location this package binds on load, which a
+    * published version takes from its registry row rather than its
+    * publisher.json. Touches nothing else in the metadata, so the discovery
+    * and query-boundary policies already applied stand.
+    */
+   public setManifestLocation(manifestLocation: string | null): void {
+      this.packageMetadata = { ...this.packageMetadata, manifestLocation };
    }
 
    public setEnvironmentName(environmentName: string) {

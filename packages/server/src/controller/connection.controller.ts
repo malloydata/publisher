@@ -302,11 +302,19 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
+      // The published version whose files the per-package sandbox reads; the
+      // package's `latest` when omitted. Meaningful only with packageName.
+      versionId?: string,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+      if (packageName && versionId) {
+         // Refuse an unknown or archived version even where the connection is
+         // the environment's own and the version's files are never read.
+         environment.resolveSlot(packageName, versionId);
+      }
 
       // "duckdb" is the per-package sandbox; its rootDirectory is the
       // package's directory. There is no environment-level "duckdb" — the name is
@@ -326,7 +334,9 @@ export class ConnectionController {
                   `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
-            const pkg = await environment.getPackage(packageName);
+            const pkg = await environment.getPackage(packageName, false, {
+               versionId,
+            });
             return await pkg.getMalloyConnection(connectionName);
          }
          if (packages.length === 1) {
@@ -446,6 +456,7 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       packageName?: string,
+      versionId?: string,
    ): Promise<ApiSchema[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -459,6 +470,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       return getSchemasForConnection(connection, malloyConnection);
@@ -472,6 +484,7 @@ export class ConnectionController {
       schemaName: string,
       tableNames?: string[],
       packageName?: string,
+      versionId?: string,
    ): Promise<ApiTable[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -485,6 +498,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       return listTablesForSchema(
@@ -500,11 +514,13 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
+      versionId?: string,
    ): Promise<ApiSqlSource> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
       try {
          const schema = await (
@@ -542,11 +558,13 @@ export class ConnectionController {
       schemaName: string,
       tablePath: string,
       packageName?: string,
+      versionId?: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
       const environment = await this.environmentStore.getEnvironment(
@@ -637,6 +655,7 @@ export class ConnectionController {
        * connector refuse the statement at dispatch.
        */
       metadata?: { queryMetadata?: unknown; queryClass?: unknown },
+      versionId?: string,
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -664,6 +683,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       let runSQLOptions: RunSQLOptions = {};
@@ -828,6 +848,7 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
+      versionId?: string,
    ): Promise<ApiTemporaryTable> {
       // Express parses repeated query parameters / array-shaped JSON
       // bodies as `string[]`. The route handlers up-cast for
@@ -851,6 +872,7 @@ export class ConnectionController {
          environmentName,
          connectionName,
          packageName,
+         versionId,
       );
 
       // `manifestTemporaryTable(sqlCommand: string): Promise<string>`

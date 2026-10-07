@@ -28,7 +28,7 @@
  */
 
 import bodyParser from "body-parser";
-import type { Express, Response } from "express";
+import type { Express } from "express";
 import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -37,11 +37,7 @@ import { MaterializationController } from "./controller/materialization.controll
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
-import {
-   BadRequestError,
-   internalErrorToHttpError,
-   NotImplementedError,
-} from "./errors";
+import { BadRequestError, internalErrorToHttpError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
@@ -49,6 +45,7 @@ import {
    booleanParamOr400,
    optionalBooleanParamOr400,
    setCollectionReloadError,
+   versionIdParam,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
@@ -81,13 +78,6 @@ function remapMaterializationResponse(mat: any): any {
    }
    return out;
 }
-
-const setVersionIdError = (res: Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
 
 // ─── route registration ────────────────────────────────────────────────────
 
@@ -349,6 +339,7 @@ export function registerLegacyRoutes(
                   req.params.projectName,
                   req.params.connectionName,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -370,6 +361,7 @@ export function registerLegacyRoutes(
                   req.params.schemaName,
                   normalizeQueryArray(req.query.tableNames),
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -391,6 +383,7 @@ export function registerLegacyRoutes(
                   req.params.schemaName,
                   req.params.tablePath,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -435,6 +428,7 @@ export function registerLegacyRoutes(
                   req.params.connectionName,
                   req.body.sqlStatement as string,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -489,6 +483,8 @@ export function registerLegacyRoutes(
                   req.query.sqlStatement as string,
                   req.query.options as string,
                   req.params.packageName,
+                  undefined,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -544,6 +540,8 @@ export function registerLegacyRoutes(
                   req.body.sqlStatement as string,
                   options as string,
                   req.params.packageName,
+                  undefined,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -586,6 +584,7 @@ export function registerLegacyRoutes(
                   req.params.connectionName,
                   req.body.sqlStatement as string,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -600,10 +599,6 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          if (req.query.reload !== undefined) {
             setCollectionReloadError(
                res,
@@ -612,6 +607,12 @@ export function registerLegacyRoutes(
             return;
          }
          try {
+            if (versionIdParam(req) !== undefined) {
+               // Same refusal as the /environments package list.
+               throw new BadRequestError(
+                  "The package list takes no versionId. List one package's versions at …/packages/{packageName}/versions.",
+               );
+            }
             res.status(200).json(
                await packageController.listPackages(req.params.projectName),
             );
@@ -643,10 +644,6 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          const reload = booleanParamOr400(req, res, "reload");
          if (reload === undefined) {
             return;
@@ -657,6 +654,7 @@ export function registerLegacyRoutes(
                   req.params.projectName,
                   req.params.packageName,
                   reload,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -708,15 +706,12 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             res.status(200).json(
                await modelController.listModels(
                   req.params.projectName,
                   req.params.packageName,
+                  { versionId: versionIdParam(req) },
                ),
             );
          } catch (error) {
@@ -730,10 +725,6 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             const modelPath = (req.params as Record<string, string>)["0"];
             res.status(200).json(
@@ -741,6 +732,7 @@ export function registerLegacyRoutes(
                   req.params.projectName,
                   req.params.packageName,
                   modelPath,
+                  { versionId: versionIdParam(req) },
                ),
             );
          } catch (error) {
@@ -760,10 +752,6 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
       async (req, res) => {
-         if (req.body.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             const modelPath = (req.params as Record<string, string>)["0"];
             res.status(200).json(
@@ -779,6 +767,8 @@ export function registerLegacyRoutes(
                      | Record<string, string | string[]>
                      | undefined,
                   req.body.bypassFilters === true ? true : undefined,
+                  undefined,
+                  { versionId: req.body?.versionId as string | undefined },
                ),
             );
          } catch (error) {
@@ -802,6 +792,9 @@ export function registerLegacyRoutes(
                req.params.modelName,
                req.body.source,
                req.body.includeSql === true,
+               undefined,
+               undefined,
+               versionIdParam(req),
             );
             res.status(200).json(result);
          } catch (error) {
@@ -816,15 +809,12 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             res.status(200).json(
                await modelController.listNotebooks(
                   req.params.projectName,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -840,10 +830,6 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             const cellIndex = parseInt(req.params.cellIndex, 10);
             if (isNaN(cellIndex)) {
@@ -881,6 +867,8 @@ export function registerLegacyRoutes(
                   cellIndex,
                   filterParams,
                   bypassFilters,
+                  undefined,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -894,10 +882,6 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             const notebookPath = (req.params as Record<string, string>)["0"];
             res.status(200).json(
@@ -905,6 +889,7 @@ export function registerLegacyRoutes(
                   req.params.projectName,
                   req.params.packageName,
                   notebookPath,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {
@@ -919,15 +904,12 @@ export function registerLegacyRoutes(
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
       async (req, res) => {
-         if (req.query.versionId) {
-            setVersionIdError(res);
-            return;
-         }
          try {
             res.status(200).json(
                await databaseController.listDatabases(
                   req.params.projectName,
                   req.params.packageName,
+                  versionIdParam(req),
                ),
             );
          } catch (error) {

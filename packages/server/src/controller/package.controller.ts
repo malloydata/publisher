@@ -1,19 +1,23 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import * as path from "path";
 import { components } from "../api";
-import { normalizeModelPath } from "../constants";
+import { getPackageVersioningMode, getVersionPromotionMode } from "../config";
+import { API_PREFIX, normalizeModelPath } from "../constants";
 import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
+   PackageNotFoundError,
+   PackageVersionError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
+import type { PackageVersion } from "../storage/DatabaseInterface";
 
 type ApiPackage = components["schemas"]["Package"];
+type ApiPackageVersion = components["schemas"]["PackageVersion"];
 
 /**
  * Which path a reload took. `in-place` recompiles the tree already on disk and
@@ -84,17 +88,21 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       reload: boolean,
+      versionId?: string,
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
-         metadata = (await this.reloadPackage(environmentName, packageName))
-            .metadata;
+         metadata = (
+            await this.reloadPackage(environmentName, packageName, versionId)
+         ).metadata;
       } else {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
             false,
          );
-         const _package = await environment.getPackage(packageName, false);
+         const _package = await environment.getPackage(packageName, false, {
+            versionId,
+         });
          metadata = _package.getPackageMetadata();
       }
 
@@ -150,11 +158,26 @@ export class PackageController {
    public async reloadPackage(
       environmentName: string,
       packageName: string,
+      versionId?: string,
    ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+
+      // A published version is immutable: there is nothing on disk newer than
+      // what it serves, and re-fetching it could only produce the same tree.
+      // So a reload of one reports the version as it is.
+      if (environment.isVersionedPackage(packageName)) {
+         const _package = await environment.getPackage(packageName, false, {
+            versionId,
+         });
+         return { metadata: _package.getPackageMetadata(), mode: "in-place" };
+      }
+      if (versionId) {
+         // Refused the same way a read naming a version of this package is.
+         environment.resolveSlot(packageName, versionId);
+      }
 
       // Resolve the package's source location from the currently-cached
       // metadata WITHOUT triggering a stale-state reload. If a `location`
@@ -172,7 +195,7 @@ export class PackageController {
          const reinstalled = await environment.installPackage(
             packageName,
             (stagingPath) =>
-               this.downloadInto(
+               this.environmentStore.downloadPackageInto(
                   environmentName,
                   packageName,
                   location,
@@ -212,14 +235,42 @@ export class PackageController {
       //   - no-location: addPackage registered a *pre-existing* user directory,
       //     so we validate after the fact and `unloadPackage` (evict from
       //     memory, keep the files) rather than delete it.
+      // With package versioning on, a publish from a location is a published
+      // version: immutable, numbered by the package's own publisher.json, and
+      // recorded in the version registry. Without it, or without a location,
+      // the package is the single unversioned slot it always was.
+      const versioned =
+         body.location !== undefined &&
+         getPackageVersioningMode(this.environmentStore.serverRootPath) ===
+            "on";
       let result;
       try {
-         if (body.location) {
+         if (body.location && versioned) {
+            const bodyLocation = body.location;
+            result = await environment.publishPackageVersion(
+               packageName,
+               (stagingPath) =>
+                  this.environmentStore.downloadPackageInto(
+                     environmentName,
+                     packageName,
+                     bodyLocation,
+                     stagingPath,
+                  ),
+               {
+                  sourceLocation: bodyLocation,
+                  promotion: getVersionPromotionMode(
+                     this.environmentStore.serverRootPath,
+                  ),
+                  validate: (pkg) => formatPublishRejections(pkg),
+                  manifestLocation: body.manifestLocation,
+               },
+            );
+         } else if (body.location) {
             const bodyLocation = body.location;
             result = await environment.installPackage(
                packageName,
                (stagingPath) =>
-                  this.downloadInto(
+                  this.environmentStore.downloadPackageInto(
                      environmentName,
                      packageName,
                      bodyLocation,
@@ -267,12 +318,61 @@ export class PackageController {
          }
       }
 
-      await this.environmentStore.addPackageToDatabase(
-         environmentName,
-         packageName,
-      );
+      // A versioned publish already wrote the package's registry row.
+      if (!versioned) {
+         await this.environmentStore.addPackageToDatabase(
+            environmentName,
+            packageName,
+         );
+      }
 
       return result;
+   }
+
+   /**
+    * The package's published versions, highest first, as the versions
+    * resource returns them. An unversioned package has none; a package this
+    * environment does not have at all is 404.
+    */
+   public async listPackageVersions(
+      environmentName: string,
+      packageName: string,
+   ): Promise<ApiPackageVersion[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const { latest, versions } = environment.listPackageVersions(packageName);
+      if (
+         versions.length === 0 &&
+         environment.getPackageStatus(packageName) === undefined
+      ) {
+         throw new PackageNotFoundError(`Package ${packageName} not found`);
+      }
+      return versions.map((v) =>
+         toApiPackageVersion(environmentName, v, latest),
+      );
+   }
+
+   /** One published version, archived or not. */
+   public async getPackageVersion(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<ApiPackageVersion> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const { latest, versions } = environment.listPackageVersions(packageName);
+      const version = versions.find((v) => v.version === versionId);
+      if (!version) {
+         throw new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            `Package ${packageName} has no version ${versionId}.`,
+         );
+      }
+      return toApiPackageVersion(environmentName, version, latest);
    }
 
    public async deletePackage(environmentName: string, packageName: string) {
@@ -314,7 +414,7 @@ export class PackageController {
          await environment.installPackage(
             packageName,
             (stagingPath) =>
-               this.downloadInto(
+               this.environmentStore.downloadPackageInto(
                   environmentName,
                   packageName,
                   bodyLocation,
@@ -337,57 +437,32 @@ export class PackageController {
 
       return result;
    }
+}
 
-   /**
-    * Run the right downloader for the given location into `targetPath`.
-    * Callers pass a sibling staging dir (not the canonical package
-    * directory) so the long-running download doesn't hold the per-package
-    * mutex.
-    */
-   private async downloadInto(
-      environmentName: string,
-      packageName: string,
-      packageLocation: string,
-      targetPath: string,
-   ) {
-      const isCompressedFile = packageLocation.endsWith(".zip");
-      if (
-         packageLocation.startsWith("https://") ||
-         packageLocation.startsWith("git@")
-      ) {
-         await this.environmentStore.downloadGitHubDirectory(
-            packageLocation,
-            targetPath,
-         );
-      } else if (packageLocation.startsWith("gs://")) {
-         await this.environmentStore.downloadGcsDirectory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      } else if (packageLocation.startsWith("s3://")) {
-         await this.environmentStore.downloadS3Directory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      }
-
-      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
-         // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
-         // so we need to mount them on the right place. `path.isAbsolute` is
-         // what catches a Windows drive-letter path (`D:\pkgs\sales`), which no
-         // other branch here claims either — without it the install stages
-         // nothing and the swap fails with a bare ENOENT rename. Same pairing
-         // as environment_store's isLocalPath.
-         await this.environmentStore.mountLocalDirectory(
-            packageLocation,
-            targetPath,
-            environmentName,
-            packageName,
-         );
-      }
-   }
+/** A registry version as the versions resource returns it. */
+function toApiPackageVersion(
+   environmentName: string,
+   version: PackageVersion,
+   latest: string | null,
+): ApiPackageVersion {
+   return {
+      resource: `${API_PREFIX}/environments/${environmentName}/packages/${version.packageName}/versions/${encodeURIComponent(version.version)}`,
+      packageName: version.packageName,
+      id: version.version,
+      latest: version.version === latest,
+      archiveStatus: version.archiveStatus,
+      archivedAt: version.archivedAt ? version.archivedAt.toISOString() : null,
+      ...(version.description !== null
+         ? { description: version.description }
+         : {}),
+      ...(version.sourceLocation !== null
+         ? { location: version.sourceLocation }
+         : {}),
+      contentHash: version.contentHash,
+      manifestLocation: version.manifestLocation,
+      gitCommitSha: version.gitCommitSha,
+      gitRef: version.gitRef,
+      createdAt: version.createdAt.toISOString(),
+      updatedAt: version.updatedAt.toISOString(),
+   };
 }
