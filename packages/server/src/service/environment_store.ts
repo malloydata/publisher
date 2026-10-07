@@ -667,7 +667,7 @@ export class EnvironmentStore {
          discardPackage: async (packageName) => {
             const id = await environmentId();
             const row = await repository().getPackageByName(id, packageName);
-            if (row) await repository().deletePackage(row.id);
+            if (row) await repository().deletePackageRecord(row.id);
          },
          createVersion: async (version) =>
             repository().createPackageVersion({

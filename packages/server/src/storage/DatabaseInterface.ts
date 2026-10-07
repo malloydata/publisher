@@ -40,6 +40,11 @@ export interface ResourceRepository {
    updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
    deletePackage(id: string): Promise<void>;
    /**
+    * Delete the package's own row and nothing keyed by its name. For undoing
+    * a row created moments before; deletePackage removes a package whole.
+    */
+   deletePackageRecord(id: string): Promise<void>;
+   /**
     * Move a package's `latest` pointer from `expected` to `next`, and report
     * whether it moved. It moves only while the pointer still reads `expected`
     * (null meaning "no latest yet"), so two publishes racing to advance it

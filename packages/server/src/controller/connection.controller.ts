@@ -750,6 +750,12 @@ export class ConnectionController {
             queryClass: queryClass ?? "ops",
             environment: environmentName,
             package: packageName,
+            // The version the request was served from: the one named, or
+            // latest. Undefined for an unversioned package.
+            version: packageName
+               ? environmentForAdmission.resolveSlot(packageName, versionId)
+                    .version?.version
+               : undefined,
             correlationId: mintCorrelationId(),
          },
       });

@@ -223,12 +223,10 @@ export interface QueryContext {
    environment?: string;
    package?: string;
    /**
-    * Published version id, when the query runs against a versioned package.
-    *
-    * Reserved, not yet reachable: the only path that supplies it is a query
-    * request's `versionId`, which the route rejects with 501 until versioned
-    * packages land. It keeps its slot in {@link CONTEXT_SHED_ORDER} so that
-    * wiring it later is a one-line change rather than a shed-order revision.
+    * Published version id, when the query runs against a versioned package:
+    * the version that answered, which is `latest` when the request named none.
+    * Set by the model query route, the package-scoped raw SQL route and MCP
+    * `execute_query`.
     */
    version?: string;
    /** Package-relative model path, for query paths. */

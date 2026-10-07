@@ -7,7 +7,7 @@ import type {
    RunSQLOptions,
    StreamingConnection,
 } from "@malloydata/malloy";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
 import {
@@ -412,6 +412,83 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
  * the way in, plus an overflow check on the way out (same sentinel
  * pattern as the non-streaming path).
  */
+describe("ConnectionController.getConnectionQueryData version tag", () => {
+   // Tags are attached only with query metadata on.
+   const saved = process.env.PUBLISHER_QUERY_METADATA;
+   beforeEach(() => {
+      process.env.PUBLISHER_QUERY_METADATA = "on";
+   });
+   afterEach(() => {
+      if (saved === undefined) delete process.env.PUBLISHER_QUERY_METADATA;
+      else process.env.PUBLISHER_QUERY_METADATA = saved;
+   });
+
+   function controllerServing(version: string | undefined) {
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const resolveSlot = sinon
+         .stub()
+         .returns(version ? { version: { version } } : {});
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            resolveSlot,
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves({ runSQL } as unknown as Connection);
+      return { controller, runSQL, resolveSlot };
+   }
+
+   const tagsOf = (runSQL: sinon.SinonStub) =>
+      (runSQL.firstCall.args[1] as { queryMetadata?: Record<string, string> })
+         .queryMetadata ?? {};
+
+   it("tags a package's raw SQL with the version that served it", async () => {
+      const { controller, runSQL, resolveSlot } = controllerServing("1.2.0");
+      await controller.getConnectionQueryData(
+         "env",
+         "duckdb",
+         "SELECT 1",
+         "",
+         "sales",
+         undefined,
+         undefined,
+      );
+      // Named none, so latest answered: its version is the tag.
+      expect(resolveSlot.firstCall.args).toEqual(["sales", undefined]);
+      expect(tagsOf(runSQL).version).toBe("1.2.0");
+   });
+
+   it("leaves the tag off for an unversioned package and an environment query", async () => {
+      const unversioned = controllerServing(undefined);
+      await unversioned.controller.getConnectionQueryData(
+         "env",
+         "duckdb",
+         "SELECT 1",
+         "",
+         "plain",
+      );
+      expect(tagsOf(unversioned.runSQL).version).toBeUndefined();
+
+      const environmentWide = controllerServing("1.2.0");
+      await environmentWide.controller.getConnectionQueryData(
+         "env",
+         "warehouse",
+         "SELECT 1",
+         "",
+      );
+      expect(environmentWide.resolveSlot.called).toBe(false);
+      expect(tagsOf(environmentWide.runSQL).version).toBeUndefined();
+   });
+});
+
 describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
    afterEach(() => sinon.restore());
 
