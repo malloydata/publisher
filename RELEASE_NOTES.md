@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Package versions: move latest, bind a version's manifest, archive versions, and materialize per version
+
+The rest of the `versions` routes, and materializations that know which version they build. All of it applies only to a package with published versions (`packageVersioning: "on"`). [docs/package-versions.md](docs/package-versions.md) is the reference.
+
+- **`PUT …/packages/{name}/latest`** points `latest` at a published, unarchived version: the way an orchestrator running `versionPromotion: "explicit"` promotes, and the way anyone rolls back. The version is loaded before the pointer moves, so one that cannot load never becomes `latest`.
+- **`PUT …/versions/{versionId}/manifest`** binds one version to a build manifest, or back to live with `null`, and replaces the deprecated package PATCH for a versioned package. The binding is kept with the version across unloads and restarts.
+- **`PATCH …/versions/{versionId}`** archives a version (410 `VERSION_ARCHIVED` on every read of it, unloaded, files kept on disk) or unarchives it. Archiving `latest` is a 409 `VERSION_IS_LATEST`, and so is archiving a version while a materialization of it is running.
+- **Materializations** take `versionId` on every route: a run builds the version named, or `latest`, and records it in `metadata.versionId`. Under `"materialization": { "scope": "version" }` each version builds into tables of its own (`summary__v1_2_0`), and archiving a version reclaims them in the background. Under the default `scope: "package"` the versions share the package's tables, so an auto-run of a version other than `latest` is refused with 400 (pass `buildInstructions` to build into tables you name); after `latest` builds, a loaded version whose source is defined differently serves live instead of another version's table. One run is active per package at a time, and a schedule builds only `latest`.
+- **No route answers 501 for a `versionId` any more.** A package with no versions answers 404 `VERSION_NOT_FOUND` for one, everywhere.
+- **Disk.** A published version's files are never deleted while its package exists, archived or not: [the sizing section](docs/package-versions.md#disk-growth) says how much that is.
+
 ## [Unreleased] — Package versions: publish immutable versions, and read any of them
 
 With `packageVersioning: "on"` (or `PUBLISHER_PACKAGE_VERSIONING=on`), publishing a package from a `location` publishes an immutable version of it, numbered by the `version` field of the package's own `publisher.json`. Bumping that field is the release. With the setting off, the default, nothing changes.
@@ -28,11 +39,10 @@ With `packageVersioning: "on"` (or `PUBLISHER_PACKAGE_VERSIONING=on`), publishin
 - **Publish.** A missing or non-semver `version` is a 400 (`MANIFEST_VERSION_MISSING` / `MANIFEST_VERSION_INVALID`). The same version with different content is a 409 (`VERSION_CONFLICT`); with the same content it succeeds and changes nothing, so an orchestrator can re-load a version safely. A version that fails the publish checks is refused, and the versions already published keep serving. A package's first versioned publish takes over its unversioned tree.
 - **`latest`.** Under `versionPromotion: "on-publish"` (default) a publish makes the new version `latest` unless a higher one already is; under `"explicit"` it never moves it.
 - **Reads.** `versionId` now works on every route that declares it, `/projects/...` aliases included, instead of answering 501. Omitted, the package's `latest` answers. An unknown version is 404 `VERSION_NOT_FOUND`, and a package with no versions answers 404 for any `versionId`. The data-app list carries each app's `versionId` and links with `?versionId=`; static files follow `?versionId=`, or the page they were loaded from. The `publisher.js` runtime queries the version its page was opened at.
-- **`GET …/packages/{name}/versions`** and **`…/versions/{versionId}`** list and describe published versions. The other `versions` routes still answer 501.
+- **`GET …/packages/{name}/versions`** and **`…/versions/{versionId}`** list and describe published versions.
 - **Immutable.** A package with versions refuses in-place changes with 409 `PACKAGE_IS_VERSIONED`: the deprecated PATCH, a dashboard or notebook save, and an unversioned publish over it. `?reload=true` on a version returns it unchanged. Deleting the package deletes every version.
 - **`/status`** lists every loaded version of a package, each with its `versionId`; `GET …/packages` still lists one entry per package.
 - **Restart.** Versions survive a restart. A version whose files are missing is fetched again from where it was published, and served only if it hashes to what was published.
-- **Not yet version-aware:** materialization routes (still 501 for a `versionId`), schedules and archive. They come next.
 
 ## [Unreleased] — Package versions: the API contract and the registry, ahead of the feature
 
