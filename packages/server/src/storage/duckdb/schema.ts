@@ -116,9 +116,10 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    //
    // Keyed on the package's NAME, like `materializations` and
    // `incremental_ledger`, not on `packages.id`: nothing references `packages.id`,
-   // and a package row is deleted and re-created, with a new id, by an unload
-   // and reload. Deleting a package or an environment deletes these rows by hand
-   // (see DuckDBRepository), since nothing here cascades.
+   // and a DELETE followed by a publish (which is how an orchestrator unloads
+   // and re-loads a package) re-creates the row with a new id. Deleting a package
+   // or an environment deletes these rows by hand (see DuckDBRepository), since
+   // nothing here cascades.
    //
    // The content is immutable; the row is not. `archive_status`, `archived_at`
    // and `manifest_location` (the build manifest the version is bound to, which

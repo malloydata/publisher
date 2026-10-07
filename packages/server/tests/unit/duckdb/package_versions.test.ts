@@ -380,6 +380,18 @@ describe("package versions schema upgrade", () => {
             FOREIGN KEY (environment_id) REFERENCES environments(id)
          )
       `);
+      // The indexes a real store already holds when this build first boots.
+      // DuckDB refuses some ALTERs on an indexed table, so the upgrade has to
+      // be proven with them in place, not on bare tables.
+      await db.run(
+         "CREATE INDEX idx_packages_environment_id ON packages(environment_id)",
+      );
+      await db.run(
+         "CREATE INDEX idx_materializations_environment_package ON materializations(environment_id, package_name)",
+      );
+      await db.run(
+         "CREATE UNIQUE INDEX idx_materializations_active_key ON materializations(active_key)",
+      );
       await db.run(
          `INSERT INTO environments VALUES ('env-1', 'env', '/tmp/env', NULL, NULL,
             TIMESTAMP '2026-09-01 00:00:00', TIMESTAMP '2026-09-01 00:00:00')`,

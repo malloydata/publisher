@@ -221,10 +221,10 @@ export default function Package({
    // Goes through the configured API client so consumers using a non-default
    // baseURL or Bearer auth (via <ServerProvider>) get the same plumbing as
    // every other endpoint.
-   // No versionId in the key: /data-apps serves static files, which aren't
-   // versioned (listDataApps takes only env + package), so keying on
-   // versionId would fragment the cache and prevent DataAppViewer's identical
-   // query from deduping.
+   // No versionId in the key: this lists the apps of the version a request
+   // naming none gets, which is also what DataAppViewer asks for, so the two
+   // identical queries dedupe. (The route accepts a versionId now; this page
+   // does not pin one.)
    const dataAppsQuery = useQueryWithApiError({
       queryKey: ["data-apps", environmentName, packageName],
       queryFn: async () => {

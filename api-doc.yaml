@@ -1774,7 +1774,10 @@ paths:
               $ref: "#/components/schemas/PackageVersionManifest"
       responses:
         "200":
-          description: The version, with the binding's outcome
+          description: >-
+            The version as a package resource (`versionId` set), which is where
+            the binding's outcome is reported: `manifestBindingStatus`,
+            `manifestEntryCount` and `boundManifestUri`.
           content:
             application/json:
               schema:
