@@ -8,6 +8,7 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
+   PackageAdmissionRefusedError,
    PackageNotFoundError,
    PackageVersionError,
 } from "../errors";
@@ -111,6 +112,7 @@ export class PackageController {
             versionId,
          });
          metadata = _package.getPackageMetadata();
+         metadata.status = environment.describePackageStatus(packageName);
       }
 
       // Enriched on BOTH paths. This sat below a `reload` early return, so
@@ -191,14 +193,22 @@ export class PackageController {
       // is set, route the reload through `installPackage` so that
       // download-then-load happens atomically; otherwise fall back to an
       // in-place reload of the existing on-disk content.
-      let location: string | undefined;
+      let resident: ApiPackage | undefined;
       try {
          const cached = await environment.getPackage(packageName, false);
-         location = cached.getPackageMetadata().location;
+         resident = cached.getPackageMetadata();
       } catch {
          // Not previously loaded, so there is nothing to reinstall from.
       }
-      if (location) {
+      const location = resident?.location;
+      if (resident && location) {
+         // The re-fetched tree carries what its author wrote. The two things
+         // an orchestrator set on the served copy, where it was installed from
+         // and which manifest it is bound to, are re-applied inside the
+         // install, else the package would serve live until the next drift
+         // check. Nothing else is: the author's description, surface and
+         // policy are the new tree's to declare, and a reload stays fail-safe
+         // rather than enforcing publish-time checks after the swap.
          const reinstalled = await environment.installPackage(
             packageName,
             (stagingPath) =>
@@ -208,6 +218,15 @@ export class PackageController {
                   location,
                   stagingPath,
                ),
+            undefined,
+            {
+               update: {
+                  location,
+                  ...(resident.manifestLocation
+                     ? { manifestLocation: resident.manifestLocation }
+                     : {}),
+               },
+            },
          );
          return {
             metadata: reinstalled.getPackageMetadata(),
@@ -286,6 +305,26 @@ export class PackageController {
                      stagingPath,
                   ),
                (pkg) => formatPublishRejections(pkg),
+               // The install records where it fetched from, and a publish that
+               // names a manifest binds it, both under the install's own lock.
+               // The downloaded tree's publisher.json carries neither: the
+               // location is the caller's, and the orchestrator computes the
+               // manifest, not the author. Without the location a later PATCH
+               // naming the same location could not be told from new content;
+               // without the manifest the package came up serving live and was
+               // fully reloaded moments later by the drift check.
+               {
+                  update: {
+                     location: bodyLocation,
+                     // Only a manifest to bind. A fresh install serves live
+                     // already, so a null or empty value has nothing to
+                     // revert and would only recompile the package a second
+                     // time.
+                     ...(body.manifestLocation
+                        ? { manifestLocation: body.manifestLocation }
+                        : {}),
+                  },
+               },
             );
          } else {
             result = await environment.addPackage(packageName);
@@ -298,10 +337,19 @@ export class PackageController {
          // with the same message the response carries, so /status never says
          // more than the caller was told. A rejection of the package's own
          // content (4xx) is answered with its reason and is not recorded.
+         // An admission refusal under memory back-pressure is an answer to
+         // this request, not a failure of the package, and the caller places
+         // the package elsewhere; recorded here it would read as a load
+         // failure until this server next loaded that package, which it may
+         // never do. Every other 5xx, a worker-pool failure included, is
+         // recorded: that one carries the cause an operator has to fix.
          const answered = internalErrorToHttpError(error as Error, {
             log: false,
          });
-         if (answered.status >= 500) {
+         if (
+            answered.status >= 500 &&
+            !(error instanceof PackageAdmissionRefusedError)
+         ) {
             environment.recordPackageAddFailure(
                packageName,
                answered.json.message,
@@ -547,14 +595,43 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
+      // A `location` that matches the one the package was installed from is a
+      // metadata update, not a reinstall. A package version's content does not
+      // change under one URI, so re-downloading and recompiling it would only
+      // repeat work and hold two compiled copies for the duration; the rebind
+      // an orchestrator sends after a materialization build is exactly this
+      // shape. A caller that wants the same location fetched again reloads the
+      // package instead.
+      //
+      // The decision is made against the copy that is resident once nothing
+      // is loading. During an install the resident copy, if any, is the one
+      // about to be replaced; deciding against it would start a second install
+      // for the location already in flight, or treat a location whose install
+      // has just failed as installed. Waiting first means a PATCH for the same
+      // location lands on the installed copy, and a PATCH for a location whose
+      // install failed installs it, as it did before. A location that is not a
+      // string (a client that serializes unset fields as null) names nothing
+      // to fetch.
+      await environment.awaitPackageLoads(packageName);
+      const installedFrom = environment
+         .peekPackage(packageName)
+         ?.getPackageMetadata().location;
+      const reinstall =
+         typeof body.location === "string" &&
+         body.location !== "" &&
+         body.location !== installedFrom;
+      let result: ApiPackage;
+      if (reinstall) {
          // Re-install: stream the new content into a staging dir (no lock)
          // and atomically swap it in (under the lock). Validate the effective
          // explores (the body override, else the new tree's own manifest)
          // INSIDE the swap window, so a rejected update rolls back to the
          // previous tree instead of swapping the bad one in and 400-ing after.
-         const bodyLocation = body.location;
-         await environment.installPackage(
+         // The rest of the body is applied after the swap commits but inside
+         // the same lock hold, so nothing can run between the two; a policy
+         // the body gets wrong is answered 400 with the new tree in place.
+         const bodyLocation = body.location as string;
+         const installed = await environment.installPackage(
             packageName,
             (stagingPath) =>
                this.environmentStore.downloadPackageInto(
@@ -568,11 +645,14 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
+            { update: body },
          );
+         result = installed.getPackageMetadata();
+      } else {
+         // Apply metadata changes (publisher.json) under the per-package
+         // mutex via `Environment.updatePackage`.
+         result = await environment.updatePackage(packageName, body);
       }
-      // Apply metadata changes (publisher.json) under the same per-package
-      // mutex via `Environment.updatePackage`.
-      const result = await environment.updatePackage(packageName, body);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
