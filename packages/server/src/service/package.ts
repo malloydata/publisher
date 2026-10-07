@@ -25,6 +25,7 @@ import {
    getPackageLoadPool,
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
+import type { LoadPackageRequest } from "../package_load/protocol";
 import { llmConfigured } from "../providers/active";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -835,7 +836,7 @@ export class Package {
           * placeholder carries no text, so a reader of it judges the saved
           * file instead of the edit.
           */
-         replacement?: { modelPath: string; source: string };
+         replacement?: LoadPackageRequest["replacement"];
       },
       onCompileError: "throw" | "placeholder",
       afterHydrate?: (
@@ -1005,7 +1006,7 @@ export class Package {
       malloyConfig: MalloyConfig,
       outcome: LoadPackageOutcome,
       buildManifest?: BuildManifest["entries"],
-      replacement?: { modelPath: string; source: string },
+      replacement?: LoadPackageRequest["replacement"],
    ): Promise<{
       renderTagWarnings: ApiPackageWarning[];
       dashboardWarnings: ApiPackageWarning[];
