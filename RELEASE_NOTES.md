@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+
+A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
+
+The usual cause is a package version that was replaced and unloaded while a caller still held its old name. A router that caches which server holds which package can treat the 404 as "look again", which it could not do with a 400. If you branch on the 400 for this case, branch on 404 instead.
+
+A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
