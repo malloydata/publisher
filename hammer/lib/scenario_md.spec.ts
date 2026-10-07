@@ -452,6 +452,16 @@ run: daily -> { select: total }
 });
 
 describe("scenario grammar: package versions", () => {
+   it("refuses a package that is both configured and published", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Model sales/x.malloy\n\n${MODEL}\n\n` +
+               `## Version sales@1.0.0\n\n${MODEL}\n`,
+            "t",
+         ),
+      ).toThrow("either configured or published");
+   });
+
    it("refuses (version=) on an orchestrated build, which could not carry it", () => {
       expect(() =>
          parseMarkdownForTest(

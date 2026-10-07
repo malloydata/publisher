@@ -474,6 +474,11 @@ describe("package versioning across its modes", () => {
 
    describe("packageVersioning on", () => {
       beforeAll(async () => {
+         // Made with versioning off, by this block's own setup rather than an
+         // earlier block's test, so the block runs alone (-t) too.
+         setModes("off");
+         expect((await publish("early", "1.0.0", 12)).status).toBe(200);
+         expect((await publish("sales___2.0.1", "2.0.1", 4)).status).toBe(200);
          setModes("on");
          expect((await publish("ver", "1.0.0", 1)).status).toBe(200);
          expect((await publish("ver", "1.1.0", 2)).status).toBe(200);
@@ -557,34 +562,41 @@ describe("package versioning across its modes", () => {
 
       it("still serves an unversioned package made before versioning was on, as unversioned", async () => {
          expectEveryRoute(
-            await probeAll("plain", undefined),
-            servedUnversioned(11),
+            await probeAll("early", undefined),
+            servedUnversioned(12),
          );
-         expectEveryRoute(await probeAll("plain", "1.0.0"), (name) =>
+         expectEveryRoute(await probeAll("early", "1.0.0"), (name) =>
             name === "GET static page"
-               ? { status: 200, answer: 11 }
+               ? { status: 200, answer: 12 }
                : { status: 404, reason: "VERSION_NOT_FOUND" },
          );
       });
 
       it("leaves an existing pkg___<version> package unversioned once versioning is on", async () => {
          expectEveryRoute(
-            await probeAll("sales___1.0.3", undefined),
-            servedUnversioned(3),
+            await probeAll("sales___2.0.1", undefined),
+            servedUnversioned(4),
          );
       });
    });
 
    describe("turning versioning off again", () => {
-      beforeAll(() => setModes("off"));
+      beforeAll(async () => {
+         // Published with versioning on by this block's own setup, then the
+         // setting goes off.
+         setModes("on");
+         expect((await publish("kept", "1.0.0", 1)).status).toBe(200);
+         expect((await publish("kept", "1.1.0", 2)).status).toBe(200);
+         setModes("off");
+      });
 
       it("keeps serving every published version by name, and latest without one", async () => {
          expectEveryRoute(
-            await probeAll("ver", "1.0.0"),
+            await probeAll("kept", "1.0.0"),
             servedVersion("1.0.0", 1),
          );
          expectEveryRoute(
-            await probeAll("ver", undefined),
+            await probeAll("kept", undefined),
             servedVersion("1.1.0", 2),
          );
       });
@@ -592,19 +604,19 @@ describe("package versioning across its modes", () => {
       it("still refuses in-place changes to the versioned package: a publish over it, PATCH and a model write", async () => {
          const reasonOf = async (res: Response) =>
             ((await res.json()) as { reason?: string }).reason;
-         const legacy = await publish("ver", "1.1.0", 99);
+         const legacy = await publish("kept", "1.1.0", 99);
          expect(legacy.status).toBe(409);
          expect(await reasonOf(legacy)).toBe("PACKAGE_IS_VERSIONED");
-         const patch = await fetch(pkgApi("ver"), {
+         const patch = await fetch(pkgApi("kept"), {
             method: "PATCH",
             headers: json,
-            body: JSON.stringify({ name: "ver", description: "edited" }),
+            body: JSON.stringify({ name: "kept", description: "edited" }),
          });
          expect(patch.status).toBe(409);
          expect(await reasonOf(patch)).toBe("PACKAGE_IS_VERSIONED");
          // A dashboard write: the one model write the route takes.
          const write = await fetch(
-            `${pkgApi("ver")}/models/dashboards/probe.malloy`,
+            `${pkgApi("kept")}/models/dashboards/probe.malloy`,
             {
                method: "PUT",
                headers: json,
@@ -617,39 +629,39 @@ describe("package versioning across its modes", () => {
          expect(write.status).toBe(409);
          expect(await reasonOf(write)).toBe("PACKAGE_IS_VERSIONED");
          expect(
-            (await route("POST query").call(pkgApi("ver"), undefined)).answer,
+            (await route("POST query").call(pkgApi("kept"), undefined)).answer,
          ).toBe(2);
       });
 
       it("still moves latest and archives versions, which are not publishes", async () => {
-         const latest = await fetch(`${pkgApi("ver")}/latest`, {
+         const latest = await fetch(`${pkgApi("kept")}/latest`, {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ versionId: "1.0.0" }),
          });
          expect(latest.status).toBe(200);
          expect(
-            (await route("POST query").call(pkgApi("ver"), undefined)).answer,
+            (await route("POST query").call(pkgApi("kept"), undefined)).answer,
          ).toBe(1);
-         const back = await fetch(`${pkgApi("ver")}/latest`, {
+         const back = await fetch(`${pkgApi("kept")}/latest`, {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ versionId: "1.1.0" }),
          });
          expect(back.status).toBe(200);
          const archiveStatus = (status: string) =>
-            fetch(`${pkgApi("ver")}/versions/1.0.0`, {
+            fetch(`${pkgApi("kept")}/versions/1.0.0`, {
                method: "PATCH",
                headers: json,
                body: JSON.stringify({ archiveStatus: status }),
             });
          expect((await archiveStatus("archive")).status).toBe(200);
          expect(
-            (await route("POST query").call(pkgApi("ver"), "1.0.0")).status,
+            (await route("POST query").call(pkgApi("kept"), "1.0.0")).status,
          ).toBe(410);
          expect((await archiveStatus("unarchive")).status).toBe(200);
          expect(
-            (await route("POST query").call(pkgApi("ver"), "1.0.0")).answer,
+            (await route("POST query").call(pkgApi("kept"), "1.0.0")).answer,
          ).toBe(1);
       });
    });

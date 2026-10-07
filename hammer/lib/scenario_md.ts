@@ -1118,7 +1118,10 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const expect = requireExpectTable(sec.body, sec.header);
             const known = new Set(["version", "latest", "archived", "loaded"]);
             const unknown = expect.cols.filter((c) => !known.has(c.name));
-            if (!expect.cols.some((c) => c.name === "version") || unknown.length) {
+            if (
+               !expect.cols.some((c) => c.name === "version") ||
+               unknown.length
+            ) {
                throw new Error(
                   `## ${sec.header}: the Expect table needs a "version" column, and ` +
                      `may add "latest", "archived" and "loaded"` +
@@ -1141,6 +1144,25 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             throw new Error(
                `Unknown section kind "${kind}" in header: ## ${sec.header}`,
             );
+      }
+   }
+
+   // A package is either configured (`## Model`) or published (`## Version`),
+   // never both: their files would compete for which model a query reads.
+   const configured = new Set<string>();
+   for (const step of steps) {
+      if (step.kind === "model") configured.add(`${step.env}:${step.pkg}`);
+   }
+   for (const step of steps) {
+      if (
+         step.kind === "version" &&
+         configured.has(`${step.env}:${step.pkg}`)
+      ) {
+         throw new Error(
+            `## Version ${step.pkg}@${step.version}: package "${step.pkg}" also has ` +
+               `a ## Model, and one package is either configured or published, ` +
+               `not both. Publish it under another name.`,
+         );
       }
    }
 
@@ -1228,7 +1250,9 @@ function splitPkgVersion(
    const pkg = at < 0 ? "" : arg.slice(0, at).trim();
    const version = at < 0 ? "" : arg.slice(at + 1).trim();
    if (!pkg || !version) {
-      throw new Error(`## ${header}: expected <package>@<version>, got "${arg}"`);
+      throw new Error(
+         `## ${header}: expected <package>@<version>, got "${arg}"`,
+      );
    }
    return { pkg, version };
 }
@@ -2890,19 +2914,25 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                            : {}),
                      }),
                   );
-                  writeFileSync(path.join(dir, `${step.pkg}.malloy`), step.malloy);
+                  writeFileSync(
+                     path.join(dir, `${step.pkg}.malloy`),
+                     step.malloy,
+                  );
                   const res = await rest.publishFrom(step.pkg, dir);
                   const label = `version ${step.pkg}@${step.version}`;
                   if (step.refused) {
                      assert.ok(
                         `${label}: refused`,
                         !res.ok,
-                        res.ok ? "expected a refusal, but it published" : undefined,
+                        res.ok
+                           ? "expected a refusal, but it published"
+                           : undefined,
                      );
                      if (step.reason)
                         assert.eq(
                            `${label}: reason`,
-                           (res.body.reason as string | undefined) ?? "(absent)",
+                           (res.body.reason as string | undefined) ??
+                              "(absent)",
                            step.reason,
                         );
                      if (step.cites)
@@ -2915,7 +2945,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      assert.ok(
                         `${label}: published`,
                         res.ok,
-                        res.ok ? undefined : JSON.stringify(res.body).slice(0, 300),
+                        res.ok
+                           ? undefined
+                           : JSON.stringify(res.body).slice(0, 300),
                      );
                   }
                } finally {
@@ -2938,7 +2970,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   assert.ok(
                      `${label}: refused`,
                      !res.ok,
-                     res.ok ? "expected a refusal, but it was applied" : undefined,
+                     res.ok
+                        ? "expected a refusal, but it was applied"
+                        : undefined,
                   );
                   if (step.reason)
                      assert.eq(
@@ -2950,7 +2984,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   assert.ok(
                      `${label}: applied`,
                      res.ok,
-                     res.ok ? undefined : JSON.stringify(res.body).slice(0, 300),
+                     res.ok
+                        ? undefined
+                        : JSON.stringify(res.body).slice(0, 300),
                   );
                }
                break;

@@ -110,6 +110,8 @@ class Server {
       while (mcpPort === port) mcpPort = await freePort();
       this.baseUrl = `http://127.0.0.1:${port}`;
       this.exited = false;
+      // Again here: teardown can land during the port lookups above.
+      if (this.closed) throw new Error("server closed");
       this.proc = spawn("bun", ["src/server.ts"], {
          cwd: SERVER_DIR,
          env: {
