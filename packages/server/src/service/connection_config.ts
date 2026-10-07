@@ -220,7 +220,7 @@ function getStaticConnectionAttributes(
       case "postgres":
          return {
             dialectName: "postgres",
-            isPool: false,
+            isPool: true,
             canPersist: true,
             canStream: true,
          };
@@ -300,7 +300,7 @@ function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    return keyData;
 }
 
-function buildPostgresConnectionString(
+export function buildPostgresConnectionString(
    config: components["schemas"]["PostgresConnection"],
 ): string | undefined {
    if (config.connectionString || !process.env.PGSSLMODE) {
