@@ -14,6 +14,7 @@ import {
    PayloadTooLargeError,
    ResponseUnserializableError,
    ServiceUnavailableError,
+   ConnectionPoolExhaustedError,
 } from "../errors";
 
 /**
@@ -48,6 +49,22 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Memory limit reached");
       expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("homes an exhausted connection pool as retryable, not as Malloy", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new ConnectionPoolExhaustedError(
+            "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+         ),
+      );
+      expect(details.message).toContain("has no free database session");
+      expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).toContain(
+         "PUBLISHER_POSTGRES_POOL_MAX",
+      );
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
    });
 
