@@ -5,6 +5,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    afterAll,
    afterEach,
+   beforeAll,
    beforeEach,
    describe,
    expect,
@@ -35,6 +36,10 @@ import {
    UnconfiguredConnectionError,
    UnsupportedCatalogFormatError,
 } from "../errors";
+import {
+   startClosingListener,
+   type ClosingListener,
+} from "../test_helpers/closing_listener";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -1780,7 +1785,9 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(
+               /must provide either attachedDatabases or non-empty setupSQL/,
+            );
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
@@ -1788,11 +1795,11 @@ describe("connection integration tests", () => {
                createEnvironmentConnections(
                   [
                      {
-                        name: "duckdb_with_setup_sql",
+                        name: "duckdb_with_unsupported_field",
                         type: "duckdb",
                         duckdbConnection: {
                            attachedDatabases: [],
-                           setupSQL: "INSTALL httpfs",
+                           customUnsupportedField: "invalid",
                         },
                      } as unknown as ApiConnection,
                   ],
@@ -2146,6 +2153,15 @@ describe("connection integration tests", () => {
    });
 
    describe("testConnectionConfig", () => {
+      // Where the specs below send a Postgres connection that has to fail.
+      let unreachable: ClosingListener;
+      beforeAll(async () => {
+         unreachable = await startClosingListener();
+      });
+      afterAll(async () => {
+         await unreachable.close();
+      });
+
       it(
          "should successfully test valid PostgreSQL connection",
          async () => {
@@ -2204,11 +2220,70 @@ describe("connection integration tests", () => {
          expect(result.errorMessage).toContain("name is required");
       });
 
-      // These specs drive real attach failures offline: nothing can listen on
-      // localhost port 1 without root, so DuckDB's postgres extension fails
-      // with "Connection refused" and echoes the full connection string into
-      // the error message. The assertions prove that string reaches the
-      // caller redacted (`***`) and never in cleartext.
+      // The connection test is unauthenticated and stores nothing, so it is
+      // where an unscreened setupSQL would run first. The marker file is the
+      // proof: setupSQL either ran (file present) or it did not.
+      describe("DuckDB setupSQL opt-in", () => {
+         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let dir: string;
+
+         beforeEach(async () => {
+            dir = await fs.mkdtemp(path.join(os.tmpdir(), "setupsql-gate-"));
+         });
+
+         afterEach(async () => {
+            if (originalAllow === undefined) {
+               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            } else {
+               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
+            }
+            await fs.rm(dir, { recursive: true, force: true });
+         });
+
+         const markerConfig = (marker: string): ApiConnection => ({
+            name: "setup_sql_gate",
+            type: "duckdb",
+            duckdbConnection: {
+               setupSQL: `COPY (SELECT 1 AS ran) TO '${marker}'`,
+            },
+         });
+
+         const exists = (file: string) =>
+            fs.access(file).then(
+               () => true,
+               () => false,
+            );
+
+         it("refuses setupSQL without running it when the opt-in is unset", async () => {
+            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain(
+               "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true",
+            );
+            expect(await exists(marker)).toBe(false);
+         });
+
+         it("runs setupSQL when the opt-in is set", async () => {
+            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("ok");
+            expect(await exists(marker)).toBe(true);
+         });
+      });
+
+      // These specs drive real attach failures offline: the closing listener
+      // accepts the connection and drops it, so DuckDB's postgres extension
+      // fails with "server closed the connection unexpectedly" and echoes the
+      // full connection string into the error message. The assertions prove
+      // that string reaches the caller redacted (`***`) and never in
+      // cleartext.
       describe("errorMessage redaction", () => {
          const leakedPassword = "supersecretpw";
 
@@ -2245,7 +2320,7 @@ describe("connection integration tests", () => {
                            name: "redact_pg_url_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],
@@ -2271,7 +2346,7 @@ describe("connection integration tests", () => {
                            type: "postgres",
                            postgresConnection: {
                               host: "127.0.0.1",
-                              port: 1,
+                              port: unreachable.port,
                               userName: "alice",
                               password: leakedPassword,
                               databaseName: "mydb",
@@ -2296,7 +2371,7 @@ describe("connection integration tests", () => {
                   ducklakeConnection: {
                      catalog: {
                         postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
                         },
                      },
                      storage: {
@@ -2316,7 +2391,7 @@ describe("connection integration tests", () => {
          );
 
          // The three specs above depend on the DuckDB postgres extension
-         // loading so the attach reaches a DSN-bearing "connection refused".
+         // loading so the attach reaches a DSN-bearing connection failure.
          // This one pins the redaction wiring independently: stub runSQL to
          // throw a DSN-bearing error, so the failure carries a secret whether
          // or not any extension is available, and assert it comes back
@@ -2386,7 +2461,7 @@ describe("connection integration tests", () => {
                      ducklakeConnection: {
                         catalog: {
                            postgresConnection: {
-                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/${database}`,
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/${database}`,
                            },
                         },
                         storage: {
@@ -2537,8 +2612,7 @@ describe("connection integration tests", () => {
                            name: "probe_db",
                            type: "postgres",
                            postgresConnection: {
-                              connectionString:
-                                 "postgres://u:p@127.0.0.1:1/mydb",
+                              connectionString: `postgres://u:p@127.0.0.1:${unreachable.port}/mydb`,
                            },
                         },
                      ],

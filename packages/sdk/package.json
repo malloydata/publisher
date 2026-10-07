@@ -75,6 +75,7 @@
       "build": "bun generate-api-types && bunx vite build",
       "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";' > ./dist/styles.css",
       "test": "bun test",
+      "test:tz": "bun test ./src/components/given/GivenInput.spec.tsx ./src/components/given/paramCodec.spec.ts ./src/utils/malloyLiteral.spec.ts ./src/components/drill/resolveDrill.spec.ts ./src/components/DashboardBuilder/preview.spec.ts ./src/components/Materializations/cron.spec.ts ./src/components/Materializations/utils.spec.ts",
       "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",

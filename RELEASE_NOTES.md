@@ -47,6 +47,14 @@ How each is recognized, from the driver's own fields on the error and its `cause
 
 A failure that matches none of these keeps its old status.
 
+## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+
+A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
+
+The usual cause is a package version that was replaced and unloaded while a caller still held its old name. A router that caches which server holds which package can treat the 404 as "look again", which it could not do with a 400. If you branch on the 400 for this case, branch on 404 instead.
+
+A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
@@ -60,6 +68,20 @@ Public SDK surface: `buildCatalog` credits a source only to a model whose `model
 - **Builder defaults.** The builder no longer shows `Default: (empty)` under a filter control the viewer shows nothing for, and an unwrapped filter default beginning with `f` (`fall`) is no longer shown as `all`.
 - **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
 - **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
+
+## [Unreleased] — A package stays listed while it reloads, and an install is refused under memory back-pressure
+
+Every listed package now carries a `status` object with two independent facts: `serving`, whether a compiled copy answers queries on this server, and `loading`, whether a load, reinstall or recompile is in progress here, with `loadingSince` while it is. A package that is reloaded while it serves reports both, because the previous copy keeps answering until the new one is swapped in. Until now the listing, and so `/status`, left such a package out for the whole compile, which read as the package having left the server; an orchestrator that reads `/status` to place packages took it that way, unloaded the replica, and the reload in flight then failed for nothing. A package loading for the first time is listed only on request, as its name and `status` on `GET /status?includeLoading=true`, so an orchestrator that reads `status` can tell a dispatched load from an absence; every other listing shows only packages that can be queried, as before, since a listed package has always meant one that can serve.
+
+Three install behaviours change with it:
+
+- An install, whether a `POST` or a `PATCH` with a `location`, is refused with a 503 while the memory governor reports back-pressure, before the download starts, the way a lazy load and an add already were. A reinstall holds the new compiled copy beside the serving one until the swap, so it was the one allocation the governor could not see.
+- A `PATCH` whose `location` matches the one the package was installed from is a metadata update, not a reinstall: the manifest is rebound in place and nothing is downloaded or recompiled beyond what the manifest itself requires. A `PATCH` that arrives while any install of the package is in progress, downloading or compiling, a first install or a reinstall, waits for it and is decided against the copy that install leaves resident, so it lands on the installed copy, and a `PATCH` naming a location whose install failed installs it. Only an install records a location; a metadata `PATCH` never changes it. To make the comparison hold across an in-place reload and a restart, the server records the install location in its own file outside the package directory, `<environment>/.install-records/<package>.json`, and reads nothing inside the package as one, neither a `location` an author writes into `publisher.json` nor a record shipped with the content, since a reload fetches from it. `GET …?reload=true` and the `reload_package` tool re-fetch from the recorded location and re-apply the manifest binding; that is the way to fetch the same location again.
+- A `POST` that carries a `manifestLocation` binds it as part of the install. The downloaded tree's own `publisher.json` does not carry it, so until now the package came up serving live and was rebound, with a full reload, by the next drift check.
+
+A metadata `PATCH` also preserves what it does not mention: `description`, `resource` and `location` were replaced by the body's absent values, and `publisher.json` lost its `description`. A field sent as `null` counts as not mentioned, the rule `scope` already followed, so a client that serializes unset fields as null does not blank them; an empty string is a value. And the metadata sent with an install is applied inside the install's own lock hold, so a delete queued behind the swap can no longer run between the two and leave the update answering 404 for an install that had completed.
+
+A package installed before this release has no recorded location, so its first `PATCH` that names its location reinstalls it once and records it; every later one is a metadata update.
 
 ## [Unreleased] - Compile returns the document it describes
 

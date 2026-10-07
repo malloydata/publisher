@@ -16,7 +16,9 @@ import {
    BadRequestError,
    ConnectionError,
    ConnectionFailedError,
+   internalErrorToHttpError,
    InvalidArgumentError,
+   PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
 } from "../errors";
@@ -1215,5 +1217,68 @@ describe("ConnectionController on a database that cannot be reached", () => {
       );
       expect(error).toBeInstanceOf(Error);
       expect(error).not.toBeInstanceOf(ConnectionError);
+   });
+});
+
+/**
+ * The per-package "duckdb" lookup. A router that cached which worker serves a
+ * package version re-resolves on a 404 and retries; a 400 sends it back to the
+ * same worker. So a package this server does not hold must be a 404, while a
+ * lookup that names no package in a multi-package environment stays a 400.
+ */
+describe("ConnectionController per-package duckdb lookup", () => {
+   afterEach(() => sinon.restore());
+
+   function buildDuckdbController(packageNames: string[]): {
+      controller: ConnectionController;
+      envLookup: sinon.SinonStub;
+   } {
+      const envLookup = sinon.stub().rejects(new Error("env lookup reached"));
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            listPackages: sinon
+               .stub()
+               .resolves(packageNames.map((name) => ({ name }))),
+            getMalloyConnection: envLookup,
+         }),
+      } as unknown as EnvironmentStore;
+      return { controller: new ConnectionController(fakeStore), envLookup };
+   }
+
+   const sqlSource = (controller: ConnectionController, packageName?: string) =>
+      controller.getConnectionSqlSource(
+         "env",
+         "duckdb",
+         "SELECT 1",
+         packageName,
+      );
+
+   it("answers 404 for a package the environment does not hold", async () => {
+      const { controller } = buildDuckdbController(["pkg@1.0.13"]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(internalErrorToHttpError(error, { log: false }).status).toBe(404);
+   });
+
+   it("answers 404 when the environment holds no packages at all", async () => {
+      // The worker unloaded its only package. This used to fall through to the
+      // environment-level lookup, which has no "duckdb" connection.
+      const { controller, envLookup } = buildDuckdbController([]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(envLookup.called).toBe(false);
+   });
+
+   it("keeps an unnamed lookup across several packages a 400", async () => {
+      const { controller } = buildDuckdbController(["a", "b"]);
+      const error = await sqlSource(controller).catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toMatch(/^Ambiguous "duckdb" connection lookup/);
    });
 });
