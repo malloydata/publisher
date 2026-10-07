@@ -1,13 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import type { PackageVersion } from "../storage/DatabaseInterface";
 import { Environment, type VersionRegistry } from "./environment";
+import { Package } from "./package";
 import { hashPackageTree } from "./package_content_hash";
 
 function version(
@@ -82,6 +83,13 @@ describe("Environment.resolveSlot", () => {
             reason: "VERSION_NOT_FOUND",
          });
       });
+
+      it("refuses a value that is not a semantic version with 400 VERSION_ID_INVALID", () => {
+         expect(refusal(() => env.resolveSlot("sales", "v2"))).toEqual({
+            status: 400,
+            reason: "VERSION_ID_INVALID",
+         });
+      });
    });
 
    describe("a versioned package", () => {
@@ -116,6 +124,16 @@ describe("Environment.resolveSlot", () => {
             status: 404,
             reason: "VERSION_NOT_FOUND",
          });
+      });
+
+      it("tells a malformed value from a missing version: 400, not 404", () => {
+         // "1.0.0 build.5" is what a bare + in a query string decodes to.
+         for (const bad of ["v2", "1.0", "1.0.0 build.5", "latest"]) {
+            expect(refusal(() => env.resolveSlot("sales", bad))).toEqual({
+               status: 400,
+               reason: "VERSION_ID_INVALID",
+            });
+         }
       });
 
       it("refuses an archived version with 410 VERSION_ARCHIVED", () => {
@@ -166,7 +184,12 @@ function memoryRegistry(): VersionRegistry & {
       listVersions: async (name) => rows.filter((r) => r.packageName === name),
       getLatest: async (name) => latest.get(name) ?? null,
       ensurePackage: async (name) => {
-         if (!latest.has(name)) latest.set(name, null);
+         if (latest.has(name)) return false;
+         latest.set(name, null);
+         return true;
+      },
+      discardPackage: async (name) => {
+         latest.delete(name);
       },
       createVersion: async (v) => {
          const row = version(v.packageName, v.version, { ...v });
@@ -440,6 +463,25 @@ describe("Environment versions under concurrency and failure", () => {
 
    const tick = () => new Promise((r) => setTimeout(r, 25));
 
+   const exists = (p: string) =>
+      fs
+         .stat(p)
+         .then(() => true)
+         .catch(() => false);
+
+   /** A version staged as a publish stages one, ready for the locked step. */
+   async function stage(v: string, n: number) {
+      const stagingPath = path.join(envPath, ".staging", `sales-${v}`);
+      await writePackage(stagingPath, v, n);
+      return {
+         stagingPath,
+         version: v,
+         description: null,
+         dirName: v,
+         contentHash: await hashPackageTree(stagingPath),
+      };
+   }
+
    it("serves a read that races a publish from the publish's own instance, never a second copy", async () => {
       env.setVersionRegistry(memoryRegistry());
       await publish("1.0.0", 1);
@@ -605,6 +647,187 @@ describe("Environment versions under concurrency and failure", () => {
          ),
       ).toContain("SELECT 10");
       expect((await env.getPackage("sales")).getVersionId()).toBeUndefined();
+   });
+
+   it("puts an unversioned tree back at startup when its first versioned publish was cut short", async () => {
+      // What a crash during the publish leaves: the tree aside, and at most a
+      // half-placed version where the package was. No version is registered.
+      await writePackage(path.join(envPath, ".legacy", "sales"), "0.0.1", 10);
+      await writePackage(path.join(envPath, "sales", "1.0.0"), "1.0.0", 11);
+      const registry = memoryRegistry();
+      const restarted = await Environment.create("testEnv", envPath, []);
+      restarted.setVersionRegistry(registry);
+
+      await restarted.loadPackageVersions();
+
+      expect(restarted.isVersionedPackage("sales")).toBe(false);
+      expect(
+         await fs.readFile(
+            path.join(envPath, "sales", "report.malloy"),
+            "utf8",
+         ),
+      ).toContain("SELECT 10");
+      expect(await exists(path.join(envPath, ".legacy", "sales"))).toBe(false);
+   });
+
+   it("drops the tree it moved aside once the first versioned publish committed, even across a restart", async () => {
+      await writePackage(path.join(envPath, ".legacy", "sales"), "0.0.1", 10);
+      await writePackage(path.join(envPath, "sales", "1.0.0"), "1.0.0", 11);
+      const registry = memoryRegistry();
+      registry.rows.push(version("sales", "1.0.0"));
+      registry.latest.set("sales", "1.0.0");
+      const restarted = await Environment.create("testEnv", envPath, []);
+      restarted.setVersionRegistry(registry);
+
+      await restarted.loadPackageVersions();
+
+      expect(restarted.isVersionedPackage("sales")).toBe(true);
+      expect(await exists(path.join(envPath, ".legacy", "sales"))).toBe(false);
+      expect(await exists(path.join(envPath, "sales", "1.0.0"))).toBe(true);
+   });
+
+   it("keeps an unversioned tree out of the startup sweep while its first versioned publish runs", async () => {
+      await writePackage(path.join(envPath, "sales"), "0.0.1", 10);
+      await env.addPackage("sales");
+      env.setVersionRegistry(memoryRegistry());
+      // Look while the publish holds the tree aside, as a crash would find it.
+      let asideDuring = false;
+      let sweptSurvives = false;
+      env.setStorageBindingResolver(async () => {
+         const aside = path.join(envPath, ".legacy", "sales");
+         asideDuring = await exists(aside);
+         // The sweep a restart runs removes .staging and .retired, not this.
+         await Environment.sweepStaleInstallDirs(envPath);
+         sweptSurvives = await exists(aside);
+         return {};
+      });
+      await publish("1.0.0", 11);
+      expect(asideDuring).toBe(true);
+      expect(sweptSurvives).toBe(true);
+   });
+
+   it("re-places a version whose tree is missing from the tree it was just sent, without fetching it again", async () => {
+      const registry = memoryRegistry();
+      let fetched = 0;
+      const fetcher = async () => {
+         fetched++;
+         throw new Error("the original location is gone");
+      };
+      env.setVersionRegistry(registry, fetcher);
+      await publish("1.0.0", 1);
+      // A fresh process whose disk lost the version's files.
+      await fs.rm(path.join(envPath, "sales", "1.0.0"), {
+         recursive: true,
+         force: true,
+      });
+      const restarted = await Environment.create("testEnv", envPath, []);
+      restarted.setVersionRegistry(registry, fetcher);
+      await restarted.loadPackageVersions();
+
+      const pkg = await restarted.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         { sourceLocation: "/src/elsewhere", promotion: "on-publish" },
+      );
+
+      expect(fetched).toBe(0);
+      expect(pkg.getVersionId()).toBe("1.0.0");
+      expect(await exists(path.join(envPath, "sales", "1.0.0"))).toBe(true);
+   });
+
+   it("leaves latest where it was when a re-published version cannot load", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      await publish("1.0.0", 1);
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "2.0.0", 2),
+         { sourceLocation: "/src/sales-2", promotion: "explicit" },
+      );
+      expect(env.listPackageVersions("sales").latest).toBe("1.0.0");
+      // A fresh process, so re-publishing 2.0.0 has to load it.
+      const restarted = await Environment.create("testEnv", envPath, []);
+      restarted.setVersionRegistry(registry);
+      await restarted.loadPackageVersions();
+      const create = spyOn(Package, "create").mockImplementationOnce(() => {
+         throw new Error("cannot load");
+      });
+      try {
+         await expect(
+            restarted.publishPackageVersion(
+               "sales",
+               (staging) => writePackage(staging, "2.0.0", 2),
+               { sourceLocation: "/src/sales-2", promotion: "on-publish" },
+            ),
+         ).rejects.toThrow("cannot load");
+      } finally {
+         create.mockRestore();
+      }
+      expect(registry.latest.get("sales")).toBe("1.0.0");
+      expect((await restarted.getPackage("sales")).getVersionId()).toBe(
+         "1.0.0",
+      );
+   });
+
+   it("removes the package row a failed first publish created", async () => {
+      const registry = memoryRegistry();
+      registry.createVersion = async () => {
+         throw new Error("the registry is down");
+      };
+      env.setVersionRegistry(registry);
+
+      await expect(publish("1.0.0", 1)).rejects.toThrow("registry is down");
+      expect(registry.latest.has("sales")).toBe(false);
+   });
+
+   it("keeps a versioned package serving, versions and all, when removing its rows fails", async () => {
+      env.setVersionRegistry(memoryRegistry());
+      await publish("1.0.0", 1);
+
+      await expect(
+         env.deletePackage("sales", {
+            forget: async () => {
+               throw new Error("the database is down");
+            },
+         }),
+      ).rejects.toThrow("database is down");
+
+      expect(env.isVersionedPackage("sales")).toBe(true);
+      expect((await env.getPackage("sales")).getVersionId()).toBe("1.0.0");
+      expect(await exists(path.join(envPath, "sales", "1.0.0"))).toBe(true);
+   });
+
+   it("compiles against the version a first versioned publish placed while the compile waited", async () => {
+      await writePackage(path.join(envPath, "sales"), "0.0.1", 10);
+      await env.addPackage("sales");
+      env.setVersionRegistry(memoryRegistry());
+      const staged = await stage("1.0.0", 11);
+      const locked = env as unknown as {
+         _publishVersionLocked: (
+            name: string,
+            staged: unknown,
+            options: unknown,
+         ) => Promise<unknown>;
+      };
+
+      // The compile resolves the unversioned slot, then waits on the package
+      // lock this publish holds; after it, the directory holds versions only.
+      let compiled: Promise<{ sql?: string }> = Promise.resolve({});
+      await env.withPackageLock("sales", async () => {
+         compiled = env.compileSource(
+            "sales",
+            "report.malloy",
+            "run: report -> { select: n }",
+            true,
+         );
+         await tick();
+         await locked._publishVersionLocked("sales", staged, {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+         });
+      });
+
+      expect((await compiled).sql).toContain("SELECT 11");
    });
 
    it("refuses to publish a version into a package watch mode mounts in place", async () => {

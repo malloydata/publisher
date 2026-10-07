@@ -3243,6 +3243,19 @@ components:
         One published version of a package. Its content is immutable; what
         changes over its life is its lifecycle state (`archiveStatus`), whether
         it is the package's `latest`, and the build manifest it is bound to.
+      required:
+        - resource
+        - packageName
+        - id
+        - latest
+        - archiveStatus
+        - archivedAt
+        - contentHash
+        - manifestLocation
+        - gitCommitSha
+        - gitRef
+        - createdAt
+        - updatedAt
       properties:
         resource:
           type: string
@@ -3750,19 +3763,22 @@ components:
             - type: "null"
           readOnly: true
           description: >-
-            The published version this response describes, or null for a package
-            that has no versions. A request that names no `versionId` is answered
-            with the package's `latest` version, so this is how a caller learns
-            which version it got. Set from the version's publisher.json at
-            publish; never sent by a client.
+            The published version this response describes. Absent for a package
+            that has no published versions. A request that names no `versionId`
+            is answered with the package's `latest` version, so this is how a
+            caller learns which version it got. In a package listing it is null
+            for a package none of whose versions is `latest` yet (under
+            `versionPromotion: explicit`, before `PUT .../latest`). Set from the
+            version's publisher.json at publish; never sent by a client.
         latestVersion:
           oneOf:
             - $ref: "#/components/schemas/VersionIdPattern"
             - type: "null"
           readOnly: true
           description: >-
-            The package's `latest` version, or null for a package that has no
-            versions. Equal to `versionId` unless the request named another one.
+            The package's `latest` version. Absent for a package that has no
+            published versions, and null while none of its versions is `latest`.
+            Equal to `versionId` unless the request named another one.
         loaded:
           type: boolean
           readOnly: true
@@ -3770,9 +3786,9 @@ components:
             Set only on a version's entry in `GET /status`: whether this server
             holds the version in memory. A published version that is not loaded
             (one that stopped being `latest`, or one that is archived) is still
-            held, so it is still listed, with `loaded: false` and no more than
-            its name, version, `latestVersion` and `archiveStatus`. It loads when
-            a request next names it.
+            held, so it is still listed, with `loaded: false` and only its
+            `resource`, name, version, `latestVersion`, `archiveStatus` and
+            `status`. It loads when a request next names it.
         archiveStatus:
           type: string
           enum: [archive, unarchive]
@@ -4940,9 +4956,13 @@ components:
             - type: "null"
           readOnly: true
           description: >-
-            The published version this data app was listed from, or null for a
-            package that has no versions. A link that must keep opening this
-            version after `latest` moves carries it as `?versionId=`.
+            The published version this data app was listed from. Absent for a
+            package that has no published versions. A link that must keep opening
+            this version after `latest` moves carries it as `?versionId=`, as
+            `resource` does. The static route serving the page reads it only for
+            a package with published versions: a package with none ignores
+            `?versionId=` on its static files and serves them as before, so a
+            router that forwards a page's query string unchanged keeps working.
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -6754,12 +6774,15 @@ components:
                 archived.
               * VERSION_BUILDING (409): a materialization of the version is
                 running, so it cannot be archived yet.
+              * VERSION_ID_INVALID (400): a requested `versionId` is not a
+                semantic version.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
 
             Known values: TABLE_NOT_FOUND, MANIFEST_VERSION_MISSING,
             MANIFEST_VERSION_INVALID, VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
-            VERSION_IS_LATEST, VERSION_BUILDING, VERSION_NOT_FOUND,
+            VERSION_IS_LATEST, VERSION_BUILDING, VERSION_ID_INVALID,
+            VERSION_NOT_FOUND,
             VERSION_ARCHIVED.
         problems:
           type: array
@@ -8404,8 +8427,11 @@ components:
         as `1.2.0` or `1.2.0-rc1`. Omitted, the request is served from the
         package's `latest` version.
 
-        An unknown version answers 404 with `reason` VERSION_NOT_FOUND, and an
-        archived one answers 410 with `reason` VERSION_ARCHIVED. A package that
+        A value that is not a semantic version answers 400 with `reason`
+        VERSION_ID_INVALID, so a malformed value is told apart from a missing
+        version. An unknown version answers 404 with `reason` VERSION_NOT_FOUND,
+        and an archived one answers 410 with `reason` VERSION_ARCHIVED. A
+        package that
         has no versions (one loaded from a plain directory, or published with
         package versioning off) is served as before when this is omitted, and
         answers 404 VERSION_NOT_FOUND when it is given.
