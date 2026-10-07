@@ -46,6 +46,17 @@ The contract for native, immutable package versions lands in `api-doc.yaml` ahea
 - **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value, in either place, fails the server's initialization (`PUBLISHER_INIT_FAILED` on stderr, `initError` on `/status`), naming the setting.
 - **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
 
+## [Unreleased] - Server: per-connection sslmode and statement timeout for Postgres
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.
+
+- **`sslmode`** (`disable`, `no-verify`, `verify-ca`, `verify-full`) applies against the configured host in place of the deployment's `PGSSLMODE`. A connection that sets a `connectionString` keeps that string's own `sslmode`, and the field is ignored with a warning. A direct connection that sets `sslmode` was rejected before and is now accepted.
+- **`statementTimeoutMilliseconds`** (new; 1 to 2147483647) makes the database cancel any statement that runs longer, on these connections and on a proxied one. It also bounds persisted-source builds on the connection, so size it for the longest build. When a `connectionString` already carries `options`, the timeout is merged into them.
+- **Behaviour change on attached databases.** An `attachedDatabases` Postgres entry that already carried `sslmode` had it silently ignored in favour of `PGSSLMODE`; it now applies. **What to check:** an entry with `sslmode: disable` under `PGSSLMODE=require` now connects in plaintext, and one with `verify-ca` needs the server's CA in `NODE_EXTRA_CA_CERTS`.
+- **Persisted sources.** On a connection without a `fingerprint`, setting or changing either field gives that connection's persisted sources new identities, so they are rebuilt. A connection with a `fingerprint`, or one that sets neither field, is unaffected.
+
+A DuckLake catalog connection is unchanged and applies neither setting.
+
 ## [Unreleased] - Server: plain Postgres connections cap their open sessions
 
 A plain (non-proxied) Postgres connection used to open a new database session for every query with no limit, so concurrent queries across a fleet could exhaust a role's `CONNECTION LIMIT`. It now runs through a pool that holds at most 5 open sessions per connection per process. Each query still gets a fresh session that is closed when it finishes, so session state (`SET`, `SET ROLE`, an open `BEGIN`) never carries over to another caller.
