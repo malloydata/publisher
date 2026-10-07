@@ -65,11 +65,11 @@ Either way, a successful publish alone does not prove a table exists - confirm t
 A green run is not proof, and neither is a fast query (on small data a live recompute is fast too). Check what the server says it serves:
 
 1. **The run lists your source.** A run's detail (`malloy-pub get materialization <id> --environment <env> --package <pkg>`) names each built or reused source with its physical table. A run can finish ready having built nothing - a source missing from its manifest was not built; see **Debugging a no-op build**.
-2. **The package is bound to those tables.** On a standalone Publisher the package's details report `manifestBindingStatus: "bound"` with a `manifestEntryCount` counting the built tables bound to its queries. `"unbound"` means every query computes live, whatever tables exist.
+2. **The package is bound to those tables.** On a standalone Publisher the package's details report `manifestBindingStatus` and `manifestEntryCount`. `"bound"` alone is not proof: an empty manifest also reports `"bound"` with a count of 0 while everything serves live. Require a nonzero count that includes your source. `"unbound"` means every query computes live, whatever tables exist, and `"live_fallback"` means a bound `storage=` table could not be read and the package is serving live for now.
 3. **The query names the table.** A query's full result (the REST query response without `compactJson`) carries the SQL it ran. Served from the table, its `FROM` names the physical table; computed live, it carries the source's own SQL instead. This is the per-query proof.
 4. **A reload unbinds them.** Reloading the package - including the automatic reload when a watched file is saved - drops the binding, and queries compute live until the next materialization run, which reuses unchanged tables and binds them again. After editing a model, run a build before you trust a timing.
 
-A query response's `servedFrom` field does not answer this question for a table built in the source's own connection: it reports only the separate `storage=` tier, and stays empty for everything else, served from a table or not.
+A query response's `servedFrom` field does not answer this question for a table built in the source's own connection: it reports only the `storage=` tier's outcome (`storage` when that tier answered, `live_fallback` when it degraded to a live recompute) and is empty otherwise, served from a colocated table or not. Do not read `live_fallback` as a signal about a colocated table.
 
 ## Debugging a no-op build
 
@@ -167,7 +167,7 @@ bound on how long a revoked row keeps being served.
 ## Gotchas
 
 - **Flag every file that declares a persist source** - a file with no `##! experimental.persistence`, of its own or from a file it imports, is skipped without a warning, so its persist sources are silently never built.
-- **A `#@ persist` on a non-persistable source fails the run** - a plain `extend` over `conn.table(...)` is refused, and every run that covers it fails naming the source, so the rest of the package doesn't build either.
+- **A `#@ persist` on a non-persistable source fails the run** - a plain `extend` over `conn.table(...)` is refused, and every run that covers it fails naming the source, so a whole-package run builds nothing until you fix it.
 - **A tag doesn't build** - a standalone Publisher materializes only on an explicit run or its scheduler; only a hosted control plane builds on publish.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
