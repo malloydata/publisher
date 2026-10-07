@@ -308,4 +308,32 @@ describe("materializations of a versioned package", () => {
          expect(await n(PKG, "1.0.0")).toBe(1);
       });
    });
+
+   describe("a package built before its first versioned publish", () => {
+      const PKG = "upgraded";
+
+      it("keeps listing the runs it had before it was versioned, under every version", async () => {
+         // Versioning off: an unversioned install, and a run of it.
+         process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+         let legacy: Run;
+         try {
+            await publish(PKG, "0.0.1", 7);
+            legacy = await buildAndSettle(PKG, {});
+         } finally {
+            process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+         }
+         // Its first versioned publish.
+         await publish(PKG, "1.0.0", 8);
+
+         expect((await runs(PKG)).map((r) => r.id)).toContain(legacy.id);
+         expect((await runs(PKG, "1.0.0")).map((r) => r.id)).toContain(
+            legacy.id,
+         );
+         // And reachable by id under a version, as the listing shows it.
+         const byId = await fetch(
+            api(PKG, `/materializations/${legacy.id}?versionId=1.0.0`),
+         );
+         expect(byId.status).toBe(200);
+      });
+   });
 });

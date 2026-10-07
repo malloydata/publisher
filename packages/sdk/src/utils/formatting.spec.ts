@@ -136,4 +136,21 @@ describe("encodeResourceUri", () => {
          }),
       ).toThrow(/Failed to encode resource URI, missing environment name/);
    });
+
+   it("round-trips a version carrying build metadata", () => {
+      // A bare `+` in a query string decodes to a space, which would name a
+      // version the package does not have.
+      const resource = {
+         environmentName: "malloy-samples",
+         packageName: "names",
+         versionId: "1.0.0+build.5",
+         connectionName: undefined,
+         modelPath: undefined,
+      };
+      const resourceUri = encodeResourceUri(resource);
+      expect(resourceUri).toEqual(
+         "publisher://environments/malloy-samples/packages/names?versionId=1.0.0%2Bbuild.5",
+      );
+      expect(parseResourceUri(resourceUri).versionId).toEqual("1.0.0+build.5");
+   });
 });

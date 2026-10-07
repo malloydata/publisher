@@ -99,6 +99,7 @@ import {
 } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
+import { isSemver } from "./service/semver";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { classifySpaFallback } from "./spa_fallback";
 import {
@@ -449,6 +450,13 @@ environmentStore.setVersionLifecycleHook((environmentName, event) => {
       );
    });
 });
+// A reclaim that a crash or a failed drop cut short is started again here,
+// since only an archive starts one otherwise. Off the startup path.
+void environmentStore.finishedInitialization
+   .then(() => materializationService.reclaimArchivedVersions())
+   .catch((error) =>
+      logger.warn("Failed to sweep archived versions for reclaim", { error }),
+   );
 /**
  * Construct and start the standalone materialization scheduler from environment
  * config, or return null when the feature is disabled
@@ -681,7 +689,11 @@ function staticVersionIdOf(
       `/environments/${encodeURIComponent(req.params.environmentName)}` +
       `/packages/${encodeURIComponent(req.params.packageName)}/`;
    if (!url.pathname.startsWith(prefix)) return undefined;
-   return url.searchParams.get("versionId") || undefined;
+   // The Referer is incidental, so a version there that is not a semantic
+   // version (a page linked with a bare `+`, which decodes to a space) is
+   // ignored rather than refusing every asset the page loads.
+   const fromPage = url.searchParams.get("versionId");
+   return fromPage && isSemver(fromPage) ? fromPage : undefined;
 }
 
 async function serveFromPackage(

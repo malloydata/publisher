@@ -87,7 +87,12 @@ import {
 } from "./query_metadata";
 import type { components } from "../api";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
-import { isVersionOwnedRun, ownedVersionOf } from "./environment";
+import {
+   isVersionOwnedRun,
+   ownedVersionOf,
+   REBUILDING_TABLES_KEY,
+   withoutUnsettledRebuilds,
+} from "./environment";
 import { EnvironmentStore } from "./environment_store";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
@@ -647,13 +652,6 @@ function tableKey(destination: string, physicalTableName: string): string {
 }
 
 /**
- * The suffix that makes a self-assigned table one published version's own, in
- * a `scope: version` package: `__v1_2_3` for a release. A version with a
- * pre-release or build part also gets 8 hex of its hash, because its dots,
- * dashes and plus signs cannot stand in an identifier and the underscored
- * form alone could name two versions (`1.0.0-rc.1` and `1.0.0-rc-1`).
- */
-/**
  * The longest table segment a version-owned name may have: Postgres truncates
  * identifiers at 63 characters, and a build appends a 13-character staging
  * suffix to the name while it builds (see stagingSuffix).
@@ -666,11 +664,10 @@ const VERSIONED_TABLE_SEGMENT_MAX = 50;
  * VERSIONED_TABLE_SEGMENT_MAX so a dialect that truncates long identifiers
  * never folds two versions' tables into one. A segment too long for the
  * suffix is cut and given 8 hex of its hash, so distinct names stay distinct.
- * A name the author quoted is left exactly as written, suffix appended, as
- * the staging suffix is: quoting is the author's.
+ * `base` is a plain identifier path: a quoted `name=` is refused before any
+ * build (see persist_annotation_validation).
  */
 export function versionedTableName(base: string, suffix: string): string {
-   if (/["`[\]]/.test(base)) return `${base}${suffix}`;
    const dot = base.lastIndexOf(".");
    const prefix = base.slice(0, dot + 1);
    const segment = base.slice(dot + 1);
@@ -685,6 +682,13 @@ export function versionedTableName(base: string, suffix: string): string {
    return `${prefix}${segment.slice(0, Math.max(room, 1))}_${digest}${suffix}`;
 }
 
+/**
+ * The suffix that makes a self-assigned table one published version's own, in
+ * a `scope: version` package: `__v1_2_3` for a release. A version with a
+ * pre-release or build part also gets 8 hex of its hash, because its dots,
+ * dashes and plus signs cannot stand in an identifier and the underscored
+ * form alone could name two versions (`1.0.0-rc.1` and `1.0.0-rc-1`).
+ */
 export function versionTableSuffix(version: string): string {
    const release = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
    const base = release
@@ -1205,7 +1209,10 @@ export class MaterializationService {
       return this.repository.listMaterializations(environmentId, packageName, {
          limit: options?.limit,
          offset: options?.offset,
-         ...(version !== null ? { version } : {}),
+         // A version's listing includes the runs from before the package's
+         // first versioned publish: they still drive what a `scope: package`
+         // version serves, and listing them is the only way to find them.
+         ...(version !== null ? { version, includeUnversioned: true } : {}),
       });
    }
 
@@ -1295,7 +1302,9 @@ export class MaterializationService {
          );
       }
       if (version !== undefined) {
-         if (m.version !== version) {
+         // A run from before the package's first versioned publish belongs to
+         // every version's view, as in the listing.
+         if (m.version !== version && m.version !== null) {
             throw new MaterializationNotFoundError(
                `Materialization ${id} not found for version ${versionId} of package ${packageName}`,
             );
@@ -1667,6 +1676,26 @@ export class MaterializationService {
             ));
          }
 
+         // A version's run under `scope: package` rebuilds the tables every
+         // version of the package reads, source by source, before it commits.
+         // Recorded first, so that until it commits, and for good if it fails,
+         // a rebind treats those tables as of unknown content: the other loaded
+         // versions serve them live from now on, rather than reading rows this
+         // run's definition builds (see withoutUnsettledRebuilds).
+         const rebuildsShared =
+            !orchestrated &&
+            versionId !== undefined &&
+            ownedVersion === undefined &&
+            instructions.length > 0;
+         if (rebuildsShared) {
+            await this.markRebuildingSharedTables(id, instructions);
+            await this.rebindLoadedVersions(
+               environmentName,
+               packageName,
+               versionId,
+            );
+         }
+
          const {
             entries,
             failures,
@@ -1797,8 +1826,38 @@ export class MaterializationService {
          );
       } catch (err) {
          this.recordRun(mode, outcomeFor(err, signal), startedAt);
+         if (opts.version && !orchestrated) {
+            // The run may have swapped some shared tables before it failed.
+            // Its marker stays, so rebinding now leaves them unbound for every
+            // other loaded version, as a restart would.
+            await this.rebindLoadedVersions(
+               environmentName,
+               packageName,
+               opts.version,
+            );
+         }
          throw err;
       }
+   }
+
+   /**
+    * Record on a run, before it builds, the shared tables it rebuilds: see
+    * REBUILDING_TABLES_KEY. Merged into the metadata the run was created
+    * with, which its commit replaces.
+    */
+   private async markRebuildingSharedTables(
+      id: string,
+      instructions: BuildInstruction[],
+   ): Promise<void> {
+      const run = await this.repository.getMaterializationById(id);
+      await this.repository.updateMaterialization(id, {
+         metadata: {
+            ...(run?.metadata ?? {}),
+            [REBUILDING_TABLES_KEY]: [
+               ...new Set(instructions.map((i) => i.physicalTableName)),
+            ],
+         },
+      });
    }
 
    /**
@@ -2187,6 +2246,9 @@ export class MaterializationService {
             packageName,
             version !== undefined ? { version } : undefined,
          )) ?? [];
+      // Shared runs newer than the one chosen, none of which committed: see
+      // withoutUnsettledRebuilds. Newest first, so these come before it.
+      const newer: typeof list = [];
       for (const m of list) {
          if (m.id === excludeId) continue;
          // The package's shared runs never include a `scope: version` run:
@@ -2200,12 +2262,16 @@ export class MaterializationService {
             // every later run -- a warehouse error that clears on its own would
             // never be retried -- and seeding a downstream FROM from it would
             // compile against a table that was never created.
-            return Object.fromEntries(
+            const entries = Object.fromEntries(
                Object.entries(m.manifest.entries).filter(
                   ([, entry]) => !isLegacyFailedEntry(entry),
                ),
             );
+            return version === undefined
+               ? withoutUnsettledRebuilds(entries, newer)
+               : entries;
          }
+         newer.push(m);
       }
       return {};
    }
@@ -4838,11 +4904,48 @@ export class MaterializationService {
     * Then the reclaimed runs are deleted, so an unarchived version serves live
     * until it is built again rather than binding to tables that are gone.
     *
-    * Done under the version's lock, and only while it is still archived: an
-    * unarchive that lands first leaves everything in place, and a load after
-    * one waits for this to finish.
+    * Done under the version's lock, and only while it is still archived. An
+    * unarchive that commits before this takes the lock leaves everything in
+    * place. One that commits while this runs (it takes only the package lock)
+    * answers before the drops finish; the version then serves live, since a
+    * load waits on the same lock and binds to the runs that remain.
     */
    async reclaimVersionTables(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      await this.reclaimVersionTablesOnce(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   }
+
+   /**
+    * Reclaim every archived version that still has runs to reclaim, across
+    * the environments this server holds. Run once at startup: a reclaim is
+    * started only by an archive, so one a crash or a failed drop cut short
+    * would otherwise never run again. Best-effort, one version at a time.
+    */
+   async reclaimArchivedVersions(): Promise<void> {
+      for (const environment of this.environmentStore.getLoadedEnvironments()) {
+         const environmentName = environment.getEnvironmentName();
+         for (const packageName of environment.listVersionedPackageNames()) {
+            for (const version of environment.listPackageVersions(packageName)
+               .versions) {
+               if (version.archiveStatus !== "archive") continue;
+               await this.reclaimVersionTablesOnce(
+                  environmentName,
+                  packageName,
+                  version.version,
+               );
+            }
+         }
+      }
+   }
+
+   private async reclaimVersionTablesOnce(
       environmentName: string,
       packageName: string,
       versionId: string,
@@ -4901,7 +5004,7 @@ export class MaterializationService {
                // a load would take, and the version is archived anyway.
                const connectionFor = environmentConnectionResolver(environment);
                for (const m of runs) {
-                  await this.dropManifestEntries(
+                  const owed = await this.dropManifestEntries(
                      environment,
                      environmentName,
                      packageName,
@@ -4910,7 +5013,35 @@ export class MaterializationService {
                      stillReferenced,
                      connectionFor,
                   );
-                  await this.repository.deleteMaterialization(m.id);
+                  if (owed.length === 0) {
+                     await this.repository.deleteMaterialization(m.id);
+                     continue;
+                  }
+                  // A table that could not be dropped keeps a record naming
+                  // it, or nothing would ever name it again. Kept as FAILED,
+                  // so no version is ever bound to it, holding only what is
+                  // still owed, which the next reclaim (another archive, or
+                  // the sweep at startup) tries again.
+                  await this.repository.updateMaterialization(m.id, {
+                     status: "FAILED",
+                     error: `Reclaiming archived version ${versionId} could not drop ${owed.length} table(s); the next reclaim retries.`,
+                     manifest: {
+                        ...(m.manifest ?? { strict: false }),
+                        entries: Object.fromEntries(
+                           owed.map((e) => [e.sourceEntityId, e]),
+                        ),
+                     },
+                  });
+                  logger.warn(
+                     "Kept a reclaimed run's record: some of its tables could not be dropped",
+                     {
+                        environmentName,
+                        packageName,
+                        version: versionId,
+                        materializationId: m.id,
+                        owed: owed.map((e) => e.physicalTableName),
+                     },
+                  );
                }
                logger.info("Reclaimed an archived version's tables", {
                   environmentName,
@@ -5160,7 +5291,9 @@ export class MaterializationService {
 
    /**
     * Best-effort drop of the tables a run's manifest entries name, skipping
-    * any `stillReferenced` holds. Failures are logged and swallowed.
+    * any `stillReferenced` holds. Failures are logged rather than thrown, and
+    * returned: the entries whose table may still exist because its drop failed
+    * or its destination could not be reached.
     */
    private async dropManifestEntries(
       environment: Awaited<ReturnType<EnvironmentStore["getEnvironment"]>>,
@@ -5170,9 +5303,10 @@ export class MaterializationService {
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
-   ): Promise<void> {
+   ): Promise<ManifestEntry[]> {
       const m = { id: materializationId };
       const connectionCache = new Map<string, MalloyConnection>();
+      const owed: ManifestEntry[] = [];
       for (const entry of entries) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -5211,7 +5345,10 @@ export class MaterializationService {
                environment,
                entry.storageDestinationName,
             );
-            if (!destinationConnection) continue;
+            if (!destinationConnection) {
+               owed.push(entry);
+               continue;
+            }
             try {
                await dropStorageTable({
                   destinationName: entry.storageDestinationName,
@@ -5226,6 +5363,7 @@ export class MaterializationService {
                   storageDestinationName: entry.storageDestinationName,
                });
             } catch (err) {
+               owed.push(entry);
                recordDropTables("failure", "storage");
                logger.warn("Failed to drop a storage-materialized table", {
                   materializationId: m.id,
@@ -5294,6 +5432,7 @@ export class MaterializationService {
                connectionName,
             });
          } catch (err) {
+            owed.push(entry);
             recordDropTables("failure", "in_warehouse");
             logger.warn("Failed to drop materialized table on delete", {
                materializationId: m.id,
@@ -5303,6 +5442,7 @@ export class MaterializationService {
             });
          }
       }
+      return owed;
    }
 
    /**

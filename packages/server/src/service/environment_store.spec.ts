@@ -65,6 +65,14 @@ let mockDbDestinations: MockDestinationRow[] = [];
 // the in-memory list can be empty without the operator having emptied it.
 let failNextDestinationReads = 0;
 
+// The environment row `getEnvironmentByName` answers with; null (the default)
+// simulates an environment that does not exist yet.
+let mockEnvironmentByName: Record<string, unknown> | null = null;
+
+// Every `deletePackageVersions` call the store makes, in order.
+const deletedPackageVersions: { environmentId: string; packageName: string }[] =
+   [];
+
 /** A well-formed DuckLake destination, as publisher.config.json declares one. */
 function managedDestination(name = "managed"): Connection {
    return {
@@ -131,9 +139,14 @@ mock.module("../storage/StorageManager", () => {
 
                getEnvironmentByName: async (
                   _name: string,
-               ): Promise<MockData | null> => {
-                  // Return null to simulate "project doesn't exist yet"
-                  return null;
+               ): Promise<MockData | null> =>
+                  mockEnvironmentByName as MockData | null,
+
+               deletePackageVersions: async (
+                  environmentId: string,
+                  packageName: string,
+               ): Promise<void> => {
+                  deletedPackageVersions.push({ environmentId, packageName });
                },
 
                createEnvironment: async (
@@ -2911,11 +2924,14 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
+      mockEnvironmentByName = null;
+      deletedPackageVersions.length = 0;
       _resetEmbeddingIndexStateForTests();
    });
 
    afterEach(() => {
       embeddingCleanupBlocks = false;
+      mockEnvironmentByName = null;
       _resetEmbeddingIndexStateForTests();
       if (existsSync(serverRootPath)) {
          rmSync(serverRootPath, { recursive: true, force: true });
@@ -2938,6 +2954,20 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
+   });
+
+   it("deletePackageFromDatabase removes version rows that outlived their package row", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+      // The environment exists; the package's row does not (the mock's
+      // getPackageByName answers null), but rows keyed by its name may.
+      mockEnvironmentByName = { id: "env-1", name: "wiring-env" };
+
+      await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
+
+      expect(deletedPackageVersions).toEqual([
+         { environmentId: "env-1", packageName: "wiring-pkg" },
+      ]);
    });
 
    it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {

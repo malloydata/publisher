@@ -69,7 +69,9 @@ export class MaterializationRepository {
          "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ?";
       const params: unknown[] = [environmentId, packageName];
       if (options?.version !== undefined) {
-         sql += " AND version IS NOT DISTINCT FROM ?";
+         sql += options.includeUnversioned
+            ? " AND (version IS NOT DISTINCT FROM ? OR version IS NULL)"
+            : " AND version IS NOT DISTINCT FROM ?";
          params.push(options.version);
       }
       sql += " ORDER BY created_at DESC";

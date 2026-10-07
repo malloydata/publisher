@@ -116,10 +116,13 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    //
    // Keyed on the package's NAME, like `materializations` and
    // `incremental_ledger`, not on `packages.id`: nothing references `packages.id`,
-   // and a DELETE followed by a publish (which is how an orchestrator unloads
-   // and re-loads a package) re-creates the row with a new id. Deleting a package
-   // or an environment deletes these rows by hand (see DuckDBRepository), since
-   // nothing here cascades.
+   // and a DELETE followed by a publish re-creates the row with a new id.
+   // Deleting a package or an environment deletes these rows by hand (see
+   // DuckDBRepository), since nothing here cascades — so deleting a package
+   // deletes its whole version history. That is the contract: a version is
+   // taken out of service by archiving it, never by deleting it, and an
+   // orchestrator that unloads one version of a versioned package archives it
+   // rather than deleting the package.
    //
    // The content is immutable; the row is not. `archive_status`, `archived_at`
    // and `manifest_location` (the build manifest the version is bound to, which

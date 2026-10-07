@@ -508,6 +508,62 @@ describe("MaterializationService", () => {
          expect(ctx.repository.deleteMaterialization.called).toBe(false);
       });
 
+      it("keeps a run whose table could not be dropped, as FAILED holding only what it still owes", async () => {
+         const { runSQL } = setup("archive");
+         runSQL.callsFake(async (sql: string) => {
+            if (sql === 'DROP TABLE IF EXISTS "daily__v1_0_0"') {
+               throw new Error("warehouse unavailable");
+            }
+         });
+         await ctx.service.reclaimVersionTables("my-env", "pkg", "1.0.0");
+
+         expect(ctx.repository.deleteMaterialization.called).toBe(false);
+         const kept = ctx.repository.updateMaterialization
+            .getCalls()
+            .find((c) => c.args[0] === "r-own");
+         expect(kept?.args[1].status).toBe("FAILED");
+         // Only the table it could not drop: the shared one was never its to
+         // drop, and the in-memory one went with the unload.
+         expect(Object.keys(kept?.args[1].manifest?.entries ?? {})).toEqual([
+            "a",
+         ]);
+      });
+
+      it("reclaims every archived version at startup, and only those", async () => {
+         const { runSQL } = setup("archive");
+         const environment = await ctx.environmentStore.getEnvironment(
+            "my-env",
+            false,
+         );
+         Object.assign(environment, {
+            getEnvironmentName: () => "my-env",
+            listVersionedPackageNames: () => ["pkg"],
+            listPackageVersions: () => ({
+               latest: "1.1.0",
+               versions: [
+                  { version: "1.1.0", archiveStatus: "unarchive" },
+                  { version: "1.0.0", archiveStatus: "archive" },
+               ],
+            }),
+         });
+         (
+            ctx.environmentStore as unknown as {
+               getLoadedEnvironments: () => unknown[];
+            }
+         ).getLoadedEnvironments = () => [environment];
+
+         await ctx.service.reclaimArchivedVersions();
+
+         expect(dropped(runSQL)).toEqual([
+            'DROP TABLE IF EXISTS "daily__v1_0_0"',
+         ]);
+         expect(
+            ctx.repository.deleteMaterialization
+               .getCalls()
+               .map((c) => c.args[0]),
+         ).toEqual(["r-own"]);
+      });
+
       it("defers to a running build of the version, which reclaims when it settles", async () => {
          const { runSQL } = setup("archive");
          ctx.repository.getActiveMaterialization.resolves(
@@ -541,10 +597,12 @@ describe("MaterializationService", () => {
          expect(a).not.toBe(b);
       });
 
-      it("leaves a name the author quoted as written", () => {
-         expect(versionedTableName('"My Table"', "__v1_2_0")).toBe(
-            '"My Table"__v1_2_0',
-         );
+      it("suffixes a qualified name's table segment only", () => {
+         // A quoted name never gets here: persist_annotation_validation
+         // refuses one before any build.
+         expect(
+            versionedTableName("my-proj.analytics.summary", "__v1_2_0"),
+         ).toBe("my-proj.analytics.summary__v1_2_0");
       });
    });
 
@@ -844,6 +902,52 @@ describe("MaterializationService", () => {
          expect(boundTo(spy)).toEqual({
             "1.0.0": ["ce-shared"],
             "1.1.0": ["ce-shared"],
+         });
+      });
+
+      it("binds no version to a shared table a newer run set out to rebuild and never committed", async () => {
+         const spy = setupVersions(() => "package");
+         const entry = (id: string) => ({
+            sourceEntityId: id,
+            sourceName: id,
+            physicalTableName: `t_${id}`,
+            connectionName: "wh",
+         });
+         // Newest first: a run of latest that recorded the shared table it was
+         // rebuilding and then failed, after the package's last committed run.
+         ctx.repository.listMaterializations.callsFake(async () => [
+            makeMaterialization({
+               id: "failed-run",
+               status: "FAILED",
+               version: "1.1.0",
+               metadata: {
+                  mode: "auto",
+                  versionId: "1.1.0",
+                  scope: "package",
+                  rebuildingTables: ["t_summary"],
+               },
+            }),
+            makeMaterialization({
+               id: "shared-run",
+               status: "MANIFEST_FILE_READY",
+               version: "1.0.0",
+               metadata: { mode: "auto", versionId: "1.0.0", scope: "package" },
+               manifest: {
+                  builtAt: "2026-01-01T00:00:00Z",
+                  strict: false,
+                  entries: {
+                     summary: entry("summary"),
+                     stable: entry("stable"),
+                  },
+               },
+            }),
+         ]);
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+         // `t_summary` may hold the failed run's rows, so neither version
+         // reads it; `stable` was not being rebuilt and stays bound.
+         expect(boundTo(spy)).toEqual({
+            "1.0.0": ["stable"],
+            "1.1.0": ["stable"],
          });
       });
 
