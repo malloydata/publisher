@@ -8,6 +8,8 @@ import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
    BadRequestError,
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -38,6 +40,9 @@ import {
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
+   upstreamReuseFromManifest,
+   strictMissSourceId,
+   manifestForCompiler,
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -3789,18 +3794,23 @@ describe("buildOneSource", () => {
       // A colocated downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a colocated upstream is kept.
+      // inlined/recomputed); a colocated upstream is kept. The build SQL is
+      // the first render; the second is the permissive full-manifest render
+      // the reuse classification compares it with.
       const runSQL = sinon.stub().resolves();
-      let seenManifest:
-         | { entries?: Record<string, { tableName?: string }> }
-         | undefined;
+      type SeenManifest = {
+         entries?: Record<string, { tableName?: string }>;
+         strict?: boolean;
+      };
+      const seenManifests: (SeenManifest | undefined)[] = [];
       const down = fakeSource({
          name: "down",
          sourceEntityId: "downdowndowndown",
          sql: "SELECT 1",
          onGetSQL: (o) => {
-            seenManifest = (o as { buildManifest?: typeof seenManifest })
-               .buildManifest;
+            seenManifests.push(
+               (o as { buildManifest?: SeenManifest }).buildManifest,
+            );
          },
       });
       const manifest = new Manifest();
@@ -3841,8 +3851,11 @@ describe("buildOneSource", () => {
          },
          builtEntries,
       );
-      expect(seenManifest?.entries?.up_storage).toBeUndefined();
-      expect(seenManifest?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      const [buildRender, compareRender] = seenManifests;
+      expect(buildRender?.entries?.up_storage).toBeUndefined();
+      expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      expect(compareRender?.entries?.up_storage?.tableName).toBe("daily__mabc");
+      expect(compareRender?.strict).toBe(false);
    });
 
    it("records the QUOTED just-built name in the build manifest (matches the CREATE)", async () => {
@@ -3881,10 +3894,19 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      stackOnParent: "ok" | "throw" | "infra";
+      /**
+       * What the stack-on-parent seam does: builds (`ok`); finds the downstream
+       * REACHES the warehouse, so no build over the parents exists (`raw`);
+       * could not CARRY a shape that reads only stored parents (`uncarried`);
+       * finds a persisted upstream MISSING from the destination; or fails on
+       * infrastructure.
+       */
+      stackOnParent: "ok" | "raw" | "uncarried" | "missing" | "infra";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
+      upstreamReuse?: string;
+      upstreamRecomputeReason?: string;
    }> {
       const source = fakeSource({
          name: "monthly",
@@ -3918,29 +3940,53 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
+            upstreamReuse?: string;
+            upstreamRecomputeReason?: string;
          }>;
       };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
-      svc.buildDownstreamViaParents =
-         opts.stackOnParent === "ok"
-            ? sinon.stub().resolves({
-                 storageDestinationName: "lake",
-                 schema: [
-                    { name: "order_month", type: "DATE" },
-                    { name: "monthly_total", type: "DOUBLE" },
-                 ],
-              })
-            : opts.stackOnParent === "infra"
-              ? // An outage, not a modelling limit: a plain Error, as a failed
-                // ATTACH or CTAS would throw.
-                sinon.stub().rejects(new Error("IO Error: destination is down"))
-              : // A shape limit: the downstream cannot be expressed over its
-                // rebound parents.
-                sinon.stub().rejects(
-                   new MaterializationEligibilityError({
-                      message: "uncarried parent",
-                   }),
-                );
+      const seam: Record<typeof opts.stackOnParent, sinon.SinonStub> = {
+         ok: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // An outage, not a modelling limit: a plain Error, as a failed ATTACH
+         // or CTAS would throw.
+         infra: sinon
+            .stub()
+            .rejects(new Error("IO Error: destination is down")),
+         // The downstream reads the warehouse through a non-persisted source:
+         // nothing stored stands in for that, so no build over the parents exists.
+         raw: sinon.stub().rejects(
+            new MaterializationEligibilityError({
+               message:
+                  "'monthly' reads the source warehouse (regions) through 'daily_regional'",
+            }),
+         ),
+         // Every upstream is stored and present, yet the build could not carry
+         // the shape over them: a limit of the carrying, not of the source.
+         uncarried: sinon
+            .stub()
+            .rejects(
+               new ChainedShapeNotCarriedError(
+                  "'monthly' reads only stored upstreams ('daily') but could not be built over them: Reference to undefined object 'r'",
+               ),
+            ),
+         // A dispatch miss: a persisted upstream this build cannot see.
+         missing: sinon
+            .stub()
+            .rejects(
+               new ChainedUpstreamMissingError(
+                  ["daily"],
+                  "persisted upstream 'daily' of 'monthly' is not materialized in destination 'lake' for this build",
+               ),
+            ),
+      };
+      svc.buildDownstreamViaParents = seam[opts.stackOnParent];
       return svc.buildOneSourceIntoStorage({
          persistSource: source,
          instruction,
@@ -3961,37 +4007,113 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       });
    }
 
-   it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
+   it("stacks on the parent: builds by reading it and the entry says so", async () => {
       const entry = await callInto({ strict: false, stackOnParent: "ok" });
       expect(entry.storageDestinationName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("strict + cannot stack on the parent: refuses loudly instead of recomputing from raw", async () => {
+   it("strict + a persisted upstream the build cannot see: refuses, naming it, instead of recomputing from raw", async () => {
+      // The orchestrator meant to pin that upstream; recomputing it here would
+      // rebuild a table it did not ask for. The refusal carries the upstream's
+      // name so the dispatch, not the model, is what gets fixed.
       await expect(
-         callInto({ strict: true, stackOnParent: "throw" }),
-      ).rejects.toThrow(/strict upstreams forbid/i);
+         callInto({ strict: true, stackOnParent: "missing" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*persisted upstream 'daily'/is,
+      );
    });
 
-   it("non-strict + an INFRA failure fails rather than recomputing from raw", async () => {
+   it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
+      // No build over the parents exists for this source, so the recompute is
+      // the only build there is and strict permits it. Only the parent-reuse
+      // seam is stubbed, so the recompute runs for real and fails for its own
+      // reason (no destination file) — the proof it was reached, since the two
+      // paths report differently: "chained source" from the stack-on-parent
+      // path, "source" from the single-source recompute.
+      await expect(
+         callInto({ strict: true, stackOnParent: "raw" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("strict + a shape over stored upstreams the build could not carry: refuses rather than recomputing them", async () => {
+      // Every upstream was handed to the build; recomputing them would rebuild
+      // pinned tables because of a limit in the carrying, which is not the
+      // source's doing and not a licence strict grants.
+      await expect(
+         callInto({ strict: true, stackOnParent: "uncarried" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*could not be built over them/is,
+      );
+   });
+
+   it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
+      for (const stackOnParent of ["missing", "uncarried"] as const) {
+         await expect(
+            callInto({ strict: false, stackOnParent }),
+         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      }
+   });
+
+   it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
       // Recompute-from-raw writes to the same destination, so retrying an outage
       // there just fails again — and metering it as a fallback files the outage
       // under the same label as a legitimate shape miss. Only a shape failure is
       // a reason to try the other path.
-      await expect(
-         callInto({ strict: false, stackOnParent: "infra" }),
-      ).rejects.toThrow(/Failed to materialize chained source/i);
+      for (const strict of [false, true]) {
+         await expect(
+            callInto({ strict, stackOnParent: "infra" }),
+         ).rejects.toThrow(/Failed to materialize chained source/i);
+      }
    });
 
-   it("non-strict + a SHAPE failure falls through to recompute-from-raw", async () => {
-      // Only the parent-reuse seam is stubbed, so the recompute runs for real and
-      // fails for its own reason (no destination file). That is the proof it was
-      // reached: the two paths report differently — the chained path says
-      // "chained source", the single-source recompute says "source". A shape
-      // failure must reach the second; an infra failure must not.
+   it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
       await expect(
-         callInto({ strict: false, stackOnParent: "throw" }),
+         callInto({ strict: false, stackOnParent: "raw" }),
       ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   describe("telemetry", () => {
+      let harness: MetricsHarness;
+      beforeEach(async () => {
+         harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+      });
+      afterEach(async () => {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      });
+      const COUNTER = "publisher_storage_chained_build_total";
+
+      it("meters each rung under its own outcome", async () => {
+         await callInto({ strict: false, stackOnParent: "ok" });
+         await callInto({ strict: true, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: false, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "missing" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "uncarried" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "infra" }).catch(
+            () => undefined,
+         );
+         for (const [outcome, n] of [
+            ["parent_reuse", 1],
+            ["strict_shape_fallback", 1],
+            ["inline_fallback", 1],
+            ["strict_refused", 2],
+            ["infra_failure", 1],
+         ] as const) {
+            expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
+         }
+      });
    });
 });
 
@@ -5575,5 +5697,457 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.refresh).toBe("full");
          expect(upsert.called).toBe(false);
       });
+   });
+});
+
+describe("upstreamReuseFromManifest", () => {
+   const addressBySourceId = {
+      "daily@m": "addr-daily",
+      "sites@m": "addr-sites",
+   };
+   const daily = { name: "daily", sourceID: "daily@m" };
+   const sites = { name: "sites", sourceID: "sites@m" };
+   const builtEntries = {
+      "addr-daily": {
+         sourceEntityId: "addr-daily",
+         sourceName: "daily",
+         physicalTableName: "daily__g1",
+         storageDestinationName: "lake",
+      },
+   };
+
+   it("reused when every upstream's address is in the manifest the SQL was rendered with", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily, sites],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         substituted: { "addr-daily": {}, "addr-sites": {} },
+         full: { "addr-daily": {}, "addr-sites": {} },
+         builtEntries: {},
+         tier: "colocated",
+      });
+      expect(out).toEqual({
+         fields: { upstreamReuse: "reused" },
+         inManifestOnly: [],
+         missing: [],
+      });
+   });
+
+   it("an entry handed over by reference counts, whatever it is called: the lookup is by address, never by name", () => {
+      // A thin reference carries no sourceName. By address it is present.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         substituted: { "addr-daily": { tableName: "daily__g1" } },
+         full: { "addr-daily": { tableName: "daily__g1" } },
+         builtEntries: {
+            "addr-daily": {
+               sourceEntityId: "addr-daily",
+               physicalTableName: "daily__g1",
+            },
+         },
+         tier: "colocated",
+      });
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a colocated build recomputes a storage-tier upstream and says which destination holds it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: true,
+         compilerMissing: [],
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "colocated",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'daily' is materialized in storage destination 'lake'/,
+      );
+   });
+
+   it("a storage build treats a storage-tier upstream as a parent to stack on, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: true,
+         compilerMissing: [],
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("an upstream the compiler misses is missing, and the reason says what would have supplied it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [daily],
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /neither built in this run nor supplied by reference/,
+      );
+   });
+
+   it("a source with no stored upstream reports nothing", () => {
+      expect(
+         upstreamReuseFromManifest({
+            reached: [],
+            addressBySourceId,
+            sqlInlinesStored: false,
+            compilerMissing: [],
+            substituted: {},
+            full: {},
+            builtEntries: {},
+            tier: "colocated",
+         }).fields,
+      ).toEqual({});
+   });
+
+   it("the compiler's reach is the floor: a stored table inlined past the walk is recomputed, with a reason", () => {
+      // Every upstream the walk named was read from its table, but the build
+      // SQL differs from the SQL rendered with every stored entry available:
+      // a join declared on a stored stop reached a storage-tier table.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+         compilerMissing: [],
+      });
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /^the build SQL inlines a stored table reached through a refinement declared on a stored upstream/,
+      );
+   });
+
+   it("the floor reports even when the walk named nothing", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+         compilerMissing: [],
+      });
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("an upstream with no content address is reached but unread: not missing, not a reason, not reported", () => {
+      // Its SQL could not be rendered, so a build that read it would have
+      // failed on its own render; the compiler's strict render is the oracle
+      // for what the SQL reads, and it says nothing about this one.
+      const out = upstreamReuseFromManifest({
+         reached: [{ name: "given", sourceID: "given@m" }],
+         addressBySourceId: { ...addressBySourceId, "given@m": undefined },
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+   });
+
+   it("two models' same-named sources resolve by id, not by name", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [
+            { name: "daily", sourceID: "daily@a" },
+            { name: "daily", sourceID: "daily@b" },
+         ],
+         addressBySourceId: { "daily@a": "addr-a", "daily@b": "addr-b" },
+         substituted: { "addr-a": {} },
+         full: { "addr-a": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [{ name: "daily", sourceID: "daily@b" }],
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("a walk stop in no manifest that the compiler did not miss is a join the SQL never reads: not missing, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily, sites],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a storage-tier stop the SQL never read is neither a parent nor a reason", () => {
+      // In the full manifest, excluded from the warehouse manifest — and the
+      // compare says nothing stored was inlined: a declared join the query
+      // does not use. The build is the passthrough it always was.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a dependency only the compiler reaches is missing even though the walk never named it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [{ name: "counts", sourceID: "counts@m" }],
+      });
+      expect(out.missing).toEqual(["counts"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'counts' is not in this build's manifest/,
+      );
+   });
+
+   it("a stop sharing the root's address is the table being built, not an upstream", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         rootAddress: "addr-daily",
+      });
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+   });
+});
+
+describe("manifestForCompiler", () => {
+   const facts = {
+      addressBySourceId: {
+         "p@m": "addr-p-partitioned",
+         "u@m": "addr-u",
+         "x@m": undefined,
+      },
+      compilerKeyBySourceId: {
+         "p@m": "key-p",
+         "u@m": "addr-u",
+         "x@m": "key-x",
+      },
+   };
+   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+      const full = {
+         entries: {
+            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-u": { tableName: "u__g1" },
+         },
+         strict: true,
+      } as never;
+      const out = manifestForCompiler(full, facts) as unknown as {
+         entries: Record<string, unknown>;
+         strict: boolean;
+      };
+      expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(Object.keys(out.entries).sort()).toEqual([
+         "addr-p-partitioned",
+         "addr-u",
+         "key-p",
+      ]);
+      expect(out.strict).toBe(true);
+   });
+   it("returns the same manifest when nothing needs aliasing", () => {
+      const full = { entries: { "addr-u": {} } } as never;
+      expect(manifestForCompiler(full, facts)).toBe(full);
+   });
+});
+
+describe("strictMissSourceId", () => {
+   it("names the source a compiler strict miss reports, and nothing else", () => {
+      const miss = Object.assign(
+         new Error(
+            "Persisted source 'counts@file:///m.malloy' not found in manifest (buildId: abc); strict manifest mode forbids fallback to live compilation.",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      expect(strictMissSourceId(miss)).toEqual({
+         sourceID: "counts@file:///m.malloy",
+      });
+      // The code is the contract: a reworded message is still a miss, of an
+      // unnamed source.
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("manifest has no entry"), {
+               code: "runtime-manifest-strict-miss",
+            }),
+         ),
+      ).toEqual({ sourceID: undefined });
+      expect(
+         strictMissSourceId(
+            new Error("Persisted source 'x' not found in manifest"),
+         ),
+      ).toBeUndefined();
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("boom"), { code: "other" }),
+         ),
+      ).toBeUndefined();
+      expect(strictMissSourceId(undefined)).toBeUndefined();
+   });
+});
+
+describe("buildOneSource reports upstreamReuse from the manifest it substituted from", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   withQueryMetadataOn();
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   // The author model: `rollup` (the source being built) reads `daily`, a
+   // persist source over a table.
+   const modelDef = {
+      contents: {
+         orders: { sourceID: "orders@m", type: "table" },
+         daily: {
+            sourceID: "daily@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "orders@m" },
+         },
+         rollup: {
+            sourceID: "rollup@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "daily@m" },
+         },
+      },
+   };
+   const planFacts = {
+      persistSourceIds: new Set(["daily@m", "rollup@m"]),
+      aliasesBySourceName: {},
+      addressBySourceId: { "daily@m": "addr-daily", "rollup@m": "addr-rollup" },
+      compilerKeyBySourceId: {
+         "daily@m": "addr-daily",
+         "rollup@m": "addr-rollup",
+      },
+   };
+
+   async function build(
+      manifest: Manifest,
+      builtEntries: Record<string, unknown>,
+      onGetSQL?: (sqlOpts: unknown) => void,
+   ) {
+      const source = fakeSource({
+         name: "rollup",
+         sourceEntityId: "addr-rollup",
+         sql: "SELECT * FROM t",
+         modelDef,
+         onGetSQL,
+      });
+      const instruction: BuildInstruction = {
+         sourceEntityId: "addr-rollup",
+         materializedTableId: "mt-1",
+         physicalTableName: "rollup_mz",
+         realization: "COPY",
+      };
+      return (
+         ctx.service as unknown as {
+            buildOneSource: (...args: unknown[]) => Promise<{
+               upstreamReuse?: string;
+               upstreamRecomputeReason?: string;
+            }>;
+         }
+      ).buildOneSource(
+         source,
+         instruction,
+         { runSQL: sinon.stub().resolves(undefined) },
+         { duckdb: "dig" },
+         manifest,
+         {
+            getApiConnection: () => ({}),
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         builtEntries,
+         undefined,
+         undefined,
+         undefined,
+         planFacts,
+      );
+   }
+
+   it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {
+      const manifest = new Manifest();
+      manifest.update("addr-daily", { tableName: "daily__g1" });
+      const entry = await build(manifest, {
+         "addr-daily": {
+            sourceEntityId: "addr-daily",
+            physicalTableName: "daily__g1",
+            connectionName: "duckdb",
+         },
+      });
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
+   });
+
+   it("recomputed, with the reason, when the upstream is in no manifest and the compiler's strict render misses it", async () => {
+      const entry = await build(new Manifest(), {}, (sqlOpts) => {
+         const m = (
+            sqlOpts as {
+               buildManifest?: {
+                  strict?: boolean;
+                  entries?: Record<string, unknown>;
+               };
+            }
+         ).buildManifest;
+         if (m?.strict === true && !("addr-daily" in (m.entries ?? {}))) {
+            throw Object.assign(
+               new Error(
+                  "Persisted source 'daily@m' not found in manifest (buildId: addr-daily); strict manifest mode forbids fallback to live compilation.",
+               ),
+               { code: "runtime-manifest-strict-miss" },
+            );
+         }
+      });
+      expect(entry.upstreamReuse).toBe("recomputed");
+      expect(entry.upstreamRecomputeReason).toMatch(
+         /'daily' is not in this build's manifest/,
+      );
    });
 });
