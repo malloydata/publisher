@@ -1075,9 +1075,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/status`, async (_req, res) => {
+app.get(`${API_PREFIX}/status`, async (req, res) => {
    try {
-      const status = await environmentStore.getStatus();
+      // Packages still loading for the first time are listed only on request:
+      // a listed package has always meant one that can serve here, and only a
+      // caller that reads `Package.status` can tell the two apart.
+      const status = await environmentStore.getStatus({
+         includeLoading: req.query.includeLoading === "true",
+      });
       // Compose theme onto the status response so the SDK can read both
       // in one round trip on app boot. ThemeStore is the source of truth;
       // publisher.config.json is only a boot seed (see ThemeStore). The
