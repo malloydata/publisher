@@ -2079,17 +2079,22 @@ export class Model {
     * One definition for the two places that must agree: the prepare-time
     * failure handler, and the run-statement count, which has to give way to
     * this denial rather than answer 400 ahead of it.
+    *
+    * `gateGivenNames` is the set of names checked for a missing value. The
+    * prepare handler passes every name any gate in the model reads, since a
+    * binding failure has already confirmed one of them is missing. The count
+    * has no failure to confirm it, so it passes only the names this query's
+    * own grafts read: another source's gate must not turn its 400 into a 403.
     */
    private unboundGateDenial(
       runnable: QueryMaterializer,
       givens: Record<string, unknown> | undefined,
       fallbackLabel: string,
+      gateGivenNames: Iterable<string>,
    ): AccessDeniedError | undefined {
       if (
          !this.queryHadRowLevelFilterAttached(runnable) ||
-         ![...this.authorizeReferencedGivenNames].some(
-            (name) => !(name in (givens ?? {})),
-         )
+         ![...gateGivenNames].some((name) => !(name in (givens ?? {})))
       ) {
          return undefined;
       }
@@ -7989,6 +7994,9 @@ export class Model {
                runnable,
                givens,
                compiledSource ?? sourceName ?? "unknown",
+               (this.rowLevelFilteredRunnables.get(runnable) ?? []).flatMap(
+                  (graft) => graft.givenNames,
+               ),
             ) ?? multipleRunStatementsError(runCount)
          );
       }
@@ -8185,6 +8193,7 @@ export class Model {
                     runnable,
                     givens,
                     compiledSource ?? sourceName ?? "unknown",
+                    this.authorizeReferencedGivenNames,
                  )
                : undefined;
             if (gateDenial) {

@@ -1149,9 +1149,15 @@ source: gated is duckdb.table('customers') extend {
 
 given:
   TENANTS :: number[]
+  REGIONS :: number[]
 
 #(access_filter) id in $TENANTS
 source: filtered is duckdb.table('customers') extend {
+  measure: c is count()
+}
+
+#(access_filter) id in $REGIONS
+source: other is duckdb.table('customers') extend {
   measure: c is count()
 }
 `,
@@ -1166,6 +1172,8 @@ source: filtered is duckdb.table('customers') extend {
          runGated("rt_row_multi.malloy", two, {}),
       ).rejects.toBeInstanceOf(AccessDeniedError);
       // With the given supplied, nothing denies, so the count is the answer.
+      // REGIONS stays unsupplied: only `other`'s gate reads it, and that gate
+      // is not on this query, so it must not turn the 400 into a 403.
       const supplied = runGated("rt_row_multi.malloy", two, { TENANTS: [1] });
       await expect(supplied).rejects.toBeInstanceOf(BadRequestError);
       await expect(supplied).rejects.toThrow("The query has 2 run: statements");
