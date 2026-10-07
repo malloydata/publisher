@@ -1656,7 +1656,7 @@ export class EnvironmentStore {
 
    public async listEnvironments(
       skipInitializationCheck: boolean = false,
-      options: { everyVersion?: boolean } = {},
+      options: { everyVersion?: boolean; includeLoading?: boolean } = {},
    ) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
@@ -1688,7 +1688,7 @@ export class EnvironmentStore {
       }
    }
 
-   public async getStatus() {
+   public async getStatus(options: { includeLoading?: boolean } = {}) {
       // Surface the memory governor's back-pressure as a "throttled"
       // operational state so the control plane can stop routing new package
       // loads/queries to a throttled worker. Draining takes precedence: a
@@ -1727,7 +1727,9 @@ export class EnvironmentStore {
       // Every version held, loaded or not, not only `latest`: an orchestrator
       // reconciles what this server holds from this list (see ServerStatus in
       // api-doc.yaml).
+      // `includeLoading` is the caller's, from /status's query string.
       const environments = await this.listEnvironments(true, {
+         ...options,
          everyVersion: true,
       });
 
