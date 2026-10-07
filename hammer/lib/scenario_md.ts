@@ -64,6 +64,8 @@
 // registers the package under that environment.
 // Front matter: `id`, `package`, `title`, `tags: a, b`, `requires: dialect:x`.
 
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import os from "os";
 import path from "path";
 import type { PersistStorageMode } from "./server";
 import { Rest } from "./rest";
@@ -128,6 +130,8 @@ type Step =
         sourceNames?: string[];
         async: boolean;
         label?: string;
+        /** `(version=…)`: the published version to build; omitted, latest. */
+        versionId?: string;
      }
    | { kind: "await"; label?: string }
    | {
@@ -176,6 +180,8 @@ type Step =
         mode: PersistStorageMode;
         cites: string;
         excludes?: string;
+        /** `(version=…)`: the published version whose build must be refused. */
+        versionId?: string;
      }
    | {
         kind: "query";
@@ -193,6 +199,8 @@ type Step =
         exactColumns: boolean;
         /** `servedFrom: storage` — assert which tier produced the answer. */
         servedFrom?: string;
+        /** `(version=…)`: the published version to query; omitted, latest. */
+        versionId?: string;
      }
    | {
         kind: "buildRefusals";
@@ -294,6 +302,43 @@ type Step =
         cites?: string;
      }
    | { kind: "restart"; mode: PersistStorageMode; init: boolean }
+   | {
+        /** `## Version <pkg>@<x.y.z>`: publish an immutable version. */
+        kind: "version";
+        pub?: string;
+        env: string;
+        pkg: string;
+        version: string;
+        mode: PersistStorageMode;
+        malloy: string;
+        /** `(scope=version|package)`: the package's materialization scope. */
+        scope?: string;
+        refused: boolean;
+        /** `reason:` the refusal's `Error.reason`, asserted exactly. */
+        reason?: string;
+        cites?: string;
+     }
+   | {
+        /** `## Latest` (PUT …/latest) or `## Archive` / `## Unarchive` (PATCH …/versions/{v}). */
+        kind: "versionLifecycle";
+        action: "latest" | "archive" | "unarchive";
+        pub?: string;
+        env: string;
+        pkg: string;
+        version: string;
+        mode: PersistStorageMode;
+        refused: boolean;
+        reason?: string;
+     }
+   | {
+        /** `## Versions [<pkg>]`: assert the published versions, highest first. */
+        kind: "versions";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expect: Table;
+     }
    | { kind: "hook"; name: string };
 
 interface ParsedMd {
@@ -332,17 +377,19 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    data: {},
    mutate: {},
    model: {},
-   publish: { attrs: ["sources", "forcerefresh", "reseed", "async", "label"] },
+   publish: {
+      attrs: ["sources", "forcerefresh", "reseed", "async", "label", "version"],
+   },
    await: { attrs: ["label"] },
    delete: {},
    reclaim: {},
    build: {
-      attrs: ["orchestrated", "strict", "pkg"],
+      attrs: ["orchestrated", "strict", "pkg", "version"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
    query: {
-      attrs: ["again", "refused", "pkg"],
+      attrs: ["again", "refused", "pkg", "version"],
       keys: ["cites", "givens", "columns", "servedfrom"],
    },
    sql: {},
@@ -357,6 +404,12 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    manifest: { attrs: ["pkg"] },
    restart: { attrs: ["init"] },
+   // Package versions: publish one, move latest, archive, and assert the list.
+   version: { attrs: ["scope", "refused"], keys: ["reason", "cites"] },
+   latest: { attrs: ["refused"], keys: ["reason"] },
+   archive: { attrs: ["refused"], keys: ["reason"] },
+   unarchive: { attrs: ["refused"], keys: ["reason"] },
+   versions: {},
    hook: {},
 };
 
@@ -631,6 +684,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                sourceNames,
                async: !!attrs.async,
                label: attrs.label as string | undefined,
+               versionId: (attrs.version as string | undefined) || undefined,
             });
             break;
          }
@@ -738,6 +792,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   mode,
                   cites,
                   excludes: firstKey(sec.body, "excludes"),
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             }
             break;
@@ -784,6 +839,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   givens,
                   exactColumns,
                   servedFrom,
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             } else {
                steps.push({
@@ -800,6 +856,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   givens,
                   exactColumns,
                   servedFrom,
+                  versionId: (attrs.version as string | undefined) || undefined,
                });
             }
             break;
@@ -993,6 +1050,84 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             steps.push({ kind: "hook", name: arg.trim() });
             break;
          }
+         case "version": {
+            // `## Version <pkg>@<x.y.z> (scope=…, refused)` + the package's model.
+            const { pkg, version } = splitPkgVersion(arg, sec.header);
+            const malloy = extractCode(sec.body, "malloy");
+            if (!malloy)
+               throw new Error(
+                  `## ${sec.header}: missing a \`\`\`malloy block — the version's model`,
+               );
+            const refused = !!attrs.refused;
+            const reason = firstKey(sec.body, "reason")?.trim();
+            const cites = firstKey(sec.body, "cites");
+            if ((reason || cites) && !refused) {
+               throw new Error(
+                  `## ${sec.header}: "reason:" / "cites:" describe a refusal; add \`refused\`, or drop them`,
+               );
+            }
+            steps.push({
+               kind: "version",
+               pub,
+               env,
+               pkg,
+               version,
+               mode,
+               malloy,
+               scope: attrs.scope as string | undefined,
+               refused,
+               reason,
+               cites,
+            });
+            break;
+         }
+         case "latest":
+         case "archive":
+         case "unarchive": {
+            const { pkg, version } = splitPkgVersion(arg, sec.header);
+            const refused = !!attrs.refused;
+            const reason = firstKey(sec.body, "reason")?.trim();
+            if (reason && !refused) {
+               throw new Error(
+                  `## ${sec.header}: "reason:" describes a refusal; add \`refused\`, or drop it`,
+               );
+            }
+            steps.push({
+               kind: "versionLifecycle",
+               action: kind,
+               pub,
+               env,
+               pkg,
+               version,
+               mode,
+               refused,
+               reason,
+            });
+            break;
+         }
+         case "versions": {
+            const expect = requireExpectTable(sec.body, sec.header);
+            const known = new Set(["version", "latest", "archived", "loaded"]);
+            const unknown = expect.cols.filter((c) => !known.has(c.name));
+            if (!expect.cols.some((c) => c.name === "version") || unknown.length) {
+               throw new Error(
+                  `## ${sec.header}: the Expect table needs a "version" column, and ` +
+                     `may add "latest", "archived" and "loaded"` +
+                     (unknown.length
+                        ? `; unknown: ${unknown.map((c) => c.name).join(", ")}`
+                        : ""),
+               );
+            }
+            steps.push({
+               kind: "versions",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expect,
+            });
+            break;
+         }
          default:
             throw new Error(
                `Unknown section kind "${kind}" in header: ## ${sec.header}`,
@@ -1073,6 +1208,20 @@ function splitConnTable(arg: string): [string, string] {
    const dot = arg.indexOf(".");
    if (dot < 0) throw new Error(`expected <conn>.<table>, got "${arg}"`);
    return [arg.slice(0, dot).trim(), arg.slice(dot + 1).trim()];
+}
+
+/** `<pkg>@<x.y.z>` — a package and one of its published versions. */
+function splitPkgVersion(
+   arg: string,
+   header: string,
+): { pkg: string; version: string } {
+   const at = arg.indexOf("@");
+   const pkg = at < 0 ? "" : arg.slice(0, at).trim();
+   const version = at < 0 ? "" : arg.slice(at + 1).trim();
+   if (!pkg || !version) {
+      throw new Error(`## ${header}: expected <package>@<version>, got "${arg}"`);
+   }
+   return { pkg, version };
 }
 
 function splitPkgPath(arg: string, def: string): { pkg: string; rel: string } {
@@ -1826,6 +1975,13 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             entry.models.set(step.path, step.malloy);
          if (!primaryModel.has(k)) primaryModel.set(k, step.path);
       }
+      // A published version is not in the config: its `## Version` step writes
+      // the model as `<pkg>.malloy` and publishes it at runtime, so queries of
+      // the package name that file.
+      if (step.kind === "version") {
+         const k = pkgKey(step.env, step.pkg);
+         if (!primaryModel.has(k)) primaryModel.set(k, `${step.pkg}.malloy`);
+      }
    }
    const packages: PackageSpec[] = [...pkgModels.values()].map((e) => ({
       name: e.name,
@@ -1903,6 +2059,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   ...(step.sourceNames
                      ? { sourceNames: step.sourceNames }
                      : {}),
+                  ...(step.versionId ? { versionId: step.versionId } : {}),
                };
                if (step.async) {
                   // Fire and DON'T await — a following step observes it in flight.
@@ -1958,7 +2115,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      );
                   let bindings: Binding[] = [];
                   for (let attempt = 0; attempt < 40; attempt++) {
-                     const pkg = (await rest.getPackage(step.pkg)) as {
+                     const pkg = (await rest.getPackage(step.pkg, {
+                        versionId: step.versionId,
+                     })) as {
                         storageServeBindings?: Binding[];
                      };
                      bindings = pkg.storageServeBindings ?? [];
@@ -2001,7 +2160,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "buildRefused": {
                const rest = await serverFor(step.pub, step.env);
-               const outcome = await refusedOutcome(rest, step.pkg);
+               const outcome = await refusedOutcome(
+                  rest,
+                  step.pkg,
+                  step.versionId ? { versionId: step.versionId } : undefined,
+               );
                assert.ok(
                   `build refused (${step.pkg})`,
                   outcome.refused,
@@ -2142,7 +2305,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   const res = await rest.tryQuery(
                      step.pkg,
                      modelPath(step.pkg, step.env),
-                     { query: malloy, givens: step.givens },
+                     {
+                        query: malloy,
+                        givens: step.givens,
+                        versionId: step.versionId,
+                     },
                   );
                   assert.ok(
                      `${step.label}: refused`,
@@ -2161,7 +2328,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   const out = await rest.query(
                      step.pkg,
                      modelPath(step.pkg, step.env),
-                     { query: malloy, givens: step.givens },
+                     {
+                        query: malloy,
+                        givens: step.givens,
+                        versionId: step.versionId,
+                     },
                   );
                   compareRows(assert, step.label, step.expect!, out.rows);
                   if (step.servedFrom) {
@@ -2688,6 +2859,114 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   mode: activeMode,
                   init: step.init,
                });
+               break;
+            }
+            case "version": {
+               // The version's package, written to a directory of its own and
+               // published from it: publisher.json names the version, the way
+               // an author releases one. The publisher copies the tree in, so
+               // the directory goes once the publish has answered.
+               const rest = await serverFor(step.pub, step.env);
+               const dir = mkdtempSync(
+                  path.join(os.tmpdir(), `hammer-${step.pkg}-`),
+               );
+               try {
+                  writeFileSync(
+                     path.join(dir, "publisher.json"),
+                     JSON.stringify({
+                        name: step.pkg,
+                        version: step.version,
+                        ...(step.scope
+                           ? { materialization: { scope: step.scope } }
+                           : {}),
+                     }),
+                  );
+                  writeFileSync(path.join(dir, `${step.pkg}.malloy`), step.malloy);
+                  const res = await rest.publishFrom(step.pkg, dir);
+                  const label = `version ${step.pkg}@${step.version}`;
+                  if (step.refused) {
+                     assert.ok(
+                        `${label}: refused`,
+                        !res.ok,
+                        res.ok ? "expected a refusal, but it published" : undefined,
+                     );
+                     if (step.reason)
+                        assert.eq(
+                           `${label}: reason`,
+                           (res.body.reason as string | undefined) ?? "(absent)",
+                           step.reason,
+                        );
+                     if (step.cites)
+                        assert.includes(
+                           `${label}: cites`,
+                           String(res.body.message ?? "").toLowerCase(),
+                           step.cites.toLowerCase(),
+                        );
+                  } else {
+                     assert.ok(
+                        `${label}: published`,
+                        res.ok,
+                        res.ok ? undefined : JSON.stringify(res.body).slice(0, 300),
+                     );
+                  }
+               } finally {
+                  rmSync(dir, { recursive: true, force: true });
+               }
+               break;
+            }
+            case "versionLifecycle": {
+               const rest = await serverFor(step.pub, step.env);
+               const res =
+                  step.action === "latest"
+                     ? await rest.setLatestVersion(step.pkg, step.version)
+                     : await rest.setArchiveStatus(
+                          step.pkg,
+                          step.version,
+                          step.action,
+                       );
+               const label = `${step.action} ${step.pkg}@${step.version}`;
+               if (step.refused) {
+                  assert.ok(
+                     `${label}: refused`,
+                     !res.ok,
+                     res.ok ? "expected a refusal, but it was applied" : undefined,
+                  );
+                  if (step.reason)
+                     assert.eq(
+                        `${label}: reason`,
+                        (res.body.reason as string | undefined) ?? "(absent)",
+                        step.reason,
+                     );
+               } else {
+                  assert.ok(
+                     `${label}: applied`,
+                     res.ok,
+                     res.ok ? undefined : JSON.stringify(res.body).slice(0, 300),
+                  );
+               }
+               break;
+            }
+            case "versions": {
+               // The published versions (highest first), with what /status says
+               // is loaded. Only the columns the Expect table names are compared.
+               const rest = await serverFor(step.pub, step.env);
+               const versions = await rest.listVersions(step.pkg);
+               const loaded = new Set(
+                  (await rest.statusEntries(step.pkg))
+                     .filter((e) => e.versionId && e.loaded !== false)
+                     .map((e) => e.versionId as string),
+               );
+               compareRows(
+                  assert,
+                  `versions ${step.pkg}`,
+                  step.expect,
+                  versions.map((v) => ({
+                     version: v.id,
+                     latest: v.latest,
+                     archived: v.archiveStatus === "archive",
+                     loaded: loaded.has(v.id),
+                  })),
+               );
                break;
             }
             case "hook": {

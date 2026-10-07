@@ -154,7 +154,12 @@ const bootStats = { count: 0, ms: 0, stopMs: 0, startMs: 0 };
 class PublisherCluster {
    private pubs = new Map<
       string,
-      { server: ServerHandle; rest: Rest; mode: PersistStorageMode }
+      {
+         server: ServerHandle;
+         rest: Rest;
+         mode: PersistStorageMode;
+         extraEnv?: Record<string, string>;
+      }
    >();
    private ports = new Map<string, { port: number; mcpPort: number }>();
    private nextIdx = 0;
@@ -226,7 +231,16 @@ class PublisherCluster {
       mode: PersistStorageMode,
       opts: { init?: boolean; extraEnv?: Record<string, string> } = {},
    ): Promise<Rest> {
-      return this.boot(name, mode, opts.init ?? false, opts.extraEnv);
+      // A restart is the same server coming back, so it keeps the flags it was
+      // started with unless the caller names new ones: a `## Restart` of a
+      // publisher started with, say, PUBLISHER_PACKAGE_VERSIONING=on must not
+      // come back without it.
+      return this.boot(
+         name,
+         mode,
+         opts.init ?? false,
+         opts.extraEnv ?? this.pubs.get(name)?.extraEnv,
+      );
    }
 
    private async boot(
@@ -273,7 +287,7 @@ class PublisherCluster {
          log.warn(
             `[${this.cfg.tag}${name}] load errors: ${JSON.stringify(st.loadErrors)}`,
          );
-      this.pubs.set(name, { server, rest, mode });
+      this.pubs.set(name, { server, rest, mode, extraEnv });
       return rest;
    }
 

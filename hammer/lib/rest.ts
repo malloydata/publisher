@@ -81,6 +81,112 @@ export class Rest {
       return { ok: false, status: res.status, error: await res.text() };
    }
 
+   /**
+    * Publish a package from a directory on this host (POST /packages with a
+    * `location`). With package versioning on, this is a versioned publish: the
+    * version is the `version` in the directory's publisher.json. Returns the
+    * outcome and the body either way, so a scenario can assert a publish or a
+    * refusal and its `reason`.
+    */
+   async publishFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PUT …/latest: point the package's latest at a version. */
+   async setLatestVersion(
+      pkg: string,
+      versionId: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(this.pkgUrl(pkg, "/latest"), {
+         method: "PUT",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({ versionId }),
+      });
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PATCH …/versions/{v}: archive or unarchive one version. */
+   async setArchiveStatus(
+      pkg: string,
+      versionId: string,
+      archiveStatus: "archive" | "unarchive",
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         this.pkgUrl(pkg, `/versions/${encodeURIComponent(versionId)}`),
+         {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ archiveStatus }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** GET …/versions: the package's published versions, highest first. */
+   async listVersions(
+      pkg: string,
+   ): Promise<{ id: string; latest: boolean; archiveStatus: string }[]> {
+      const res = await fetch(this.pkgUrl(pkg, "/versions"));
+      if (!res.ok)
+         throw new Error(
+            `listVersions ${pkg} ${res.status}: ${await res.text()}`,
+         );
+      return (await res.json()) as {
+         id: string;
+         latest: boolean;
+         archiveStatus: string;
+      }[];
+   }
+
+   /**
+    * This package's entries in /status: every version the server holds, each
+    * with whether it is loaded (`loaded: false` for one held but not in
+    * memory; absent on an unversioned package's entry).
+    */
+   async statusEntries(
+      pkg: string,
+   ): Promise<{ versionId?: string | null; loaded?: boolean }[]> {
+      const res = await fetch(`${this.baseUrl}/api/v0/status`);
+      const status = (await res.json()) as {
+         environments?: {
+            name: string;
+            packages?: {
+               name?: string;
+               versionId?: string | null;
+               loaded?: boolean;
+            }[];
+         }[];
+      };
+      return (
+         status.environments
+            ?.find((e) => e.name === this.env)
+            ?.packages?.filter((p) => p.name === pkg) ?? []
+      );
+   }
+
    async listConnections(): Promise<{ name: string }[]> {
       const res = await fetch(
          `${this.baseUrl}/api/v0/environments/${this.env}/connections`,
@@ -92,11 +198,13 @@ export class Rest {
 
    async getPackage(
       pkg: string,
-      opts: { reload?: boolean } = {},
+      opts: { reload?: boolean; versionId?: string } = {},
    ): Promise<Record<string, unknown>> {
-      const res = await fetch(
-         this.pkgUrl(pkg, opts.reload ? "?reload=true" : ""),
-      );
+      const params = new URLSearchParams();
+      if (opts.reload) params.set("reload", "true");
+      if (opts.versionId) params.set("versionId", opts.versionId);
+      const qs = params.toString();
+      const res = await fetch(this.pkgUrl(pkg, qs ? `?${qs}` : ""));
       if (!res.ok)
          throw new Error(
             `getPackage ${pkg} ${res.status}: ${await res.text()}`,
@@ -341,6 +449,8 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         /** The published version to query; omitted, the package's latest. */
+         versionId?: string;
       },
    ): Promise<QueryOutcome> {
       const url = this.pkgUrl(pkg, `/models/${modelPath}/query`);
@@ -396,6 +506,7 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         versionId?: string;
       },
    ): Promise<
       { ok: true; outcome: QueryOutcome } | { ok: false; error: string }
