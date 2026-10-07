@@ -8,8 +8,10 @@ import sinon from "sinon";
 
 import {
    BadRequestError,
+   ConnectionFailedError,
    ModelNotFoundError,
    PayloadTooLargeError,
+   QueryExecutionError,
    ResponseUnserializableError,
 } from "../errors";
 import { Model, ModelType } from "./model";
@@ -1182,6 +1184,8 @@ describe("service/model", () => {
          packageBindings?: unknown[];
          storageFailsAt: "prepare" | "run";
          liveRunFails?: boolean;
+         /** What the failing run rejects with, in place of the defaults. */
+         failWith?: Error;
          livePreparedLimit?: number;
          /**
           * Raw `##` note texts for the model file, and `#@` note texts per
@@ -1213,7 +1217,7 @@ describe("service/model", () => {
          /** Named queries, for the `queryName` request shape. */
          queries?: { name: string; sourceName: string }[];
       }) {
-         const storageErr = new Error("store table missing");
+         const storageErr = opts.failWith ?? new Error("store table missing");
          // Both runnables stub `getPreparedQuery` even though nothing in these
          // tests reads the compiled query: the authorize entry-point walk and
          // the storage-routing row-level pre-check both call it, and a mock
@@ -1246,7 +1250,7 @@ describe("service/model", () => {
             connectionName: "live_pg",
          };
          const liveRun = opts.liveRunFails
-            ? sinon.stub().rejects(new Error("warehouse down"))
+            ? sinon.stub().rejects(opts.failWith ?? new Error("warehouse down"))
             : sinon.stub().resolves(fakeResult);
          const preparedQuery = opts.compiledRunTarget
             ? {
@@ -1960,7 +1964,7 @@ describe("service/model", () => {
 
          await expect(
             model.getQueryResults(undefined, undefined, "run: daily -> x"),
-         ).rejects.toThrow(BadRequestError);
+         ).rejects.toThrow(QueryExecutionError);
 
          const errored = recordStub
             .getCalls()
@@ -1986,6 +1990,38 @@ describe("service/model", () => {
          await model.getQueryResults(undefined, undefined, "run: daily -> x");
 
          expect(liveRun.calledOnce).toBe(true);
+      });
+
+      it("answers an unreachable database on the live retry as a connection failure", async () => {
+         // The broad outage above, where the warehouse refuses connections
+         // outright: the query never ran, so it is not the caller's to fix.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            liveRunFails: true,
+            failWith: Object.assign(
+               new Error("connect ECONNREFUSED 10.0.0.5:5432"),
+               { code: "ECONNREFUSED" },
+            ),
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(ConnectionFailedError);
+      });
+
+      it("answers an unreachable database without a retry as a connection failure too", async () => {
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "stale_ok")],
+            storageFailsAt: "run",
+            failWith: Object.assign(new Error("read ECONNRESET"), {
+               code: "ECONNRESET",
+            }),
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(ConnectionFailedError);
       });
 
       it("keeps surfacing the error when the shape carries a non-live binding", async () => {

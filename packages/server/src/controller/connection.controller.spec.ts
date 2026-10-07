@@ -7,12 +7,15 @@ import type {
    RunSQLOptions,
    StreamingConnection,
 } from "@malloydata/malloy";
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, describe, expect, it } from "bun:test";
+import * as net from "net";
 import sinon from "sinon";
 
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionFailedError,
    InvalidArgumentError,
    PayloadTooLargeError,
    TableNotFoundError,
@@ -1132,5 +1135,85 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       await expect(getSqlSource(controller)).rejects.toThrow(
          "plain string failure",
       );
+   });
+});
+
+describe("ConnectionController on a database that cannot be reached", () => {
+   // A real Malloy Postgres driver aimed at a port nothing listens on, so the
+   // error is the one node-pg actually raises, carried through db_utils.
+   let pg: PostgresConnection | undefined;
+
+   afterEach(async () => {
+      sinon.restore();
+      await pg?.close();
+      pg = undefined;
+   });
+
+   async function deadPostgres(): Promise<PostgresConnection> {
+      const server = net.createServer();
+      await new Promise<void>((resolve) =>
+         server.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const { port } = server.address() as net.AddressInfo;
+      await new Promise((resolve) => server.close(resolve));
+      pg = new PostgresConnection({
+         name: "warehouse",
+         host: "127.0.0.1",
+         port,
+         username: "nobody",
+         databaseName: "nothing",
+      });
+      return pg;
+   }
+
+   function controllerOn(malloyConnection: Connection): ConnectionController {
+      const fakeStore = {
+         getEnvironment: sinon
+            .stub()
+            .resolves({ assertCanAdmitQuery: sinon.stub() }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      const internals = controller as unknown as {
+         getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         getApiConnectionForLookup: (...args: unknown[]) => unknown;
+      };
+      sinon.stub(internals, "getMalloyConnection").resolves(malloyConnection);
+      sinon.stub(internals, "getApiConnectionForLookup").returns({
+         name: "warehouse",
+         type: "postgres",
+         postgresConnection: {},
+      });
+      return controller;
+   }
+
+   it("answers sqlQuery with a connection failure", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.getConnectionQueryData("env", "warehouse", "SELECT 1", ""),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it("answers a schema listing with a connection failure, not a 500", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.listSchemas("env", "warehouse"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it("leaves a schema listing that failed for another reason as it was", async () => {
+      // Only an unreachable database is reclassified. A failure the listing
+      // wrapped for any other reason keeps its old status.
+      const rejected = Object.assign(new Error("permission denied"), {
+         code: "42501",
+      });
+      const controller = controllerOn({
+         runSQL: sinon.stub().rejects(rejected),
+      } as unknown as Connection);
+      const error = await controller.listSchemas("env", "warehouse").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ConnectionError);
    });
 });

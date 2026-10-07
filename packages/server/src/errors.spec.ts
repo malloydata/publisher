@@ -1,13 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { describe, expect, it } from "bun:test";
+import * as net from "net";
 import {
    AccessDeniedError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
+   ConnectionFailedError,
    InvalidArgumentError,
+   isConnectionFailure,
+   QueryExecutionError,
    TableNotFoundError,
    internalErrorToHttpError,
    ModelCompilationError,
@@ -233,5 +239,173 @@ describe("internalErrorToHttpError", () => {
          message:
             "Query exceeded PUBLISHER_QUERY_TIMEOUT_MS (300000ms) and was aborted.",
       });
+   });
+});
+
+describe("connection failure vs a rejected query", () => {
+   it("maps ConnectionFailedError to 502 with reason CONNECTION_FAILED and no driver text", () => {
+      const { status, json } = internalErrorToHttpError(
+         new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
+      );
+      expect(status).toBe(502);
+      expect(json).toEqual({
+         code: 502,
+         message: "Upstream connection error.",
+         reason: "CONNECTION_FAILED",
+      });
+   });
+
+   it("maps QueryExecutionError to 400 with reason QUERY_EXECUTION_FAILED and the database's text", () => {
+      const { status, json } = internalErrorToHttpError(
+         new QueryExecutionError("Query execution failed: division by zero"),
+      );
+      expect(status).toBe(400);
+      expect(json).toEqual({
+         code: 400,
+         message: "Query execution failed: division by zero",
+         reason: "QUERY_EXECUTION_FAILED",
+      });
+   });
+
+   it("keeps a plain ConnectionError's 502 free of a reason", () => {
+      // A statement the warehouse rejected on the sqlQuery route is also a
+      // ConnectionError. It must not claim the database was unreachable.
+      const { json } = internalErrorToHttpError(
+         new ConnectionError("syntax error at or near SELEC"),
+      );
+      expect(json).toEqual({
+         code: 502,
+         message: "Upstream connection error.",
+      });
+   });
+});
+
+/** A port on loopback that nothing listens on. */
+async function closedPort(): Promise<number> {
+   const server = net.createServer();
+   await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve()),
+   );
+   const { port } = server.address() as net.AddressInfo;
+   await new Promise((resolve) => server.close(resolve));
+   return port;
+}
+
+describe("isConnectionFailure", () => {
+   it("recognizes the error Malloy's Postgres driver raises for a closed port", async () => {
+      // The real error, not a hand-built one: what reaches Publisher is
+      // whatever @malloydata/db-postgres and node-pg actually throw.
+      const connection = new PostgresConnection({
+         name: "pg",
+         host: "127.0.0.1",
+         port: await closedPort(),
+         username: "nobody",
+         databaseName: "nothing",
+      });
+      const error = await connection.runSQL("SELECT 1").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      await connection.close();
+      expect(error).toBeInstanceOf(Error);
+      expect(isConnectionFailure(error)).toBe(true);
+   });
+
+   it("recognizes Node's own socket error", async () => {
+      const port = await closedPort();
+      const error = await new Promise<unknown>((resolve) => {
+         const socket = net.connect(port, "127.0.0.1");
+         socket.on("error", resolve);
+      });
+      expect((error as NodeJS.ErrnoException).code).toBe("ECONNREFUSED");
+      expect(isConnectionFailure(error)).toBe(true);
+   });
+
+   it("follows the cause chain, as Snowflake and Malloy's MySQL driver wrap it", () => {
+      const socket = Object.assign(
+         new Error("connect ETIMEDOUT 10.0.0.5:443"),
+         {
+            code: "ETIMEDOUT",
+         },
+      );
+      const wrapped = new Error("Network error. Could not reach Snowflake.", {
+         cause: socket,
+      });
+      expect(isConnectionFailure(wrapped)).toBe(true);
+   });
+
+   it("recognizes a Postgres connection SQLSTATE and a server shutdown", () => {
+      // node-pg puts the SQLSTATE in `code`.
+      for (const code of ["08006", "08001", "57P01"]) {
+         const error = Object.assign(new Error("server gone"), { code });
+         expect(isConnectionFailure(error)).toBe(true);
+      }
+   });
+
+   it("recognizes mysql2's fatal flag, bare and as Malloy's driver wraps it", () => {
+      // mysql2 sets `fatal: true` on the closed-state error and gives it no
+      // code (lib/base/connection.js, _addCommandClosedState).
+      const driver = Object.assign(
+         new Error("Can't add new command when connection is in closed state"),
+         { fatal: true },
+      );
+      expect(isConnectionFailure(driver)).toBe(true);
+      // @malloydata/db-mysql after malloydata/malloy#3134.
+      expect(
+         isConnectionFailure(
+            Object.assign(new Error(String(driver)), { cause: driver }),
+         ),
+      ).toBe(true);
+   });
+
+   it("recognizes the codeless messages, whole, as the current drivers raise them", () => {
+      // @malloydata/db-mysql before malloydata/malloy#3134: `new Error(e)`,
+      // which drops `fatal` and prefixes "Error: ".
+      expect(
+         isConnectionFailure(
+            new Error(
+               "Error: Can't add new command when connection is in closed state",
+            ),
+         ),
+      ).toBe(true);
+      expect(
+         isConnectionFailure(new Error("Connection terminated unexpectedly")),
+      ).toBe(true);
+   });
+
+   it("does not take a query the database rejected for a connection failure", async () => {
+      // A real DuckDB rejection: what a bad query actually throws.
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const error = await duckdb.runSQL("SELECT CAST('x' AS INTEGER)").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      await duckdb.close();
+      expect(error).toBeInstanceOf(Error);
+      expect(isConnectionFailure(error)).toBe(false);
+   });
+
+   it("does not match a Postgres SQLSTATE outside the connection classes", () => {
+      // 22012 division_by_zero, 42P01 undefined_table, 28P01 bad password.
+      for (const code of ["22012", "42P01", "28P01"]) {
+         const error = Object.assign(new Error("rejected"), { code });
+         expect(isConnectionFailure(error)).toBe(false);
+      }
+   });
+
+   it("does not match a codeless message that only quotes a signature", () => {
+      // A row value or literal echoed back inside a longer message.
+      for (const message of [
+         'invalid input syntax for type integer: "Connection terminated unexpectedly"',
+         "Table 'connect ECONNREFUSED' does not exist",
+         "Unknown field econnrefused in output space",
+      ]) {
+         expect(isConnectionFailure(new Error(message))).toBe(false);
+      }
+   });
+
+   it("is false for a thrown non-Error", () => {
+      expect(isConnectionFailure("connect ECONNREFUSED")).toBe(false);
+      expect(isConnectionFailure(undefined)).toBe(false);
    });
 });

@@ -12,7 +12,9 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionFailedError,
    InvalidArgumentError,
+   isConnectionFailure,
    PayloadTooLargeError,
    TableNotFoundError,
 } from "../errors";
@@ -232,7 +234,38 @@ function classifyDriverFailure(error: unknown): Error {
          : typeof error === "string"
            ? error
            : JSON.stringify(error);
+   if (isConnectionFailure(error)) return new ConnectionFailedError(message);
    return driverErrorToPublisherError(message);
+}
+
+/**
+ * A failure running SQL the caller sent. Either way it is a 502 with the
+ * driver's text logged and generalized; a database that could not be reached
+ * also carries `reason: CONNECTION_FAILED`.
+ */
+function sqlRunFailure(error: unknown): ConnectionError {
+   const message = (error as Error).message;
+   return isConnectionFailure(error)
+      ? new ConnectionFailedError(message)
+      : new ConnectionError(message);
+}
+
+/**
+ * Schema listing lets most driver failures through as they are (a 500), but
+ * an unreachable database is a 502 with `reason: CONNECTION_FAILED`, the same
+ * as every other route that reaches it.
+ */
+async function withConnectionFailureClassified<T>(
+   list: () => Promise<T>,
+): Promise<T> {
+   try {
+      return await list();
+   } catch (error) {
+      if (isConnectionFailure(error)) {
+         throw new ConnectionFailedError((error as Error).message);
+      }
+      throw error;
+   }
 }
 
 export class ConnectionController {
@@ -461,7 +494,9 @@ export class ConnectionController {
          packageName,
       );
 
-      return getSchemasForConnection(connection, malloyConnection);
+      return withConnectionFailureClassified(() =>
+         getSchemasForConnection(connection, malloyConnection),
+      );
    }
 
    // Lists tables available in a schema. For postgres the schema is usually "public".
@@ -487,11 +522,13 @@ export class ConnectionController {
          packageName,
       );
 
-      return listTablesForSchema(
-         connection,
-         schemaName,
-         malloyConnection,
-         tableNames,
+      return withConnectionFailureClassified(() =>
+         listTablesForSchema(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         ),
       );
    }
 
@@ -788,7 +825,7 @@ export class ConnectionController {
                // ConnectionError we'd throw here is discarded — the
                // timeout verdict wins. So this branch only matters
                // for genuine driver failures.
-               throw new ConnectionError((error as Error).message);
+               throw sqlRunFailure(error);
             }
          }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed), queryCorrelationId };
@@ -805,7 +842,7 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
 
@@ -895,7 +932,7 @@ export class ConnectionController {
             // will convert this to QueryTimeoutError on its own
             // — don't bury the reason in ConnectionError.
             if (signal.aborted) throw error;
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
    }

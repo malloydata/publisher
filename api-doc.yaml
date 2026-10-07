@@ -639,6 +639,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -696,6 +698,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -994,6 +998,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1056,6 +1062,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1870,6 +1878,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2314,6 +2324,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2851,6 +2863,16 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: |
+        The database behind the connection failed. With `reason:
+        CONNECTION_FAILED` it could not be reached, so the query never ran.
+        The driver's message can name an internal host, so it is logged and
+        the body carries a generic message.
       content:
         application/json:
           schema:
@@ -6124,12 +6146,25 @@ components:
             says nothing about whether the caller reached the right server; the
             latter is a routing problem worth retrying elsewhere.
 
+            CONNECTION_FAILED, on a 502, means the database could not be
+            reached (the connection was refused, reset or timed out, or the
+            server closed it), so the query never ran. The query and the model
+            are fine; retrying elsewhere will not help, and neither will
+            rewriting the query.
+
+            QUERY_EXECUTION_FAILED, on a 400 from the query route, means the
+            database ran the query and rejected it (a type mismatch, a division
+            by zero, a permission on a table). The message carries the
+            database's text. A Malloy compile error is also a 400, but carries
+            `problems` and no reason.
+
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
             grow. Callers must treat an unrecognized value as absent.
 
-            Known values: TABLE_NOT_FOUND.
+            Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
+            QUERY_EXECUTION_FAILED.
         problems:
           type: array
           description: |

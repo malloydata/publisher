@@ -7,6 +7,7 @@ import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionFailedError,
    InvalidArgumentError,
    ModelCompilationError,
    PackageManifestError,
@@ -38,6 +39,24 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Resource not found");
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("tells the agent an unreachable database is not its query to fix", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
+      );
+      expect(details).toEqual({
+         message:
+            "Could not reach the database for env/pkg. The query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      });
+      // The driver's text names an internal host; it is logged, not returned.
+      expect(JSON.stringify(details)).not.toContain("10.0.0.5");
    });
 
    it("homes back-pressure as retryable, not as Malloy", () => {

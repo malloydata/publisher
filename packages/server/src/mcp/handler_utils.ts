@@ -6,6 +6,7 @@ import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionFailedError,
    ConnectionNotFoundError,
    InvalidArgumentError,
    PackageNotFoundError,
@@ -19,6 +20,7 @@ import {
    QueryTimeoutError,
    ResponseUnserializableError,
    ServiceUnavailableError,
+   logInternalFailure,
 } from "../errors";
 import {
    getNotFoundError,
@@ -105,6 +107,24 @@ export function classifyToolError(
       error instanceof ConnectionNotFoundError
    ) {
       return getNotFoundError(identifier);
+   }
+   if (error instanceof ConnectionFailedError) {
+      // The database could not be reached. The internal branch below would
+      // call it unexpected, and nothing here should send the agent to its
+      // Malloy. The driver's text can name an internal host, so it is logged
+      // and left out, as on the HTTP 502.
+      logInternalFailure(
+         `Database unreachable during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `Could not reach the database for ${identifier}. The query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      } satisfies ErrorDetails;
    }
    if (error instanceof ServiceUnavailableError) {
       // Back-pressure: surface the server's own message so the caller knows to

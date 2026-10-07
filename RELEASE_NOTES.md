@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - A database that cannot be reached answers 502, not 400
+
+When the database behind a query could not be reached (the connection was refused, reset or timed out, or the server closed it), the query route answered 400 with `Query execution failed: <driver text>`. That read as "fix your query" to every caller, and the driver text could name an internal host and port.
+
+It now answers **502** with `reason: CONNECTION_FAILED` and the generic message `Upstream connection error.` The driver's text goes to the server log at `warn`. The same holds for a notebook cell, for `sqlQuery` and `sqlTemporaryTable`, and for listing a connection's schemas and tables, which answered 500 before. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
+
+A query the database ran and rejected (a type mismatch, a division by zero, a permission on a table) is still a 400 with the database's text, and now carries `reason: QUERY_EXECUTION_FAILED`.
+
+**If you branch on the old 400**, branch on `reason` instead: `CONNECTION_FAILED` means retry or report the connection, and `QUERY_EXECUTION_FAILED` means change the query. Do not answer a 502 here by sending the query to another server; it reaches the same database.
+
+Publisher recognizes an unreachable database from the driver's error code: Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others) on the error or its `cause`, a Postgres connection SQLSTATE (class `08`, `57P01`-`57P03`), and MySQL's `fatal` flag. Two drivers raise one with no code, so their exact message is matched instead: node-pg's `Connection terminated unexpectedly`, and MySQL's `Can't add new command when connection is in closed state` until Publisher moves to a Malloy release with [malloydata/malloy#3134](https://github.com/malloydata/malloy/pull/3134). A failure that matches none of these keeps its old status.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.

@@ -130,7 +130,15 @@ export function logInternalFailure(
  * caller on that connection is using. Only reasons that a caller is expected to
  * branch on are emitted; absence is the norm and means "no special handling".
  */
-export type ErrorReason = "TABLE_NOT_FOUND";
+export type ErrorReason =
+   | "TABLE_NOT_FOUND"
+   // On a 502: the database could not be reached, so the query never ran. The
+   // query and the model are fine, and rewriting either will not help.
+   | "CONNECTION_FAILED"
+   // On a 400: the database ran the query and rejected it (a type mismatch, a
+   // division by zero, a permission on a table). Distinct from a Malloy
+   // compile error, which carries `problems` instead.
+   | "QUERY_EXECUTION_FAILED";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -160,6 +168,74 @@ export function filesystemAccessFailure(
       current = errno.cause;
    }
    return undefined;
+}
+
+/**
+ * Node's codes for a socket that could not connect or was cut. Postgres,
+ * MySQL and Snowflake all surface these, on the error itself or on its `cause`.
+ */
+const NODE_CONNECTION_CODES = new Set([
+   "ECONNREFUSED",
+   "ECONNRESET",
+   "ECONNABORTED",
+   "EPIPE",
+   "ETIMEDOUT",
+   "ENOTFOUND",
+   "EAI_AGAIN",
+   "EHOSTUNREACH",
+   "ENETUNREACH",
+]);
+
+/**
+ * Postgres SQLSTATEs that mean the session is gone rather than that the
+ * statement was wrong: class 08 (connection exception) and the three
+ * operator-intervention codes for a server shutting down.
+ */
+const POSTGRES_CONNECTION_SQLSTATE = /^(08[0-9A-Z]{3}|57P0[123])$/;
+
+/**
+ * Messages raised with no code at all, matched whole.
+ *
+ * node-pg raises "Connection terminated unexpectedly" as a plain Error, so it
+ * stays. The MySQL one is here only because `@malloydata/db-mysql` drops the
+ * driver's `fatal` flag; delete it once Publisher is on a Malloy release with
+ * malloydata/malloy#3134, which keeps the driver's error as `cause`.
+ */
+const CODELESS_CONNECTION_MESSAGES = [
+   /^Connection terminated unexpectedly$/,
+   /^(Error: )?Can't add new command when connection is in closed state$/,
+];
+
+/**
+ * Whether `error` means the database could not be reached, as opposed to the
+ * database running the statement and rejecting it.
+ *
+ * Read from the driver's structured fields on the error and its `cause` chain:
+ * a Node socket code, a Postgres connection SQLSTATE, or mysql2's `fatal`
+ * flag, which it sets when the connection is unusable. Message text is the
+ * last resort, for the few drivers that raise a connection failure with no
+ * code, and is matched whole so a row value or a table name quoted inside a
+ * longer message cannot match.
+ */
+export function isConnectionFailure(error: unknown): boolean {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code, fatal } = current as Error & {
+         code?: unknown;
+         fatal?: unknown;
+      };
+      if (typeof code === "string") {
+         if (NODE_CONNECTION_CODES.has(code)) return true;
+         if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
+      }
+      if (fatal === true) return true;
+      const message = current.message.trim();
+      if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
+         return true;
+      }
+      current = current.cause;
+   }
+   return false;
 }
 
 /**
@@ -226,7 +302,9 @@ export function internalErrorToHttpError(
             `Give the user the server runs as access to it.`,
       );
    }
-   if (error instanceof BadRequestError) {
+   if (error instanceof QueryExecutionError) {
+      return httpError(400, error.message, "QUERY_EXECUTION_FAILED");
+   } else if (error instanceof BadRequestError) {
       return httpError(400, error.message);
    } else if (error instanceof ServerConfigurationError) {
       logInternal("Server configuration error", error, "warn");
@@ -290,11 +368,15 @@ export function internalErrorToHttpError(
       // and wants its own change; a table path that names nothing already took
       // that route (see TableNotFoundError, 404). Until then a caller who needs
       // the driver's text gets it from the logs, by traceparent.
+      const reason =
+         error instanceof ConnectionFailedError
+            ? "CONNECTION_FAILED"
+            : undefined;
       if (error.callerSafe) {
-         return httpError(502, error.message);
+         return httpError(502, error.message, reason);
       }
       logInternal("Upstream connection error", error, "warn");
-      return httpError(502, GENERIC_UPSTREAM_MESSAGE);
+      return httpError(502, GENERIC_UPSTREAM_MESSAGE, reason);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof MaterializationConflictError) {
@@ -367,6 +449,17 @@ export class BadRequestError extends Error {
  * Still a BadRequestError, so it still maps to HTTP 400.
  */
 export class InvalidArgumentError extends BadRequestError {}
+
+/**
+ * The database ran a query and rejected it: a type mismatch, a division by
+ * zero, a permission on a table. The message carries the database's text,
+ * because only the caller can act on it.
+ *
+ * Still a BadRequestError, so it still maps to HTTP 400. It adds
+ * `reason: QUERY_EXECUTION_FAILED`, so a caller can tell it from a Malloy
+ * compile error without reading the message.
+ */
+export class QueryExecutionError extends BadRequestError {}
 
 /**
  * A dashboard write was refused because the text does not compile, and the
@@ -475,6 +568,21 @@ export class ConnectionError extends Error {
       this.callerSafe = options?.callerSafe ?? false;
    }
 }
+
+/**
+ * The database could not be reached: the connection was refused, reset or
+ * timed out, or the server closed it. The query never ran, so it maps to 502
+ * with `reason: CONNECTION_FAILED`, not to the 400 a rejected query gets.
+ *
+ * Raised only where {@link isConnectionFailure} recognized the driver's error.
+ * The message is the driver's, so it is logged and generalized like any other
+ * ConnectionError: it can name an internal host and port.
+ *
+ * Not a 503. A router treats a worker's 503 as "this worker is overloaded" and
+ * sends the query to another worker, which would run it again against the same
+ * unreachable database.
+ */
+export class ConnectionFailedError extends ConnectionError {}
 
 /**
  * A storage destination was named but is not configured on the
