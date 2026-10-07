@@ -29,6 +29,7 @@ import {
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
+   PACKAGE_INSTALL_RECORD_NAME,
 } from "../constants";
 import {
    AccessDeniedError,
@@ -329,7 +330,6 @@ export class Environment {
       {
          count: number;
          since: number;
-         location?: string;
          /**
           * Resolves once every load counted here has finished, however each
           * ended. Loads of one package started independently (a reinstall
@@ -1863,10 +1863,12 @@ export class Environment {
     *
     * A package that is loading for the first time has nothing compiled to
     * describe. It is listed, as its name and `status` alone, only when
-    * `includeLoading` is set; `/status` sets it so an orchestrator can tell a
-    * load it dispatched from a package that is absent. The default listing
-    * leaves it out, because that listing is also what syncs packages to the
-    * database and what the discovery tools treat as queryable.
+    * `includeLoading` is set; `GET /status?includeLoading=true` sets it so an
+    * orchestrator that reads `status` can tell a load it dispatched from a
+    * package that is absent. Every other listing leaves it out: a listed
+    * package has always meant one that can serve here, and a consumer that
+    * reads the listing that way would otherwise route to a copy still
+    * downloading or compiling.
     */
    public async listPackages(
       options: { includeLoading?: boolean } = {},
@@ -1953,13 +1955,18 @@ export class Environment {
     * it answers during the operations it describes.
     */
    /**
-    * The location an install in progress is fetching the package from, or
-    * undefined when no install is in flight. Lets a caller tell a request
-    * that names the same location apart from one that asks for new content
-    * while the package is not yet resident to ask.
+    * Resolve once no load, reinstall or recompile of the package is in flight
+    * here. A caller that must decide against the copy that will be resident
+    * (a PATCH comparing its `location` with the installed one) waits here
+    * first, so it reads the outcome of the install rather than the copy the
+    * install is about to replace, or has just failed to.
     */
-   public installingFrom(packageName: string): string | undefined {
-      return this.loadsInFlight.get(packageName)?.location;
+   public async awaitPackageLoads(packageName: string): Promise<void> {
+      let entry = this.loadsInFlight.get(packageName);
+      while (entry !== undefined) {
+         await entry.settled;
+         entry = this.loadsInFlight.get(packageName);
+      }
    }
 
    public describePackageStatus(packageName: string): ApiPackageStatus {
@@ -1983,7 +1990,6 @@ export class Environment {
    private async trackPackageLoad<T>(
       packageName: string,
       fn: () => Promise<T>,
-      location?: string,
    ): Promise<T> {
       const current = this.loadsInFlight.get(packageName);
       let settle = current?.settle;
@@ -1995,7 +2001,6 @@ export class Environment {
       this.loadsInFlight.set(packageName, {
          count: (current?.count ?? 0) + 1,
          since: current?.since ?? Date.now(),
-         location: location ?? current?.location,
          settled,
          settle: settle!,
       });
@@ -2618,9 +2623,12 @@ export class Environment {
       validate?: (pkg: Package) => string | undefined,
       options: {
          allowAdmission?: boolean;
+         /**
+          * Metadata to apply to the installed copy inside the install's own lock
+          * hold. The `location` it carries is recorded as where the package was
+          * installed from; an install is the only path that records one.
+          */
          update?: ApiPackage;
-         /** Where `downloader` fetches from; reported by {@link installingFrom}. */
-         location?: string;
       } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
@@ -2637,16 +2645,13 @@ export class Environment {
             : "install a package",
          options.allowAdmission === true,
       );
-      return this.trackPackageLoad(
-         packageName,
-         () =>
-            this._installPackageTracked(
-               packageName,
-               downloader,
-               validate,
-               options,
-            ),
-         options.location,
+      return this.trackPackageLoad(packageName, () =>
+         this._installPackageTracked(
+            packageName,
+            downloader,
+            validate,
+            options,
+         ),
       );
    }
 
@@ -2852,7 +2857,9 @@ export class Environment {
          // delete queued behind the swap ran first and the update then found
          // no package and answered 404 for work that had completed.
          if (options.update !== undefined) {
-            await this._updatePackageLocked(packageName, options.update);
+            await this._updatePackageLocked(packageName, options.update, {
+               recordLocation: true,
+            });
          }
 
          return newPackage;
@@ -3304,12 +3311,6 @@ export class Environment {
             ...(metadata.description !== undefined
                ? { description: metadata.description }
                : {}),
-            // The install location, so an in-place reload and a restart know
-            // where this package came from. A caller that supplies it names
-            // what it just fetched; it is never cleared from here.
-            ...(metadata.location !== undefined && metadata.location !== ""
-               ? { location: metadata.location }
-               : {}),
             ...(metadata.explores !== undefined && !echoesDerivedSurface
                ? { explores: metadata.explores }
                : {}),
@@ -3348,6 +3349,18 @@ export class Environment {
             JSON.stringify(updatedManifest, null, 2),
             "utf-8",
          );
+         // The install location lives in the server's own record beside the
+         // manifest, so an in-place reload and a restart know where the
+         // package came from, and a `location` an author wrote into
+         // publisher.json is never read as one. Written only when an install
+         // supplies it; never cleared from here.
+         if (metadata.location !== undefined && metadata.location !== "") {
+            await fs.promises.writeFile(
+               safeJoinUnderRoot(packagePath, PACKAGE_INSTALL_RECORD_NAME),
+               JSON.stringify({ location: metadata.location }, null, 2),
+               "utf-8",
+            );
+         }
 
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
@@ -3358,17 +3371,19 @@ export class Environment {
 
    public async updatePackage(packageName: string, body: ApiPackage) {
       assertSafePackageName(packageName);
-      // An install downloads before it takes the package lock, so a PATCH
-      // that arrives during a first install's download finds no resident
-      // copy and a free lock. It is meant for the copy being installed, so
-      // it waits for that install to finish and is then applied to it; if
-      // the install failed, the lookup below answers 404 as it would for any
-      // package that is not here.
-      if (!this.packages.has(packageName)) {
-         await this.loadsInFlight.get(packageName)?.settled;
-      }
+      // An install downloads before it takes the package lock. A PATCH that
+      // arrives then finds the lock free and, during a reinstall, the previous
+      // copy resident; applied at once it would land on that copy, and what
+      // it wrote would be swapped away a moment later, or kept by a rollback
+      // as if the new content had arrived. So a PATCH waits for every load in
+      // flight and is applied to whichever copy is resident afterwards. If
+      // nothing is, the lookup below answers 404 as for any package that is
+      // not here.
+      await this.awaitPackageLoads(packageName);
       return this.withPackageLock(packageName, () =>
-         this._updatePackageLocked(packageName, body),
+         this._updatePackageLocked(packageName, body, {
+            recordLocation: false,
+         }),
       );
    }
 
@@ -3378,7 +3393,20 @@ export class Environment {
     * and {@link installPackage} calls this inside its own hold so an install
     * and the metadata that came with it land as one operation.
     */
-   private async _updatePackageLocked(packageName: string, body: ApiPackage) {
+   private async _updatePackageLocked(
+      packageName: string,
+      body: ApiPackage,
+      options: {
+         /**
+          * Whether the body's `location` is recorded as where the package was
+          * installed from. True only for the metadata an install applies to the
+          * copy it just installed: a metadata PATCH never changes it, because a
+          * PATCH naming a different location is a reinstall, decided before it
+          * gets here.
+          */
+         recordLocation: boolean;
+      },
+   ) {
       const _package = this.packages.get(packageName);
       if (!_package) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
@@ -3403,7 +3431,7 @@ export class Environment {
             ? normalizedExplores
             : existing.explores;
       const queryableSources =
-         body.queryableSources !== undefined
+         body.queryableSources != null
             ? body.queryableSources
             : existing.queryableSources;
       // Preserve the existing manifestLocation unless the body explicitly
@@ -3476,7 +3504,10 @@ export class Environment {
          description:
             body.description != null ? body.description : existing.description,
          resource: body.resource != null ? body.resource : existing.resource,
-         location: body.location != null ? body.location : existing.location,
+         location:
+            options.recordLocation && body.location != null
+               ? body.location
+               : existing.location,
          explores,
          queryableSources,
          manifestLocation,
@@ -3510,9 +3541,11 @@ export class Environment {
       await this.writePackageManifest(packageName, {
          name: packageName,
          description: body.description ?? undefined,
-         location: body.location ?? undefined,
+         location: options.recordLocation
+            ? (body.location ?? undefined)
+            : undefined,
          explores: normalizedExplores,
-         queryableSources: body.queryableSources,
+         queryableSources: body.queryableSources ?? undefined,
          manifestLocation: body.manifestLocation,
          // Only write when explicitly provided (non-null): mirrors the
          // null-as-absent rule above, so a rebind PATCH neither wipes the
@@ -3527,22 +3560,28 @@ export class Environment {
       // When the body changes manifestLocation, apply it now so the new
       // binding takes effect without a separate reload: a URI rebinds models
       // to the materialized tables; null/empty reverts the package to live.
-      if (body.manifestLocation !== undefined) {
+      const revertsBinding =
+         body.manifestLocation !== undefined &&
+         !body.manifestLocation &&
+         (_package.hasBoundTableNameManifest() ||
+            _package.hasStorageServeBindings());
+      if (body.manifestLocation) {
          // A rebind may recompile the package (colocated manifest entries
          // resolve at compile time), so it is reported as loading while it
          // runs, like every other recompile.
+         await this.trackPackageLoad(packageName, () =>
+            this.bindManifest(_package, body.manifestLocation as string),
+         );
+      } else if (revertsBinding) {
+         // Revert to live: drop the colocated tableName substitution AND the
+         // cross-connection storage serve bindings the prior bindManifest
+         // applied, so no query still routes to a materialized table after
+         // the operator explicitly cleared the manifest. A package with
+         // nothing bound has nothing to revert, so a null from a client that
+         // serializes unset fields does not recompile it.
          await this.trackPackageLoad(packageName, async () => {
-            if (body.manifestLocation) {
-               await this.bindManifest(_package, body.manifestLocation);
-            } else {
-               // Revert to live: drop the colocated tableName substitution AND
-               // the cross-connection storage serve bindings the prior
-               // bindManifest applied, so no query still routes to a
-               // materialized table after the operator explicitly cleared the
-               // manifest.
-               await _package.reloadAllModels({});
-               _package.bindStorageServeBindings({});
-            }
+            await _package.reloadAllModels({});
+            _package.bindStorageServeBindings({});
          });
       } else {
          // The surface may have changed with no file changing, so the tile
@@ -3877,7 +3916,9 @@ export class Environment {
       );
    }
 
-   public async serialize(): Promise<ApiEnvironment> {
+   public async serialize(
+      options: { includeLoading?: boolean } = {},
+   ): Promise<ApiEnvironment> {
       return {
          ...this.metadata,
          // Credentials stay server-side, the same rule storageDestinations
@@ -3891,7 +3932,7 @@ export class Environment {
             name,
             type,
          })),
-         packages: await this.listPackages({ includeLoading: true }),
+         packages: await this.listPackages(options),
       };
    }
 

@@ -6,6 +6,13 @@ export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
+/**
+ * The server's own record of where it installed a package from, beside the
+ * package's manifest. Written only by the server, so a reload trusts it as the
+ * source to re-fetch; a `location` an author writes into `publisher.json` is
+ * never read as one.
+ */
+export const PACKAGE_INSTALL_RECORD_NAME = ".publisher-install.json";
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 

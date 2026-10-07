@@ -172,6 +172,18 @@ describe("Package.status: serving and loading", () => {
       expect(onStatus?.status?.loading).toBe(true);
       expect(onStatus?.status?.loadingSince).toBeString();
 
+      // The environment resource and the default status report describe the
+      // environment without it: a listed package has always meant one that
+      // can serve here. Only `includeLoading` adds it.
+      expect(
+         (await env.serialize()).packages?.map((p) => p.name),
+      ).not.toContain("pkg");
+      expect(
+         (await env.serialize({ includeLoading: true })).packages?.map(
+            (p) => p.name,
+         ),
+      ).toContain("pkg");
+
       download.resolve();
       await install;
 
@@ -278,13 +290,19 @@ describe("Package.status: serving and loading", () => {
 
    it("keeps description, resource and location through a PATCH that omits them", async () => {
       const env = await Environment.create("testEnv", envPath, []);
-      await writePackageDir(path.join(envPath, "pkg"), "first");
-      await env.addPackage("pkg");
-      await env.updatePackage("pkg", {
-         name: "pkg",
-         resource: "/api/v0/environments/testEnv/packages/pkg",
-         location: "gs://bucket/pkg.zip",
-      });
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture, "first");
+      await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         {
+            update: {
+               resource: "/api/v0/environments/testEnv/packages/pkg",
+               location: "gs://bucket/pkg.zip",
+            },
+         },
+      );
 
       // A metadata PATCH that names only the manifest: everything it omits
       // must survive.
@@ -324,7 +342,7 @@ describe("Package.status: serving and loading", () => {
             await copyDir(fixture, stagingPath);
          },
          undefined,
-         { location, update: { location } },
+         { update: { location } },
       );
       expect(env.describePackageStatus("pkg").serving).toBe(false);
 
@@ -370,13 +388,19 @@ describe("Package.status: serving and loading", () => {
       // null counts as not mentioned, the rule `scope` already follows, and
       // publisher.json gets no `description: null` either.
       const env = await Environment.create("testEnv", envPath, []);
-      await writePackageDir(path.join(envPath, "pkg"), "first");
-      await env.addPackage("pkg");
-      await env.updatePackage("pkg", {
-         name: "pkg",
-         resource: "/api/v0/environments/testEnv/packages/pkg",
-         location: "gs://bucket/pkg.zip",
-      });
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture, "first");
+      await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         {
+            update: {
+               resource: "/api/v0/environments/testEnv/packages/pkg",
+               location: "gs://bucket/pkg.zip",
+            },
+         },
+      );
 
       const after = await env.updatePackage("pkg", {
          name: "pkg",
@@ -384,9 +408,11 @@ describe("Package.status: serving and loading", () => {
          resource: null as unknown as string,
          location: null as unknown as string,
          manifestLocation: null,
+         queryableSources: null as unknown as "declared",
       });
 
       expect(after.name).toBe("pkg");
+      expect(after.queryableSources).toBe("declared");
       expect(after.description).toBe("first");
       expect(after.resource).toBe("/api/v0/environments/testEnv/packages/pkg");
       expect(after.location).toBe("gs://bucket/pkg.zip");
@@ -397,7 +423,13 @@ describe("Package.status: serving and loading", () => {
          ),
       );
       expect(onDisk.description).toBe("first");
-      expect(onDisk.location).toBe("gs://bucket/pkg.zip");
+      const record = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, "pkg", ".publisher-install.json"),
+            "utf-8",
+         ),
+      );
+      expect(record.location).toBe("gs://bucket/pkg.zip");
 
       // An empty string is a value, and clears.
       const cleared = await env.updatePackage("pkg", {
@@ -488,7 +520,7 @@ describe("Package.status: serving and loading", () => {
             throw new Error("first download failed");
          },
          undefined,
-         { location },
+         { update: { location } },
       );
       const secondDownload = deferred();
       const second = env.installPackage(
@@ -498,7 +530,7 @@ describe("Package.status: serving and loading", () => {
             await copyDir(fixture, stagingPath);
          },
          undefined,
-         { location },
+         { update: { location } },
       );
 
       let patchSettled = false;
@@ -538,27 +570,148 @@ describe("Package.status: serving and loading", () => {
             await copyDir(fixture, stagingPath);
          },
          undefined,
-         { location, update: { location } },
+         { update: { location } },
       );
-      // Known from the moment the install is accepted, before anything is
-      // compiled, so a PATCH arriving mid-install can be matched against it.
-      expect(env.installingFrom("pkg")).toBe(location);
+      expect(env.describePackageStatus("pkg").loading).toBe(true);
       download.resolve();
       const installed = await install;
-      expect(env.installingFrom("pkg")).toBeUndefined();
+      expect(env.describePackageStatus("pkg").loading).toBe(false);
 
       expect(installed.getPackageMetadata().location).toBe(location);
-      const onDisk = JSON.parse(
+      // Recorded in the server's own file, not in the package's manifest: the
+      // manifest is the author's, and a reload fetches from this value.
+      const record = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, "pkg", ".publisher-install.json"),
+            "utf-8",
+         ),
+      );
+      expect(record.location).toBe(location);
+      const manifest = JSON.parse(
          await fs.readFile(
             path.join(envPath, "pkg", "publisher.json"),
             "utf-8",
          ),
       );
-      expect(onDisk.location).toBe(location);
+      expect(manifest.location).toBeUndefined();
 
-      // An in-place reload rebuilds the metadata from publisher.json.
+      // An in-place reload rebuilds the metadata from disk.
       const reloaded = await env.getPackage("pkg", true);
       expect(reloaded.getPackageMetadata().location).toBe(location);
+   });
+
+   it("ignores a location an author wrote into publisher.json", async () => {
+      // A reload re-fetches from the recorded location, mounting a local path
+      // in place. Read from the package's own manifest, that would let a
+      // package author name any path on the server; only the server's record
+      // counts.
+      const env = await Environment.create("testEnv", envPath, []);
+      const dir = path.join(envPath, "pkg");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: "pkg", location: "/etc" }),
+      );
+      await fs.writeFile(path.join(dir, "model.malloy"), MODEL);
+
+      const added = await env.addPackage("pkg");
+      expect(added?.getPackageMetadata().location).toBeUndefined();
+   });
+
+   it("a metadata PATCH never changes where a package was installed from", async () => {
+      // Only an install records a location. A PATCH naming a different one is
+      // a reinstall, decided by the controller; if a PATCH could write the
+      // location directly, a failed reinstall would leave the old content
+      // claiming the new location and the package would never upgrade.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      const first = "gs://bucket/pkg___1.0.0.zip";
+      await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         { update: { location: first } },
+      );
+
+      const after = await env.updatePackage("pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         description: "patched",
+      });
+      expect(after.description).toBe("patched");
+      expect(after.location).toBe(first);
+      const record = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, "pkg", ".publisher-install.json"),
+            "utf-8",
+         ),
+      );
+      expect(record.location).toBe(first);
+   });
+
+   it("a metadata PATCH during a reinstall waits for the swap and lands on the new copy", async () => {
+      // During a reinstall the previous copy is resident and the lock is free
+      // while the download runs. Applied then, the PATCH would land on the
+      // copy about to be replaced: lost at the swap, or kept by a rollback.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture, "first");
+      const second = path.join(rootDir, "fixture2");
+      await writePackageDir(second, "second");
+      await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         { update: { location: "gs://bucket/pkg___1.0.0.zip" } },
+      );
+
+      const download = deferred();
+      const reinstall = env.installPackage(
+         "pkg",
+         async (stagingPath) => {
+            await download.promise;
+            await copyDir(second, stagingPath);
+         },
+         undefined,
+         { update: { location: "gs://bucket/pkg___1.0.1.zip" } },
+      );
+      let patchSettled = false;
+      const patch = env
+         .updatePackage("pkg", { name: "pkg", resource: "/r" })
+         .finally(() => {
+            patchSettled = true;
+         });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(patchSettled).toBe(false);
+      expect(env.peekPackage("pkg")?.getPackageMetadata().description).toBe(
+         "first",
+      );
+
+      download.resolve();
+      await reinstall;
+      const after = await patch;
+      expect(after.description).toBe("second");
+      expect(after.resource).toBe("/r");
+      expect(after.location).toBe("gs://bucket/pkg___1.0.1.zip");
+   });
+
+   it("clearing a manifest that was never bound does not recompile the package", async () => {
+      // A null manifestLocation from a client that serializes unset fields
+      // has nothing to revert on a package serving live; recompiling every
+      // model to get back to where it already is costs a full load.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      await env.installPackage("pkg", (stagingPath) =>
+         copyDir(fixture, stagingPath),
+      );
+      const resident = env.peekPackage("pkg");
+      expect(resident).toBeDefined();
+      const reload = sinon.spy(resident!, "reloadAllModels");
+
+      await env.updatePackage("pkg", { name: "pkg", manifestLocation: null });
+      expect(reload.called).toBe(false);
    });
 
    it("applies a metadata PATCH that arrives during a first install once the install lands", async () => {

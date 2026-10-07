@@ -172,13 +172,13 @@ export class PackageController {
       }
       const location = resident?.location;
       if (resident && location) {
-         // The re-fetched tree's own publisher.json carries only what its
-         // author wrote. The location it was fetched from, and the metadata
-         // callers have since set on the served copy (the manifest binding
-         // above all, else the package would serve live until the next drift
-         // check; the description, policy and surface too) are re-applied
-         // inside the install's lock hold, so a reload changes the content and
-         // nothing else.
+         // The re-fetched tree carries what its author wrote. The two things
+         // an orchestrator set on the served copy, where it was installed from
+         // and which manifest it is bound to, are re-applied inside the
+         // install, else the package would serve live until the next drift
+         // check. Nothing else is: the author's description, surface and
+         // policy are the new tree's to declare, and a reload stays fail-safe
+         // rather than enforcing publish-time checks after the swap.
          const reinstalled = await environment.installPackage(
             packageName,
             (stagingPath) =>
@@ -189,7 +189,14 @@ export class PackageController {
                   stagingPath,
                ),
             undefined,
-            { location, update: residentMetadataToReapply(resident) },
+            {
+               update: {
+                  location,
+                  ...(resident.manifestLocation
+                     ? { manifestLocation: resident.manifestLocation }
+                     : {}),
+               },
+            },
          );
          return {
             metadata: reinstalled.getPackageMetadata(),
@@ -247,7 +254,6 @@ export class PackageController {
                // without the manifest the package came up serving live and was
                // fully reloaded moments later by the drift check.
                {
-                  location: bodyLocation,
                   update: {
                      location: bodyLocation,
                      // Only a manifest to bind. A fresh install serves live
@@ -346,24 +352,27 @@ export class PackageController {
          environmentName,
          false,
       );
-      // A `location` that matches the one the package was installed from, or
-      // is being installed from right now, is a metadata update, not a
-      // reinstall. A package version's content does not change under one URI,
-      // so re-downloading and recompiling it would only repeat work and hold
-      // two compiled copies for the duration; the rebind an orchestrator sends
-      // after a materialization build is exactly this shape, and so is the
-      // drift check it runs while a first install is still compiling. The
-      // update then queues on the package lock behind that install and lands
-      // on the installed copy. A caller that wants the same location fetched
-      // again reloads the package instead.
-      // The install in flight is asked first: while a reinstall from a new
-      // location runs, the resident copy still names the old one, and a
-      // repeated PATCH for the new location must wait for that install, not
-      // start a second. A location that is not a string (a client that
-      // serializes unset fields as null) names nothing to fetch.
-      const installedFrom =
-         environment.installingFrom(packageName) ??
-         environment.peekPackage(packageName)?.getPackageMetadata().location;
+      // A `location` that matches the one the package was installed from is a
+      // metadata update, not a reinstall. A package version's content does not
+      // change under one URI, so re-downloading and recompiling it would only
+      // repeat work and hold two compiled copies for the duration; the rebind
+      // an orchestrator sends after a materialization build is exactly this
+      // shape. A caller that wants the same location fetched again reloads the
+      // package instead.
+      //
+      // The decision is made against the copy that is resident once nothing
+      // is loading. During an install the resident copy, if any, is the one
+      // about to be replaced; deciding against it would start a second install
+      // for the location already in flight, or treat a location whose install
+      // has just failed as installed. Waiting first means a PATCH for the same
+      // location lands on the installed copy, and a PATCH for a location whose
+      // install failed installs it, as it did before. A location that is not a
+      // string (a client that serializes unset fields as null) names nothing
+      // to fetch.
+      await environment.awaitPackageLoads(packageName);
+      const installedFrom = environment
+         .peekPackage(packageName)
+         ?.getPackageMetadata().location;
       const reinstall =
          typeof body.location === "string" &&
          body.location !== "" &&
@@ -393,7 +402,7 @@ export class PackageController {
                   pkg,
                   body.explores?.map(normalizeModelPath),
                ),
-            { location: bodyLocation, update: body },
+            { update: body },
          );
          result = installed.getPackageMetadata();
       } else {
@@ -461,29 +470,4 @@ export class PackageController {
          );
       }
    }
-}
-
-/**
- * The metadata a reload re-applies to the re-fetched tree: everything the
- * served copy carries that a caller can set through the API, and nothing the
- * tree's own `publisher.json` is the source of. Fields the copy does not have
- * are left out, so the update neither clears them nor writes nulls.
- */
-function residentMetadataToReapply(resident: ApiPackage): ApiPackage {
-   const update: ApiPackage = {};
-   if (resident.location) update.location = resident.location;
-   if (resident.description !== undefined)
-      update.description = resident.description;
-   if (resident.resource !== undefined) update.resource = resident.resource;
-   if (resident.explores !== undefined) update.explores = resident.explores;
-   if (resident.queryableSources !== undefined)
-      update.queryableSources = resident.queryableSources;
-   if (resident.manifestLocation)
-      update.manifestLocation = resident.manifestLocation;
-   if (resident.scope != null) update.scope = resident.scope;
-   if (resident.materialization != null)
-      update.materialization = resident.materialization;
-   if (resident.queryMetadata != null)
-      update.queryMetadata = resident.queryMetadata;
-   return update;
 }
