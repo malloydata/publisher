@@ -623,6 +623,71 @@ describe("service/package", () => {
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
       });
+
+      describe("a published version", () => {
+         /** A package whose build plan defines `summary` with `sourceEntityId`. */
+         const planned = (versionId: string | undefined) => {
+            const pkg = packageWith({
+               eligible: ["summary", "stable"],
+               refused: {},
+            });
+            (
+               pkg as unknown as {
+                  buildPlan: {
+                     graphs: [];
+                     sources: Record<
+                        string,
+                        { name: string; sourceEntityId: string }
+                     >;
+                  };
+               }
+            ).buildPlan = {
+               graphs: [],
+               sources: {
+                  "summary@m": { name: "summary", sourceEntityId: "eid-mine" },
+                  "stable@m": { name: "stable", sourceEntityId: "eid-stable" },
+               },
+            };
+            if (versionId) pkg.setVersion(versionId, "1.1.0");
+            return pkg;
+         };
+         const built = (sourceName: string, sourceEntityId: string) => ({
+            ...entry(sourceName, `t_${sourceName}`),
+            sourceEntityId,
+         });
+
+         it("serves live a source whose stored table another version's definition built", () => {
+            // Under `scope: package` the versions share `summary`'s table, so
+            // once latest rebuilds it from a changed definition, this version's
+            // binding by name would answer from rows its own model never makes.
+            const pkg = planned("1.0.0");
+
+            pkg.bindStorageServeBindings({
+               a: built("summary", "eid-latests"),
+               b: built("stable", "eid-stable"),
+            });
+
+            expect(boundSources(pkg)).toEqual(["stable"]);
+         });
+
+         it("keeps a table its own definition built", () => {
+            const pkg = planned("1.0.0");
+
+            pkg.bindStorageServeBindings({ a: built("summary", "eid-mine") });
+
+            expect(boundSources(pkg)).toEqual(["summary"]);
+         });
+
+         it("leaves an unversioned package binding by name, as before", () => {
+            const pkg = planned(undefined);
+
+            pkg.bindStorageServeBindings({
+               a: built("summary", "eid-latests"),
+            });
+
+            expect(boundSources(pkg)).toEqual(["summary"]);
+         });
+      });
    });
 
    // The colocated-tier analogue of the storage gate above — a positive
