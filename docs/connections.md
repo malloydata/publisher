@@ -301,7 +301,7 @@ control on the tunnel itself, and is required unless the deployment opts out.
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
-(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+(a direct connection can set it too - see below). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
 **hostname** can't be checked from the tunnel address alone. The supported modes:
 
@@ -320,6 +320,40 @@ than the query driver, and every mode above keeps its meaning there: libpq dials
 endpoint as `hostaddr` while `host` stays the database's own name, so `verify-full` checks the
 certificate against the real host through the tunnel, with the same trust set the query path
 uses.
+
+### TLS and statement timeout per connection
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
+federated Postgres source accept the same two per-connection settings. A proxied connection also
+applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described above.
+
+- `sslmode` - the same four modes as above, applied against the configured host. When unset,
+  the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
+  the string's own `sslmode` applies and the field is ignored, with a warning logged.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
+  integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
+  `statement_timeout` applies. The query driver sets it on each session with
+  `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
+  timeout is merged into them, so its other server settings are kept; a `statement_timeout`
+  already in them is replaced by this field, with a warning logged. A connection pooler in
+  transaction mode may not carry a session setting from one statement to the next. The timeout
+  bounds every statement on the connection, including persisted-source builds: a colocated
+  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  for the longest build, not only for interactive queries.
+
+Neither setting is applied to a DuckLake catalog connection.
+
+#### Effect on persisted sources
+
+A persisted source's identity includes its connection's identity. A connection that carries a
+`fingerprint` uses it as that identity, so neither setting affects it. A connection without one
+derives its identity from its configuration, and both settings are part of it: setting or
+changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
+gives that connection's persisted sources new identities, and they are built again on the next
+build. A connection that sets neither keeps the identity it had before. Together with the build
+bound above, this means raising a timeout that cancelled a build also rebuilds every persisted
+source on a connection without a `fingerprint`.
 
 ## Credentials in API responses
 
