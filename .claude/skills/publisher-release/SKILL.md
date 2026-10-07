@@ -398,10 +398,44 @@ Open it once the run has finished, for any release whose sdk reached npm
 (`npm view @malloy-publisher/sdk version` reads it). That includes one whose
 `gh-release` then failed: it shipped, and `release-sync.yml` stays red until
 this PR merges. A release that never reached npm has nothing to merge back:
-leave its branch alone (the next dispatch skips past it) and dispatch again. A prerelease or a `+build` version never gets a PR.
+leave its branch alone (the next dispatch skips past it) and dispatch again.
+A prerelease or a `+build` version never gets a PR.
+
+**First confirm the branch is there and holds only the release commit**, against
+`origin/main`:
 
 ```bash
 V=<version>
+git fetch origin
+# 1. prepare pushed it
+git ls-remote --exit-code --heads origin "release/sdk-$V"
+# 2. one commit ahead of main, titled chore(release): $V
+git log --oneline "origin/main..origin/release/sdk-$V"
+# 3. only the three manifests and RELEASE_NOTES.md
+git diff --stat "origin/main...origin/release/sdk-$V"
+# 4. the [$V] sections it stamped, which should match the release page
+NOTES="$(mktemp)" && git show "origin/release/sdk-$V:RELEASE_NOTES.md" > "$NOTES"
+RELEASE_NOTES_FILE="$NOTES" node scripts/release-notes.mjs extract "$V" | grep '^## '
+# 5. no PR for it yet
+gh pr list --repo malloydata/publisher --head "release/sdk-$V" --state all
+```
+
+Read them in order, and stop at the first surprise:
+
+1. **No branch:** `prepare` failed before pushing, so nothing published. Read
+   the run; there is nothing to merge back.
+2. **More than one commit:** someone pushed to the release branch. Read those
+   commits before opening anything.
+3. **Any other file:** stop and show the user. The release branch should carry
+   nothing else.
+4. **No sections:** normal for a routine patch. Otherwise compare with
+   `gh release view "v$V" --repo malloydata/publisher`.
+5. **A PR exists:** use it rather than opening a second. If it was closed
+   unmerged, reopen it.
+
+Then open it against `main`:
+
+```bash
 gh pr create --repo malloydata/publisher --base main --head "release/sdk-$V" \
   --title "chore(release): $V" \
   --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
