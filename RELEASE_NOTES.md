@@ -34,7 +34,7 @@ The contract for native, immutable package versions lands in `api-doc.yaml` ahea
 - **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value, in either place, fails the server's initialization (`PUBLISHER_INIT_FAILED` on stderr, `initError` on `/status`), naming the setting.
 - **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
 
-## [Unreleased] - Server: per-connection sslmode and statement timeout for Postgres
+## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.
 
@@ -45,7 +45,7 @@ A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgre
 
 A DuckLake catalog connection is unchanged and applies neither setting.
 
-## [Unreleased] - Server: plain Postgres connections cap their open sessions
+## [0.9.6] - Server: plain Postgres connections cap their open sessions
 
 A plain (non-proxied) Postgres connection used to open a new database session for every query with no limit, so concurrent queries across a fleet could exhaust a role's `CONNECTION LIMIT`. It now runs through a pool that holds at most 5 open sessions per connection per process. Each query still gets a fresh session that is closed when it finishes, so session state (`SET`, `SET ROLE`, an open `BEGIN`) never carries over to another caller.
 
