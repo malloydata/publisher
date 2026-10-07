@@ -50,6 +50,64 @@ describe("scenario grammar: strict parse", () => {
       expect(parsed.steps.map((s) => s.kind)).toEqual(["publisher", "query"]);
    });
 
+   it("parses each ## Destination action", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Destination tables
+
+Expect:
+
+| name |
+| ---- |
+| a    |
+
+## Destination drop a (schema=analytics)
+
+## Destination cleanup (snapshots=7d, files=0s)
+
+deleted: 1
+
+## Destination files (dest=other)
+
+Expect:
+
+| table |
+| ----- |
+| b     |
+`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) =>
+            s.kind === "destination"
+               ? [
+                    s.action,
+                    s.dest,
+                    s.schema,
+                    s.table,
+                    s.snapshotsAgeMs,
+                    s.filesAgeMs,
+                    s.deleted,
+                 ]
+               : s.kind,
+         ),
+      ).toEqual([
+         ["tables", "lake", "main", undefined, undefined, undefined, undefined],
+         ["drop", "lake", "analytics", "a", undefined, undefined, undefined],
+         ["cleanup", "lake", "main", undefined, 7 * 864e5, 0, 1],
+         ["files", "other", "main", undefined, undefined, undefined, undefined],
+      ]);
+   });
+
+   it("requires a stated window on ## Destination cleanup", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination cleanup (files=0s)\n`,
+            "t",
+         ),
+      ).toThrow(/snapshots=<n>/);
+   });
+
    it("rejects an unknown section kind", () => {
       expect(() =>
          parseMarkdownForTest(`${FRONT}\n## Bulid targets\n`, "t"),
@@ -135,6 +193,7 @@ describe("scenario grammar: every step must verify something", () => {
          "await",
          "delete",
          "reclaim",
+         "destination",
       ]) {
          expect(stepMustAssert(kind)).toBe(true);
       }

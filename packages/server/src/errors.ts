@@ -456,6 +456,8 @@ export function internalErrorToHttpError(
       return httpError(404, error.message, "TABLE_NOT_FOUND");
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof StorageDestinationNotFoundError) {
+      return httpError(404, error.message);
    } else if (error instanceof DestinationNotFoundError) {
       return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
@@ -757,6 +759,18 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
  * so answers for one exactly as it does for a name that does not exist.
  */
 export class DestinationNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * The storage destination a request's path names is not configured on the
+ * environment. 404, unlike {@link DestinationNotFoundError}: here the destination
+ * is the resource being addressed, so its absence is an ordinary not-found, not
+ * a build or serve that named something unconfigured.
+ */
+export class StorageDestinationNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }
