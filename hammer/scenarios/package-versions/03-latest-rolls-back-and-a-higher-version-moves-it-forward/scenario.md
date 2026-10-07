@@ -65,9 +65,26 @@ Expect:
 | 1.1.0   | false  | false  |
 | 1.0.0   | true   | true   |
 
+## Version sales@1.0.5
+
+Above the rolled-back latest and below 1.1.0: it becomes latest, because a
+publish compares with latest, not with the highest version published.
+
+```malloy
+source: answer is orders_pg.sql("SELECT 5 as n")
+```
+
+## Query latest (again)
+
+Expect:
+
+| n |
+| - |
+| 5 |
+
 ## Version sales@1.2.0
 
-Higher than the rolled-back latest, so it becomes latest.
+Higher than latest, so it becomes latest.
 
 ```malloy
 source: answer is orders_pg.sql("SELECT 3 as n")

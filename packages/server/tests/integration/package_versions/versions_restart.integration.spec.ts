@@ -70,6 +70,26 @@ async function poll(
    return false;
 }
 
+/**
+ * This process's environment, minus what would change how the child starts:
+ * a sibling spec in the same run that failed before its cleanup can leave
+ * `INITIALIZE_STORAGE` (which would drop the store this test restarts on), a
+ * config path, or a shutdown setting behind.
+ */
+function inheritedEnv(): NodeJS.ProcessEnv {
+   const env = { ...process.env };
+   for (const key of Object.keys(env)) {
+      if (
+         key === "INITIALIZE_STORAGE" ||
+         key === "PUBLISHER_CONFIG_PATH" ||
+         key.startsWith("SHUTDOWN_")
+      ) {
+         delete env[key];
+      }
+   }
+   return env;
+}
+
 /** One server process on `serverRoot`, with package versioning on. */
 class Server {
    private proc: ChildProcess | undefined;
@@ -77,9 +97,14 @@ class Server {
    log = "";
    baseUrl = "";
 
+   private closed = false;
+
    constructor(private serverRoot: string) {}
 
    async start(): Promise<void> {
+      // A hook that timed out keeps running after teardown; it must not
+      // spawn a server nothing will stop.
+      if (this.closed) throw new Error("server closed");
       const port = await freePort();
       let mcpPort = await freePort();
       while (mcpPort === port) mcpPort = await freePort();
@@ -88,12 +113,13 @@ class Server {
       this.proc = spawn("bun", ["src/server.ts"], {
          cwd: SERVER_DIR,
          env: {
-            ...process.env,
+            ...inheritedEnv(),
             SERVER_ROOT: this.serverRoot,
             PUBLISHER_HOST: "127.0.0.1",
             PUBLISHER_PORT: String(port),
             MCP_PORT: String(mcpPort),
             PUBLISHER_PACKAGE_VERSIONING: "on",
+            PUBLISHER_VERSION_PROMOTION: "on-publish",
             PUBLISHER_NO_MCP_CONFIG: "1",
          },
          stdio: ["ignore", "pipe", "pipe"],
@@ -127,6 +153,12 @@ class Server {
          }
       }, 150_000);
       if (!serving) throw new Error(`server did not serve:\n${this.log}`);
+   }
+
+   /** Stop, and refuse any later start. */
+   async close(): Promise<void> {
+      this.closed = true;
+      await this.stop();
    }
 
    async stop(): Promise<void> {
@@ -322,10 +354,12 @@ describe("published versions across a restart", () => {
 
       // ---- Second process, same server root. ----
       await server.start();
-   });
+      // Two server starts (150s each, worst case), two builds (120s each) and
+      // a stop backstop: past the file's 300s default for a single test.
+   }, 600_000);
 
    afterAll(async () => {
-      await server?.stop();
+      await server?.close();
       for (const dir of [serverRoot, srcRoot]) {
          fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -359,10 +393,18 @@ describe("published versions across a restart", () => {
       ).json()) as { manifestLocation?: string; boundManifestUri?: string };
       expect(bound.manifestLocation).toBe(manifestFile);
       expect(bound.boundManifestUri).toBe(manifestFile);
-      const other = (await (
-         await fetch(`${pkgApi("kept")}?versionId=1.1.0`)
-      ).json()) as { manifestLocation?: string | null };
+      const res = await fetch(`${pkgApi("kept")}?versionId=1.1.0`);
+      expect(res.status).toBe(200);
+      const other = (await res.json()) as {
+         versionId?: string;
+         manifestLocation?: string | null;
+         boundManifestUri?: string | null;
+      };
+      expect(other.versionId).toBe("1.1.0");
       expect(other.manifestLocation ?? null).toBeNull();
+      // The binding in memory, not only the row: a restart that bound the
+      // manifest onto every loaded version would leave the row right.
+      expect(other.boundManifestUri ?? null).toBeNull();
    });
 
    it("lists each version's materialization runs, which kept their version", async () => {
@@ -390,12 +432,17 @@ describe("published versions across a restart", () => {
       expect(await n("kept")).toBe(8);
    });
 
-   it("publishes on from where it left off", async () => {
+   it("publishes on from where it left off: promotion compares with latest, not the highest version", async () => {
+      // 1.1.1 is above latest (1.1.0) and below the archived 1.2.0, so it
+      // becomes latest only because promotion compares with latest.
+      expect(await publish("kept", "1.1.1", 9)).toEqual({ status: 200 });
+      expect(await n("kept")).toBe(9);
       expect(await publish("kept", "1.3.0", 10)).toEqual({ status: 200 });
       expect(await n("kept")).toBe(10);
       expect((await versions("kept")).map(([id]) => id)).toEqual([
          "1.3.0",
          "1.2.0",
+         "1.1.1",
          "1.1.0",
          "1.0.0",
       ]);

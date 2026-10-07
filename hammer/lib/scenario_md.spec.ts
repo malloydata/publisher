@@ -452,6 +452,15 @@ run: daily -> { select: total }
 });
 
 describe("scenario grammar: package versions", () => {
+   it("refuses (version=) on an orchestrated build, which could not carry it", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build (orchestrated, version=1.0.0)\n\n- daily -> daily_t @ lake\n`,
+            "t",
+         ),
+      ).toThrow("not supported with (orchestrated)");
+   });
+
    const MODEL = "```malloy\nsource: s is orders_pg.sql('SELECT 1 as n')\n```";
 
    it("reads a published version, its scope, and a refusal's reason", () => {

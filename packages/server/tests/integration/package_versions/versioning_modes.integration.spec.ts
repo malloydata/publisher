@@ -4,20 +4,29 @@
 /// <reference types="bun-types" />
 
 /**
- * Package versioning across its modes, on every route that reads a
- * `versionId`.
+ * Package versioning across its modes, on 13 kinds of route that read a
+ * `versionId`: one of each shape (package, model, query, compile, document
+ * lists, data apps, databases, the package-scoped connection, materializations,
+ * events and static files). The per-item routes behind them (one dashboard,
+ * one notebook or cell, a connection's tables and SQL routes, one
+ * materialization) resolve the version the same way and are not probed here.
  *
  * The feature ships dormant, so the property that matters most is that the
  * modes do not leak into one another: with `packageVersioning` off a package
  * is the mutable slot it always was, a server that published versions keeps
  * serving them when the setting is turned off again, an unversioned package
- * never answers as if it were a version, and Credible's `pkg___<version>`
- * packages (unversioned packages whose names carry a version) keep working
- * whatever their requests carry. Each route is probed the same way in each
- * mode, so a route that forgets the version shows up as one failing row.
+ * never answers as if it were a version, and packages whose names carry a
+ * version (`pkg___<version>`, unversioned) keep working whatever their
+ * requests carry. Each route is probed the same way in each mode, so a route
+ * that forgets the version shows up as one failing row.
  *
- * Each package's model answers a different number, so where a route's answer
- * can say which tree served it, the probe reads it.
+ * Each package tree carries markers of its own number `n`: the model answers
+ * it, a source and a model file are named for it, a data file too, and its
+ * page says it. So a route whose answer can say which tree served it is
+ * checked on that answer, not only on its status: one that resolved the
+ * version and then read `latest` fails. Routes whose answer is the same for
+ * every tree (dashboards, notebooks, connection schemas, materializations,
+ * events) are checked on status alone.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -34,6 +43,16 @@ interface Probe {
    /** What the tree that answered says it is, when the route can tell. */
    answer?: number | string | null;
 }
+
+/** The number a marker in `pattern` carries anywhere in `body`, or null. */
+const marker =
+   (pattern: RegExp) =>
+   (body: unknown): number | null => {
+      const m = pattern.exec(
+         typeof body === "string" ? body : JSON.stringify(body),
+      );
+      return m ? Number(m[1]) : null;
+   };
 
 /** One route that reads a `versionId`, and how to call it. */
 interface Route {
@@ -80,10 +99,15 @@ const ROUTES: Route[] = [
             return pkg.versionId ?? null;
          }),
    },
-   { name: "GET models", call: (base, v) => get(`${base}/models${query(v)}`) },
+   {
+      name: "GET models",
+      call: (base, v) =>
+         get(`${base}/models${query(v)}`, marker(/marker_(\d+)\.malloy/)),
+   },
    {
       name: "GET model",
-      call: (base, v) => get(`${base}/models/report.malloy${query(v)}`),
+      call: (base, v) =>
+         get(`${base}/models/report.malloy${query(v)}`, marker(/tag_(\d+)/)),
    },
    {
       name: "POST query",
@@ -110,9 +134,10 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               source: "query: probe is report -> { select: n }",
+               source: "run: report -> { select: n }",
+               includeSql: true,
             }),
-         }).then((res) => probe(res)),
+         }).then((res) => probe(res, marker(/SELECT (\d+) as n/))),
    },
    {
       name: "GET dashboards",
@@ -124,15 +149,30 @@ const ROUTES: Route[] = [
    },
    {
       name: "GET data-apps",
-      call: (base, v) => get(`${base}/data-apps${query(v)}`),
+      call: (base, v) =>
+         get(`${base}/data-apps${query(v)}`, marker(/answers (\d+)/)),
    },
    {
       name: "GET databases",
-      call: (base, v) => get(`${base}/databases${query(v)}`),
+      call: (base, v) =>
+         get(`${base}/databases${query(v)}`, marker(/data_(\d+)\.csv/)),
    },
    {
       name: "GET connection schemas",
       call: (base, v) => get(`${base}/connections/duckdb/schemas${query(v)}`),
+   },
+   {
+      // The package's own duckdb sandbox reads the tree's files, so a query of
+      // its data file says which tree the connection was opened on.
+      name: "POST connection sqlQuery",
+      call: (base, v) =>
+         fetch(`${base}/connections/duckdb/sqlQuery${query(v)}`, {
+            method: "POST",
+            headers: json,
+            body: JSON.stringify({
+               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+            }),
+         }).then((res) => probe(res, marker(/\\?"n\\?":\s*\\?"?(\d+)/))),
    },
    {
       name: "GET materializations",
@@ -155,19 +195,34 @@ const ROUTES: Route[] = [
       },
    },
    {
+      // A refusal here is the JSON error every route answers, so its reason
+      // is read like theirs: a missing file's HTML 404 cannot pass for one.
       name: "GET static page",
       call: (base, v) =>
          fetch(`${base.replace("/api/v0", "")}/index.html${query(v)}`).then(
-            async (res) => {
-               const text = await res.text();
-               const out: Probe = { status: res.status };
-               const m = /answers (\d+)/.exec(text);
-               if (res.status < 400 && m) out.answer = Number(m[1]);
-               return out;
-            },
+            (res) => probe(res, marker(/answers (\d+)/)),
          ),
    },
 ];
+
+/** Routes whose answer says which tree served it. */
+const ANSWERING = new Set([
+   "GET package",
+   "GET models",
+   "GET model",
+   "POST query",
+   "POST compile",
+   "GET data-apps",
+   "GET databases",
+   "POST connection sqlQuery",
+   "GET static page",
+]);
+
+const route = (name: string): Route => {
+   const found = ROUTES.find((r) => r.name === name);
+   if (!found) throw new Error(`no route ${name}`);
+   return found;
+};
 
 describe("package versioning across its modes", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
@@ -200,8 +255,14 @@ describe("package versioning across its modes", () => {
       );
       await fs.writeFile(
          path.join(dir, "report.malloy"),
-         `source: report is duckdb.sql("SELECT ${n} as n")\n`,
+         `source: report is duckdb.sql("SELECT ${n} as n")\n` +
+            `source: tag_${n} is report\n`,
       );
+      await fs.writeFile(
+         path.join(dir, `marker_${n}.malloy`),
+         `source: marker is duckdb.sql("SELECT ${n} as m")\n`,
+      );
+      await fs.writeFile(path.join(dir, `data_${n}.csv`), `n\n${n}\n`);
       await fs.mkdir(path.join(dir, "public"));
       await fs.writeFile(
          path.join(dir, "public/index.html"),
@@ -261,30 +322,27 @@ describe("package versioning across its modes", () => {
 
    /** An unversioned package answers, and answers `n` where a route can say. */
    function servedUnversioned(n: number) {
-      return (route: string): Partial<Probe> => {
-         if (route === "POST query" || route === "GET static page") {
-            return { status: 200, answer: n };
-         }
-         if (route === "GET package") return { status: 200, answer: null };
-         return { status: 200 };
+      return (name: string): Partial<Probe> => {
+         if (name === "GET package") return { status: 200, answer: null };
+         return ANSWERING.has(name)
+            ? { status: 200, answer: n }
+            : { status: 200 };
       };
    }
 
-   /** A versioned package answers from `version`, whose model answers `n`. */
+   /** A versioned package answers from `version`, whose tree is `n`'s. */
    function servedVersion(version: string, n: number) {
-      return (route: string): Partial<Probe> => {
-         if (route === "POST query" || route === "GET static page") {
-            return { status: 200, answer: n };
-         }
-         if (route === "GET package") return { status: 200, answer: version };
-         return { status: 200 };
+      return (name: string): Partial<Probe> => {
+         if (name === "GET package") return { status: 200, answer: version };
+         return ANSWERING.has(name)
+            ? { status: 200, answer: n }
+            : { status: 200 };
       };
    }
 
-   /** A refusal with its reason (the static route answers HTML, no reason). */
+   /** The same refusal, reason included, on every route. */
    function refused(status: number, reason: string) {
-      return (route: string): Partial<Probe> =>
-         route === "GET static page" ? { status } : { status, reason };
+      return (): Partial<Probe> => ({ status, reason });
    }
 
    beforeAll(async () => {
@@ -341,10 +399,18 @@ describe("package versioning across its modes", () => {
       });
 
       it("refuses a named version on every route but static files, and never answers from the one tree", async () => {
-         expectEveryRoute(await probeAll("plain", "1.0.0"), (route) =>
-            route === "GET static page"
+         expectEveryRoute(await probeAll("plain", "1.0.0"), (name) =>
+            name === "GET static page"
                ? { status: 200, answer: 1 }
                : { status: 404, reason: "VERSION_NOT_FOUND" },
+         );
+      });
+
+      it("refuses a versionId that is not a semantic version with 400 on every route but static files", async () => {
+         expectEveryRoute(await probeAll("plain", "v1"), (name) =>
+            name === "GET static page"
+               ? { status: 200, answer: 1 }
+               : { status: 400, reason: "VERSION_ID_INVALID" },
          );
       });
 
@@ -353,17 +419,18 @@ describe("package versioning across its modes", () => {
             await probeAll("sales___1.0.3", undefined),
             servedUnversioned(3),
          );
-         const page = await ROUTES.find(
-            (r) => r.name === "GET static page",
-         )!.call(pkgApi("sales___1.0.3"), "1.0.3");
+         const page = await route("GET static page").call(
+            pkgApi("sales___1.0.3"),
+            "1.0.3",
+         );
          expect(page).toEqual({ status: 200, answer: 3 });
       });
 
       it("keeps a publish over an unversioned package the in-place replace it always was", async () => {
          expect((await publish("plain", "1.0.0", 11)).status).toBe(200);
-         expect((await ROUTES[3].call(pkgApi("plain"), undefined)).answer).toBe(
-            11,
-         );
+         expect(
+            (await route("POST query").call(pkgApi("plain"), undefined)).answer,
+         ).toBe(11);
          const versions = await fetch(`${pkgApi("plain")}/versions`);
          expect(await versions.json()).toEqual([]);
          // The deprecated PATCH still edits an unversioned package.
@@ -373,6 +440,10 @@ describe("package versioning across its modes", () => {
             body: JSON.stringify({ name: "plain", description: "edited" }),
          });
          expect(patch.status).toBe(200);
+         const after = (await (await fetch(pkgApi("plain"))).json()) as {
+            description?: string;
+         };
+         expect(after.description).toBe("edited");
       });
 
       it("refuses the lifecycle routes for a package with no versions", async () => {
@@ -420,6 +491,10 @@ describe("package versioning across its modes", () => {
             await probeAll("ver", "1.0.0"),
             servedVersion("1.0.0", 1),
          );
+      });
+
+      it("treats an empty versionId as none on a versioned package too: latest answers", async () => {
+         expectEveryRoute(await probeAll("ver", ""), servedVersion("1.1.0", 2));
       });
 
       it("refuses an unknown version on every route", async () => {
@@ -485,14 +560,14 @@ describe("package versioning across its modes", () => {
             await probeAll("plain", undefined),
             servedUnversioned(11),
          );
-         expectEveryRoute(await probeAll("plain", "1.0.0"), (route) =>
-            route === "GET static page"
+         expectEveryRoute(await probeAll("plain", "1.0.0"), (name) =>
+            name === "GET static page"
                ? { status: 200, answer: 11 }
                : { status: 404, reason: "VERSION_NOT_FOUND" },
          );
       });
 
-      it("serves a pkg___<version> package as before: on, a publish of one would version it, but an existing one is untouched", async () => {
+      it("leaves an existing pkg___<version> package unversioned once versioning is on", async () => {
          expectEveryRoute(
             await probeAll("sales___1.0.3", undefined),
             servedUnversioned(3),
@@ -514,21 +589,36 @@ describe("package versioning across its modes", () => {
          );
       });
 
-      it("still refuses every in-place change to the versioned package", async () => {
+      it("still refuses in-place changes to the versioned package: a publish over it, PATCH and a model write", async () => {
+         const reasonOf = async (res: Response) =>
+            ((await res.json()) as { reason?: string }).reason;
          const legacy = await publish("ver", "1.1.0", 99);
          expect(legacy.status).toBe(409);
-         expect(((await legacy.json()) as { reason?: string }).reason).toBe(
-            "PACKAGE_IS_VERSIONED",
-         );
+         expect(await reasonOf(legacy)).toBe("PACKAGE_IS_VERSIONED");
          const patch = await fetch(pkgApi("ver"), {
             method: "PATCH",
             headers: json,
             body: JSON.stringify({ name: "ver", description: "edited" }),
          });
          expect(patch.status).toBe(409);
-         expect((await ROUTES[3].call(pkgApi("ver"), undefined)).answer).toBe(
-            2,
+         expect(await reasonOf(patch)).toBe("PACKAGE_IS_VERSIONED");
+         // A dashboard write: the one model write the route takes.
+         const write = await fetch(
+            `${pkgApi("ver")}/models/dashboards/probe.malloy`,
+            {
+               method: "PUT",
+               headers: json,
+               body: JSON.stringify({
+                  source:
+                     '## artifact { kind=dashboard tiles=[] }\nimport "../report.malloy"\n',
+               }),
+            },
          );
+         expect(write.status).toBe(409);
+         expect(await reasonOf(write)).toBe("PACKAGE_IS_VERSIONED");
+         expect(
+            (await route("POST query").call(pkgApi("ver"), undefined)).answer,
+         ).toBe(2);
       });
 
       it("still moves latest and archives versions, which are not publishes", async () => {
@@ -538,15 +628,29 @@ describe("package versioning across its modes", () => {
             body: JSON.stringify({ versionId: "1.0.0" }),
          });
          expect(latest.status).toBe(200);
-         expect((await ROUTES[3].call(pkgApi("ver"), undefined)).answer).toBe(
-            1,
-         );
+         expect(
+            (await route("POST query").call(pkgApi("ver"), undefined)).answer,
+         ).toBe(1);
          const back = await fetch(`${pkgApi("ver")}/latest`, {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ versionId: "1.1.0" }),
          });
          expect(back.status).toBe(200);
+         const archiveStatus = (status: string) =>
+            fetch(`${pkgApi("ver")}/versions/1.0.0`, {
+               method: "PATCH",
+               headers: json,
+               body: JSON.stringify({ archiveStatus: status }),
+            });
+         expect((await archiveStatus("archive")).status).toBe(200);
+         expect(
+            (await route("POST query").call(pkgApi("ver"), "1.0.0")).status,
+         ).toBe(410);
+         expect((await archiveStatus("unarchive")).status).toBe(200);
+         expect(
+            (await route("POST query").call(pkgApi("ver"), "1.0.0")).answer,
+         ).toBe(1);
       });
    });
 

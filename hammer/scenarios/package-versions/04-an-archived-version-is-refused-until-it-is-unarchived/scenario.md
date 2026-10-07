@@ -42,6 +42,20 @@ source: answer is orders_pg.sql("SELECT 2 as n")
 
 reason: VERSION_IS_LATEST
 
+## Query loaded (version=1.0.0)
+
+Loads 1.0.0, so the archive below has a loaded version to unload.
+
+```malloy
+run: answer -> { select: n }
+```
+
+Expect:
+
+| n |
+| - |
+| 1 |
+
 ## Archive sales@1.0.0
 
 ## Query archived (version=1.0.0, refused)

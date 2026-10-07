@@ -199,7 +199,9 @@ publisher's flags. `(version=<v>)` on `## Query`, `## Publish` and `## Build ref
 sends that `versionId`, so a step runs against one version rather than latest. A
 versioned package needs a second, unversioned package (a `## Model anchor/…`) only
 because a configured environment with no package is skipped at boot. See
-`scenarios/package-versions/`.
+`scenarios/package-versions/`. In `## Versions`, `loaded` is evidence only on a
+row that is not `latest`: `/status`, which the column is read from, loads
+`latest` when it is not resident, so `latest` always reads `true`.
 
 **`(again)`** re-runs the most recent query of the same label — the basis of the
 routing proof: mutate the source, run the query again, expect the value

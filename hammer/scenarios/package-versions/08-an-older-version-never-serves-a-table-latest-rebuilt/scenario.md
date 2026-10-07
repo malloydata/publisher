@@ -72,7 +72,7 @@ source: stable is orders_pg.sql("SELECT 7 as k") -> { group_by: k }
 
 ## Build refused (version=1.0.0)
 
-cites: scope
+cites: is not its latest
 
 ## Restart
 

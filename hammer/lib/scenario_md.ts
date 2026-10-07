@@ -758,6 +758,15 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                (attrs.pkg as string) ??
                (arg.replace(/^refused/i, "").trim() || defaultPackage);
             if (attrs.orchestrated) {
+               // An orchestrated build sends the caller's instructions as they
+               // are; nothing here would carry a version, so one given would
+               // be dropped and the step would build latest without saying so.
+               if (attrs.version !== undefined) {
+                  throw new Error(
+                     `${sec.header}: (version=) is not supported with (orchestrated); ` +
+                        `drop one of them.`,
+                  );
+               }
                const { sources, references } = parseOrchestratedBody(sec.body);
                // `refused` asserts the RUN failed, so it records no per-source
                // outcome to check `(failed)` against. Marking one there asks for

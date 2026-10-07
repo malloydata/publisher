@@ -108,6 +108,23 @@ source: answer is orders_pg.sql("SELECT 7 as n")
 
 reason: VERSION_CONFLICT
 
+## Version sales@1.1.5
+
+Above latest (1.1.0) and below the archived 1.2.0: it becomes latest, since a
+publish compares with latest, not with the highest version published.
+
+```malloy
+source: answer is orders_pg.sql("SELECT 6 as n")
+```
+
+## Query latest (again)
+
+Expect:
+
+| n |
+| - |
+| 6 |
+
 ## Version sales@1.3.0
 
 ```malloy
