@@ -29,7 +29,7 @@ import {
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
-   installRecordPath,
+   PACKAGE_INSTALL_RECORDS_DIR,
 } from "../constants";
 import {
    AccessDeniedError,
@@ -1955,6 +1955,21 @@ export class Environment {
     * it answers during the operations it describes.
     */
    /**
+    * The server's record of where `packageName` was installed from, kept
+    * outside the package directory (see {@link PACKAGE_INSTALL_RECORDS_DIR}).
+    * Joined under the environment root the way every other path built from a
+    * package name here is, so a name that escaped validation cannot name a
+    * file elsewhere.
+    */
+   private installRecordPath(packageName: string): string {
+      return safeJoinUnderRoot(
+         this.environmentPath,
+         PACKAGE_INSTALL_RECORDS_DIR,
+         `${packageName}.json`,
+      );
+   }
+
+   /**
     * Resolve once no load, reinstall or recompile of the package is in flight
     * here. A caller that must decide against the copy that will be resident
     * (a PATCH comparing its `location` with the installed one) waits here
@@ -3356,10 +3371,7 @@ export class Environment {
          // tree) is ever read as one. Written only when an install supplies
          // it; never cleared from here.
          if (metadata.location !== undefined && metadata.location !== "") {
-            const recordPath = installRecordPath(
-               this.environmentPath,
-               packageName,
-            );
+            const recordPath = this.installRecordPath(packageName);
             await fs.promises.mkdir(path.dirname(recordPath), {
                recursive: true,
             });
@@ -3780,9 +3792,7 @@ export class Environment {
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
          await fs.promises
-            .rm(installRecordPath(this.environmentPath, packageName), {
-               force: true,
-            })
+            .rm(this.installRecordPath(packageName), { force: true })
             .catch(() => {});
 
          if (renamed) {
