@@ -10,6 +10,7 @@ import {
    DEFAULT_MAX_CONCURRENT_QUERIES,
    DEFAULT_MAX_QUERY_ROWS,
    DEFAULT_MAX_RESPONSE_BYTES,
+   DEFAULT_POSTGRES_POOL_MAX,
    DEFAULT_QUERY_ROW_LIMIT,
    DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
@@ -1065,6 +1066,24 @@ export const getMaxConcurrentQueries = (): number => {
 };
 
 /**
+ * Resolve the cap on open database sessions for one plain (non-proxied)
+ * Postgres connection in this process. Reads `PUBLISHER_POSTGRES_POOL_MAX`;
+ * falls back to {@link DEFAULT_POSTGRES_POOL_MAX} when unset or empty.
+ * Loud-failure on bad input, including `0`, which would leave the pool unable
+ * to open a session at all.
+ */
+export const getPostgresPoolMax = (): number => {
+   const raw = parseIntEnv("PUBLISHER_POSTGRES_POOL_MAX");
+   if (raw === undefined) return DEFAULT_POSTGRES_POOL_MAX;
+   if (raw < 1) {
+      throw new Error(
+         `PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
  * DuckDB extension-fetch policy. Governs whether Publisher's explicit extension
  * INSTALL step (see `installAndLoadExtension` in service/connection.ts) may
  * reach the DuckDB extension network.
@@ -1103,6 +1122,26 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
       `Invalid value for EXTENSION_FETCH_POLICY: expected "on-demand" or "local-only", got "${raw}"`,
    );
 };
+
+export const ALLOW_DUCKDB_SETUP_SQL_ENV = "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL";
+
+/**
+ * Whether environment-authored DuckDB connections may carry `setupSQL`. Off
+ * unless set.
+ *
+ * `setupSQL` runs arbitrary DuckDB statements when a session is set up:
+ * `COPY ... TO` a host path, `CREATE PERSISTENT SECRET` into the secret
+ * directory every DuckDB instance in the process reads, `INSTALL`/`LOAD` of
+ * community extensions. That is more than the query path can reach, and it
+ * comes from connection config, which Malloy's restricted mode never sees. It
+ * belongs only on a deployment whose connection authors are trusted with the
+ * host.
+ *
+ * Throws on an unrecognised value (see parseBoolEnv), so a misspelled opt-in
+ * fails the config load instead of reading as off.
+ */
+export const isDuckdbSetupSqlAllowed = (): boolean =>
+   parseBoolEnv(ALLOW_DUCKDB_SETUP_SQL_ENV) === true;
 
 /**
  * Where an `s3` connection may select `provider: credential_chain` — host-resolved

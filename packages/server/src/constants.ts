@@ -2,10 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import os from "os";
+import path from "path";
 export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
+/**
+ * Where an environment keeps the server's own records of where it installed
+ * each package from: `<environment>/.install-records/<package>.json`. Outside
+ * every package directory, so nothing a package's content carries, downloaded
+ * or added from a directory, can plant one; a reload trusts the record as the
+ * source to re-fetch, and a `location` an author writes into `publisher.json`
+ * is never read as one.
+ */
+export const PACKAGE_INSTALL_RECORDS_DIR = ".install-records";
+
+export function installRecordPath(
+   environmentPath: string,
+   packageName: string,
+): string {
+   return path.join(
+      environmentPath,
+      PACKAGE_INSTALL_RECORDS_DIR,
+      `${packageName}.json`,
+   );
+}
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 
@@ -118,5 +139,12 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
  * memory budgets should lower it.
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
+/**
+ * Default cap on open database sessions for one plain (non-proxied) Postgres
+ * connection in one publisher process. Override at startup via
+ * `PUBLISHER_POSTGRES_POOL_MAX`. Kept small because a role's CONNECTION LIMIT
+ * is shared by every pod serving the environment.
+ */
+export const DEFAULT_POSTGRES_POOL_MAX = 5;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";

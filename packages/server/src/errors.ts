@@ -477,6 +477,19 @@ export class ConnectionError extends Error {
 }
 
 /**
+ * Every database session a connection may open from this process was busy for
+ * the whole wait, so the query never reached the database. A 502 like any other
+ * connection-side failure, with a server-authored message, so the caller learns
+ * the cause instead of the generic upstream text.
+ */
+export class ConnectionPoolExhaustedError extends ConnectionError {
+   constructor(message: string) {
+      super(message, { callerSafe: true });
+      this.name = "ConnectionPoolExhaustedError";
+   }
+}
+
+/**
  * A storage destination was named but is not configured on the
  * environment. Distinct from {@link ConnectionNotFoundError} so a misconfigured
  * destination is diagnosable in logs, and mapped to 422 rather than 404 because
@@ -782,6 +795,14 @@ export class ServiceUnavailableError extends Error {
       super(message, options);
    }
 }
+
+/**
+ * The memory governor refused to admit a new compiled copy of a package. A
+ * 503 like any {@link ServiceUnavailableError}, but an answer to one request
+ * rather than a fault of the server or the package: the caller places the
+ * package elsewhere, and nothing about this server is left to repair.
+ */
+export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
 
 /**
  * Thrown when a response would exceed a server-side size cap (e.g. an

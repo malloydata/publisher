@@ -52,6 +52,7 @@ const POSTGRES: PublicShape = {
    databaseName: "scalar",
    userName: "scalar",
    sslmode: "scalar",
+   statementTimeoutMilliseconds: "scalar",
 };
 
 const BIGQUERY: PublicShape = {
