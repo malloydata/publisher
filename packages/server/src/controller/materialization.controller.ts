@@ -44,6 +44,7 @@ export class MaterializationController {
       strictUpstreams?: boolean;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
+      versionId?: string;
    } {
       const result: {
          forceRefresh?: boolean;
@@ -54,7 +55,17 @@ export class MaterializationController {
          strictUpstreams?: boolean;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
+         versionId?: string;
       } = {};
+      // The version to build, in the body rather than the query string: see
+      // CreateMaterializationRequest.versionId in api-doc.yaml. An empty
+      // value is absent, as on every route (a proxy sends one).
+      if (body.versionId !== undefined && body.versionId !== null) {
+         if (typeof body.versionId !== "string") {
+            throw new BadRequestError("versionId must be a string");
+         }
+         if (body.versionId !== "") result.versionId = body.versionId;
+      }
       if (body.runContext !== undefined && body.runContext !== null) {
          result.runContext = this.validateRunContext(body.runContext);
       }
@@ -388,18 +399,20 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      versionId?: string,
    ) {
       return this.materializationService.stopMaterialization(
          environmentName,
          packageName,
          materializationId,
+         versionId,
       );
    }
 
    async listMaterializations(
       environmentName: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: { limit?: number; offset?: number; versionId?: string },
    ) {
       return this.materializationService.listMaterializations(
          environmentName,
@@ -412,11 +425,13 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      versionId?: string,
    ) {
       return this.materializationService.getMaterialization(
          environmentName,
          packageName,
          materializationId,
+         versionId,
       );
    }
 
@@ -424,7 +439,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean } = {},
+      options: { dropTables?: boolean; versionId?: string } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

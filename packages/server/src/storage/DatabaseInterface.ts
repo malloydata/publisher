@@ -112,7 +112,7 @@ export interface ResourceRepository {
    listMaterializations(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]>;
    getLatestScheduledFireAt(
       environmentId: string,
@@ -128,6 +128,7 @@ export interface ResourceRepository {
       packageName: string,
       status?: MaterializationStatus,
       metadata?: Record<string, unknown> | null,
+      version?: string | null,
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,
@@ -267,10 +268,25 @@ export type Realization = components["schemas"]["Realization"];
  */
 export type LedgerEntry = components["schemas"]["LedgerEntry"];
 
+export interface MaterializationListOptions {
+   limit?: number;
+   offset?: number;
+   /**
+    * Only the runs of this version; null for the runs of an unversioned
+    * package. Omitted, every run of the package is listed.
+    */
+   version?: string | null;
+}
+
 export interface Materialization {
    id: string;
    environmentId: string;
    packageName: string;
+   /**
+    * The published version this run built, or null for an unversioned
+    * package. A run of a versioned package belongs to exactly one version.
+    */
+   version: string | null;
    status: MaterializationStatus;
    /** Build output. Null until status = MANIFEST_FILE_READY. */
    manifest: BuildManifestResult | null;

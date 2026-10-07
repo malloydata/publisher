@@ -30,7 +30,6 @@ import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    BadRequestError,
    internalErrorToHttpError,
-   NotImplementedError,
    ServiceUnavailableError,
 } from "./errors";
 import {
@@ -428,6 +427,28 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+// An archive waits for a running build of the version: archiving reclaims the
+// tables that build is writing.
+packageController.setVersionBuildCheck(
+   (environmentName, packageName, version) =>
+      materializationService.isVersionBuilding(
+         environmentName,
+         packageName,
+         version,
+      ),
+);
+// What an archive owes the version's materializations happens off the request
+// path, after the archive has committed.
+environmentStore.setVersionLifecycleHook((environmentName, event) => {
+   if (event.version.archiveStatus !== "archive") return;
+   setImmediate(() => {
+      void materializationService.reclaimVersionTables(
+         environmentName,
+         event.packageName,
+         event.version.version,
+      );
+   });
+});
 /**
  * Construct and start the standalone materialization scheduler from environment
  * config, or return null when the feature is disabled
@@ -1011,13 +1032,6 @@ if (!isDevelopment) {
       }),
    );
 }
-
-const setVersionIdError = (res: express.Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
 
 app.use(
    cors({
@@ -2272,12 +2286,6 @@ app.post(
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
-      // In the body here, not the query string: see
-      // CreateMaterializationRequest.versionId in api-doc.yaml.
-      if (req.body?.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const build = await materializationController.createMaterialization(
             req.params.environmentName,
@@ -2295,17 +2303,13 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const limit = parseNonNegativeIntParam(req.query.limit);
          const offset = parseNonNegativeIntParam(req.query.offset);
          const builds = await materializationController.listMaterializations(
             req.params.environmentName,
             req.params.packageName,
-            { limit, offset },
+            { limit, offset, versionId: versionIdParam(req) },
          );
          res.status(200).json(builds);
       } catch (error) {
@@ -2318,15 +2322,12 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const build = await materializationController.getMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            versionIdParam(req),
          );
          res.status(200).json(build);
       } catch (error) {
@@ -2339,10 +2340,6 @@ app.get(
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const action = req.query.action;
          if (action === "stop") {
@@ -2350,6 +2347,7 @@ app.post(
                req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
+               versionIdParam(req),
             );
             res.status(200).json(build);
          } else {
@@ -2367,10 +2365,6 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       const dropTables = booleanParamOr400(req, res, "dropTables");
       if (dropTables === undefined) {
          return;
@@ -2380,7 +2374,7 @@ app.delete(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
+            { dropTables, versionId: versionIdParam(req) },
          );
          res.status(204).send();
       } catch (error) {

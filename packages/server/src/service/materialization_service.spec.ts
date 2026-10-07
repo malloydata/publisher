@@ -16,6 +16,7 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
+   PackageVersionError,
    internalErrorToHttpError,
 } from "../errors";
 import {
@@ -315,6 +316,35 @@ function buildEnvironmentStub(opts: {
    };
 }
 
+/**
+ * A stub environment serving one unversioned package: the version surface
+ * the service consults (resolveSlot and the rest) answers as it does for a
+ * package with no published versions. `overrides` win.
+ */
+function unversionedEnvironment(
+   overrides: Record<string, unknown>,
+): Record<string, unknown> {
+   return {
+      resolveSlot: (name: string, versionId?: string) => {
+         if (versionId) {
+            throw new PackageVersionError(
+               "VERSION_NOT_FOUND",
+               `Package ${name} has no version ${versionId}.`,
+            );
+         }
+         return { name, key: name, path: `/test/${name}` };
+      },
+      listPackageVersions: () => ({ latest: null, versions: [] }),
+      getLoadedVersionIds: () => [],
+      withPackageSlotLock: async (
+         _name: string,
+         _versionId: string | undefined,
+         fn: () => Promise<unknown>,
+      ) => fn(),
+      ...overrides,
+   };
+}
+
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
 function setPackage(
    environmentStore: EnvironmentStore,
@@ -330,12 +360,14 @@ function setPackage(
       getPackageMetadata: () => ({}),
       ...pkgOverrides,
    };
-   (environmentStore.getEnvironment as sinon.SinonStub).resolves({
-      getPackage: sinon.stub().resolves(pkg),
-      withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
-         fn(),
-      reloadAllModelsForPackage: sinon.stub().resolves(),
-   });
+   (environmentStore.getEnvironment as sinon.SinonStub).resolves(
+      unversionedEnvironment({
+         getPackage: sinon.stub().resolves(pkg),
+         withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
+            fn(),
+         reloadAllModelsForPackage: sinon.stub().resolves(),
+      }),
+   );
 }
 
 describe("MaterializationService", () => {
@@ -364,12 +396,14 @@ describe("MaterializationService", () => {
             environmentPath: "/test",
          });
          const getStorageDestination = environment.getStorageDestination;
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon
-               .stub()
-               .resolves({ getMalloyConnection: async () => ({}) }),
-            ...environment,
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon
+                  .stub()
+                  .resolves({ getMalloyConnection: async () => ({}) }),
+               ...environment,
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "MANIFEST_FILE_READY",
@@ -412,12 +446,14 @@ describe("MaterializationService", () => {
             environmentPath: "/test",
          });
          const getStorageDestination = environment.getStorageDestination;
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon
-               .stub()
-               .resolves({ getMalloyConnection: async () => ({}) }),
-            ...environment,
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon
+                  .stub()
+                  .resolves({ getMalloyConnection: async () => ({}) }),
+               ...environment,
+            }),
+         );
          const entries = {
             se1: {
                sourceEntityId: "se1",
@@ -487,15 +523,17 @@ describe("MaterializationService", () => {
       } {
          const storageSpy = sinon.stub().resolves();
          const colocatedSpy = sinon.stub().resolves();
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon
-               .stub()
-               .resolves({ getMalloyConnection: async () => ({}) }),
-            getApiConnection: () => ({ name: "lake", type: "duckdb" }),
-            getEnvironmentPath: () => "/test",
-            bindPackageStorageServeBindings: storageSpy,
-            bindPackageColocatedServeManifest: colocatedSpy,
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon
+                  .stub()
+                  .resolves({ getMalloyConnection: async () => ({}) }),
+               getApiConnection: () => ({ name: "lake", type: "duckdb" }),
+               getEnvironmentPath: () => "/test",
+               bindPackageStorageServeBindings: storageSpy,
+               bindPackageColocatedServeManifest: colocatedSpy,
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "MANIFEST_FILE_READY",
@@ -505,6 +543,107 @@ describe("MaterializationService", () => {
          );
          return { storageSpy, colocatedSpy };
       }
+
+      /**
+       * A versioned package: every loaded version is rebound, each from the
+       * runs whose tables it may serve. The repository stub answers a list
+       * with one run per version filter, named for it, so the entries a
+       * version was bound to say which runs it read.
+       */
+      function setupVersions(
+         scopeOf: (versionId: string) => string,
+         manifestLocationOf: (versionId: string) => string | undefined = () =>
+            undefined,
+      ): sinon.SinonStub {
+         const colocatedSpy = sinon.stub().resolves();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getLoadedVersionIds: () => ["1.0.0", "1.1.0"],
+               getPackage: sinon
+                  .stub()
+                  .callsFake(
+                     async (
+                        _name: string,
+                        _reload: boolean,
+                        opts: { versionId?: string },
+                     ) => ({
+                        getVersionId: () => opts.versionId,
+                        getPackageMetadata: () => ({
+                           scope: scopeOf(opts.versionId as string),
+                           manifestLocation: manifestLocationOf(
+                              opts.versionId as string,
+                           ),
+                        }),
+                        getMalloyConnection: async () => ({}),
+                     }),
+                  ),
+               bindPackageStorageServeBindings: sinon.stub().resolves(),
+               bindPackageColocatedServeManifest: colocatedSpy,
+            }),
+         );
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               version: "1.0.0",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               manifest: { entries: {} } as any,
+            }),
+         );
+         ctx.repository.listMaterializations.callsFake(
+            async (
+               _env: string,
+               _pkg: string,
+               opts?: { version?: string | null },
+            ) => {
+               const owner = opts?.version ?? "package";
+               return [
+                  makeMaterialization({
+                     id: `run-${owner}`,
+                     status: "MANIFEST_FILE_READY",
+                     version: opts?.version ?? null,
+                     manifest: {
+                        builtAt: "2026-01-01T00:00:00Z",
+                        strict: false,
+                        entries: {
+                           [`ce-${owner}`]: {
+                              sourceEntityId: `ce-${owner}`,
+                              sourceName: "daily",
+                              physicalTableName: `daily_${owner}`,
+                              connectionName: "wh",
+                           },
+                        },
+                     },
+                  }),
+               ];
+            },
+         );
+         return colocatedSpy;
+      }
+
+      const boundTo = (spy: sinon.SinonStub) =>
+         Object.fromEntries(
+            spy
+               .getCalls()
+               .map((c) => [c.args[2], Object.keys(c.args[1] as object)]),
+         );
+
+      it('rebinds each loaded version of a "scope: version" package from its own runs', async () => {
+         const spy = setupVersions(() => "version");
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+         expect(boundTo(spy)).toEqual({
+            "1.0.0": ["ce-1.0.0"],
+            "1.1.0": ["ce-1.1.0"],
+         });
+      });
+
+      it('rebinds every version of a "scope: package" package from the package\'s runs, but not one a host manifest binds', async () => {
+         const spy = setupVersions(
+            () => "package",
+            (v) => (v === "1.0.0" ? "s3://bucket/manifest.json" : undefined),
+         );
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+         expect(boundTo(spy)).toEqual({ "1.1.0": ["ce-package"] });
+      });
 
       it("re-derives storage bindings from the next-latest materialization (on)", async () => {
          process.env.PERSIST_STORAGE_MODE = "on";
@@ -647,6 +786,8 @@ describe("MaterializationService", () => {
                mode: "auto",
                trigger: "ON_DEMAND",
             },
+            // The version the run builds: none, for an unversioned package.
+            null,
          ]);
       });
 
@@ -1007,11 +1148,15 @@ describe("MaterializationService", () => {
       it("does not drop tables by default (record-only delete)", async () => {
          const runSQL = sinon.stub().resolves();
          const getMalloyConnection = sinon.stub().resolves({ runSQL });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon.stub().resolves({ getMalloyConnection }),
+               withPackageLock: async (
+                  _n: string,
+                  fn: () => Promise<unknown>,
+               ) => fn(),
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "MANIFEST_FILE_READY",
@@ -1043,11 +1188,15 @@ describe("MaterializationService", () => {
          const getMalloyConnection = sinon
             .stub()
             .resolves({ runSQL, dialectName: "duckdb" });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon.stub().resolves({ getMalloyConnection }),
+               withPackageLock: async (
+                  _n: string,
+                  fn: () => Promise<unknown>,
+               ) => fn(),
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "MANIFEST_FILE_READY",
@@ -1083,11 +1232,15 @@ describe("MaterializationService", () => {
          const getMalloyConnection = sinon
             .stub()
             .resolves({ runSQL, dialectName: "standardsql" });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon.stub().resolves({ getMalloyConnection }),
+               withPackageLock: async (
+                  _n: string,
+                  fn: () => Promise<unknown>,
+               ) => fn(),
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "MANIFEST_FILE_READY",
@@ -1120,11 +1273,15 @@ describe("MaterializationService", () => {
       it("still deletes the record when a table drop fails", async () => {
          const runSQL = sinon.stub().rejects(new Error("boom"));
          const getMalloyConnection = sinon.stub().resolves({ runSQL });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               getPackage: sinon.stub().resolves({ getMalloyConnection }),
+               withPackageLock: async (
+                  _n: string,
+                  fn: () => Promise<unknown>,
+               ) => fn(),
+            }),
+         );
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "FAILED",
@@ -1178,11 +1335,13 @@ describe("deleteMaterialization telemetry", () => {
       const getMalloyConnection = sinon
          .stub()
          .resolves({ runSQL, dialectName: "duckdb" });
-      (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-         getPackage: sinon.stub().resolves({ getMalloyConnection }),
-         withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-            fn(),
-      });
+      (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+         unversionedEnvironment({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         }),
+      );
       ctx.repository.getMaterializationById.resolves(
          makeMaterialization({
             status: "MANIFEST_FILE_READY",

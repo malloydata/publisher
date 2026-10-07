@@ -4,6 +4,7 @@
 import {
    BuildManifestResult,
    Materialization,
+   MaterializationListOptions,
    MaterializationStatus,
    MaterializationUpdate,
 } from "../DatabaseInterface";
@@ -62,11 +63,16 @@ export class MaterializationRepository {
    async list(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ?";
       const params: unknown[] = [environmentId, packageName];
+      if (options?.version !== undefined) {
+         sql += " AND version IS NOT DISTINCT FROM ?";
+         params.push(options.version);
+      }
+      sql += " ORDER BY created_at DESC";
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
          params.push(options.limit);
@@ -128,6 +134,7 @@ export class MaterializationRepository {
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
+      version: string | null = null,
    ): Promise<Materialization> {
       const id = this.generateId();
       const now = this.now();
@@ -143,13 +150,14 @@ export class MaterializationRepository {
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, version, status, active_key, metadata, manifest, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             RETURNING *`,
             [
                id,
                environmentId,
                packageName,
+               version,
                status,
                activeKey,
                metadataJson,
@@ -272,6 +280,7 @@ export class MaterializationRepository {
          id: row.id as string,
          environmentId: row.environment_id as string,
          packageName: row.package_name as string,
+         version: row.version != null ? (row.version as string) : null,
          status: row.status as MaterializationStatus,
          manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
          metadata,

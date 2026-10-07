@@ -24,6 +24,7 @@ export function makeMaterialization(
       id: "mat-1",
       environmentId: "env-1",
       packageName: "pkg",
+      version: null,
       status: "PENDING",
       manifest: null,
       startedAt: null,

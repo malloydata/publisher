@@ -1712,16 +1712,20 @@ paths:
         is immutable.
 
         - `archive` takes the version out of service: reads and queries that name it answer 410
-          with `reason` `VERSION_ARCHIVED`, it is unloaded from memory, and any materialization
-          schedule it runs stops. Tables materialized for it under `scope: version` are
-          reclaimed in the background; tables another version still uses are kept. Its files
-          stay on disk, so the publisher never reclaims an archived version's directory.
-        - `unarchive` puts it back in service and re-arms its schedule. It loads again on its
-          next read.
+          with `reason` `VERSION_ARCHIVED`, and it is unloaded from memory. The tables its own
+          auto-runs built under `scope: version` are reclaimed in the background, with their run
+          records; tables another version's run still references are kept, and so are an
+          orchestrated run's, whose names and lifetime the caller that assigned them owns. Its
+          files stay on disk, so the publisher never reclaims an archived version's directory.
+        - `unarchive` puts it back in service. It loads again on its next read, and serves live
+          until it is built again.
 
-        The package's `latest` version cannot be archived (409, `reason` `VERSION_IS_LATEST`):
-        move `latest` first. Sending the state the version is already in changes nothing and
-        answers 200.
+        A materialization schedule only ever builds the package's `latest`, which cannot be
+        archived (409, `reason` `VERSION_IS_LATEST`: move `latest` first), so archiving never
+        stops a running schedule, and an unarchived version is scheduled again once it is made
+        `latest`. An archive is also refused with 409 while a materialization of that version is
+        running, since it would reclaim the tables that run is writing. Sending the state the
+        version is already in changes nothing and answers 200.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -6930,6 +6934,18 @@ components:
             VERSION_ARCHIVED). Carried in the body rather than the query string
             because the body is optional: a new optional query parameter ahead
             of it would move the body argument of every generated client.
+
+            The run records the version it built in `metadata.versionId`, with
+            the package's materialization scope in `metadata.scope`, which
+            decides whose tables it builds. Under `scope: "version"` each
+            version builds into tables of its own: a self-assigned name gains
+            the version as a suffix (`order_summary__v1_2_0`). Under
+            `scope: "package"` (the default) the versions share the package's
+            tables, so an auto-run (no `buildInstructions`) of a version other
+            than `latest` is refused with 400: it would rebuild the table
+            `latest` serves. Pass `buildInstructions` to build any version into
+            tables you name. One run is active per package at a time, whatever
+            version it builds.
         buildInstructions:
           oneOf:
             - $ref: "#/components/schemas/BuildInstructions"

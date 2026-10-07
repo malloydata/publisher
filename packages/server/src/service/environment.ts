@@ -368,6 +368,29 @@ export interface VersionRegistry {
    ): Promise<PackageVersion>;
 }
 
+/**
+ * The entries of a package's newest successful materialization. `version`
+ * narrows it to one version's own runs; undefined takes the package's newest
+ * run whichever version built it (see {@link ownedVersionOf}).
+ */
+export type StorageBindingResolver = (
+   packageName: string,
+   version: string | undefined,
+) => Promise<Record<string, ManifestEntry>>;
+
+/**
+ * The version whose materialized tables a loaded package serves from: its own
+ * version when it is a published version of a `scope: version` package (each
+ * version owns its tables), and undefined otherwise, when the package's
+ * tables are shared by all its versions (`scope: package`, the default) or
+ * the package is unversioned.
+ */
+export function ownedVersionOf(pkg: Package): string | undefined {
+   const version = pkg.getVersionId();
+   if (version === undefined) return undefined;
+   return pkg.getPackageMetadata().scope === "version" ? version : undefined;
+}
+
 /** A version was archived or unarchived; `version` is its row after the change. */
 export interface VersionLifecycleEvent {
    packageName: string;
@@ -553,9 +576,7 @@ export class Environment {
    // materialization repository. Undefined ⇒ no re-bind on load (routing then
    // depends on a fresh build, the old behavior). See
    // {@link rebindServeBindingsFromLocalStore}.
-   private storageBindingResolver?: (
-      packageName: string,
-   ) => Promise<Record<string, ManifestEntry>>;
+   private storageBindingResolver?: StorageBindingResolver;
    public metadata: ApiEnvironment;
    // The shared memory governor that consults process RSS. Optional —
    // when null the gate is a no-op and the environment behaves exactly
@@ -2324,9 +2345,7 @@ export class Environment {
     * Inject the resolver that fetches a package's latest persisted
     * materialization entries — both tiers (see {@link storageBindingResolver}).
     */
-   public setStorageBindingResolver(
-      resolver: (packageName: string) => Promise<Record<string, ManifestEntry>>,
-   ): void {
+   public setStorageBindingResolver(resolver: StorageBindingResolver): void {
       this.storageBindingResolver = resolver;
    }
 
@@ -2372,7 +2391,10 @@ export class Environment {
       if (pkg.getPackageMetadata().manifestLocation) return;
       const packageName = pkg.getPackageName();
       try {
-         const rawEntries = await this.storageBindingResolver(packageName);
+         const rawEntries = await this.storageBindingResolver(
+            packageName,
+            ownedVersionOf(pkg),
+         );
          if (Object.keys(rawEntries).length === 0) return;
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
@@ -2622,6 +2644,55 @@ export class Environment {
 
       return this.withSlotLock(slot, () =>
          this._loadOrGetPackageLocked(slot, effectiveReload),
+      );
+   }
+
+   /**
+    * Hold the lock of the slot a package (and, for a versioned one, a named
+    * version) resolves to: what a build compiling one version's tree takes,
+    * so it never blocks the package's other versions. An unversioned package's
+    * slot lock is its package lock.
+    */
+   public async withPackageSlotLock<T>(
+      packageName: string,
+      versionId: string | undefined,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return this.withSlotLock(this.resolveSlot(packageName, versionId), fn);
+   }
+
+   /**
+    * The versions of a package currently loaded, in no order; empty for an
+    * unversioned package. Never loads anything.
+    */
+   public getLoadedVersionIds(packageName: string): string[] {
+      const loaded: string[] = [];
+      for (const [key, pkg] of this.packages) {
+         const versionId = pkg.getVersionId();
+         if (versionId !== undefined && key.startsWith(`${packageName}@`)) {
+            loaded.push(versionId);
+         }
+      }
+      return loaded;
+   }
+
+   /**
+    * Hold one version's slot lock even when the version is archived, which
+    * {@link resolveSlot} refuses. For work on an archived version's leftovers
+    * that must not interleave with the version loading again.
+    */
+   public async withVersionLock<T>(
+      packageName: string,
+      versionId: string,
+      fn: (version: PackageVersion | undefined) => Promise<T>,
+   ): Promise<T> {
+      const dirName =
+         this.packageVersions.get(packageName)?.versions.get(versionId)
+            ?.dirName ?? versionDirName(versionId);
+      return this.getOrCreatePackageMutex(
+         `${packageName}@${dirName}`,
+      ).runExclusive(() =>
+         fn(this.packageVersions.get(packageName)?.versions.get(versionId)),
       );
    }
 

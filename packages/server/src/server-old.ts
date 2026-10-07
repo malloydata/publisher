@@ -951,7 +951,7 @@ export function registerLegacyRoutes(
             const builds = await materializationController.listMaterializations(
                req.params.projectName,
                req.params.packageName,
-               { limit, offset },
+               { limit, offset, versionId: versionIdParam(req) },
             );
             res.status(200).json(remapMaterializationResponse(builds));
          } catch (error) {
@@ -969,6 +969,7 @@ export function registerLegacyRoutes(
                req.params.projectName,
                req.params.packageName,
                req.params.materializationId,
+               versionIdParam(req),
             );
             res.status(200).json(remapMaterializationResponse(build));
          } catch (error) {
@@ -989,6 +990,7 @@ export function registerLegacyRoutes(
                      req.params.projectName,
                      req.params.packageName,
                      req.params.materializationId,
+                     versionIdParam(req),
                   );
                res.status(200).json(remapMaterializationResponse(build));
             } else {
@@ -1015,7 +1017,7 @@ export function registerLegacyRoutes(
                req.params.projectName,
                req.params.packageName,
                req.params.materializationId,
-               { dropTables },
+               { dropTables, versionId: versionIdParam(req) },
             );
             res.status(204).send();
          } catch (error) {

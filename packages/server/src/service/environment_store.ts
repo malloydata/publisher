@@ -52,6 +52,7 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import {
    Environment,
    PackageStatus,
+   type VersionLifecycleEvent,
    type VersionRegistry,
 } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
@@ -494,6 +495,11 @@ export class EnvironmentStore {
    private packageLoadedHook:
       | ((environmentName: string, pkg: Package) => void)
       | null = null;
+   // Called after a version of a package in any Environment is archived or
+   // unarchived. Set once at server start, like packageLoadedHook.
+   private versionLifecycleHook:
+      | ((environmentName: string, event: VersionLifecycleEvent) => void)
+      | null = null;
 
    /**
     * Set of environment names that should be loaded "in place" — i.e. the
@@ -581,6 +587,28 @@ export class EnvironmentStore {
       env.setPackageLoadedHook(
          hook ? (pkg) => hook(env.getEnvironmentName(), pkg) : null,
       );
+      const lifecycle = this.versionLifecycleHook;
+      env.setVersionLifecycleHook(
+         lifecycle
+            ? (event) => lifecycle(env.getEnvironmentName(), event)
+            : null,
+      );
+   }
+
+   /**
+    * Attach (or detach with `null`) a callback run after a version is archived
+    * or unarchived, in any Environment. It must only schedule work. Attached
+    * alongside the package-loaded hook, so Environments created later use it.
+    */
+   public setVersionLifecycleHook(
+      hook:
+         | ((environmentName: string, event: VersionLifecycleEvent) => void)
+         | null,
+   ): void {
+      this.versionLifecycleHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachPackageLoadedHook(env);
+      }
    }
 
    /**
@@ -952,11 +980,14 @@ export class EnvironmentStore {
                         // rebindServeBindingsFromLocalStore.
                         const envId = dbEnvironment.id;
                         environmentInstance.setStorageBindingResolver(
-                           async (packageName) => {
+                           async (packageName, version) => {
                               const runs =
                                  await repository.listMaterializations(
                                     envId,
                                     packageName,
+                                    version !== undefined
+                                       ? { version }
+                                       : undefined,
                                  );
                               const latest = runs.find(
                                  (m) =>

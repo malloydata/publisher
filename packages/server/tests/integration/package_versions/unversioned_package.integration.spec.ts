@@ -4,10 +4,11 @@
 /// <reference types="bun-types" />
 
 /**
- * The package-versions contract is declared in api-doc.yaml ahead of the
- * implementation. Until a route is implemented it must say so with 501, never
- * by answering as if the version had been honored: a request naming a version
- * and getting some other version's answer is the failure this pins.
+ * An unversioned package, on every route that takes a `versionId`: naming a
+ * version it never published is 404 VERSION_NOT_FOUND, never an answer from
+ * its one tree as if the version had been honored (a request naming a version
+ * and getting some other version's answer is the failure this pins), and
+ * naming none serves it exactly as before versions existed.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -17,19 +18,19 @@ import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(__dirname, "../../fixtures/html-data-apps-test");
-const ENV_NAME = "versions-not-implemented-env";
+const ENV_NAME = "unversioned-package-env";
 const PKG = "html-data-apps-test";
 
-describe("package versions, before they are implemented", () => {
+describe("an unversioned package and versionId", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    const pkgUrl = (sub: string) =>
       `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
 
-   async function expect501(res: Response): Promise<void> {
-      expect(res.status).toBe(501);
-      expect(((await res.json()) as { message?: string }).message).toContain(
-         "Version IDs not implemented",
+   async function expectVersionNotFound(res: Response): Promise<void> {
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as { reason?: string }).reason).toBe(
+         "VERSION_NOT_FOUND",
       );
    }
 
@@ -119,21 +120,37 @@ describe("package versions, before they are implemented", () => {
       expect(compiled.status).toBe(404);
    });
 
-   it("answers 501 for a versionId on the materialization routes", async () => {
-      await expect501(await fetch(pkgUrl("/materializations?versionId=1.0.0")));
+   it("refuses a versionId on the materialization routes", async () => {
+      await expectVersionNotFound(
+         await fetch(pkgUrl("/materializations?versionId=1.0.0")),
+      );
       // create-materialization carries it in the body (see api-doc.yaml).
-      await expect501(
+      await expectVersionNotFound(
          await fetch(pkgUrl("/materializations"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ versionId: "1.0.0" }),
          }),
       );
+      for (const method of ["GET", "DELETE"]) {
+         // A run that does not exist would 404 anyway; the version is what
+         // is checked first, and its reason says so.
+         await expectVersionNotFound(
+            await fetch(pkgUrl("/materializations/any-id?versionId=1.0.0"), {
+               method,
+            }),
+         );
+      }
    });
 
-   it("still serves those routes when no version is named", async () => {
+   it("still serves those routes when no version is named, an empty one included", async () => {
       expect((await fetch(pkgUrl("/data-apps"))).status).toBe(200);
       expect((await fetch(pkgUrl("/connections/duckdb/schemas"))).status).toBe(
+         200,
+      );
+      expect((await fetch(pkgUrl("/materializations"))).status).toBe(200);
+      // A proxy sends an empty versionId; it is absent, not a version.
+      expect((await fetch(pkgUrl("/materializations?versionId="))).status).toBe(
          200,
       );
    });
