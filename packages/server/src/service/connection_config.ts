@@ -62,18 +62,18 @@ function validatePostgresSslmode(subject: string, sslmode: string): void {
    }
 }
 
-/**
- * The connection's statement timeout, validated. Returns undefined when unset.
- *
- * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
- * a libpq conninfo string, so anything but a positive integer is rejected here
- * rather than trusted: a JSON body is not held to the schema's `integer` type
- * before it reaches this code.
- */
 // Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
 // value makes the session SET fail on every connection that applies it.
 const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
 
+/**
+ * The connection's statement timeout, validated. Returns undefined when unset.
+ *
+ * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
+ * a libpq conninfo string, so anything but an integer from 1 to
+ * POSTGRES_MAX_STATEMENT_TIMEOUT_MS is rejected here rather than trusted: a JSON
+ * body is not held to the schema before it reaches this code.
+ */
 export function postgresStatementTimeoutMs(
    name: string,
    pg: components["schemas"]["PostgresConnection"],

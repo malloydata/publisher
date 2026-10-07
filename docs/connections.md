@@ -321,10 +321,11 @@ endpoint as `hostaddr` while `host` stays the database's own name, so `verify-fu
 certificate against the real host through the tunnel, with the same trust set the query path
 uses.
 
-### TLS and statement timeout on a direct connection
+### TLS and statement timeout per connection
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
-federated Postgres source accept the same two per-connection settings:
+federated Postgres source accept the same two per-connection settings. A proxied connection also
+applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described above.
 
 - `sslmode` - the same four modes as above, applied against the configured host. When unset,
   the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
@@ -336,7 +337,10 @@ federated Postgres source accept the same two per-connection settings:
   (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
   timeout is merged into them, so its other server settings are kept; a `statement_timeout`
   already in them is replaced by this field, with a warning logged. A connection pooler in
-  transaction mode may not carry a session setting from one statement to the next.
+  transaction mode may not carry a session setting from one statement to the next. The timeout
+  bounds every statement on the connection, including persisted-source builds: a colocated
+  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  for the longest build, not only for interactive queries.
 
 Neither setting is applied to a DuckLake catalog connection.
 
@@ -347,7 +351,9 @@ A persisted source's identity includes its connection's identity. A connection t
 derives its identity from its configuration, and both settings are part of it: setting or
 changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
 gives that connection's persisted sources new identities, and they are built again on the next
-build. A connection that sets neither keeps the identity it had before.
+build. A connection that sets neither keeps the identity it had before. Together with the build
+bound above, this means raising a timeout that cancelled a build also rebuilds every persisted
+source on a connection without a `fingerprint`.
 
 ## Credentials in API responses
 
