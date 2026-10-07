@@ -329,13 +329,25 @@ federated Postgres source accept the same two per-connection settings:
 - `sslmode` - the same four modes as above, applied against the configured host. When unset,
   the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
   the string's own `sslmode` applies and the field is ignored, with a warning logged.
-- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. When
-  unset, the database's own `statement_timeout` applies. The query driver sets it on each
-  session with `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
-  (`options='-c statement_timeout=N'`). A connection pooler in transaction mode may not carry a
-  session setting from one statement to the next.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
+  integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
+  `statement_timeout` applies. The query driver sets it on each session with
+  `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
+  timeout is merged into them, so its other server settings are kept; a `statement_timeout`
+  already in them is replaced by this field, with a warning logged. A connection pooler in
+  transaction mode may not carry a session setting from one statement to the next.
 
 Neither setting is applied to a DuckLake catalog connection.
+
+#### Effect on persisted sources
+
+A persisted source's identity includes its connection's identity. A connection that carries a
+`fingerprint` uses it as that identity, so neither setting affects it. A connection without one
+derives its identity from its configuration, and both settings are part of it: setting or
+changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
+gives that connection's persisted sources new identities, and they are built again on the next
+build. A connection that sets neither keeps the identity it had before.
 
 ## Credentials in API responses
 

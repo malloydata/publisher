@@ -820,7 +820,9 @@ describe("SSH proxy validation", () => {
       }
    });
 
-   it.each([0, -1, 1.5, "5000; DROP TABLE users"])(
+   // 2147483647 is Postgres's own ceiling for statement_timeout (an int, in
+   // ms); above it the session SET fails on every pool acquire.
+   it.each([0, -1, 1.5, "5000; DROP TABLE users", 2147483648, 1e21])(
       "rejects statementTimeoutMilliseconds %p",
       (value) => {
          expect(() =>
@@ -828,18 +830,21 @@ describe("SSH proxy validation", () => {
                directPg({ statementTimeoutMilliseconds: value as never }),
             ]),
          ).toThrow(
-            `Connection 'pg-direct' has an invalid statementTimeoutMilliseconds ${JSON.stringify(value)} (expected a positive integer).`,
+            `Connection 'pg-direct' has an invalid statementTimeoutMilliseconds ${JSON.stringify(value)} (expected an integer from 1 to 2147483647).`,
          );
       },
    );
 
-   it("accepts a positive integer statementTimeoutMilliseconds", () => {
-      expect(() =>
-         assembleEnvironmentConnections([
-            directPg({ statementTimeoutMilliseconds: 30000 }),
-         ]),
-      ).not.toThrow();
-   });
+   it.each([1, 30000, 2147483647])(
+      "accepts statementTimeoutMilliseconds %p",
+      (value) => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ statementTimeoutMilliseconds: value }),
+            ]),
+         ).not.toThrow();
+      },
+   );
 
    it("rejects a proxied database name with URI-reserved characters", () => {
       const conn: ApiConnection = {

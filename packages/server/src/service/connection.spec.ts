@@ -2384,6 +2384,60 @@ describe("connection integration tests", () => {
             { timeout: 30000 },
          );
 
+         it.each(["uri", "keyword"] as const)(
+            "should keep a %s connectionString's own options when adding the statement timeout to an attach",
+            async (form) => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const f = testPostgresFields();
+               const connectionString =
+                  form === "uri"
+                     ? `postgresql://${encodeURIComponent(f.userName)}:${encodeURIComponent(f.password)}@${f.host}:${f.port}/${f.databaseName}?options=${encodeURIComponent("-c search_path=pg_catalog -c statement_timeout=100")}`
+                     : `host=${f.host} port=${f.port} dbname=${f.databaseName} user=${f.userName} password=${f.password} options='-c search_path=pg_catalog -c statement_timeout=100'`;
+               const name = `pg_opts_${form}`;
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: `duckdb_${name}`,
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name,
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    connectionString,
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  `duckdb_${name}`,
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // libpq's own parse of the merged string, read back from the
+               // session it opened: the string's search_path survives and the
+               // field's timeout replaces the string's.
+               const result = await connection.runSQL(
+                  `SELECT * FROM postgres_query('${name}', 'SELECT current_setting(''search_path'') AS sp, current_setting(''statement_timeout'') AS st')`,
+               );
+               expect(result.rows[0]).toEqual({
+                  sp: "pg_catalog",
+                  st: "750ms",
+               });
+            },
+            { timeout: 30000 },
+         );
+
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");
             await fs.writeFile(insideCsvPath, "id\n1\n");
@@ -3671,6 +3725,72 @@ describe("buildPgConnectionString", () => {
          "host=db.example.com dbname=lake options='-c statement_timeout=5000'",
       );
    });
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics&sslmode=require",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000&sslmode=require",
+      ],
+      [
+         "a keyword string with a quoted value",
+         "host=db.example.com dbname=lake options='-c search_path=analytics'",
+         "host=db.example.com dbname=lake options='-c search_path=analytics -c statement_timeout=5000'",
+      ],
+      [
+         "a keyword string with an unquoted value",
+         "host=db.example.com options=-csearch_path=analytics dbname=lake",
+         "host=db.example.com options='-csearch_path=analytics -c statement_timeout=5000' dbname=lake",
+      ],
+   ])(
+      "merges the statement timeout into %s connectionString's existing options",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.called).toBe(false);
+         } finally {
+            warn.restore();
+         }
+      },
+   );
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20statement_timeout%3D100%20-c%20search_path%3Danalytics",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000",
+      ],
+      [
+         "a keyword string",
+         "host=db.example.com options='-c statement_timeout=100 --search_path=analytics -cstatement_timeout=200 --statement-timeout=300'",
+         "host=db.example.com options='--search_path=analytics -c statement_timeout=5000'",
+      ],
+   ])(
+      "replaces a statement_timeout already in %s connectionString's options and warns",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.calledOnce).toBe(true);
+            expect(warn.firstCall.args[0] as unknown).toBe(
+               "Connection 'pg_att' sets statementTimeoutMilliseconds and its connectionString's options also set statement_timeout; statementTimeoutMilliseconds applies.",
+            );
+         } finally {
+            warn.restore();
+         }
+      },
+   );
 
    it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
       const warn = sinon.stub(logger, "warn");

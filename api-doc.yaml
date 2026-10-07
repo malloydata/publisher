@@ -5646,6 +5646,7 @@ components:
         statementTimeoutMilliseconds:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description:
             Maximum run time of each statement on the database, in
             milliseconds. The database cancels a statement that exceeds it.

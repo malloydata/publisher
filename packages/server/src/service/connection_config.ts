@@ -70,16 +70,25 @@ function validatePostgresSslmode(subject: string, sslmode: string): void {
  * rather than trusted: a JSON body is not held to the schema's `integer` type
  * before it reaches this code.
  */
+// Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
+// value makes the session SET fail on every connection that applies it.
+const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+
 export function postgresStatementTimeoutMs(
    name: string,
    pg: components["schemas"]["PostgresConnection"],
 ): number | undefined {
    const value: unknown = pg.statementTimeoutMilliseconds;
    if (value === undefined || value === null) return undefined;
-   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+   if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > POSTGRES_MAX_STATEMENT_TIMEOUT_MS
+   ) {
       throw new Error(
          `Connection '${name}' has an invalid statementTimeoutMilliseconds ` +
-            `${JSON.stringify(value)} (expected a positive integer).`,
+            `${JSON.stringify(value)} (expected an integer from 1 to ${POSTGRES_MAX_STATEMENT_TIMEOUT_MS}).`,
       );
    }
    return value;

@@ -589,11 +589,106 @@ async function attachSnowflake(
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
+// A server switch that sets statement_timeout: `-cstatement_timeout=N` or
+// `--statement_timeout=N` (Postgres reads `-` in a switch name as `_`). The
+// two-token `-c statement_timeout=N` form is handled where tokens are walked.
+const STATEMENT_TIMEOUT_SWITCH = /^(?:-c|--)statement[_-]timeout=/i;
+
 /**
- * A raw connectionString with the connection's statement timeout appended, in
+ * libpq `options` with every statement_timeout switch removed and the
+ * connection's own appended, so the string carries exactly one. Other switches
+ * are kept in order. Splits on unescaped whitespace, as the server does.
+ */
+function mergeStatementTimeoutOption(
+   existing: string,
+   ms: number,
+): { value: string; replaced: boolean } {
+   const tokens = existing.split(/(?<!\\)\s+/).filter((t) => t !== "");
+   const kept: string[] = [];
+   let replaced = false;
+   for (let i = 0; i < tokens.length; i++) {
+      if (
+         tokens[i] === "-c" &&
+         /^statement[_-]timeout=/i.test(tokens[i + 1] ?? "")
+      ) {
+         i++;
+         replaced = true;
+      } else if (STATEMENT_TIMEOUT_SWITCH.test(tokens[i])) {
+         replaced = true;
+      } else {
+         kept.push(tokens[i]);
+      }
+   }
+   kept.push("-c", `statement_timeout=${ms}`);
+   return { value: kept.join(" "), replaced };
+}
+
+/**
+ * The key/value pairs of a libpq keyword/value conninfo string, with each pair's
+ * span so it can be replaced in place. Values are unquoted and unescaped.
+ * Stops at the first token that is not a `key=value` pair.
+ */
+function conninfoPairs(
+   conninfo: string,
+): { key: string; value: string; start: number; end: number }[] {
+   const pairs: { key: string; value: string; start: number; end: number }[] =
+      [];
+   const isSpace = (c: string | undefined) => c !== undefined && /\s/.test(c);
+   let i = 0;
+   while (i < conninfo.length) {
+      while (isSpace(conninfo[i])) i++;
+      if (i >= conninfo.length) break;
+      const start = i;
+      let key = "";
+      while (
+         i < conninfo.length &&
+         conninfo[i] !== "=" &&
+         !isSpace(conninfo[i])
+      ) {
+         key += conninfo[i++];
+      }
+      while (isSpace(conninfo[i])) i++;
+      if (conninfo[i] !== "=") break;
+      i++;
+      while (isSpace(conninfo[i])) i++;
+      let value = "";
+      if (conninfo[i] === "'") {
+         i++;
+         while (i < conninfo.length && conninfo[i] !== "'") {
+            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
+            value += conninfo[i++];
+         }
+         i++;
+      } else {
+         while (i < conninfo.length && !isSpace(conninfo[i])) {
+            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
+            value += conninfo[i++];
+         }
+      }
+      pairs.push({ key, value, start, end: Math.min(i, conninfo.length) });
+   }
+   return pairs;
+}
+
+function decodeUriComponentOrRaw(value: string): string {
+   try {
+      return decodeURIComponent(value);
+   } catch {
+      return value;
+   }
+}
+
+/**
+ * A raw connectionString with the connection's statement timeout added, in
  * whichever of libpq's two forms the string is written: a URI takes it as an
  * `options` query parameter, a keyword/value string as an `options` pair.
- * Unchanged when the connection sets no statement timeout.
+ *
+ * libpq honors only the last `options`, so the timeout is merged into that one
+ * rather than added beside it, which would drop the string's other server
+ * settings. A statement_timeout the string already sets is replaced, with a
+ * warning: the explicit field wins, as it does on the query driver, where the
+ * session SET runs after connecting. Unchanged when the connection sets no
+ * statement timeout.
  */
 function withLibpqStatementTimeout(
    name: string,
@@ -602,11 +697,48 @@ function withLibpqStatementTimeout(
 ): string {
    const ms = postgresStatementTimeoutMs(name, pg);
    if (ms === undefined) return connectionString;
+   const merged = (existing: string | undefined): string => {
+      if (existing === undefined) return `-c statement_timeout=${ms}`;
+      const { value, replaced } = mergeStatementTimeoutOption(existing, ms);
+      if (replaced) {
+         logger.warn(
+            `Connection '${name}' sets statementTimeoutMilliseconds and its connectionString's ` +
+               `options also set statement_timeout; statementTimeoutMilliseconds applies.`,
+         );
+      }
+      return value;
+   };
+
    if (/^postgres(ql)?:\/\//i.test(connectionString)) {
-      const separator = connectionString.includes("?") ? "&" : "?";
-      return `${connectionString}${separator}options=${encodeURIComponent(`-c statement_timeout=${ms}`)}`;
+      const queryStart = connectionString.indexOf("?");
+      if (queryStart === -1) {
+         return `${connectionString}?options=${encodeURIComponent(merged(undefined))}`;
+      }
+      const params = connectionString.slice(queryStart + 1).split("&");
+      const isOptions = (param: string) =>
+         decodeUriComponentOrRaw(param.split("=", 1)[0]) === "options";
+      const last = params.map(isOptions).lastIndexOf(true);
+      if (last === -1) {
+         params.push(`options=${encodeURIComponent(merged(undefined))}`);
+      } else {
+         const raw = params[last].slice(params[last].indexOf("=") + 1);
+         params[last] =
+            `options=${encodeURIComponent(merged(decodeUriComponentOrRaw(raw)))}`;
+      }
+      return `${connectionString.slice(0, queryStart)}?${params.join("&")}`;
    }
-   return `${connectionString} ${pgConninfoPair("options", `-c statement_timeout=${ms}`)}`;
+
+   const existing = conninfoPairs(connectionString)
+      .filter((pair) => pair.key === "options")
+      .pop();
+   if (!existing) {
+      return `${connectionString} ${pgConninfoPair("options", merged(undefined))}`;
+   }
+   return (
+      connectionString.slice(0, existing.start) +
+      pgConninfoPair("options", merged(existing.value)) +
+      connectionString.slice(existing.end)
+   );
 }
 
 /**
@@ -2338,8 +2470,9 @@ export function buildProxiedSslQuery(name: string, sslmode?: string): string {
    switch (mode) {
       case "disable":
          // Explicit: with no sslmode in the connectionString, pg falls back to
-         // the PGSSLMODE env (set on the non-proxied path), which would verify
-         // and fail the 127.0.0.1 hostname check. Force plaintext explicitly.
+         // the deployment's PGSSLMODE (the default for a direct connection that
+         // sets no sslmode), which would verify and fail the 127.0.0.1 hostname
+         // check. Force plaintext explicitly.
          return "?sslmode=disable";
       case "no-verify":
          return "?sslmode=no-verify";
