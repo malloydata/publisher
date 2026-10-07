@@ -239,8 +239,10 @@ export class PackageController {
       // version: immutable, numbered by the package's own publisher.json, and
       // recorded in the version registry. Without it, or without a location,
       // the package is the single unversioned slot it always was.
+      // A location of null or "" is no location: such a publish is the
+      // unversioned add, and writes its row below like any other.
       const versioned =
-         body.location !== undefined &&
+         Boolean(body.location) &&
          getPackageVersioningMode(this.environmentStore.serverRootPath) ===
             "on";
       let result;
@@ -383,11 +385,15 @@ export class PackageController {
          environmentName,
          false,
       );
-      const result = await environment.deletePackage(packageName);
-      await this.environmentStore.deletePackageFromDatabase(
-         environmentName,
-         packageName,
-      );
+      // The rows go under the package lock, with the files: see
+      // Environment.deletePackage.
+      const result = await environment.deletePackage(packageName, {
+         forget: () =>
+            this.environmentStore.deletePackageFromDatabase(
+               environmentName,
+               packageName,
+            ),
+      });
 
       return result;
    }

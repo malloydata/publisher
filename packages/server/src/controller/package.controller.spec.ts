@@ -141,6 +141,49 @@ describe("PackageController.addPackage explores validation", () => {
 
       expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(true);
    });
+
+   it("treats a null or empty location as none with versioning on: an unversioned add that persists its row", async () => {
+      const saved = process.env.PUBLISHER_PACKAGE_VERSIONING;
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      try {
+         for (const location of [null, ""]) {
+            const mockPackage = {
+               formatInvalidExplores: () => "",
+               formatInvalidPersistencePolicy: () => "",
+               formatInvalidIncrementalPolicy: () => "",
+               formatInvalidPreaggregatePolicy: () => "",
+               formatPersistenceCollisionRejections: () => "",
+            };
+            const addPackage = sinon.stub().resolves(mockPackage);
+            const publishPackageVersion = sinon.stub().resolves(mockPackage);
+            const getEnvironment = sinon
+               .stub()
+               .resolves({ addPackage, publishPackageVersion });
+            const addPackageToDatabase = sinon.stub().resolves(undefined);
+            const controller = new PackageController({
+               publisherConfigIsFrozen: false,
+               serverRootPath: "/nonexistent/publisher-root",
+               getEnvironment,
+               addPackageToDatabase,
+            } as unknown as EnvironmentStore);
+
+            await controller.addPackage("env", {
+               name: "pkg",
+               location,
+            } as unknown as components["schemas"]["Package"]);
+
+            expect(publishPackageVersion.called).toBe(false);
+            expect(addPackage.calledOnce).toBe(true);
+            expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(
+               true,
+            );
+         }
+      } finally {
+         if (saved === undefined)
+            delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+         else process.env.PUBLISHER_PACKAGE_VERSIONING = saved;
+      }
+   });
 });
 
 describe("PackageController.addPackage persistence policy validation", () => {

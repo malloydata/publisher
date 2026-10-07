@@ -731,6 +731,13 @@ async function serveFromPackage(
       // with no framing header at all -- see the note in `frame_ancestors.ts`.
       // Never let a served asset be MIME-sniffed into a different content type.
       res.setHeader("X-Content-Type-Options", "nosniff");
+      if (environment.isVersionedPackage(req.params.packageName)) {
+         // The same URL serves a different version's file depending on the
+         // page it was requested from (see staticVersionIdOf), so a cache may
+         // keep it only per Referer, and must ask again before reusing it.
+         res.setHeader("Vary", "Referer");
+         res.setHeader("Cache-Control", "no-cache");
+      }
       res.sendFile(realFullPath, (err) => {
          if (err) {
             // Own the 404 instead of letting Express fall through to a

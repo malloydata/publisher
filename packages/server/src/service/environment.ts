@@ -2178,6 +2178,9 @@ export class Environment {
       assertSafeRelativeModelPath(modelPath);
       this.assertNotVersioned(packageName, "have its files written");
       return this.withPackageLock(packageName, async () => {
+         // Again under the lock: a first versioned publish may have committed
+         // since the check above, and its trees are not this file's.
+         this.assertNotVersioned(packageName, "have its files written");
          const target = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
@@ -2645,6 +2648,14 @@ export class Environment {
       if (slot.version !== undefined) {
          return this._loadVersionLocked(slot);
       }
+      if (this.isVersionedPackage(slot.name)) {
+         // Resolved as unversioned before the package's first versioned
+         // publish committed. Its directory now holds version trees, so it is
+         // served through its latest, under that version's own lock (taken
+         // inside the package lock this caller holds: the usual order).
+         const fresh = this.resolveSlot(slot.name);
+         return this.withSlotLock(fresh, () => this._loadVersionLocked(fresh));
+      }
       const packageName = slot.name;
       const existingPackage = this.packages.get(packageName);
       if (existingPackage !== undefined && !reload) {
@@ -2724,9 +2735,16 @@ export class Environment {
     * {@link restoreVersionTreeIfMissing}).
     */
    private async _loadVersionLocked(slot: PackageSlot): Promise<Package> {
-      const version = slot.version as PackageVersion;
       const loaded = this.packages.get(slot.key);
       if (loaded !== undefined) return loaded;
+      // The slot was resolved before this lock was taken, so an archive (or a
+      // manifest rebind) may have landed in between. Read the version again:
+      // loading from the stale snapshot would put an archived version back
+      // in memory, or bind it to a manifest it no longer has.
+      const version = this.resolveSlot(
+         slot.name,
+         (slot.version as PackageVersion).version,
+      ).version as PackageVersion;
 
       await this.restoreVersionTreeIfMissing(slot);
       logger.debug(
@@ -3052,19 +3070,52 @@ export class Environment {
          throw error;
       }
 
+      // The version is committed. Nothing from here on may undo it or report
+      // the publish as failed, so each step is best-effort: a step that fails
+      // is logged and the version is served with what is known.
+      const key = `${packageName}@${staged.dirName}`;
       const previousLatest = index?.latest ?? null;
-      if (options.promotion === "on-publish") {
-         await this.promoteOnPublish(packageName, staged.version);
-      }
-      await this.refreshPackageVersions(packageName);
-      const latest = this.packageVersions.get(packageName)?.latest ?? null;
-      pkg.setVersion(staged.version, latest);
-      pkg.setManifestLocation(row.manifestLocation);
-      // Best-effort, after the commit: a manifest that cannot be fetched must
-      // not undo a publish, so the version serves live instead.
-      await this.bindManifestIfConfigured(pkg);
-      await this.rebindServeBindingsFromLocalStore(pkg);
-      this.packages.set(`${packageName}@${staged.dirName}`, pkg);
+      let latest = previousLatest;
+      // Held until the version is in the package map. Once the index below
+      // makes it resolvable, a read that names it (or, promoted, one that
+      // names none) waits here for this instance rather than loading a
+      // second copy of its own.
+      await this.getOrCreatePackageMutex(key).runExclusive(async () => {
+         if (options.promotion === "on-publish") {
+            try {
+               await this.promoteOnPublish(packageName, staged.version, true);
+            } catch (error) {
+               logger.error(
+                  "Published a package version but could not move latest to it",
+                  { error, packageName, version: staged.version },
+               );
+            }
+         }
+         try {
+            await this.refreshPackageVersions(packageName);
+         } catch (error) {
+            // The registry could not be read back. Mirror the row this publish
+            // wrote, so the version is servable by name until the index is
+            // next read; latest stays what it was known to be.
+            logger.error(
+               "Published a package version but could not re-read its versions",
+               { error, packageName, version: staged.version },
+            );
+            const known = this.packageVersions.get(packageName);
+            this.setPackageVersions(packageName, known?.latest ?? null, [
+               ...(known?.versions.values() ?? []),
+               row,
+            ]);
+         }
+         latest = this.packageVersions.get(packageName)?.latest ?? null;
+         pkg.setVersion(staged.version, latest);
+         pkg.setManifestLocation(row.manifestLocation);
+         // A manifest that cannot be fetched must not undo a publish, so the
+         // version serves live instead (bindManifest records the fallback).
+         await this.bindManifestIfConfigured(pkg);
+         await this.rebindServeBindingsFromLocalStore(pkg);
+         this.packages.set(key, pkg);
+      });
       this.setPackageStatus(packageName, PackageStatus.SERVING);
       this.clearPackageLoadFailure(packageName);
       if (latest === staged.version) this.notifyPackageLoaded(pkg);
@@ -3074,7 +3125,7 @@ export class Environment {
       // the next request that names it. That keeps a publish from growing the
       // server's memory by one package each time.
       if (previousLatest && previousLatest !== latest) {
-         this.unloadVersionSlot(packageName, previousLatest);
+         await this.unloadVersionSlot(packageName, previousLatest);
       }
       if (legacyPackage) {
          this.retireConnectionGeneration(`package ${packageName}`, () =>
@@ -3130,13 +3181,20 @@ export class Environment {
             manifestLocation: options.manifestLocation,
          });
       }
+      const previousLatest =
+         this.packageVersions.get(packageName)?.latest ?? null;
       if (options.promotion === "on-publish") {
-         await this.promoteOnPublish(packageName, staged.version);
+         // Only to a strictly higher version: re-loading an older build of an
+         // equal version must not take latest back to it.
+         await this.promoteOnPublish(packageName, staged.version, false);
       }
       await this.refreshPackageVersions(packageName);
+      const latest = this.packageVersions.get(packageName)?.latest ?? null;
       const slot = this.resolveSlot(packageName, staged.version);
+      let wasLoaded = false;
       const pkg = await this.withSlotLock(slot, async () => {
          const loaded = this.packages.get(slot.key);
+         wasLoaded = loaded !== undefined;
          if (loaded && rebind) {
             await this.applyVersionManifest(
                loaded,
@@ -3147,6 +3205,17 @@ export class Environment {
          return this._loadVersionLocked(slot);
       });
       this.setPackageStatus(packageName, PackageStatus.SERVING);
+      if (latest !== previousLatest) {
+         // This re-publish moved latest, as a publish would: the old latest
+         // leaves memory, and the new one feeds the retrieval index (a fresh
+         // load already did that; an instance that was loaded did not).
+         if (previousLatest) {
+            await this.unloadVersionSlot(packageName, previousLatest);
+         }
+         if (latest === staged.version && wasLoaded) {
+            this.notifyPackageLoaded(pkg);
+         }
+      }
       return pkg;
    }
 
@@ -3178,12 +3247,20 @@ export class Environment {
    private async promoteOnPublish(
       packageName: string,
       version: string,
+      // Whether a version of equal precedence (build metadata alone differs)
+      // takes latest: true for a new publish, the later build; false for a
+      // re-publish, which is placement and must not take latest back to an
+      // older build.
+      tieAdvances: boolean,
    ): Promise<void> {
       const registry = this.requireVersionRegistry();
       for (let attempt = 0; attempt < 5; attempt++) {
          const current = await registry.getLatest(packageName);
          if (current === version) return;
-         if (current !== null && compareSemver(version, current) < 0) return;
+         if (current !== null) {
+            const order = compareSemver(version, current);
+            if (order < 0 || (order === 0 && !tieAdvances)) return;
+         }
          if (await registry.setLatest(packageName, current, version)) return;
       }
       throw new Error(
@@ -3191,18 +3268,27 @@ export class Environment {
       );
    }
 
-   /** Drop one loaded version from memory; it loads again when next named. */
-   private unloadVersionSlot(packageName: string, version: string): void {
+   /**
+    * Drop one loaded version from memory; it loads again when next named.
+    * Taken under the version's own lock, so a load already in flight finishes
+    * first and is then dropped, rather than landing after the unload.
+    */
+   private async unloadVersionSlot(
+      packageName: string,
+      version: string,
+   ): Promise<void> {
       const index = this.packageVersions.get(packageName);
       const dirName = index?.versions.get(version)?.dirName;
       if (!dirName) return;
       const key = `${packageName}@${dirName}`;
-      const pkg = this.packages.get(key);
-      if (!pkg) return;
-      this.retireConnectionGeneration(`package ${key}`, () =>
-         pkg.getMalloyConfig().shutdown("close"),
-      );
-      this.packages.delete(key);
+      await this.getOrCreatePackageMutex(key).runExclusive(async () => {
+         const pkg = this.packages.get(key);
+         if (!pkg) return;
+         this.retireConnectionGeneration(`package ${key}`, () =>
+            pkg.getMalloyConfig().shutdown("close"),
+         );
+         this.packages.delete(key);
+      });
    }
 
    private removeRetiredLater(retiredPath: string): void {
@@ -3259,9 +3345,15 @@ export class Environment {
          },
       );
 
-      return this.withPackageLock(packageName, () =>
-         this._addPackageLocked(packageName),
-      );
+      return this.withPackageLock(packageName, () => {
+         // Again under the lock: the package may have published its first
+         // version since the check above.
+         this.assertNotVersioned(
+            packageName,
+            "be re-registered from a directory",
+         );
+         return this._addPackageLocked(packageName);
+      });
    }
 
    private async _addPackageLocked(
@@ -3348,6 +3440,15 @@ export class Environment {
       });
 
       return this.withPackageLock(packageName, async () => {
+         // Again under the lock: the package may have published its first
+         // version while this one downloaded, and its directory now holds the
+         // version trees the swap below would retire.
+         if (this.isVersionedPackage(packageName)) {
+            await fs.promises
+               .rm(stagingPath, { recursive: true, force: true })
+               .catch(() => {});
+            this.assertNotVersioned(packageName, "be re-installed in place");
+         }
          logger.debug("install.phase2.swap.started", {
             environmentName: this.environmentName,
             packageName,
@@ -4010,6 +4111,9 @@ export class Environment {
       assertSafePackageName(packageName);
       this.assertNotVersioned(packageName, "be updated in place");
       return this.withPackageLock(packageName, async () => {
+         // Again under the lock: a first versioned publish may have committed
+         // since the check above.
+         this.assertNotVersioned(packageName, "be updated in place");
          const _package = this.packages.get(packageName);
          if (!_package) {
             throw new PackageNotFoundError(`Package ${packageName} not found`);
@@ -4269,97 +4373,111 @@ export class Environment {
       this.packageStatuses.delete(packageName);
    }
 
-   public async deletePackage(packageName: string): Promise<void> {
+   /**
+    * Delete a package: every version of a versioned one. `forget` runs last,
+    * under the same package lock, and is where the caller removes the
+    * package's database rows: outside the lock, a publish of the same name
+    * that commits in between would have its rows erased.
+    */
+   public async deletePackage(
+      packageName: string,
+      options: { forget?: () => Promise<void> } = {},
+   ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
-         // Clear the load failure before the early return, not after it. A
-         // package that failed to load is not in `packages` (the load catch
-         // evicts it), so deleting it takes the early return every time, while
-         // the controller still drops its config row. Leaving the entry would
-         // make getStatus report a loadError for a package that is no longer
-         // configured, which is the one thing that channel must not do.
-         this.clearPackageLoadFailure(packageName);
+         await this.deletePackageLocked(packageName);
+         await options.forget?.();
+      });
+   }
 
-         if (this.isVersionedPackage(packageName)) {
-            await this.deleteVersionedPackageLocked(packageName);
-            return;
-         }
+   private async deletePackageLocked(packageName: string): Promise<void> {
+      // Clear the load failure before the early return, not after it. A
+      // package that failed to load is not in `packages` (the load catch
+      // evicts it), so deleting it takes the early return every time, while
+      // the controller still drops its config row. Leaving the entry would
+      // make getStatus report a loadError for a package that is no longer
+      // configured, which is the one thing that channel must not do.
+      this.clearPackageLoadFailure(packageName);
 
-         const _package = this.packages.get(packageName);
-         if (!_package) {
-            return;
-         }
-         const packageStatus = this.packageStatuses.get(packageName);
+      if (this.isVersionedPackage(packageName)) {
+         await this.deleteVersionedPackageLocked(packageName);
+         return;
+      }
 
-         // The mutex now serializes load/install/compile against delete, so
-         // the LOADING-state guard is mostly vestigial — left in place for
-         // backwards-compatible error messaging in case anything bypasses
-         // the lock.
-         if (packageStatus?.status === PackageStatus.LOADING) {
-            logger.error("Package loading. Can't unload.", {
+      const _package = this.packages.get(packageName);
+      if (!_package) {
+         return;
+      }
+      const packageStatus = this.packageStatuses.get(packageName);
+
+      // The mutex now serializes load/install/compile against delete, so
+      // the LOADING-state guard is mostly vestigial — left in place for
+      // backwards-compatible error messaging in case anything bypasses
+      // the lock.
+      if (packageStatus?.status === PackageStatus.LOADING) {
+         logger.error("Package loading. Can't unload.", {
+            environmentName: this.environmentName,
+            packageName,
+         });
+         throw new Error(
+            "Package loading. Can't unload. " +
+               this.environmentName +
+               " " +
+               packageName,
+         );
+      } else if (packageStatus?.status === PackageStatus.SERVING) {
+         this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+      }
+
+      // Retire the package's connections via the existing 30s drain so
+      // any in-flight queries that already acquired a connection finish
+      // before the underlying duckdb handle is released.
+      this.retireConnectionGeneration(`package ${packageName}`, () =>
+         _package.getMalloyConfig().shutdown("close"),
+      );
+
+      // Atomically rename the canonical tree out of the way so no reader
+      // can stat into it after the lock is released. The actual fs.rm is
+      // deferred to setImmediate to keep the lock-hold time at one
+      // rename rather than a (potentially slow) recursive remove.
+      const canonicalPath = safeJoinUnderRoot(
+         this.environmentPath,
+         packageName,
+      );
+      const retiredPath = this.allocateRetiredPath(packageName);
+      let renamed = false;
+      try {
+         await fs.promises.mkdir(path.dirname(retiredPath), {
+            recursive: true,
+         });
+         await fs.promises.rename(canonicalPath, retiredPath);
+         renamed = true;
+      } catch (err) {
+         logger.error(
+            "Error renaming package directory to retired during unload",
+            {
+               error: err,
                environmentName: this.environmentName,
                packageName,
-            });
-            throw new Error(
-               "Package loading. Can't unload. " +
-                  this.environmentName +
-                  " " +
-                  packageName,
-            );
-         } else if (packageStatus?.status === PackageStatus.SERVING) {
-            this.setPackageStatus(packageName, PackageStatus.UNLOADING);
-         }
-
-         // Retire the package's connections via the existing 30s drain so
-         // any in-flight queries that already acquired a connection finish
-         // before the underlying duckdb handle is released.
-         this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().shutdown("close"),
+            },
          );
+      }
 
-         // Atomically rename the canonical tree out of the way so no reader
-         // can stat into it after the lock is released. The actual fs.rm is
-         // deferred to setImmediate to keep the lock-hold time at one
-         // rename rather than a (potentially slow) recursive remove.
-         const canonicalPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         const retiredPath = this.allocateRetiredPath(packageName);
-         let renamed = false;
-         try {
-            await fs.promises.mkdir(path.dirname(retiredPath), {
-               recursive: true,
-            });
-            await fs.promises.rename(canonicalPath, retiredPath);
-            renamed = true;
-         } catch (err) {
-            logger.error(
-               "Error renaming package directory to retired during unload",
-               {
-                  error: err,
-                  environmentName: this.environmentName,
-                  packageName,
-               },
-            );
-         }
+      this.packages.delete(packageName);
+      this.packageStatuses.delete(packageName);
 
-         this.packages.delete(packageName);
-         this.packageStatuses.delete(packageName);
-
-         if (renamed) {
-            setImmediate(() => {
-               void fs.promises
-                  .rm(retiredPath, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${retiredPath}`,
-                        { error: err },
-                     );
-                  });
-            });
-         }
-      });
+      if (renamed) {
+         setImmediate(() => {
+            void fs.promises
+               .rm(retiredPath, { recursive: true, force: true })
+               .catch((err) => {
+                  logger.warn(
+                     `Failed to clean up retired package directory ${retiredPath}`,
+                     { error: err },
+                  );
+               });
+         });
+      }
    }
 
    /**
@@ -4373,7 +4491,12 @@ export class Environment {
       packageName: string,
    ): Promise<void> {
       this.setPackageStatus(packageName, PackageStatus.UNLOADING);
-      for (const version of this.listPackageVersions(packageName).versions) {
+      const versions = this.listPackageVersions(packageName).versions;
+      // Forget the versions before unloading them, so a load that resolved
+      // one before this delete and is waiting on its lock re-reads it there
+      // (see _loadVersionLocked), finds it gone, and loads nothing.
+      this.clearPackageVersions(packageName);
+      for (const version of versions) {
          const key = `${packageName}@${version.dirName}`;
          await this.getOrCreatePackageMutex(key).runExclusive(async () => {
             const pkg = this.packages.get(key);
@@ -4384,7 +4507,6 @@ export class Environment {
             this.packages.delete(key);
          });
       }
-      this.clearPackageVersions(packageName);
       this.packageStatuses.delete(packageName);
 
       const packageDir = safeJoinUnderRoot(this.environmentPath, packageName);

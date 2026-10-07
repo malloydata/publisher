@@ -1411,6 +1411,9 @@ paths:
         - Publishing a version the package already has, with different content, is refused with
           409 (`reason` `VERSION_CONFLICT`). The same content again succeeds and changes
           nothing, so re-loading a version onto a server that already holds it is safe to retry.
+          It moves `latest` only to a strictly higher version, never back to an older build of
+          an equal one. Re-publishing an archived version is refused with 410 (`reason`
+          `VERSION_ARCHIVED`): unarchive it instead.
         - A version that does not pass the publish checks (the same ones an unversioned publish
           applies) is refused with 400, and the versions already published keep serving.
         - Under `versionPromotion: "on-publish"` (the default), the new version becomes the
@@ -1447,6 +1450,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
