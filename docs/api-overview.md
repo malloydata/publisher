@@ -90,6 +90,9 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
 - **400 with `reason: QUERY_EXECUTION_FAILED`:** the query compiled, and the database ran it and
   rejected it (a type mismatch, a division by zero, a permission on a table). The message carries
   the database's text. Fix the query or the model.
+- **422 with `reason: CONNECTION_AUTH_FAILED`:** the database rejected the connection's
+  credentials, so the query never ran. The query is fine, and retrying fails the same way until
+  whoever configures the connection fixes its user, password, key or token.
 - **502 with `reason: CONNECTION_FAILED`:** the database could not be reached, so the query never
   ran. The query is fine; do not rewrite it. Retry once, then report the connection. The body
   carries a generic message, because the driver's text can name an internal host; it is in the

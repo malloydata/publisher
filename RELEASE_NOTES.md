@@ -21,11 +21,13 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] - A database that cannot be reached answers 502, not 400
+## [Unreleased] - A database that cannot be reached answers 502, and rejected credentials 422, not 400 or 500
 
 When the database behind a query could not be reached (the connection was refused, reset or timed out, or the server closed it), the query route answered 400 with `Query execution failed: <driver text>`. That read as "fix your query" to every caller, and the driver text could name an internal host and port.
 
 It now answers **502** with `reason: CONNECTION_FAILED` and the generic message `Upstream connection error.` The driver's text goes to the server log at `warn`. The same holds for a notebook cell, for `sqlQuery` and `sqlTemporaryTable`, and for listing a connection's schemas and tables, which answered 500 before. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
+
+When the database **rejects the connection's credentials** (a wrong password, an invalid key-pair JWT, an expired OAuth token), the same routes answer **422** with `reason: CONNECTION_AUTH_FAILED` and a fixed message saying to check the connection's user, password, key or token. The query route answered 400 for this and schema listing 500. It is recognized from the driver's code: a Postgres SQLSTATE in class `28`, MySQL `ER_ACCESS_DENIED_ERROR`, Snowflake login codes `390100`, `390144`, `390195` and `390318`, and the `BigQueryAuthenticationError` Malloy's BigQuery driver raises.
 
 A query the database ran and rejected (a type mismatch, a division by zero, a permission on a table) is still a 400 with the database's text, and now carries `reason: QUERY_EXECUTION_FAILED`.
 

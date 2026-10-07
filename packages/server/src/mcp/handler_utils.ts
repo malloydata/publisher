@@ -6,6 +6,7 @@ import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
    ConnectionFailedError,
    ConnectionNotFoundError,
    InvalidArgumentError,
@@ -123,6 +124,23 @@ export function classifyToolError(
          suggestions: [
             "The query and the model are fine. Do not rewrite them.",
             "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ConnectionAuthError) {
+      // The database rejected the connection's credentials. Retrying or
+      // rewriting the query fails the same way until the connection is fixed.
+      // The driver's text can name the user or account, so it is logged.
+      logInternalFailure(
+         `Connection credentials rejected during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `The database rejected the connection's credentials for ${identifier}. The query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
          ],
       } satisfies ErrorDetails;
    }

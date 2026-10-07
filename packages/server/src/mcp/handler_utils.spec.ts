@@ -7,6 +7,7 @@ import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
    ConnectionFailedError,
    InvalidArgumentError,
    ModelCompilationError,
@@ -57,6 +58,25 @@ describe("classifyToolError", () => {
       });
       // The driver's text names an internal host; it is logged, not returned.
       expect(JSON.stringify(details)).not.toContain("10.0.0.5");
+   });
+
+   it("tells the agent rejected credentials are the connection's to fix, not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionAuthError(
+            'password authentication failed for user "analytics"',
+         ),
+      );
+      expect(details).toEqual({
+         message:
+            "The database rejected the connection's credentials for env/pkg. The query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+      });
+      expect(JSON.stringify(details)).not.toContain("analytics");
    });
 
    it("homes back-pressure as retryable, not as Malloy", () => {

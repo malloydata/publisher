@@ -12,7 +12,9 @@ import {
    ConnectionError,
    ConnectionFailedError,
    InvalidArgumentError,
+   databaseAccessFailure,
    isConnectionFailure,
+   isCredentialRejection,
    QueryExecutionError,
    TableNotFoundError,
    internalErrorToHttpError,
@@ -27,14 +29,18 @@ import {
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
-   it("maps ConnectionAuthError to 422", () => {
+   it("maps ConnectionAuthError to 422 with a fixed message and no driver text", () => {
       const { status, json } = internalErrorToHttpError(
-         new ConnectionAuthError("creds rejected for db_x"),
+         new ConnectionAuthError(
+            'password authentication failed for user "analytics"',
+         ),
       );
       expect(status).toBe(422);
       expect(json).toEqual({
          code: 422,
-         message: "creds rejected for db_x",
+         message:
+            "The database rejected the connection's credentials. Check the connection's user, password, key or token.",
+         reason: "CONNECTION_AUTH_FAILED",
       });
    });
 
@@ -411,5 +417,68 @@ describe("isConnectionFailure", () => {
    it("is false for a thrown non-Error", () => {
       expect(isConnectionFailure("connect ECONNREFUSED")).toBe(false);
       expect(isConnectionFailure(undefined)).toBe(false);
+   });
+});
+
+describe("isCredentialRejection", () => {
+   // Each shape is what the driver raised when measured: Postgres 16 and
+   // MySQL 8.4 with a wrong password, through Publisher's connection builder.
+   const postgres = Object.assign(
+      new Error('password authentication failed for user "postgres"'),
+      { code: "28P01" },
+   );
+   const mysql = Object.assign(
+      new Error(
+         "Access denied for user 'root'@'192.168.215.1' (using password: YES)",
+      ),
+      { code: "ER_ACCESS_DENIED_ERROR", fatal: true },
+   );
+
+   it("recognizes a rejected login from Postgres, MySQL, Snowflake and BigQuery", () => {
+      expect(isCredentialRejection(postgres)).toBe(true);
+      expect(isCredentialRejection(mysql)).toBe(true);
+      // Snowflake's key-pair failure, as staging logged it, with its code.
+      expect(
+         isCredentialRejection(
+            Object.assign(new Error("JWT token is invalid."), {
+               code: "390144",
+            }),
+         ),
+      ).toBe(true);
+      const bigquery = new Error("invalid_grant");
+      bigquery.name = "BigQueryAuthenticationError";
+      expect(isCredentialRejection(bigquery)).toBe(true);
+   });
+
+   it("follows the cause chain that schema listing wraps it in", () => {
+      // db_utils rethrows "Failed to get schemas ..." with the driver error as
+      // cause; the Snowflake 500 on staging was this shape without the cause.
+      const wrapped = new Error(
+         "Failed to get schemas for Snowflake connection sftest: JWT token is invalid.",
+         {
+            cause: Object.assign(new Error("JWT token is invalid."), {
+               code: "390144",
+            }),
+         },
+      );
+      expect(isCredentialRejection(wrapped)).toBe(true);
+   });
+
+   it("is not a connection failure's job: a MySQL login is fatal but answers as credentials", () => {
+      expect(isConnectionFailure(mysql)).toBe(true);
+      expect(databaseAccessFailure(mysql)).toBeInstanceOf(ConnectionAuthError);
+      expect(databaseAccessFailure(postgres)).toBeInstanceOf(
+         ConnectionAuthError,
+      );
+   });
+
+   it("leaves a statement-level permission error alone", () => {
+      // 42501 insufficient_privilege: logged in fine, not allowed to read the
+      // table. That is the query's problem, not the connection's.
+      const denied = Object.assign(new Error("permission denied for table x"), {
+         code: "42501",
+      });
+      expect(isCredentialRejection(denied)).toBe(false);
+      expect(databaseAccessFailure(denied)).toBeUndefined();
    });
 });

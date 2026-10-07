@@ -12,7 +12,9 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 //
 // Generalizing is decided per branch, not by status class -- 501, 503 and 504
 // are 5xx and still return their messages. Every 4xx returns its message
-// because a client error names what the caller must change. The 5xx branches
+// because a client error names what the caller must change, with one
+// exception: the 422 for rejected credentials, whose driver text can name a
+// user or an account, returns a fixed message saying what to check. The 5xx branches
 // that return theirs do so because the message is one this server composed (a
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
@@ -43,6 +45,8 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // traceparent.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
+const GENERIC_AUTH_MESSAGE =
+   "The database rejected the connection's credentials. Check the connection's user, password, key or token.";
 
 /**
  * Cap on the logged detail. `error.message` here is unbounded and
@@ -138,7 +142,11 @@ export type ErrorReason =
    // On a 400: the database ran the query and rejected it (a type mismatch, a
    // division by zero, a permission on a table). Distinct from a Malloy
    // compile error, which carries `problems` instead.
-   | "QUERY_EXECUTION_FAILED";
+   | "QUERY_EXECUTION_FAILED"
+   // On a 422: the database rejected the connection's credentials (a wrong
+   // password, an invalid key, an expired token). The query never ran, and
+   // whoever configures the connection has to fix it.
+   | "CONNECTION_AUTH_FAILED";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -250,6 +258,62 @@ export function isConnectionFailure(error: unknown): boolean {
    return false;
 }
 
+/** Postgres SQLSTATEs for a rejected login: class 28. */
+const POSTGRES_AUTH_SQLSTATE = /^28[0-9A-Z]{3}$/;
+
+/** mysql2's code for a rejected user or password. */
+const MYSQL_AUTH_CODES = new Set(["ER_ACCESS_DENIED_ERROR"]);
+
+/**
+ * Snowflake's login failures, as its server reports them in `code`: a wrong
+ * user or password (390100), an invalid key-pair JWT (390144), an invalid ID
+ * token (390195), an expired OAuth token (390318). Session-token codes are
+ * left out, because the SDK renews those itself.
+ */
+const SNOWFLAKE_AUTH_CODES = new Set(["390100", "390144", "390195", "390318"]);
+
+/**
+ * Whether `error` means the database rejected the connection's credentials.
+ *
+ * Read from the driver's fields on the error and its `cause` chain: a Postgres
+ * SQLSTATE in class 28, mysql2's `ER_ACCESS_DENIED_ERROR`, a Snowflake login
+ * code, or the `BigQueryAuthenticationError` Malloy's BigQuery driver raises
+ * for a rejected key or token.
+ */
+export function isCredentialRejection(error: unknown): boolean {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code } = current as Error & { code?: unknown };
+      if (typeof code === "string" || typeof code === "number") {
+         const value = String(code);
+         if (POSTGRES_AUTH_SQLSTATE.test(value)) return true;
+         if (MYSQL_AUTH_CODES.has(value)) return true;
+         if (SNOWFLAKE_AUTH_CODES.has(value)) return true;
+      }
+      if (current.name === "BigQueryAuthenticationError") return true;
+      current = current.cause;
+   }
+   return false;
+}
+
+/**
+ * The error to answer with when a driver failure is about reaching the
+ * database rather than about the statement: rejected credentials (422) or an
+ * unreachable database (502). Undefined for anything else, which keeps the
+ * status its route gave it.
+ *
+ * Credentials are checked first, because mysql2 also marks a rejected login
+ * `fatal`, which on its own reads as an unusable connection.
+ */
+export function databaseAccessFailure(
+   error: unknown,
+): ConnectionAuthError | ConnectionFailedError | undefined {
+   const message = error instanceof Error ? error.message : String(error);
+   if (isCredentialRejection(error)) return new ConnectionAuthError(message);
+   if (isConnectionFailure(error)) return new ConnectionFailedError(message);
+   return undefined;
+}
+
 /**
  * One line naming a refused filesystem access, in Node's own shape
  * (`EACCES: permission denied, mkdir '/x'`), built from the errno's fields.
@@ -353,7 +417,11 @@ export function internalErrorToHttpError(
    } else if (error instanceof DestinationNotFoundError) {
       return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
-      return httpError(422, error.message);
+      // The driver's text can name the user, the account or the host, so it
+      // is logged and the body says only what to fix. warn, like the 502: a
+      // misconfigured connection is the caller's to fix, not our fault.
+      logInternal("Connection credentials rejected", error, "warn");
+      return httpError(422, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
    } else if (error instanceof UnsupportedCatalogFormatError) {
       return httpError(422, error.message);
    } else if (error instanceof MaterializationEligibilityError) {
@@ -610,6 +678,13 @@ export class DestinationNotFoundError extends Error {
    }
 }
 
+/**
+ * The database rejected the connection's credentials: a wrong password, an
+ * invalid key, an expired token. Raised where {@link isCredentialRejection}
+ * recognized the driver's error. Maps to 422 with
+ * `reason: CONNECTION_AUTH_FAILED`: the query never ran, and the fix is the
+ * connection's configuration, not the query and not a retry.
+ */
 export class ConnectionAuthError extends Error {
    constructor(message: string) {
       super(message);

@@ -639,6 +639,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -698,6 +700,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -998,6 +1002,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -1062,6 +1068,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -1878,6 +1886,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -2324,6 +2334,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "422":
+          $ref: "#/components/responses/ConnectionCredentialsRejected"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":
@@ -2863,6 +2875,16 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ConnectionCredentialsRejected:
+      description: |
+        The database rejected the connection's credentials (`reason:
+        CONNECTION_AUTH_FAILED`), so the query never ran. The body carries a
+        fixed message; the driver's text can name a user or an account, so it
+        is logged.
       content:
         application/json:
           schema:
@@ -6152,6 +6174,11 @@ components:
             are fine; retrying elsewhere will not help, and neither will
             rewriting the query.
 
+            CONNECTION_AUTH_FAILED, on a 422, means the database rejected the
+            connection's credentials (a wrong password, an invalid key, an
+            expired token), so the query never ran. Whoever configures the
+            connection has to fix it; retrying fails the same way.
+
             QUERY_EXECUTION_FAILED, on a 400 from the query route, means the
             database ran the query and rejected it (a type mismatch, a division
             by zero, a permission on a table). The message carries the
@@ -6164,7 +6191,7 @@ components:
             grow. Callers must treat an unrecognized value as absent.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            QUERY_EXECUTION_FAILED.
+            CONNECTION_AUTH_FAILED, QUERY_EXECUTION_FAILED.
         problems:
           type: array
           description: |

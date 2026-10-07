@@ -12,9 +12,8 @@ import {
 import {
    BadRequestError,
    ConnectionError,
-   ConnectionFailedError,
+   databaseAccessFailure,
    InvalidArgumentError,
-   isConnectionFailure,
    PayloadTooLargeError,
    TableNotFoundError,
 } from "../errors";
@@ -234,37 +233,34 @@ function classifyDriverFailure(error: unknown): Error {
          : typeof error === "string"
            ? error
            : JSON.stringify(error);
-   if (isConnectionFailure(error)) return new ConnectionFailedError(message);
-   return driverErrorToPublisherError(message);
+   return databaseAccessFailure(error) ?? driverErrorToPublisherError(message);
 }
 
 /**
- * A failure running SQL the caller sent. Either way it is a 502 with the
- * driver's text logged and generalized; a database that could not be reached
- * also carries `reason: CONNECTION_FAILED`.
+ * A failure running SQL the caller sent: a 502 with the driver's text logged
+ * and generalized, unless the database was unreachable (502 with
+ * `reason: CONNECTION_FAILED`) or rejected the credentials (422 with
+ * `reason: CONNECTION_AUTH_FAILED`).
  */
-function sqlRunFailure(error: unknown): ConnectionError {
-   const message = (error as Error).message;
-   return isConnectionFailure(error)
-      ? new ConnectionFailedError(message)
-      : new ConnectionError(message);
+function sqlRunFailure(error: unknown): Error {
+   return (
+      databaseAccessFailure(error) ??
+      new ConnectionError((error as Error).message)
+   );
 }
 
 /**
  * Schema listing lets most driver failures through as they are (a 500), but
- * an unreachable database is a 502 with `reason: CONNECTION_FAILED`, the same
- * as every other route that reaches it.
+ * an unreachable database or rejected credentials answer the same as on every
+ * other route that reaches the database.
  */
-async function withConnectionFailureClassified<T>(
+async function withDatabaseAccessClassified<T>(
    list: () => Promise<T>,
 ): Promise<T> {
    try {
       return await list();
    } catch (error) {
-      if (isConnectionFailure(error)) {
-         throw new ConnectionFailedError((error as Error).message);
-      }
-      throw error;
+      throw databaseAccessFailure(error) ?? error;
    }
 }
 
@@ -494,7 +490,7 @@ export class ConnectionController {
          packageName,
       );
 
-      return withConnectionFailureClassified(() =>
+      return withDatabaseAccessClassified(() =>
          getSchemasForConnection(connection, malloyConnection),
       );
    }
@@ -522,7 +518,7 @@ export class ConnectionController {
          packageName,
       );
 
-      return withConnectionFailureClassified(() =>
+      return withDatabaseAccessClassified(() =>
          listTablesForSchema(
             connection,
             schemaName,
