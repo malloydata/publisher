@@ -1,0 +1,71 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Fails while a published release has not been merged back into main.
+#
+# `release.yml` publishes sdk/app/server from a `release/sdk-<v>` branch that
+# carries the version bump and the stamped RELEASE_NOTES.md headings, and a
+# person merges that branch back as a PR. Until it merges, main's
+# packages/sdk/package.json declares the previous version and its
+# `[Unreleased]` headings still list sections that release already shipped, so
+# the next release would stamp and publish them again. npm `latest` above the
+# declared version is exactly that state, and merging the release PR is the
+# only thing that clears it. The release PR itself passes, because its tree
+# declares the new version.
+#
+# npm rather than the git tags: a release whose npm publish succeeded and whose
+# `gh-release` failed has no tag, but it shipped.
+#
+# `release.yml` does not run this check. It reports; it does not block a
+# dispatch. It is not a required status check either, since requiring it would
+# block every other PR until the release PR merges.
+
+name: Release sync
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Right after a release, so main reads red as soon as there is a release PR
+  # to merge, rather than at the next push. A workflow_run run checks out and
+  # reports on the default branch's head.
+  workflow_run:
+    workflows: ["Release (NPM + Docker)"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release_sync:
+    name: Release sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # `npm view <pkg> version` is the `latest` dist-tag, NOT the highest
+      # version published: `@malloy-publisher/sdk@1.0.1` is an old off-line
+      # publish above the real line, so comparing against the maximum would
+      # fail this forever. A prerelease publishes under `next` and never moves
+      # `latest`.
+      - name: Compare npm latest with packages/sdk/package.json
+        run: |
+          set -euo pipefail
+          NPM_LOG="$(mktemp)"
+          if ! PUBLISHED="$(npm view @malloy-publisher/sdk version 2>"$NPM_LOG")" || [ -z "$PUBLISHED" ]; then
+            # Prefixed so a line of npm's output starting with `::` is not
+            # read as a workflow command.
+            sed 's/^/[npm view] /' "$NPM_LOG"
+            echo "::error title=Release sync::could not read @malloy-publisher/sdk's latest version from npm (logged above), so this check cannot tell whether the last release merged back. Re-run the job once the registry answers."
+            exit 1
+          fi
+          DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
+          if [ "$PUBLISHED" != "$DECLARED" ] \
+            && [ "$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)" = "$PUBLISHED" ]; then
+            echo "::error title=Release sync::npm latest is ${PUBLISHED} but packages/sdk/package.json declares ${DECLARED}: release ${PUBLISHED} has not been merged back. Merge the pull request from release/sdk-${PUBLISHED} into main (titled 'chore(release): ${PUBLISHED}'); that is the only fix."
+            exit 1
+          fi
+          echo "npm latest ${PUBLISHED}, packages/sdk/package.json ${DECLARED}: nothing waiting to merge back"

@@ -10,9 +10,11 @@ SPDX-License-Identifier: MIT
 # Releasing Publisher
 
 A release is one `workflow_dispatch` of `Release (NPM + Docker)`
-(`.github/workflows/release.yml`). Everything else in this skill exists because
-work has to land on `main` **before** that dispatch, or be written **after** it
-completes — and the step that is always skipped is the last one.
+(`.github/workflows/release.yml`), followed by one pull request: the
+`release/sdk-<version>` branch the release published from, merged back into
+`main`. That branch already carries the version bump and the stamped release
+notes, so **you never create a branch or stamp anything by hand**. You open the
+PR from the branch the workflow pushed.
 
 Read `.github/workflows/CONTEXT.md` (path from the repo root) before acting. It carries the publishing rules that are not guessable from the
 YAML, and it is the authority when this file and it disagree.
@@ -22,11 +24,11 @@ YAML, and it is the authority when this file and it disagree.
 `RELEASE_NOTES.md` is not written at release time. **The PR that changes the
 behaviour writes the note**, in the same PR, as a `## [Unreleased]` section —
 which is the only way it gets written by someone who knows what changed. The
-release then carries it to users on its own: `gh-release` appends every
-`[Unreleased]` section to the release page, then pushes a branch stamping those
-headings with the version that shipped them and prints a link to open it as a PR.
-Writing the section is the whole job; opening and merging that PR is the one
-thing the release cannot do for itself.
+release then carries it to users on its own: `prepare` stamps every
+`[Unreleased]` heading with the release's version on the release branch, and
+`gh-release` puts those sections on the release page. Writing the section is
+the whole job; merging the release branch back is the one thing the release
+cannot do for itself.
 
 ### Does this change need one?
 
@@ -68,8 +70,8 @@ Three states, in order:
    #1024 (pre-aggregation off by default) and #1030 (on by default) are one
    section for exactly this reason.
 3. **`## [<version>] — <what changed>`** once a release has shipped it. **CI
-   writes this** — `gh-release` pushes a `release-notes-stamp-<version>` branch
-   after the release is cut, and a human opens and merges it. You do not stamp by
+   writes this** — `prepare` stamps it on `release/sdk-<version>`, and it
+   reaches `main` when that branch's PR merges (step 6). You do not stamp by
    hand, and you do not guess the number in advance.
 
 Once a section is stamped, it is history and does not get rewritten. A follow-up
@@ -77,13 +79,10 @@ that changes that behaviour opens a **new** `[Unreleased]` section referencing
 the shipped version by number, the way the build-failures section names 0.0.245
 and 0.0.246 when describing what 0.0.247 changed.
 
-Never write a version number into a note yourself *in advance*. Release numbers
-are assigned at dispatch time and a release can fail, so a section stamped early
-can name a version that does not exist — which is exactly why the stamp runs
-after `gh release create` succeeds and not before. Stamping a version that has
-**already** shipped is a different act and sometimes necessary, because the
-stamp branch needs a human to open and merge, and can be missed; step 3 covers
-it, including why the obvious command for it is destructive.
+Never write a version number into a note yourself. Release numbers are assigned
+at dispatch time and a release can fail. A failed release's stamp is harmless
+only because its branch is never merged; the next dispatch cuts a new branch
+from `main`, which still reads `[Unreleased]`.
 
 ## The versioning policy
 
@@ -225,10 +224,10 @@ last, nothing depends on it, and re-running the job skips whatever already
 published.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
-should: the post-release stamp PR resets those three files to the version that
-shipped. But that PR needs a human to merge it, so **`main` is truthful only if
-the last one landed** — which is why `prepare` still takes the max of npm and the
-file rather than trusting either. Ask npm when you want to know what is
+does: merging the release PR (step 6) brings those three files to the version
+that shipped, and CI's `Release sync` check fails while a shipped
+release's PR is unmerged. `prepare` still takes the max of npm and the file for
+its floor rather than trusting either. Ask npm when you want to know what is
 published.
 
 ## Order, and why each step is where it is
@@ -319,20 +318,31 @@ If the wait gives up, neither the scaffolder nor python-client was dispatched.
 Once `latest` reads the new version, re-run the `publish-packages` job (Re-run
 failed jobs), not the whole release.
 
-### 3. Sanity-check the notes
+### 3. Check the last release merged back, and read what ships
 
-`gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
-section to the release page, then pushes a branch stamping those headings. There
-is nothing to paste, so this step is a read and one check.
+`prepare` stamps `RELEASE_NOTES.md` itself and `gh-release` reads it back, so
+there is nothing to paste. Whether the last release merged back is CI's job:
+`release-sync.yml` compares npm's `latest` with `packages/sdk/package.json`
+on every PR, every push to `main`, and after every release run. Read its
+result rather than repeating the comparison:
 
 ```bash
-grep -n '^## \[Unreleased\]' RELEASE_NOTES.md
-node scripts/release-notes.mjs extract | head -40
-# a previous release's stamp, still waiting on a human
-git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
+gh api repos/malloydata/publisher/commits/main/check-runs \
+  --jq '.check_runs[] | select(.name == "Release sync") | "\(.conclusion) \(.html_url)"'
+# the narrative this release will stamp and ship
+git fetch origin
+NOTES="$(mktemp)" && git show origin/main:RELEASE_NOTES.md > "$NOTES"
+RELEASE_NOTES_FILE="$NOTES" node scripts/release-notes.mjs extract | grep '^## '
 ```
 
-What you are checking is that the sections listed are the ones this release
+**If the check failed, do not dispatch.** The previous release's PR has not
+merged, so `main` still reads `[Unreleased]` for sections that release already
+shipped, and this release would stamp and publish them again. The check's error
+names the version; finish step 6 for it, which is also the only thing that turns
+the check green. `release.yml` does not run this check itself, so nothing stops
+a dispatch but you.
+
+What you are checking in the extract is that the sections listed are the ones this release
 actually ships. A section describes work merged to `main`, so anything sitting
 there goes out with this release whether or not it was written for it. Nothing
 listed is fine and common — the generated PR list carries a routine patch.
@@ -340,74 +350,6 @@ listed is fine and common — the generated PR list carries a routine patch.
 If a section is present that should **not** ship yet, the work behind it is
 already on `main` and the note is telling the truth; the fix is a release, not
 an edit.
-
-**A previous release's stamp left unmerged is the one that will bite you**, which
-is what the third command is for. The stamp cannot land itself: `main` requires a
-pull request, so the release pushes the branch and stops. Until someone opens and
-merges it, its sections still read `[Unreleased]` and *this* release re-appends
-the previous release's narrative to its own page — and `main` still declares the
-version before last. The second is harmless (`prepare` takes the max of npm and
-the file), the first is not.
-
-`git ls-remote` rather than `gh pr list --search`, deliberately. That search is
-full text, not title-scoped, so it matches any PR whose body merely discusses the
-stamp — including release-prep PRs, which all explain the mechanism. The branch
-name is exact, and it also catches a branch that was pushed but never opened,
-which the PR search cannot see at all. If you want the PR too:
-`gh pr list --repo malloydata/publisher --search '"stamp" in:title' --state open`.
-The commit title is `chore(release): stamp <version> on main`; 0.0.250 used
-`docs: stamp the release notes shipped in <version>`, so search on `stamp` rather
-than either full phrase.
-
-So: if the branch is there, open and merge it before dispatching.
-
-#### If the branch is gone too
-
-Then stamp by hand — the one case where you write a version number into a note
-yourself, because the release that shipped it is already public and its number is
-no longer a guess. **Scope it first.** The bare command is destructive:
-
-```bash
-# DESTRUCTIVE — rewrites EVERY [Unreleased] section in the file
-node scripts/release-notes.mjs stamp <version>
-```
-
-Unscoped it stamps every `[Unreleased]` heading, including the ones *this*
-release is about to ship. Those get labelled with a version that never contained
-them and vanish from the next release's page — the exact failure `--titles` was
-added to prevent. And you cannot just pass `--titles`: that file lives in
-`$RUNNER_TEMP` and died with the run.
-
-Re-establish the scope by comparing the shipped release page against the file.
-The page carries two `## ` headings of its own — `## Release v<version>` from the
-job's header and `## What's Changed` from `--generate-notes` — so filter those or
-you are comparing 8 lines against 6 and never get a match:
-
-```bash
-gh release view "v<version>" --repo malloydata/publisher --json body -q .body   | grep '^## ' | grep -vE '^## (Release v|What'"'"'s Changed)' | sort
-node scripts/release-notes.mjs extract | grep '^## ' | sort
-```
-
-Both then print stripped titles, so the sets are directly comparable. If they are
-**identical**, every remaining section belongs to that release and the unscoped
-stamp is safe. If the file has extras, write just the shipped headings — verbatim
-from `RELEASE_NOTES.md`, `[Unreleased]` marker included — into a file and pass
-`--titles <that file>`. Either way, commit on a branch and open a PR.
-
-The lost branch carried the version reset too, so add it to the same commit —
-this one has no destructive edge, and it is a no-op if `main` already declares
-the version:
-
-```bash
-node scripts/set-version.mjs <version> \
-  packages/sdk/package.json packages/app/package.json packages/server/package.json
-```
-
-0.0.249 is the worked example, and it is why this section exists: it put all six
-of its sections on its release page and stamped none of them, because the step
-still pushed straight to a protected `main`. The unscoped stamp was safe there
-only because the two sets matched once filtered — six sections on the page, the
-same six in the file.
 
 ### 4. Dispatch
 
@@ -428,7 +370,10 @@ gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<n
 
 **Do not merge to `main` while it runs.** `publish-packages` aborts if `main`
 moves under a watched path mid-release. A `RELEASE_NOTES.md`-only merge is not
-watched, but the window is short — just wait.
+watched, but the window is short — just wait. **Do not push to
+`release/sdk-<version>` while it runs either**: `npm-sdk.yml` and
+`docker-image.yml` check it out by name, so a push mid-run can publish two
+different commits under one version.
 
 ### 5. Verify what actually shipped
 
@@ -441,68 +386,77 @@ npm view @malloy-publisher/skills version
 gh release view "v<version>" --repo malloydata/publisher
 ```
 
-### 6. Open and merge the stamp
+### 6. Open the release PR, and get it merged
 
-Half verification, half the one task the release genuinely cannot finish itself.
-Two things `gh-release` did, both visible without leaving the run:
+This is the one step the release cannot finish itself, and as the agent running
+this skill **you open the PR**. The branch already exists and already holds
+everything: `prepare` committed the three `packages/{sdk,app,server}/package.json`
+versions and the stamped `RELEASE_NOTES.md` headings to `release/sdk-<version>`
+as one commit. Do not create another branch and do not stamp anything by hand.
 
-- The release page carries the narrative under the generated header. The job
-  logs `attached N narrative section(s)`, or `no [Unreleased] sections` when
-  there were none.
-- A `release-notes-stamp-<version>` branch is pushed, and the job summary's
-  *Release notes and version* section carries a compare link to open it as a PR.
-
-**That branch carries two things**, despite its name: the stamped
-`RELEASE_NOTES.md` headings, and `main`'s three `packages/{sdk,app,server}/
-package.json` files reset to the version that shipped. It no longer touches
-`skills` or `create-malloy-package`: both carry a fixed `0.0.0-dev` placeholder,
-decided at release time from npm's own state, so there is nothing left for this
-step to move ahead of. The summary line names both. Either can legitimately be
-zero — nothing to stamp, or `main` already declaring that version — so when both
-are zero no branch is pushed, and the summary says so.
-
-The name is unchanged on purpose: it is the identifier this skill and
-`CONTEXT.md` both tell you to look for, and renaming it would break the recovery
-below to buy nothing.
-
-**Follow that link, open the PR, merge it.** The run stops at a branch on
-purpose: a PR opened by a person triggers `pull_request`, so its checks run and
-any maintainer can merge it, where one opened by the workflow would trigger no
-workflows at all and only an admin could ever merge it. One click buys back the
-check suite. Left unopened it costs exactly what a failed stamp used to — the
-next release re-appends this release's narrative to its own page, and so does the
-one after — and `main` keeps declaring the pre-release version.
-
-Of those two, **the notes half is the one that compounds**; the version half is
-self-correcting, because `prepare` takes `max(npm latest, main declared)` and so
-derives the right floor whether or not this PR landed. That is exactly why that
-floor is not "simplified" to reading the file.
+Open it once the run has finished, for any release whose sdk reached npm
+(`npm view @malloy-publisher/sdk version` reads it). That includes one whose
+`gh-release` then failed: it shipped, and `release-sync.yml` stays red until
+this PR merges. A release that never reached npm has nothing to merge back:
+leave its branch alone (the next dispatch skips past it) and dispatch again. A prerelease or a `+build` version never gets a PR.
 
 ```bash
-gh release view "v<version>" --repo malloydata/publisher --json body -q .body | head -40
-git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
-# after merging: main should now declare what shipped
-git fetch origin main && git show origin/main:packages/sdk/package.json | grep '"version"'
+V=<version>
+gh pr create --repo malloydata/publisher --base main --head "release/sdk-$V" \
+  --title "chore(release): $V" \
+  --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
+
+Release: https://github.com/malloydata/publisher/releases/tag/v$V"
 ```
 
-**Merging this PR is no longer time-sensitive against `publish-packages`.** The
-branch only touches `packages/{sdk,app,server}/package.json` and
-`RELEASE_NOTES.md`, neither of which is a path `publish_indep_pkg`'s "main moved"
-guard watches for skills or create-malloy-package, so merging it while
-`publish-packages` is still polling npm cannot abort either dispatch. Merge it
-whenever is convenient.
+The title matters: the repo squash-merges, so it is what `main`'s history keeps.
+The workflow does not open this PR itself because a PR opened with
+`GITHUB_TOKEN` triggers no workflows: `main`'s required checks would never run
+and only an admin could merge it. Opened on the user's credentials, the checks
+run and any maintainer can merge.
 
-The stamp step is `continue-on-error`, deliberately: the release is already
-public and correct by then, and reddening a finished release over a docs commit
-would send someone hunting a publishing problem that does not exist. So a missing
-branch is a real possibility — **read the job summary rather than assuming**. It
-always writes a line, including `No [Unreleased] sections to stamp` when there
-was nothing to do, so silence there means the step died and not that the release
-had no narrative. Re-running the job does not help: `gh release create` fails on
-the existing tag, and the stamp step is skipped behind it. Recover by hand as in
-step 3.
+**`main` requires the branch to be up to date, and `RELEASE_NOTES.md` usually
+conflicts.** Any PR merged since the release was cut makes the branch stale. A new
+`[Unreleased]` section lands directly above the first stamped heading, which git
+treats as one conflicting hunk. Merge `main` in locally, with a sign-off because
+the DCO check is required:
 
-A **prerelease** skips the stamp, matching the rest of the job.
+```bash
+git fetch origin
+git switch -c "release/sdk-$V" "origin/release/sdk-$V"
+git merge --signoff origin/main
+# Only if the merge stopped on a RELEASE_NOTES.md conflict: keep BOTH sides,
+# main's new [Unreleased] sections exactly as they are and this branch's [$V]
+# headings, then conclude it. The package.json version lines never conflict;
+# only release PRs change them.
+#   git add RELEASE_NOTES.md && git commit -s --no-edit
+node scripts/release-notes.mjs extract "$V" | grep '^## '   # exactly v$V's sections
+node scripts/release-notes.mjs extract | grep '^## '        # only what merged since
+git push origin "release/sdk-$V"
+```
+
+The two `extract` lines are the check that the resolution is right: the first
+must list the same sections as the release page, the second only sections
+merged after the release was cut. Pushing to the release branch is safe once the
+run has finished, since the tag pins the published commit.
+
+Ask the user to merge the PR, or merge it if they asked you to. Merging deletes
+`release/sdk-$V` (the repo deletes head branches on merge); the tag keeps the
+commit. Then confirm:
+
+```bash
+git fetch origin main
+git show origin/main:packages/sdk/package.json | grep '"version"'   # $V
+gh release view "v$V" --repo malloydata/publisher --json body -q .body | head -40
+```
+
+If the release page is missing narrative that `[$V]` sections on the branch
+carry, `gh-release` logged a `could not read RELEASE_NOTES.md` warning. Add the
+output of `extract "$V"` to the page by hand with `gh release edit`.
+
+Left unmerged, `release-sync.yml` fails on `main` and on every PR, naming
+this version; merging this PR is the only fix. Confirm it went green on `main`
+after the merge (the first command in step 3).
 
 ## If it fails
 
