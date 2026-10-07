@@ -1696,12 +1696,23 @@ export class Package {
     *
     * Refused bindings are DROPPED, not fatal: that source serves live, which is
     * always correct because the tier is a performance tier. The rest bind.
+    *
+    * A published version also drops every entry that its own definition of the
+    * source did not build. Bindings are keyed by source NAME, and under `scope:
+    * package` a package's versions share their tables under one name, so the
+    * newest run can hold what ANOTHER version's definition built: once latest
+    * rebuilds `summary` from a changed definition, an older version bound by
+    * name would answer from rows its own model does not produce. A version's
+    * tree is immutable, so its content addresses never change, and an entry
+    * whose `sourceEntityId` none of its same-named sources has was built by
+    * another version. An instructed build may stamp a host's own id, which this
+    * reads as a mismatch: that source serves live, the safe direction.
     */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
       const derived = deriveServeBindings(
-         entries,
+         this.versionId === undefined ? entries : this.ownEntries(entries),
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
       );
       const eligibility = this.sourceEligibility;
@@ -1740,6 +1751,36 @@ export class Package {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * The entries this package's own sources built: same name, same content
+    * address. See {@link bindStorageServeBindings}.
+    */
+   private ownEntries(
+      entries: Record<string, ManifestEntry>,
+   ): Record<string, ManifestEntry> {
+      const own = new Set(
+         Object.values(this.buildPlan?.sources ?? {}).map(
+            (source) => `${source.name}\u0000${source.sourceEntityId}`,
+         ),
+      );
+      const kept: Record<string, ManifestEntry> = {};
+      for (const [key, entry] of Object.entries(entries)) {
+         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
+            kept[key] = entry;
+            continue;
+         }
+         logger.info(
+            "Serving a source live: the stored table was built from another version's definition",
+            {
+               packageName: this.packageName,
+               versionId: this.versionId,
+               sourceName: entry.sourceName,
+            },
+         );
+      }
+      return kept;
    }
 
    /**

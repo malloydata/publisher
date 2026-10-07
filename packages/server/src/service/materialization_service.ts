@@ -1751,7 +1751,9 @@ export class MaterializationService {
                // The package's tables are shared by its versions, so every
                // other loaded version is rebound to this run too: each keeps
                // only the entries whose source it defines identically, and
-               // serves live what this run rebuilt from a different definition.
+               // serves live what this run rebuilt from a different definition
+               // (the colocated tier is keyed by content address; the storage
+               // tier is filtered in Package.bindStorageServeBindings).
                await this.rebindLoadedVersions(
                   environmentName,
                   packageName,
