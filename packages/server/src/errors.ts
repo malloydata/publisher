@@ -194,16 +194,28 @@ const NODE_CONNECTION_CODES = new Set([
 const POSTGRES_CONNECTION_SQLSTATE = /^(08[0-9A-Z]{3}|57P0[123])$/;
 
 /**
- * Messages raised with no code at all, matched whole.
+ * Messages that arrive with no code, matched from the start of the message so
+ * a value quoted later in it cannot match.
  *
- * node-pg raises "Connection terminated unexpectedly" as a plain Error, so it
- * stays. The MySQL one is here only because `@malloydata/db-mysql` drops the
- * driver's `fatal` flag; delete it once Publisher is on a Malloy release with
- * malloydata/malloy#3134, which keeps the driver's error as `cause`.
+ * node-pg raises "Connection terminated unexpectedly" with no code.
+ *
+ * `@malloydata/db-mysql` wraps every query error in `new Error(e)`, which keeps
+ * only the text, prefixed "Error: ", and drops mysql2's `code` and `fatal`. So
+ * a MySQL connection lost during or between queries is recognized by mysql2's
+ * own wording: a closed connection reused, a connection the server closed, or
+ * a Node socket error, which Node words as `<syscall> <CODE>`. A connection
+ * refused at connect time keeps its code: the driver connects outside that
+ * wrapper.
  */
 const CODELESS_CONNECTION_MESSAGES = [
    /^Connection terminated unexpectedly$/,
    /^(Error: )?Can't add new command when connection is in closed state$/,
+   /^(Error: )?Connection lost: The server closed the connection\.$/,
+   new RegExp(
+      `^(Error: )?(connect|read|write|getaddrinfo) (${[
+         ...NODE_CONNECTION_CODES,
+      ].join("|")})\\b`,
+   ),
 ];
 
 /**

@@ -342,7 +342,7 @@ describe("isConnectionFailure", () => {
       }
    });
 
-   it("recognizes mysql2's fatal flag, bare and as Malloy's driver wraps it", () => {
+   it("recognizes mysql2's fatal flag on a bare driver error", () => {
       // mysql2 sets `fatal: true` on the closed-state error and gives it no
       // code (lib/base/connection.js, _addCommandClosedState).
       const driver = Object.assign(
@@ -350,24 +350,26 @@ describe("isConnectionFailure", () => {
          { fatal: true },
       );
       expect(isConnectionFailure(driver)).toBe(true);
-      // @malloydata/db-mysql after malloydata/malloy#3134.
-      expect(
-         isConnectionFailure(
-            Object.assign(new Error(String(driver)), { cause: driver }),
-         ),
-      ).toBe(true);
    });
 
-   it("recognizes the codeless messages, whole, as the current drivers raise them", () => {
-      // @malloydata/db-mysql before malloydata/malloy#3134: `new Error(e)`,
-      // which drops `fatal` and prefixes "Error: ".
-      expect(
-         isConnectionFailure(
-            new Error(
-               "Error: Can't add new command when connection is in closed state",
-            ),
-         ),
-      ).toBe(true);
+   it("recognizes a lost MySQL connection after Malloy's driver drops its code", () => {
+      // @malloydata/db-mysql rethrows a query error as `new Error(e)`: the text
+      // survives, prefixed "Error: ", and `code` and `fatal` do not. The first
+      // two messages are what it threw against MySQL 8.4 for a connection
+      // KILLed between queries and during one; the third is a socket error,
+      // which Node words as `<syscall> <CODE>`.
+      for (const driverMessage of [
+         "Can't add new command when connection is in closed state",
+         "Connection lost: The server closed the connection.",
+         "read ECONNRESET",
+      ]) {
+         const wrapped = new Error(String(new Error(driverMessage)));
+         expect(wrapped.message).toBe(`Error: ${driverMessage}`);
+         expect(isConnectionFailure(wrapped)).toBe(true);
+      }
+   });
+
+   it("recognizes node-pg's codeless lost connection", () => {
       expect(
          isConnectionFailure(new Error("Connection terminated unexpectedly")),
       ).toBe(true);
@@ -399,6 +401,8 @@ describe("isConnectionFailure", () => {
          'invalid input syntax for type integer: "Connection terminated unexpectedly"',
          "Table 'connect ECONNREFUSED' does not exist",
          "Unknown field econnrefused in output space",
+         "Query execution failed: Error: Connection lost: The server closed the connection.",
+         "Error: Unknown column 'read ECONNRESET' in 'field list'",
       ]) {
          expect(isConnectionFailure(new Error(message))).toBe(false);
       }
