@@ -142,10 +142,6 @@ export type ErrorReason =
    // query and the model are fine, and rewriting either will not help. Marks a
    // 502 as the customer's database being down, not Credible failing.
    | "CONNECTION_FAILED"
-   // On a 400: the database ran the query and rejected it (a type mismatch, a
-   // division by zero, a permission on a table). Distinct from a Malloy
-   // compile error, which carries `problems` instead.
-   | "QUERY_EXECUTION_FAILED"
    // On a 424: the database rejected the connection's credentials (a wrong
    // password, an invalid key, an expired token). The query never ran, and
    // whoever configures the connection has to fix it.
@@ -187,6 +183,10 @@ export function filesystemAccessFailure(
 /**
  * Node's codes for a socket that could not connect or was cut. Postgres,
  * MySQL and Snowflake all surface these, on the error itself or on its `cause`.
+ *
+ * `ENOTFOUND` is left out: a host name that does not resolve is almost always
+ * a wrong host in the connection's config, which a retry will not fix.
+ * `EAI_AGAIN` is the transient DNS failure, and is in.
  */
 const NODE_CONNECTION_CODES = new Set([
    "ECONNREFUSED",
@@ -194,7 +194,6 @@ const NODE_CONNECTION_CODES = new Set([
    "ECONNABORTED",
    "EPIPE",
    "ETIMEDOUT",
-   "ENOTFOUND",
    "EAI_AGAIN",
    "EHOSTUNREACH",
    "ENETUNREACH",
@@ -233,12 +232,21 @@ const CODELESS_CONNECTION_MESSAGES = [
 ];
 
 /**
+ * mysql2 codes that come with `fatal` for a fault in the connection's config,
+ * not a server that is down: mysql2 marks every handshake error fatal,
+ * including an unknown database (`ER_BAD_DB_ERROR`), an unsupported auth mode,
+ * and a server without TLS (`HANDSHAKE_NO_SSL_SUPPORT`).
+ */
+const MYSQL_CONFIG_CODE = /^(ER_|HANDSHAKE_)/;
+
+/**
  * Whether `error` means the database could not be reached, as opposed to the
  * database running the statement and rejecting it.
  *
  * Read from the driver's structured fields on the error and its `cause` chain:
  * a Node socket code, a Postgres connection SQLSTATE, or mysql2's `fatal`
- * flag, which it sets when the connection is unusable. Message text is the
+ * flag, which it sets when the connection is unusable, unless the same error
+ * carries a mysql2 `ER_`/`HANDSHAKE_` code naming a config fault. Message text is the
  * last resort, for the few drivers that raise a connection failure with no
  * code, and is matched whole so a row value or a table name quoted inside a
  * longer message cannot match.
@@ -254,7 +262,9 @@ export function isConnectionFailure(error: unknown): boolean {
          if (NODE_CONNECTION_CODES.has(code)) return true;
          if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
       }
-      if (fatal === true) return true;
+      const configFault =
+         typeof code === "string" && MYSQL_CONFIG_CODE.test(code);
+      if (fatal === true && !configFault) return true;
       const message = current.message.trim();
       if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
          return true;
@@ -305,12 +315,13 @@ export function isCredentialRejection(error: unknown): boolean {
 /**
  * The error to answer with when a failure is about the connection rather than
  * the statement: rejected credentials, an unreachable database, or a
- * connection the environment does not have. The first is a 502 (something is
- * down); the other two are 424 (something is misconfigured). Undefined for
- * anything else, which keeps the status its route gave it.
+ * connection the environment does not have. An unreachable database is a 502
+ * (something is down); rejected credentials and a missing connection are 424
+ * (something is misconfigured). Undefined for anything else, which keeps the
+ * status its route gave it.
  *
- * Credentials are checked first, because mysql2 also marks a rejected login
- * `fatal`, which on its own reads as an unusable connection.
+ * Credentials are checked first, so an error that matches both answers as
+ * credentials.
  */
 export function databaseAccessFailure(
    error: unknown,
@@ -396,9 +407,7 @@ export function internalErrorToHttpError(
             `Give the user the server runs as access to it.`,
       );
    }
-   if (error instanceof QueryExecutionError) {
-      return httpError(400, error.message, "QUERY_EXECUTION_FAILED");
-   } else if (error instanceof BadRequestError) {
+   if (error instanceof BadRequestError) {
       return httpError(400, error.message);
    } else if (error instanceof ServerConfigurationError) {
       logInternal("Server configuration error", error, "warn");
@@ -466,9 +475,10 @@ export function internalErrorToHttpError(
       // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
       // sentence the product produces, and only the caller can act on it. It is
       // generalized anyway because ConnectionError is one class covering both a
-      // rejected statement and an unreachable host, and the same text that names
-      // the caller's own typo names an internal hostname when the failure is
-      // ours. Splitting the class -- a rejected statement as 4xx with its
+      // rejected statement and any driver failure no recognizer knows, and the
+      // same text that names the caller's own typo names an internal hostname
+      // when the failure is ours. (An unreachable database and rejected
+      // credentials are recognized, and answered above.) Splitting the class -- a rejected statement as 4xx with its
       // message, transport failure as a generic 502 -- is the right end state
       // and wants its own change; a table path that names nothing already took
       // that route (see TableNotFoundError, 404). Until then a caller who needs
@@ -552,17 +562,6 @@ export class BadRequestError extends Error {
 export class InvalidArgumentError extends BadRequestError {}
 
 /**
- * The database ran a query and rejected it: a type mismatch, a division by
- * zero, a permission on a table. The message carries the database's text,
- * because only the caller can act on it.
- *
- * Still a BadRequestError, so it still maps to HTTP 400. It adds
- * `reason: QUERY_EXECUTION_FAILED`, so a caller can tell it from a Malloy
- * compile error without reading the message.
- */
-export class QueryExecutionError extends BadRequestError {}
-
-/**
  * A dashboard write was refused because the text does not compile, and the
  * message names each problem with its line and column.
  *
@@ -633,8 +632,10 @@ export class ConnectionNotFoundError extends Error {
  * 404 -- which is what every spec declaring this route has always documented
  * (502 appears in none of them).
  *
- * Distinct from {@link ConnectionError}, which stays 502 for genuine transport
- * failures: unreachable database, expired credentials, exhausted quota. The
+ * Distinct from {@link ConnectionError}, which stays 502 for upstream failures
+ * such as an exhausted quota. (An unreachable database is
+ * {@link ConnectionFailedError}, also 502; rejected credentials are
+ * {@link ConnectionAuthError}, 424.) The
  * split matters beyond tidiness, because a 5xx here is counted against the
  * router's server-error budget and pages on-call for what is a typo in someone's
  * model.

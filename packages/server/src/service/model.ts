@@ -62,7 +62,6 @@ import {
    QueryCompileError,
    OffSurfaceError,
    PayloadTooLargeError,
-   QueryExecutionError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
 import {
@@ -8113,14 +8112,13 @@ export class Model {
             const errorMessage =
                err instanceof Error ? err.message : String(err);
             // The database could not be reached (502) or rejected the
-            // connection's credentials (422), so the query never ran. Logged
+            // connection's credentials (424), so the query never ran. Logged
             // once at warn by the error mapping. Not the 400 below, which
             // would tell the caller to fix a query that is fine.
             const accessFailure = databaseAccessFailure(err);
             if (accessFailure) throw accessFailure;
 
-            // The database ran the query and rejected it (a divide by zero, a
-            // type mismatch): a 400 with reason QUERY_EXECUTION_FAILED.
+            // For other runtime errors (like divide by zero), throw as BadRequestError
             logger.error("Query execution error", {
                error: err,
                errorMessage,
@@ -8130,7 +8128,7 @@ export class Model {
                queryName,
                sourceName,
             });
-            throw new QueryExecutionError(
+            throw new BadRequestError(
                `Query execution failed: ${errorMessage}`,
             );
          };
@@ -9388,7 +9386,7 @@ export class Model {
             const errorMessage =
                error instanceof Error ? error.message : String(error);
             // Same split as a query's: an unreachable database is a 502, a
-            // rejected login a 422.
+            // rejected login a 424.
             const accessFailure = databaseAccessFailure(error);
             if (accessFailure) throw accessFailure;
             if (errorMessage.trim() === "Model has no queries.") {

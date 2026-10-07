@@ -16,7 +16,6 @@ import {
    databaseAccessFailure,
    isConnectionFailure,
    isCredentialRejection,
-   QueryExecutionError,
    UnconfiguredConnectionError,
    TableNotFoundError,
    internalErrorToHttpError,
@@ -286,18 +285,6 @@ describe("connection failure vs a rejected query", () => {
       });
    });
 
-   it("maps QueryExecutionError to 400 with reason QUERY_EXECUTION_FAILED and the database's text", () => {
-      const { status, json } = internalErrorToHttpError(
-         new QueryExecutionError("Query execution failed: division by zero"),
-      );
-      expect(status).toBe(400);
-      expect(json).toEqual({
-         code: 400,
-         message: "Query execution failed: division by zero",
-         reason: "QUERY_EXECUTION_FAILED",
-      });
-   });
-
    it("keeps a plain ConnectionError's 502 free of a reason", () => {
       // A statement the warehouse rejected on the sqlQuery route is also a
       // ConnectionError. It must not claim the database was unreachable.
@@ -371,6 +358,42 @@ describe("isConnectionFailure", () => {
          const error = Object.assign(new Error("server gone"), { code });
          expect(isConnectionFailure(error)).toBe(true);
       }
+   });
+
+   it("does not read a mysql2 handshake config fault as a connection failure, though it is fatal", () => {
+      // mysql2 marks every handshake error fatal. These fail the same way on
+      // every retry, so they are not the 502 that says a retry can succeed.
+      for (const code of [
+         "ER_BAD_DB_ERROR",
+         "ER_NOT_SUPPORTED_AUTH_MODE",
+         "HANDSHAKE_NO_SSL_SUPPORT",
+      ]) {
+         const error = Object.assign(new Error("handshake failed"), {
+            code,
+            fatal: true,
+         });
+         expect(isConnectionFailure(error)).toBe(false);
+      }
+   });
+
+   it("reads a transient DNS failure as a connection failure, but not a host that does not resolve", () => {
+      const transient = Object.assign(
+         new Error("getaddrinfo EAI_AGAIN db.internal"),
+         { code: "EAI_AGAIN" },
+      );
+      expect(isConnectionFailure(transient)).toBe(true);
+      // ENOTFOUND is almost always a wrong host in the config: a retry fails
+      // the same way. Checked by code and by the code-less message alike.
+      const wrongHost = Object.assign(
+         new Error("getaddrinfo ENOTFOUND db.internal"),
+         { code: "ENOTFOUND" },
+      );
+      expect(isConnectionFailure(wrongHost)).toBe(false);
+      expect(
+         isConnectionFailure(
+            new Error("Error: getaddrinfo ENOTFOUND db.internal"),
+         ),
+      ).toBe(false);
    });
 
    it("recognizes mysql2's fatal flag on a bare driver error", () => {
@@ -490,7 +513,8 @@ describe("isCredentialRejection", () => {
    });
 
    it("is not a connection failure's job: a MySQL login is fatal but answers as credentials", () => {
-      expect(isConnectionFailure(mysql)).toBe(true);
+      // Fatal, but its ER_ code names a config fault, not a server that is down.
+      expect(isConnectionFailure(mysql)).toBe(false);
       expect(databaseAccessFailure(mysql)).toBeInstanceOf(ConnectionAuthError);
       expect(databaseAccessFailure(postgres)).toBeInstanceOf(
          ConnectionAuthError,

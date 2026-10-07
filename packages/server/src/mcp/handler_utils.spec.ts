@@ -17,6 +17,7 @@ import {
    ResponseUnserializableError,
    ServiceUnavailableError,
    ConnectionPoolExhaustedError,
+   UnconfiguredConnectionError,
 } from "../errors";
 
 /**
@@ -78,6 +79,22 @@ describe("classifyToolError", () => {
          ],
       });
       expect(JSON.stringify(details)).not.toContain("analytics");
+   });
+
+   it("tells the agent a model naming a missing connection is not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new UnconfiguredConnectionError("bq_demo"),
+      );
+      expect(details).toEqual({
+         message:
+            'No connection named "bq_demo" found in config. The model for env/pkg uses a connection this environment does not have, so the query never ran.',
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      });
    });
 
    it("homes back-pressure as retryable, not as Malloy", () => {

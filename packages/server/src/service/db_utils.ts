@@ -969,6 +969,9 @@ async function fetchFromPublisherDataplane<T>(
       throw new Error(
          `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
             `for connection "${connection.name}": ${reason}`,
+         // Keeps fetch's socket code reachable, so a dataplane that refused
+         // the connection answers 502 CONNECTION_FAILED rather than 500.
+         { cause: error },
       );
    }
 

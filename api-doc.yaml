@@ -770,8 +770,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -820,8 +824,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -898,8 +906,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -948,8 +960,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1142,8 +1158,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1198,8 +1218,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1278,8 +1302,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -1334,8 +1362,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -6263,20 +6295,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
-            QUERY_EXECUTION_FAILED, on a 400 from the query route, means the
-            database ran the query and rejected it (a type mismatch, a division
-            by zero, a permission on a table). The message carries the
-            database's text. A Malloy compile error is also a 400, but carries
-            `problems` and no reason.
-
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
             grow. Callers must treat an unrecognized value as absent.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
-            QUERY_EXECUTION_FAILED.
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
         problems:
           type: array
           description: |

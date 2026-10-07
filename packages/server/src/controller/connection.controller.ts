@@ -12,11 +12,13 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionNotFoundError,
    databaseAccessFailure,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
+   UnconfiguredConnectionError,
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
@@ -240,7 +242,7 @@ function classifyDriverFailure(error: unknown): Error {
 /**
  * A failure running SQL the caller sent: a 502 with the driver's text logged
  * and generalized, unless the database was unreachable (502 with
- * `reason: CONNECTION_FAILED`) or rejected the credentials (422 with
+ * `reason: CONNECTION_FAILED`) or rejected the credentials (424 with
  * `reason: CONNECTION_AUTH_FAILED`).
  */
 function sqlRunFailure(error: unknown): Error {
@@ -331,7 +333,37 @@ export class ConnectionController {
       }
    }
 
+   /**
+    * The Malloy connection a route runs against. Failures are classified here,
+    * before any route's own catch, because resolving a connection can already
+    * reach the database (a Postgres SSH tunnel opens on first lookup).
+    *
+    * A name the environment does not configure is a 404, as on the listing
+    * routes: the caller typed it. The 424 `CONNECTION_NOT_FOUND` is for a
+    * model naming a deleted connection, which the caller did not choose.
+    */
    private async getMalloyConnection(
+      environmentName: string,
+      connectionName: string,
+      packageName?: string,
+   ): Promise<Connection> {
+      try {
+         return await this.lookupMalloyConnection(
+            environmentName,
+            connectionName,
+            packageName,
+         );
+      } catch (error) {
+         if (error instanceof UnconfiguredConnectionError) {
+            throw new ConnectionNotFoundError(
+               `Connection ${connectionName} not found`,
+            );
+         }
+         throw databaseAccessFailure(error) ?? error;
+      }
+   }
+
+   private async lookupMalloyConnection(
       environmentName: string,
       connectionName: string,
       packageName?: string,
@@ -413,7 +445,16 @@ export class ConnectionController {
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
-            throw driverErrorToPublisherError(source);
+            // Malloy's Postgres and Databricks drivers return a failed lookup
+            // as `Error fetching schema for <path>: <driver message>`, which
+            // drops the error's code. The driver message is still matched
+            // like any other code-less one, so a dead database answers 502
+            // CONNECTION_FAILED here as on every other route.
+            const prefix = `Error fetching schema for ${tablePath}: `;
+            const accessFailure = source.startsWith(prefix)
+               ? databaseAccessFailure(new Error(source.slice(prefix.length)))
+               : undefined;
+            throw accessFailure ?? driverErrorToPublisherError(source);
          }
 
          return {

@@ -16,13 +16,16 @@ import {
    BadRequestError,
    ConnectionError,
    ConnectionFailedError,
+   ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
+   UnconfiguredConnectionError,
 } from "../errors";
+import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
 import { ConnectionController } from "./connection.controller";
 
@@ -1257,6 +1260,45 @@ describe("ConnectionController on a database that cannot be reached", () => {
       ).rejects.toBeInstanceOf(ConnectionFailedError);
    });
 
+   it.each([
+      [
+         "a table listing",
+         (c: ConnectionController) =>
+            c.listTables("env", "warehouse", "public"),
+      ],
+      [
+         "the table lookup",
+         (c: ConnectionController) =>
+            c.getTable("env", "warehouse", "public", "public.orders"),
+      ],
+      [
+         "sqlSource",
+         (c: ConnectionController) =>
+            c.getConnectionSqlSource("env", "warehouse", "SELECT 1"),
+      ],
+      [
+         "sqlTemporaryTable",
+         (c: ConnectionController) =>
+            c.getConnectionTemporaryTable("env", "warehouse", "SELECT 1"),
+      ],
+   ])("answers %s with a connection failure", async (_route, call) => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(call(controller)).rejects.toBeInstanceOf(
+         ConnectionFailedError,
+      );
+   });
+
+   it("logs a table lookup on a dead database once, at warn, not again as an error", async () => {
+      // Malloy's Postgres driver returns this failure as text rather than
+      // throwing, so it also pins that the text is still recognized.
+      const controller = controllerOn(await deadPostgres());
+      const logError = sinon.stub(logger, "error");
+      await expect(
+         controller.getTable("env", "warehouse", "public", "public.orders"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+      expect(logError.called).toBe(false);
+   });
+
    it("leaves a schema listing that failed for another reason as it was", async () => {
       // Only an unreachable database is reclassified. A failure the listing
       // wrapped for any other reason keeps its old status.
@@ -1335,5 +1377,50 @@ describe("ConnectionController per-package duckdb lookup", () => {
       const error = await sqlSource(controller).catch((e) => e);
       expect(error).toBeInstanceOf(BadRequestError);
       expect(error.message).toMatch(/^Ambiguous "duckdb" connection lookup/);
+   });
+});
+
+describe("ConnectionController connection lookup failures", () => {
+   afterEach(() => sinon.restore());
+
+   function controllerWhoseLookupRejects(error: unknown): ConnectionController {
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getMalloyConnection: sinon.stub().rejects(error),
+         }),
+      } as unknown as EnvironmentStore;
+      return new ConnectionController(fakeStore);
+   }
+
+   it("answers a lookup that could not reach the database as a connection failure", async () => {
+      // A Postgres connection behind an SSH tunnel opens the tunnel on first
+      // lookup, before any route's own catch.
+      const refused = Object.assign(new Error("connect ECONNREFUSED"), {
+         code: "ECONNREFUSED",
+      });
+      const controller = controllerWhoseLookupRejects(refused);
+      const error = await controller
+         .getConnectionSqlSource("env", "warehouse", "SELECT 1")
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionFailedError);
+      expect(internalErrorToHttpError(error, { log: false })).toMatchObject({
+         status: 502,
+         json: { reason: "CONNECTION_FAILED" },
+      });
+   });
+
+   it("answers a connection name the environment does not have as 404, as the listing routes do", async () => {
+      const controller = controllerWhoseLookupRejects(
+         new UnconfiguredConnectionError("warehuose"),
+      );
+      const error = await controller
+         .getConnectionQueryData("env", "warehuose", "SELECT 1", "")
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionNotFoundError);
+      expect(internalErrorToHttpError(error, { log: false })).toEqual({
+         status: 404,
+         json: { code: 404, message: "Connection warehuose not found" },
+      });
    });
 });

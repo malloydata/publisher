@@ -85,11 +85,9 @@ either shape to supply model-declared [runtime parameters](givens.md).
 
 A query that fails tells you whose problem it is. Branch on `reason`, not on the message:
 
-- **400 with no `reason`:** the request or the query was rejected before it ran. When Malloy
-  rejected the query, `problems` lists its diagnostics. Fix what the message names.
-- **400 with `reason: QUERY_EXECUTION_FAILED`:** the query compiled, and the database ran it and
-  rejected it (a type mismatch, a division by zero, a permission on a table). The message carries
-  the database's text. Fix the query or the model.
+- **400:** the request or the query was rejected. When Malloy rejected the query, `problems` lists
+  its diagnostics; when the database ran it and rejected it (a type mismatch, a division by zero),
+  the message carries the database's text. Fix what the message names.
 - **424 with a connection `reason`:** the connection is misconfigured, so the query never ran. The
   query is fine; do not rewrite it, and do not retry until the connection is fixed.
   - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.

@@ -8,11 +8,11 @@ import sinon from "sinon";
 
 import {
    BadRequestError,
+   ConnectionAuthError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
    ModelNotFoundError,
    PayloadTooLargeError,
-   QueryExecutionError,
    ResponseUnserializableError,
 } from "../errors";
 import { Model, ModelType } from "./model";
@@ -1011,6 +1011,57 @@ describe("service/model", () => {
             sinon.restore();
          });
 
+         it.each([
+            [
+               "an unreachable database as a connection failure",
+               Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:5432"), {
+                  code: "ECONNREFUSED",
+               }),
+               ConnectionFailedError,
+            ],
+            [
+               "rejected credentials as a credential failure",
+               Object.assign(
+                  new Error('password authentication failed for user "x"'),
+                  { code: "28P01" },
+               ),
+               ConnectionAuthError,
+            ],
+         ])("answers %s, not a 400", async (_case, driverError, expected) => {
+            const cellRunnable = {
+               getPreparedResult: sinon
+                  .stub()
+                  .resolves({ resultExplore: { limit: 10 } }),
+               run: sinon.stub().rejects(driverError),
+            };
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               [
+                  {
+                     type: "code" as const,
+                     text: "run: orders -> by_code",
+                     runnable: cellRunnable,
+                  },
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               ] as any,
+               undefined,
+            );
+
+            await expect(model.executeNotebookCell(0)).rejects.toThrow(
+               expected,
+            );
+
+            sinon.restore();
+         });
+
          it("embeds model-level givens in executed cell newSources", async () => {
             const sourceInfo = { name: "carriers", schema: { fields: [] } };
             const givens = [
@@ -2002,7 +2053,7 @@ describe("service/model", () => {
 
          await expect(
             model.getQueryResults(undefined, undefined, "run: daily -> x"),
-         ).rejects.toThrow(QueryExecutionError);
+         ).rejects.toThrow(BadRequestError);
 
          const errored = recordStub
             .getCalls()
