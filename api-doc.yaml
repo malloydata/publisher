@@ -6211,8 +6211,9 @@ components:
           type: string
           enum: [disable, no-verify, verify-ca, verify-full]
           description:
-            TLS mode for a connection reached through a `proxy` (SSH bastion).
-            Because the driver connects to a local tunnel endpoint, the cert
+            TLS mode for the connection. On a connection reached through a
+            `proxy` (SSH bastion), the driver connects to a local tunnel
+            endpoint, so the cert
             hostname can't be checked from the tunnel address alone; use
             `verify-full` to check it against the real host. `verify-ca`
             validates the server cert chain against the trusted CA bundle (e.g.
@@ -6229,9 +6230,20 @@ components:
             superset; it adds the hostname check without narrowing CA trust.
             The server defaults it to
             `no-verify` when a proxy is set (so a force-SSL target isn't rejected
-            for plaintext) — a server-applied default, not a schema default. Only
-            valid on a proxied connection — a direct connection uses the
-            deployment PGSSLMODE and rejects this field.
+            for plaintext) — a server-applied default, not a schema default. On
+            a direct connection the same modes apply against the configured
+            host; when omitted, the deployment PGSSLMODE applies. Ignored when
+            connectionString is set, which carries its own sslmode. Not applied
+            to a DuckLake catalog connection.
+        statementTimeoutMilliseconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description:
+            Maximum run time of each statement on the database, in
+            milliseconds. The database cancels a statement that exceeds it.
+            When omitted, the database's own statement_timeout applies. Not
+            applied to a DuckLake catalog connection.
 
     MysqlConnection:
       type: object

@@ -31,16 +31,73 @@ import {
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
-// TLS modes accepted on a proxied postgres connection. Canonical here (rather
-// than in connection.ts, which imports this module) so both the config-load
-// validator and the connect-time builder derive from one list. Mirrors the
-// `sslmode` enum in api-doc.yaml.
+// TLS modes accepted on a postgres connection, proxied or direct. Canonical here
+// (rather than in connection.ts, which imports this module) so both the
+// config-load validator and the connect-time builders derive from one list.
+// Mirrors the `sslmode` enum in api-doc.yaml.
 export const PROXIED_SSLMODES = [
    "disable",
    "no-verify",
    "verify-ca",
    "verify-full",
 ] as const;
+
+/**
+ * Throws unless `sslmode` is one of PROXIED_SSLMODES, and, for `verify-ca`,
+ * unless a readable CA bundle is available to pin it against. `subject` is the
+ * phrase error messages lead with, so a proxied and a direct connection each
+ * name themselves the way their existing errors do.
+ */
+function validatePostgresSslmode(subject: string, sslmode: string): void {
+   if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
+      throw new Error(
+         `${subject} has unsupported sslmode '${sslmode}' ` +
+            `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
+      );
+   }
+   if (sslmode === "verify-ca") {
+      const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+      if (!caBundle || !existsSync(caBundle)) {
+         throw new Error(
+            `${subject} uses sslmode 'verify-ca' but no readable ` +
+               `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
+               `Add the CA bundle to the image or use sslmode 'no-verify'.`,
+         );
+      }
+   }
+}
+
+// Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
+// value makes the session SET fail on every connection that applies it.
+const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * The connection's statement timeout, validated. Returns undefined when unset.
+ *
+ * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
+ * a libpq conninfo string, so anything but an integer from 1 to
+ * POSTGRES_MAX_STATEMENT_TIMEOUT_MS is rejected here rather than trusted: a JSON
+ * body is not held to the schema before it reaches this code.
+ */
+export function postgresStatementTimeoutMs(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): number | undefined {
+   const value: unknown = pg.statementTimeoutMilliseconds;
+   if (value === undefined || value === null) return undefined;
+   if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > POSTGRES_MAX_STATEMENT_TIMEOUT_MS
+   ) {
+      throw new Error(
+         `Connection '${name}' has an invalid statementTimeoutMilliseconds ` +
+            `${JSON.stringify(value)} (expected an integer from 1 to ${POSTGRES_MAX_STATEMENT_TIMEOUT_MS}).`,
+      );
+   }
+   return value;
+}
 
 export type CoreConnectionEntry = {
    is: string;
@@ -300,15 +357,60 @@ function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    return keyData;
 }
 
+/**
+ * The pg connectionString query params for a direct connection's own sslmode.
+ * Same meanings as the proxied query path (buildProxiedSslQuery): `no-verify`
+ * encrypts without verifying, `verify-ca` pins the chain to NODE_EXTRA_CA_CERTS
+ * without the hostname (libpq-compatible parsing is what makes pg honor that),
+ * and `verify-full` checks the chain and the real hostname.
+ */
+function directSslParams(
+   sslmode: (typeof PROXIED_SSLMODES)[number],
+): Record<string, string> {
+   switch (sslmode) {
+      case "disable":
+      case "no-verify":
+      case "verify-full":
+         return { sslmode };
+      case "verify-ca":
+         return {
+            uselibpqcompat: "true",
+            sslmode: "verify-ca",
+            sslrootcert: process.env.NODE_EXTRA_CA_CERTS ?? "",
+         };
+   }
+}
+
+/**
+ * The connectionString a postgres connection is opened with, or undefined when
+ * the individual host/port/user/password/database fields should be used as-is.
+ *
+ * A raw `connectionString` always wins. Otherwise the sslmode is the
+ * connection's own `sslmode` when `applySslmode` is set and the field is
+ * present, else the deployment PGSSLMODE, else none. `applySslmode` is false
+ * for a proxied connection, which applies its sslmode on the tunnel instead
+ * and must not have it baked into a string that targets the real host.
+ */
 export function buildPostgresConnectionString(
    config: components["schemas"]["PostgresConnection"],
+   { applySslmode }: { applySslmode: boolean },
 ): string | undefined {
-   if (config.connectionString || !process.env.PGSSLMODE) {
+   if (config.connectionString) {
       return config.connectionString;
    }
 
    const params = new URLSearchParams();
-   params.set("sslmode", process.env.PGSSLMODE);
+   if (applySslmode && config.sslmode != null) {
+      for (const [key, value] of Object.entries(
+         directSslParams(config.sslmode),
+      )) {
+         params.set(key, value);
+      }
+   } else if (process.env.PGSSLMODE) {
+      params.set("sslmode", process.env.PGSSLMODE);
+   } else {
+      return undefined;
+   }
    const auth =
       config.userName && config.password
          ? `${encodeURIComponent(config.userName)}:${encodeURIComponent(
@@ -481,22 +583,10 @@ function validateConnectionShape(connection: ApiConnection): void {
       // null/undefined mean unset (server applies the default).
       const sslmode = connection.postgresConnection?.sslmode;
       if (sslmode != null) {
-         if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-            throw new Error(
-               `Connection proxy on '${connection.name}' has unsupported sslmode '${sslmode}' ` +
-                  `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
-            );
-         }
-         if (sslmode === "verify-ca") {
-            const caBundle = process.env.NODE_EXTRA_CA_CERTS;
-            if (!caBundle || !existsSync(caBundle)) {
-               throw new Error(
-                  `Connection proxy on '${connection.name}' uses sslmode 'verify-ca' but no readable ` +
-                     `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
-                     `Add the CA bundle to the image or use sslmode 'no-verify'.`,
-               );
-            }
-         }
+         validatePostgresSslmode(
+            `Connection proxy on '${connection.name}'`,
+            sslmode,
+         );
          // No precondition for `verify-full`: unlike `verify-ca` (which passes an
          // explicit `sslrootcert` path), it verifies against Node's ambient trust
          // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
@@ -524,13 +614,27 @@ function validateConnectionShape(connection: ApiConnection): void {
       }
    }
 
-   // sslmode is only honored on the proxied path (the direct path builds TLS from
-   // the deployment PGSSLMODE). Reject it on a non-proxied connection so a tenant
-   // who sets it doesn't silently get a different TLS posture than they asked for.
-   if (!connection.proxy && connection.postgresConnection?.sslmode) {
-      throw new Error(
-         `Connection '${connection.name}' sets postgresConnection.sslmode but has no proxy; sslmode is ` +
-            `only supported for proxied connections (direct connections use the deployment PGSSLMODE).`,
+   // A direct connection's sslmode, when set, takes the place of the deployment
+   // PGSSLMODE; unset, PGSSLMODE applies as before. A connectionString carries its
+   // own sslmode, so alongside one the field is ignored - said here, once per
+   // config load, rather than left for the operator to discover from the TLS
+   // posture the connection actually got.
+   if (!connection.proxy && connection.postgresConnection?.sslmode != null) {
+      validatePostgresSslmode(
+         `Connection '${connection.name}'`,
+         connection.postgresConnection.sslmode,
+      );
+      if (connection.postgresConnection.connectionString) {
+         logger.warn(
+            `Connection '${connection.name}' sets both postgresConnection.sslmode and ` +
+               `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
+         );
+      }
+   }
+   if (connection.postgresConnection) {
+      postgresStatementTimeoutMs(
+         connection.name ?? "",
+         connection.postgresConnection,
       );
    }
 
@@ -1165,7 +1269,9 @@ export function assembleEnvironmentConnections(
                password: postgresConnection?.password,
                databaseName: postgresConnection?.databaseName,
                connectionString: postgresConnection
-                  ? buildPostgresConnectionString(postgresConnection)
+                  ? buildPostgresConnectionString(postgresConnection, {
+                       applySslmode: !connection.proxy,
+                    })
                   : undefined,
             };
             break;
