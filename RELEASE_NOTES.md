@@ -33,6 +33,14 @@ The contract for native, immutable package versions lands in `api-doc.yaml` ahea
 - **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value, in either place, fails the server's initialization (`PUBLISHER_INIT_FAILED` on stderr, `initError` on `/status`), naming the setting.
 - **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
 
+## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+
+A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
+
+The usual cause is a package version that was replaced and unloaded while a caller still held its old name. A router that caches which server holds which package can treat the 404 as "look again", which it could not do with a 400. If you branch on the 400 for this case, branch on 404 instead.
+
+A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.

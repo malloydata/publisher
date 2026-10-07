@@ -13,6 +13,7 @@ import {
    BadRequestError,
    ConnectionError,
    InvalidArgumentError,
+   PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
 } from "../errors";
@@ -314,20 +315,24 @@ export class ConnectionController {
       // and the caller must say which package to use.
       if (connectionName === "duckdb") {
          const packages = await environment.listPackages();
-         if (packages.length === 0) {
-            // Fall through to environment; this will surface the standard
-            // "connection not found" rather than silently inventing one.
-            return await environment.getMalloyConnection(connectionName);
-         }
          if (packageName) {
+            // A package this server does not hold is a missing resource, so
+            // 404 -- including when it holds no packages at all. Routers treat
+            // a 404 as "this worker no longer serves that package" and
+            // re-resolve; a 400 leaves them routing to the same stale worker.
             const known = packages.some((p) => p.name === packageName);
             if (!known) {
-               throw new BadRequestError(
+               throw new PackageNotFoundError(
                   `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
             const pkg = await environment.getPackage(packageName);
             return await pkg.getMalloyConnection(connectionName);
+         }
+         if (packages.length === 0) {
+            // Fall through to environment; this will surface the standard
+            // "connection not found" rather than silently inventing one.
+            return await environment.getMalloyConnection(connectionName);
          }
          if (packages.length === 1) {
             const onlyPackage = packages[0].name;
