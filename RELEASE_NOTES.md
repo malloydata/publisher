@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Package versions: the API contract and the registry, ahead of the feature
+
+The contract for native, immutable package versions lands in `api-doc.yaml` ahead of the behaviour, and the server says so honestly: every new route answers 501 until it is implemented, so nothing a client can call changes yet.
+
+- **New routes (501 for now):** `GET …/packages/{packageName}/versions`, `GET` and `PATCH …/versions/{versionId}` (archive or unarchive), `PUT …/versions/{versionId}/manifest`, and `PUT …/packages/{packageName}/latest`, under a new `versions` tag.
+- **`versionId` on every package route.** It was declared on the package, model, dashboard, notebook and database reads and the query body; it is now also declared on `compile`, `data-apps`, `events`, the six package-scoped connection routes and the five materialization routes, which answer 501 for it like the rest. It is no longer declared on `PUT …/models/{path}`: a published version is immutable, so that write will refuse a versioned package outright.
+- **`VersionIdPattern` is a semantic version**, the same pattern as the Credible control plane's `SemanticVersionPattern` (pre-release and build metadata allowed). The model-query route's `packageName` was declared with that pattern by mistake and is now a plain string, so dotted package names are not refused there.
+- **`PATCH …/packages/{packageName}` is deprecated.** It keeps working for unversioned packages and will refuse versioned ones; its manifest-rebind use moves to the version manifest route.
+- **New `reason` values** on `Error`: `MANIFEST_VERSION_MISSING`, `MANIFEST_VERSION_INVALID`, `VERSION_CONFLICT`, `PACKAGE_IS_VERSIONED`, `VERSION_IS_LATEST`, `VERSION_NOT_FOUND`, `VERSION_ARCHIVED`. `Package` and `DataApp` gain a read-only `versionId` (and `Package` a `latestVersion`).
+- **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value stops the server at startup, naming the setting.
+- **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.

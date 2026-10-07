@@ -11,6 +11,8 @@ import {
    MaterializationStatus,
    MaterializationUpdate,
    Package,
+   PackageVersion,
+   PackageVersionUpdate,
    ResourceRepository,
 } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
@@ -20,10 +22,12 @@ import { IncrementalLedgerRepository } from "./IncrementalLedgerRepository";
 import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
+import { PackageVersionRepository } from "./PackageVersionRepository";
 
 export class DuckDBRepository implements ResourceRepository {
    private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
+   private packageVersionRepo: PackageVersionRepository;
    private connectionRepo: ConnectionRepository;
    private destinationRepo: StorageDestinationRepository;
    private materializationRepo: MaterializationRepository;
@@ -32,6 +36,7 @@ export class DuckDBRepository implements ResourceRepository {
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
+      this.packageVersionRepo = new PackageVersionRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
       this.destinationRepo = new StorageDestinationRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
@@ -70,6 +75,7 @@ export class DuckDBRepository implements ResourceRepository {
       await this.materializationRepo.deleteByEnvironmentId(id);
       await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
       await this.destinationRepo.deleteByEnvironmentId(id);
+      await this.packageVersionRepo.deleteByEnvironmentId(id);
       await this.packageRepo.deletePackagesByEnvironmentId(id);
       await this.environmentRepo.deleteEnvironment(id);
    }
@@ -115,12 +121,76 @@ export class DuckDBRepository implements ResourceRepository {
             pkg.environmentId,
             pkg.name,
          );
+         await this.packageVersionRepo.deleteByPackage(
+            pkg.environmentId,
+            pkg.name,
+         );
       }
       await this.packageRepo.deletePackage(id);
    }
 
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
       return this.packageRepo.deletePackagesByEnvironmentId(id);
+   }
+
+   async setPackageLatestVersion(
+      environmentId: string,
+      packageName: string,
+      expected: string | null,
+      next: string | null,
+   ): Promise<boolean> {
+      return this.packageRepo.setLatestVersion(
+         environmentId,
+         packageName,
+         expected,
+         next,
+      );
+   }
+
+   // ==================== PACKAGE VERSIONS ====================
+
+   async listPackageVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<PackageVersion[]> {
+      return this.packageVersionRepo.list(environmentId, packageName);
+   }
+
+   async listPackageVersionsByEnvironment(
+      environmentId: string,
+   ): Promise<PackageVersion[]> {
+      return this.packageVersionRepo.listByEnvironment(environmentId);
+   }
+
+   async getPackageVersion(
+      environmentId: string,
+      packageName: string,
+      version: string,
+   ): Promise<PackageVersion | null> {
+      return this.packageVersionRepo.get(environmentId, packageName, version);
+   }
+
+   async createPackageVersion(
+      version: Omit<PackageVersion, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageVersion> {
+      return this.packageVersionRepo.create(version);
+   }
+
+   async updatePackageVersion(
+      id: string,
+      updates: PackageVersionUpdate,
+   ): Promise<PackageVersion> {
+      return this.packageVersionRepo.update(id, updates);
+   }
+
+   async deletePackageVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<void> {
+      return this.packageVersionRepo.deleteByPackage(
+         environmentId,
+         packageName,
+      );
    }
 
    // ==================== CONNECTIONS ====================

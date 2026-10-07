@@ -988,6 +988,10 @@ app.use(drainingGuard);
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/data-apps`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          const environment = await environmentStore.getEnvironment(
             req.params.environmentName,
@@ -1104,6 +1108,10 @@ let sseConnectionCount = 0;
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       const env = req.params.environmentName;
       const pkg = req.params.packageName;
       try {
@@ -1407,6 +1415,10 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.listSchemas(
@@ -1426,6 +1438,10 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.listTables(
@@ -1447,6 +1463,10 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.getTable(
@@ -1492,6 +1512,10 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    queryConcurrency(),
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
@@ -1548,6 +1572,10 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
    queryConcurrency(),
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.getConnectionQueryData(
@@ -1594,6 +1622,10 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
    queryConcurrency(),
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
@@ -1717,6 +1749,32 @@ app.delete(
          res.status(status).json(json);
       }
    },
+);
+
+// Package versions (api-doc.yaml, the `versions` tag). The contract lands ahead
+// of the implementation, so until a route's handler ships it answers 501, the
+// same answer a `versionId` gets on the routes that declare one.
+const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
+   setVersionIdError(res);
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions`,
+   versionsNotImplemented,
+);
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
+   versionsNotImplemented,
+);
+app.patch(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
+   versionsNotImplemented,
+);
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId/manifest`,
+   versionsNotImplemented,
+);
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/latest`,
+   versionsNotImplemented,
 );
 
 app.get(
@@ -2101,6 +2159,10 @@ app.post(
    // left to pin the shared event loop unbounded.
    queryConcurrency(),
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          // Express stores wildcard matches in params['0'], so nested model
          // paths (models in subdirectories) compile just like they query.
@@ -2132,6 +2194,12 @@ app.post(
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
+      // In the body here, not the query string: see
+      // CreateMaterializationRequest.versionId in api-doc.yaml.
+      if (req.body?.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          const build = await materializationController.createMaterialization(
             req.params.environmentName,
@@ -2149,6 +2217,10 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          const limit = parseNonNegativeIntParam(req.query.limit);
          const offset = parseNonNegativeIntParam(req.query.offset);
@@ -2168,6 +2240,10 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          const build = await materializationController.getMaterialization(
             req.params.environmentName,
@@ -2185,6 +2261,10 @@ app.get(
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       try {
          const action = req.query.action;
          if (action === "stop") {
@@ -2209,6 +2289,10 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
       const dropTables = booleanParamOr400(req, res, "dropTables");
       if (dropTables === undefined) {
          return;

@@ -66,6 +66,8 @@ export class PackageRepository {
       return {
          id,
          ...pkg,
+         // Not written above: only setLatestVersion moves the pointer.
+         latestVersion: null,
          createdAt: now,
          updatedAt: now,
       };
@@ -121,6 +123,29 @@ export class PackageRepository {
       await this.db.run("DELETE FROM packages WHERE environment_id = ?", [id]);
    }
 
+   /**
+    * Compare-and-swap the package's `latest` pointer. One UPDATE whose WHERE
+    * carries the expected value, so the check and the write cannot be split by
+    * a concurrent caller; `IS NOT DISTINCT FROM` lets `expected = null` match a
+    * package that has no latest yet. Returns false when the pointer had moved
+    * (or the package row does not exist), and nothing was written.
+    */
+   async setLatestVersion(
+      environmentId: string,
+      packageName: string,
+      expected: string | null,
+      next: string | null,
+   ): Promise<boolean> {
+      const rows = await this.db.all<{ id: string }>(
+         `UPDATE packages SET latest_version = ?, updated_at = ?
+           WHERE environment_id = ? AND name = ?
+             AND latest_version IS NOT DISTINCT FROM ?
+           RETURNING id`,
+         [next, this.now().toISOString(), environmentId, packageName, expected],
+      );
+      return rows.length > 0;
+   }
+
    private mapToPackage(row: Record<string, unknown>): Package {
       return {
          id: row.id as string,
@@ -133,6 +158,7 @@ export class PackageRepository {
             : undefined,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
+         latestVersion: (row.latest_version as string | null) ?? null,
       };
    }
 }

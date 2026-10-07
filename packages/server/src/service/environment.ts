@@ -15,6 +15,7 @@ import {
    notebookReaderProblem,
 } from "./notebook";
 import { isDashboardModelPath } from "./dashboard";
+import { compareSemver } from "./semver";
 import { notebookLintProblems } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -42,6 +43,7 @@ import {
    NotQueryableError,
    PackageManifestError,
    PackageNotFoundError,
+   PackageVersionError,
    ServiceUnavailableError,
    UnparseableTextError,
    WriteRolledBackError,
@@ -74,7 +76,11 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
+import {
+   FreshnessManifest,
+   ManifestEntry,
+   PackageVersion,
+} from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
@@ -302,6 +308,31 @@ async function denyHiddenAsNotQueryable(
 /** Cap on runtime add failures kept per environment for /status. */
 const MAX_RECORDED_ADD_FAILURES = 100;
 
+/**
+ * What a request for a package resolves to: the one tree it is served from.
+ *
+ * An unversioned package has a single slot, keyed by its name and served from
+ * `<environment>/<package>`, exactly as before versions existed. A versioned
+ * package has one slot per published version, keyed `<package>@<dirName>` (a
+ * package name cannot contain `@`, so the two key spaces never meet) and served
+ * from `<environment>/<package>/<dirName>`.
+ */
+export interface PackageSlot {
+   name: string;
+   /** The published version served, or undefined for an unversioned package. */
+   version?: PackageVersion;
+   /** Key into the package cache and lock maps. */
+   key: string;
+   /** The tree this slot is served from. */
+   path: string;
+}
+
+/** The published versions of one package, as the registry holds them. */
+interface PackageVersionIndex {
+   latest: string | null;
+   versions: Map<string, PackageVersion>;
+}
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
@@ -311,6 +342,15 @@ export class Environment {
    // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
+   /**
+    * Published versions, per package name, mirrored from the registry
+    * (`package_versions` and `packages.latest_version`) so resolving a request
+    * to a slot is a map lookup rather than a database read. A package absent
+    * from this map has no versions and is served as a single unversioned slot.
+    * Written only through {@link setPackageVersions} /
+    * {@link clearPackageVersions}, by whoever has just written the registry.
+    */
+   private packageVersions: Map<string, PackageVersionIndex> = new Map();
    /**
     * Configured packages that failed to load, keyed by name, with the reason.
     *
@@ -2272,6 +2312,110 @@ export class Environment {
     */
    public peekPackage(name: string): Package | undefined {
       return this.packages.get(name);
+   }
+
+   /**
+    * Replace what this environment knows of a package's published versions:
+    * every version the registry holds for it, and its `latest`. The caller has
+    * just read or written the registry; this only mirrors it.
+    */
+   public setPackageVersions(
+      packageName: string,
+      latest: string | null,
+      versions: PackageVersion[],
+   ): void {
+      assertSafePackageName(packageName);
+      this.packageVersions.set(packageName, {
+         latest,
+         versions: new Map(versions.map((v) => [v.version, v])),
+      });
+   }
+
+   /** Forget a package's versions, as when the package itself is deleted. */
+   public clearPackageVersions(packageName: string): void {
+      this.packageVersions.delete(packageName);
+   }
+
+   /** Whether the package has published versions (and so no unversioned slot). */
+   public isVersionedPackage(packageName: string): boolean {
+      return this.packageVersions.has(packageName);
+   }
+
+   /**
+    * The package's published versions, highest precedence first, and its
+    * `latest`. Empty, with no latest, for an unversioned package.
+    */
+   public listPackageVersions(packageName: string): {
+      latest: string | null;
+      versions: PackageVersion[];
+   } {
+      const index = this.packageVersions.get(packageName);
+      if (!index) return { latest: null, versions: [] };
+      const versions = [...index.versions.values()].sort(
+         (a, b) =>
+            compareSemver(b.version, a.version) ||
+            b.createdAt.getTime() - a.createdAt.getTime(),
+      );
+      return { latest: index.latest, versions };
+   }
+
+   /**
+    * Resolve a request for `packageName`, optionally naming a `versionId`, to
+    * the one slot that serves it.
+    *
+    * An unversioned package resolves to its single slot when no version is
+    * named, exactly as before versions existed, and refuses a named one: it
+    * has none, and serving its only tree under a version it never published
+    * would answer a question nobody asked. A versioned package resolves an
+    * omitted version to its `latest`. Either way an unknown version is 404
+    * VERSION_NOT_FOUND and an archived one 410 VERSION_ARCHIVED.
+    */
+   public resolveSlot(packageName: string, versionId?: string): PackageSlot {
+      assertSafePackageName(packageName);
+      const index = this.packageVersions.get(packageName);
+      if (!index) {
+         if (versionId) {
+            throw new PackageVersionError(
+               "VERSION_NOT_FOUND",
+               `Package ${packageName} has no published versions, so it has no version ${versionId}.`,
+            );
+         }
+         return {
+            name: packageName,
+            key: packageName,
+            path: safeJoinUnderRoot(this.environmentPath, packageName),
+         };
+      }
+      const wanted = versionId || index.latest;
+      if (!wanted) {
+         throw new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            `Package ${packageName} has no latest version. Name one with versionId, or set latest.`,
+         );
+      }
+      const version = index.versions.get(wanted);
+      if (!version) {
+         throw new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            `Package ${packageName} has no version ${wanted}.`,
+         );
+      }
+      if (version.archiveStatus === "archive") {
+         throw new PackageVersionError(
+            "VERSION_ARCHIVED",
+            `Version ${wanted} of package ${packageName} is archived. Unarchive it to serve it again.`,
+         );
+      }
+      return {
+         name: packageName,
+         version,
+         key: `${packageName}@${version.dirName}`,
+         path: safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            version.dirName,
+         ),
+      };
    }
 
    public async getPackage(

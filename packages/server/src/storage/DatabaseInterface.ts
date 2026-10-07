@@ -39,6 +39,44 @@ export interface ResourceRepository {
    ): Promise<Package>;
    updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
    deletePackage(id: string): Promise<void>;
+   /**
+    * Move a package's `latest` pointer from `expected` to `next`, and report
+    * whether it moved. It moves only while the pointer still reads `expected`
+    * (null meaning "no latest yet"), so two publishes racing to advance it
+    * cannot both win and the later one cannot silently undo the earlier.
+    */
+   setPackageLatestVersion(
+      environmentId: string,
+      packageName: string,
+      expected: string | null,
+      next: string | null,
+   ): Promise<boolean>;
+
+   // Package versions
+   listPackageVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<PackageVersion[]>;
+   listPackageVersionsByEnvironment(
+      environmentId: string,
+   ): Promise<PackageVersion[]>;
+   getPackageVersion(
+      environmentId: string,
+      packageName: string,
+      version: string,
+   ): Promise<PackageVersion | null>;
+   /** Throws {@link DuplicatePackageVersionError} when the version exists. */
+   createPackageVersion(
+      version: Omit<PackageVersion, "id" | "createdAt" | "updatedAt">,
+   ): Promise<PackageVersion>;
+   updatePackageVersion(
+      id: string,
+      updates: PackageVersionUpdate,
+   ): Promise<PackageVersion>;
+   deletePackageVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<void>;
 
    // Connections
    listConnections(environmentId: string): Promise<Connection[]>;
@@ -130,6 +168,56 @@ export interface Package {
    createdAt: Date;
    updatedAt: Date;
    metadata?: Record<string, unknown>;
+   /**
+    * The package's `latest` published version, or null when it has none.
+    * Moved only through `setPackageLatestVersion`; `createPackage` and
+    * `updatePackage` never write it.
+    */
+   latestVersion?: string | null;
+}
+
+export type PackageVersionArchiveStatus = "archive" | "unarchive";
+
+/**
+ * One published, immutable version of a package. Its files never change after
+ * publish; its lifecycle state and build-manifest binding do.
+ */
+export interface PackageVersion {
+   id: string;
+   environmentId: string;
+   packageName: string;
+   /** The semantic version, exactly as `publisher.json` declared it. */
+   version: string;
+   /** The version's directory under the package (`+` mapped to `_`). */
+   dirName: string;
+   /** SHA-256 (hex) over the version's files at publish. */
+   contentHash: string;
+   /** Where the version was published from; re-fetched if the tree is lost. */
+   sourceLocation: string | null;
+   /** The build manifest the version is bound to; null serves live. */
+   manifestLocation: string | null;
+   archiveStatus: PackageVersionArchiveStatus;
+   archivedAt: Date | null;
+   description: string | null;
+   gitCommitSha: string | null;
+   gitRef: string | null;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+/** The parts of a version that change after publish. */
+export interface PackageVersionUpdate {
+   archiveStatus?: PackageVersionArchiveStatus;
+   archivedAt?: Date | null;
+   manifestLocation?: string | null;
+}
+
+/** A version is published once; publishing it again is a conflict. */
+export class DuplicatePackageVersionError extends Error {
+   constructor(packageName: string, version: string) {
+      super(`Version ${version} of package ${packageName} already exists`);
+      this.name = "DuplicatePackageVersionError";
+   }
 }
 
 export interface Connection {

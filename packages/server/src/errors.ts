@@ -130,7 +130,31 @@ export function logInternalFailure(
  * caller on that connection is using. Only reasons that a caller is expected to
  * branch on are emitted; absence is the norm and means "no special handling".
  */
-export type ErrorReason = "TABLE_NOT_FOUND";
+export type ErrorReason = "TABLE_NOT_FOUND" | PackageVersionReason;
+
+/**
+ * Why a request about a package version was refused. Emitted as `reason`
+ * because several share a status, and the difference is what a caller acts on:
+ * "bump the version" and "this package's versions are immutable" are both 409.
+ */
+export type PackageVersionReason =
+   | "MANIFEST_VERSION_MISSING"
+   | "MANIFEST_VERSION_INVALID"
+   | "VERSION_CONFLICT"
+   | "PACKAGE_IS_VERSIONED"
+   | "VERSION_IS_LATEST"
+   | "VERSION_NOT_FOUND"
+   | "VERSION_ARCHIVED";
+
+const PACKAGE_VERSION_STATUS: Record<PackageVersionReason, number> = {
+   MANIFEST_VERSION_MISSING: 400,
+   MANIFEST_VERSION_INVALID: 400,
+   VERSION_CONFLICT: 409,
+   PACKAGE_IS_VERSIONED: 409,
+   VERSION_IS_LATEST: 409,
+   VERSION_NOT_FOUND: 404,
+   VERSION_ARCHIVED: 410,
+};
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -239,6 +263,12 @@ export function internalErrorToHttpError(
       return httpError(404, error.message);
    } else if (error instanceof PackageNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof PackageVersionError) {
+      return httpError(
+         PACKAGE_VERSION_STATUS[error.reason],
+         error.message,
+         error.reason,
+      );
    } else if (error instanceof ModelNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof DashboardNotFoundError) {
@@ -400,6 +430,21 @@ export class UnparseableTextError extends CompileRefusedError {
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+/**
+ * A request about a package version refused for {@link reason}, which decides
+ * its status (404, 409, 410, or 400 for a publish whose manifest version is
+ * missing or malformed) and is returned as the response's `reason`.
+ */
+export class PackageVersionError extends Error {
+   constructor(
+      readonly reason: PackageVersionReason,
+      message: string,
+   ) {
+      super(message);
+      this.name = "PackageVersionError";
    }
 }
 
