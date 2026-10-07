@@ -119,8 +119,13 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  *  - `.retired/<pkg>-<uuid>/` — the previous canonical tree, atomically
  *    renamed out of the way during a swap or delete. `fs.rm`'d asynchronously
  *    after the lock is released.
+ *  - `.legacy/<pkg>/` — an unversioned package's tree, moved aside while its
+ *    first versioned publish runs. Unlike the other two it is NOT swept at
+ *    startup: until that publish commits it is the package's only copy, so a
+ *    restart puts it back when the registry holds no version of the package
+ *    (see {@link Environment.recoverLegacyTree}), and removes it once one does.
  *
- * Both hold PACKAGE TREES, in the same directory the canonical ones live in, so
+ * All three hold PACKAGE TREES, in the same directory the canonical ones live in, so
  * both are dot-prefixed: anything that enumerates an environment looking for
  * packages must not find a half-downloaded or already-superseded copy. No such
  * enumeration exists today — `listPackages` reads the registered names and this
@@ -129,6 +134,7 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
+const LEGACY_DIR_NAME = ".legacy";
 
 // How long to wait for a control-plane manifest fetch during (re)bind before
 // giving up and serving live. Binding happens before a package is marked
@@ -355,8 +361,16 @@ export interface VersionRegistry {
    listAllVersions(): Promise<PackageVersion[]>;
    listVersions(packageName: string): Promise<PackageVersion[]>;
    getLatest(packageName: string): Promise<string | null>;
-   /** Create the package's row when it has none; a publish needs one. */
-   ensurePackage(packageName: string, description?: string): Promise<void>;
+   /**
+    * Create the package's row when it has none; a publish needs one. Returns
+    * whether it created it.
+    */
+   ensurePackage(packageName: string, description?: string): Promise<boolean>;
+   /**
+    * Remove a package row that {@link ensurePackage} created for a publish
+    * that then failed before recording any version.
+    */
+   discardPackage(packageName: string): Promise<void>;
    /** Throws DuplicatePackageVersionError when the version exists. */
    createVersion(version: NewPackageVersion): Promise<PackageVersion>;
    setLatest(
@@ -791,7 +805,9 @@ export class Environment {
    }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
-      const slot = this.resolveSlot(packageName, versionId);
+      // Resolved here for its refusals (an unknown or archived version), and
+      // again under the lock below for the path.
+      this.resolveSlot(packageName, versionId);
       if (!COMPILE_SCOPES.includes(scope)) {
          throw new BadRequestError(
             `Invalid compile scope "${String(scope)}": expected one of ` +
@@ -852,7 +868,7 @@ export class Environment {
       // compile can never observe a half-rewritten tree. The slow Phase 1
       // download happens outside this lock, so a multi-second clone does
       // not block compiles.
-      return this.withSlotLock(slot, async () => {
+      return this.withResolvedSlotLock(packageName, versionId, async (slot) => {
          // Sanitized join: input segments are allowlisted above; the
          // resolve-and-contain check here is the secondary guard CodeQL's
          // path-injection sanitizer recognises. The slot's path is the
@@ -2230,10 +2246,11 @@ export class Environment {
     * subsequent re-install must serialize against any straggling
     * readers from the deleted generation that are still inside
     * `withPackageLock`. The map therefore grows by the count of
-    * *distinct* package names the environment has ever served, not by
-    * install churn, so for the publisher's expected workload
-    * (config-declared packages, occasional ad-hoc additions) this is
-    * bounded in practice. Long-lived deployments that create and
+    * *distinct* keys the environment has ever served: one per package name,
+    * plus one per published version (`name@dirName`), never by install
+    * churn. For the publisher's expected workload (config-declared
+    * packages, occasional ad-hoc additions, versions retired by archive
+    * rather than by delete) this is bounded in practice. Long-lived deployments that create and
     * delete unique package names indefinitely would need an explicit
     * sweep; we'll add one if/when that pattern appears.
     */
@@ -2677,11 +2694,20 @@ export class Environment {
     * named, exactly as before versions existed, and refuses a named one: it
     * has none, and serving its only tree under a version it never published
     * would answer a question nobody asked. A versioned package resolves an
-    * omitted version to its `latest`. Either way an unknown version is 404
+    * omitted version to its `latest`. Either way a value that is not a
+    * semantic version is 400 VERSION_ID_INVALID, an unknown version is 404
     * VERSION_NOT_FOUND and an archived one 410 VERSION_ARCHIVED.
     */
    public resolveSlot(packageName: string, versionId?: string): PackageSlot {
       assertSafePackageName(packageName);
+      // Checked before anything is looked up, so a caller can tell a value it
+      // got wrong from a version that does not exist.
+      if (versionId && !isSemver(versionId)) {
+         throw new PackageVersionError(
+            "VERSION_ID_INVALID",
+            `"${versionId}" is not a semantic version, so it names no version of package ${packageName}. Send a version such as 1.2.0, with build metadata percent-encoded (+ as %2B).`,
+         );
+      }
       const index = this.packageVersions.get(packageName);
       if (!index) {
          if (versionId) {
@@ -2780,6 +2806,38 @@ export class Environment {
       fn: () => Promise<T>,
    ): Promise<T> {
       return this.getOrCreatePackageMutex(slot.key).runExclusive(fn);
+   }
+
+   /**
+    * Resolve a request's slot and hold its lock, re-resolving once the lock is
+    * held. A request resolved before a publish it then waited on (the
+    * package's first versioned publish, or a move of `latest`) would otherwise
+    * read a path that no longer holds its files. When the slot moved, the lock
+    * is released and the new slot's taken instead, rather than nesting two
+    * slot locks, which two such requests could take in opposite orders.
+    */
+   private async withResolvedSlotLock<T>(
+      packageName: string,
+      versionId: string | undefined,
+      fn: (slot: PackageSlot) => Promise<T>,
+   ): Promise<T> {
+      let slot = this.resolveSlot(packageName, versionId);
+      for (let attempt = 0; ; attempt++) {
+         const held = slot;
+         const outcome = await this.withSlotLock<
+            { moved: PackageSlot } | { value: T }
+         >(held, async () => {
+            const fresh = this.resolveSlot(packageName, versionId);
+            // Bounded: a slot that keeps moving is served from where it last
+            // was, under the lock taken for it, rather than retried forever.
+            if (fresh.key !== held.key && attempt < 3) {
+               return { moved: fresh };
+            }
+            return { value: await fn(fresh.key === held.key ? fresh : held) };
+         });
+         if ("value" in outcome) return outcome.value;
+         slot = outcome.moved;
+      }
    }
 
    /**
@@ -2913,14 +2971,20 @@ export class Environment {
          slot.path,
          () => this.malloyConfig.malloyConfig,
       );
-      const latest = this.packageVersions.get(slot.name)?.latest ?? null;
-      pkg.setVersion(version.version, latest);
+      pkg.setVersion(
+         version.version,
+         this.packageVersions.get(slot.name)?.latest ?? null,
+      );
       // The registry row, not the tree's publisher.json, holds the version's
       // manifest binding: it is serving state, and it changes after publish.
       pkg.setManifestLocation(version.manifestLocation);
       this.attachDestinationServeConfig(pkg);
       await this.bindManifestIfConfigured(pkg);
       await this.rebindServeBindingsFromLocalStore(pkg);
+      // Read again: a publish that moved latest during the binds above
+      // refreshed only the versions already in the map, not this one.
+      const latest = this.packageVersions.get(slot.name)?.latest ?? null;
+      pkg.setVersion(version.version, latest);
       this.packages.set(slot.key, pkg);
       // The load hook builds the package's retrieval index, which is keyed by
       // package name, so only the version a nameless request reaches feeds it.
@@ -3009,8 +3073,77 @@ export class Environment {
       if (!this.versionRegistry) return;
       const all = await this.versionRegistry.listAllVersions();
       const names = new Set(all.map((v) => v.packageName));
+      // A first versioned publish interrupted by a crash left the package's
+      // unversioned tree aside; settle it before anything loads the package.
+      const legacyRoot = safeJoinUnderRoot(
+         this.environmentPath,
+         LEGACY_DIR_NAME,
+      );
+      const aside = await fs.promises.readdir(legacyRoot).catch(() => []);
+      for (const name of aside) {
+         try {
+            assertSafePackageName(name);
+         } catch {
+            continue;
+         }
+         await this.recoverLegacyTree(name, names.has(name));
+      }
       for (const name of names) {
          await this.refreshPackageVersions(name);
+      }
+   }
+
+   /**
+    * Settle an unversioned tree a first versioned publish moved aside to
+    * `.legacy/<pkg>`. When a version of the package is registered, the publish
+    * committed and the tree is retired. When none is, the publish never did,
+    * so the tree goes back: unless the package directory already holds an
+    * unversioned tree of its own (its publisher.json at the top), which was
+    * installed since and is newer, and the copy aside is dropped instead.
+    * A no-op when nothing is aside.
+    */
+   private async recoverLegacyTree(
+      packageName: string,
+      committed: boolean,
+   ): Promise<void> {
+      const aside = safeJoinUnderRoot(
+         this.environmentPath,
+         LEGACY_DIR_NAME,
+         packageName,
+      );
+      const isDir = (p: string) =>
+         fs.promises
+            .stat(p)
+            .then((stat) => stat.isDirectory())
+            .catch(() => false);
+      if (!(await isDir(aside))) return;
+      const packageDir = safeJoinUnderRoot(this.environmentPath, packageName);
+      const ownTree = await fs.promises
+         .stat(path.join(packageDir, PACKAGE_MANIFEST_NAME))
+         .then(() => true)
+         .catch(() => false);
+      try {
+         if (committed || ownTree) {
+            await fs.promises.rm(aside, { recursive: true, force: true });
+            return;
+         }
+         // The package directory holds at most a half-placed version tree.
+         await fs.promises.rm(packageDir, { recursive: true, force: true });
+         await fs.promises.rename(aside, packageDir);
+         logger.warn(
+            "Restored an unversioned package whose first versioned publish was interrupted",
+            { environmentName: this.environmentName, packageName },
+         );
+      } catch (error) {
+         logger.error(
+            "Failed to settle an unversioned package tree moved aside by a versioned publish",
+            {
+               error,
+               environmentName: this.environmentName,
+               packageName,
+               aside,
+            },
+         );
       }
    }
 
@@ -3139,12 +3272,26 @@ export class Environment {
       }
       const legacyPackage = index ? undefined : this.packages.get(packageName);
       let retiredLegacy: string | undefined;
-      if (!index && onDisk?.isDirectory()) {
-         retiredLegacy = this.allocateRetiredPath(packageName);
-         await fs.promises.mkdir(path.dirname(retiredLegacy), {
-            recursive: true,
-         });
-         await fs.promises.rename(packageDir, retiredLegacy);
+      if (!index) {
+         // A tree still aside from an earlier attempt whose put-back failed
+         // goes back first, so it is what this publish moves aside again.
+         await this.recoverLegacyTree(packageName, false);
+         const current = await fs.promises
+            .lstat(packageDir)
+            .catch(() => undefined);
+         if (current?.isDirectory()) {
+            // Aside where the startup sweep never reaches: until this publish
+            // commits, it is the package's only copy (see recoverLegacyTree).
+            retiredLegacy = safeJoinUnderRoot(
+               this.environmentPath,
+               LEGACY_DIR_NAME,
+               packageName,
+            );
+            await fs.promises.mkdir(path.dirname(retiredLegacy), {
+               recursive: true,
+            });
+            await fs.promises.rename(packageDir, retiredLegacy);
+         }
       }
 
       const target = safeJoinUnderRoot(
@@ -3153,6 +3300,7 @@ export class Environment {
          staged.dirName,
       );
       let retiredOrphan: string | undefined;
+      let createdPackageRow = false;
       let pkg: Package;
       let row: PackageVersion;
       try {
@@ -3186,7 +3334,7 @@ export class Environment {
          if (validationMsg) {
             throw new BadRequestError(validationMsg);
          }
-         await registry.ensurePackage(
+         createdPackageRow = await registry.ensurePackage(
             packageName,
             staged.description ?? undefined,
          );
@@ -3217,6 +3365,18 @@ export class Environment {
          await fs.promises
             .rm(target, { recursive: true, force: true })
             .catch(() => {});
+         if (createdPackageRow) {
+            // No version was recorded, so the row this publish created would
+            // otherwise list a package with no files after a restart.
+            await registry
+               .discardPackage(packageName)
+               .catch((err) =>
+                  logger.error(
+                     "Failed to remove the package row a failed versioned publish created",
+                     { error: err, packageName },
+                  ),
+               );
+         }
          if (retiredLegacy) {
             // The package directory holds only the refused version, so the
             // unversioned tree goes back exactly where it was.
@@ -3288,8 +3448,11 @@ export class Environment {
 
       // The version that stopped being latest is out of the request path a
       // nameless request takes, so it leaves memory now and loads again on
-      // the next request that names it. That keeps a publish from growing the
-      // server's memory by one package each time.
+      // the next request that names it. Other versions stay loaded as any
+      // package does: one published below latest, every one published under
+      // explicit promotion, and one loaded by name, until it is archived, its
+      // package is deleted or the server restarts. Each version is its own
+      // cache entry, admitted by the memory governor like any package's.
       if (previousLatest && previousLatest !== latest) {
          await this.unloadVersionSlot(packageName, previousLatest);
       }
@@ -3316,6 +3479,13 @@ export class Environment {
     * the version is loaded if it is not, a newly supplied manifest is bound,
     * and the promotion rule is applied again (it is monotone, so this never
     * moves `latest` backwards). With different content it is a conflict.
+    *
+    * The version is loaded before `latest` can move to it, as on a first
+    * publish: a version that cannot load must never become what every
+    * request naming no version reaches. When its tree is missing, the tree
+    * this request staged, already checked against the published hash, is put
+    * in place rather than fetched again from where the version was first
+    * published, which may since have moved on or gone.
     */
    private async republishVersionLocked(
       packageName: string,
@@ -3346,9 +3516,34 @@ export class Environment {
          await options.registry.updateVersion(existing.id, {
             manifestLocation: options.manifestLocation,
          });
+         await this.refreshPackageVersions(packageName);
       }
       const previousLatest =
          this.packageVersions.get(packageName)?.latest ?? null;
+      const slot = this.resolveSlot(packageName, staged.version);
+      const pkg = await this.withSlotLock(slot, async () => {
+         const loaded = this.packages.get(slot.key);
+         if (loaded) {
+            if (rebind) {
+               await this.applyVersionManifest(
+                  loaded,
+                  options.manifestLocation ?? null,
+               );
+            }
+            return loaded;
+         }
+         const present = await fs.promises
+            .stat(slot.path)
+            .then((stat) => stat.isDirectory())
+            .catch(() => false);
+         if (!present) {
+            await fs.promises.mkdir(path.dirname(slot.path), {
+               recursive: true,
+            });
+            await fs.promises.rename(staged.stagingPath, slot.path);
+         }
+         return this._loadVersionLocked(slot);
+      });
       if (options.promotion === "on-publish") {
          // Only to a strictly higher version: re-loading an older build of an
          // equal version must not take latest back to it.
@@ -3356,31 +3551,15 @@ export class Environment {
       }
       await this.refreshPackageVersions(packageName);
       const latest = this.packageVersions.get(packageName)?.latest ?? null;
-      const slot = this.resolveSlot(packageName, staged.version);
-      let wasLoaded = false;
-      const pkg = await this.withSlotLock(slot, async () => {
-         const loaded = this.packages.get(slot.key);
-         wasLoaded = loaded !== undefined;
-         if (loaded && rebind) {
-            await this.applyVersionManifest(
-               loaded,
-               options.manifestLocation ?? null,
-            );
-            return loaded;
-         }
-         return this._loadVersionLocked(slot);
-      });
       this.setPackageStatus(packageName, PackageStatus.SERVING);
       if (latest !== previousLatest) {
          // This re-publish moved latest, as a publish would: the old latest
-         // leaves memory, and the new one feeds the retrieval index (a fresh
-         // load already did that; an instance that was loaded did not).
+         // leaves memory, and the new one feeds the retrieval index, which it
+         // did not when it loaded above, before it was latest.
          if (previousLatest) {
             await this.unloadVersionSlot(packageName, previousLatest);
          }
-         if (latest === staged.version && wasLoaded) {
-            this.notifyPackageLoaded(pkg);
-         }
+         if (latest === staged.version) this.notifyPackageLoaded(pkg);
       }
       return pkg;
    }
@@ -3405,10 +3584,15 @@ export class Environment {
 
    /**
     * Advance `latest` to `version` unless a higher version already is latest.
-    * Two versions of equal precedence (build metadata alone differs) go to
-    * the later publish. The pointer moves by compare-and-swap, retried when a
-    * concurrent move wins, so the result is the same whatever order two
-    * publishes commit in.
+    * The pointer moves by compare-and-swap, retried when a concurrent move
+    * wins, so between versions of different precedence the result does not
+    * depend on the order publishes commit in. Two versions of equal
+    * precedence (they differ only in build metadata, or in leading zeros the
+    * shared semver pattern accepts) go to the later publish, so for those the
+    * order does decide. Each server keeps its own registry, so under
+    * on-publish promotion two servers that take such a pair in opposite
+    * orders disagree; an orchestrator that needs them to agree sets `latest`
+    * itself (`versionPromotion: explicit`).
     */
    private async promoteOnPublish(
       packageName: string,
@@ -4136,8 +4320,7 @@ export class Environment {
    ): Promise<string> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelPath);
-      const slot = this.resolveSlot(packageName, versionId);
-      return this.withSlotLock(slot, async () => {
+      return this.withResolvedSlotLock(packageName, versionId, async (slot) => {
          const pkg = this.packages.get(slot.key);
          if (!pkg) {
             throw new PackageNotFoundError(
@@ -4687,10 +4870,17 @@ export class Environment {
    }
 
    /**
-    * Delete a package: every version of a versioned one. `forget` runs last,
-    * under the same package lock, and is where the caller removes the
-    * package's database rows: outside the lock, a publish of the same name
-    * that commits in between would have its rows erased.
+    * Delete a package: every version of a versioned one. `forget` runs under
+    * the same package lock, and is where the caller removes the package's
+    * database rows: outside the lock, a publish of the same name that commits
+    * in between would have its rows erased.
+    *
+    * For a versioned package `forget` runs first. Its rows are what a restart
+    * restores the package from, so if removing them fails nothing else has
+    * changed, the package keeps serving, and a retry starts clean; the other
+    * way round, a failure left a package gone from this process that came back
+    * from its rows on the next restart. An unversioned package keeps the
+    * original order.
     */
    public async deletePackage(
       packageName: string,
@@ -4698,6 +4888,11 @@ export class Environment {
    ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
+         if (this.isVersionedPackage(packageName)) {
+            await options.forget?.();
+            await this.deletePackageLocked(packageName);
+            return;
+         }
          await this.deletePackageLocked(packageName);
          await options.forget?.();
       });

@@ -100,6 +100,7 @@ import {
 } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
+import { isSemver } from "./service/semver";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { classifySpaFallback } from "./spa_fallback";
 import {
@@ -660,7 +661,11 @@ function staticVersionIdOf(
       `/environments/${encodeURIComponent(req.params.environmentName)}` +
       `/packages/${encodeURIComponent(req.params.packageName)}/`;
    if (!url.pathname.startsWith(prefix)) return undefined;
-   return url.searchParams.get("versionId") || undefined;
+   // The Referer is incidental, so a version there that is not a semantic
+   // version (a page linked with a bare `+`, which decodes to a space) is
+   // ignored rather than refusing every asset the page loads.
+   const fromPage = url.searchParams.get("versionId");
+   return fromPage && isSemver(fromPage) ? fromPage : undefined;
 }
 
 async function serveFromPackage(

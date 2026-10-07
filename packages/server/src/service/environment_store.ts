@@ -623,13 +623,21 @@ export class EnvironmentStore {
             )?.latestVersion ?? null,
          ensurePackage: async (packageName, description) => {
             const id = await environmentId();
-            if (await repository().getPackageByName(id, packageName)) return;
+            if (await repository().getPackageByName(id, packageName)) {
+               return false;
+            }
             await repository().createPackage({
                environmentId: id,
                name: packageName,
                description,
                manifestPath: "",
             });
+            return true;
+         },
+         discardPackage: async (packageName) => {
+            const id = await environmentId();
+            const row = await repository().getPackageByName(id, packageName);
+            if (row) await repository().deletePackage(row.id);
          },
          createVersion: async (version) =>
             repository().createPackageVersion({
@@ -1518,6 +1526,11 @@ export class EnvironmentStore {
       if (existingPackage) {
          await repository.deletePackage(existingPackage.id);
          logger.info(`Deleted package "${packageName}" from database`);
+      } else {
+         // Version rows are keyed by name, not by the package row, so they
+         // can outlive it; left behind, a later publish under this name would
+         // inherit them.
+         await repository.deletePackageVersions(dbEnvironment.id, packageName);
       }
    }
 

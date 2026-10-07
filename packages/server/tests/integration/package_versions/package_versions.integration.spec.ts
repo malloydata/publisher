@@ -260,6 +260,28 @@ describe("published package versions", () => {
       expect(await latest.text()).toContain("window.n = 2");
    });
 
+   it("answers 400 VERSION_ID_INVALID for a versionId that is not a semantic version, and ignores one in a Referer", async () => {
+      // A bare + in a query string decodes to a space.
+      const bad = await fetch(api(`/packages/${PKG}?versionId=1.0.0+build`));
+      expect(bad.status).toBe(400);
+      expect(((await bad.json()) as { reason?: string }).reason).toBe(
+         "VERSION_ID_INVALID",
+      );
+
+      // The Referer is incidental, so its malformed version falls back to
+      // latest rather than refusing every asset the page loads.
+      const asset = await fetch(
+         `${baseUrl}/environments/${ENV_NAME}/packages/${PKG}/app.js`,
+         {
+            headers: {
+               Referer: `${baseUrl}/environments/${ENV_NAME}/packages/${PKG}/index.html?versionId=v1`,
+            },
+         },
+      );
+      expect(asset.status).toBe(200);
+      expect(await asset.text()).toContain("window.n = 2");
+   });
+
    it("reports every loaded version on /status, each with its own versionId", async () => {
       await n("1.0.0");
       await n("1.1.0");
