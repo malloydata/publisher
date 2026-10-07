@@ -69,6 +69,29 @@ describe("Theme cascade in publisher.config.json", () => {
       expect(cfg.environments[0].theme?.palette?.series).toEqual(["#ff0080"]);
    });
 
+   it("keeps the chart and border chrome keys through sanitising", () => {
+      const chrome = {
+         border: { light: "#e5e7eb", dark: "#1f2937" },
+         cardBorder: { light: "#d1d5db" },
+         axis: { dark: "#6b7280" },
+         gridline: { light: "#f3f4f6" },
+         chartText: { light: "#4b5563", dark: "#d1d5db" },
+         value: { dark: "#fafafa" },
+      };
+      writeConfig({
+         frozenConfig: false,
+         theme: { palette: chrome },
+         environments: [
+            {
+               name: "default",
+               packages: [{ name: "pkg", location: "/tmp/pkg" }],
+            },
+         ],
+      });
+      const cfg = getProcessedPublisherConfig(TEST_ROOT);
+      expect(cfg.theme?.palette).toEqual(chrome);
+   });
+
    it("environment theme overrides instance per key", () => {
       writeConfig({
          frozenConfig: false,

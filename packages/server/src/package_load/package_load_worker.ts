@@ -87,6 +87,7 @@ import {
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
+import { translatorMalloyError } from "../service/translator_error";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -1147,7 +1148,13 @@ async function compileOneModel(
       return {
          modelPath,
          modelType,
-         compilationError: serializeError(error),
+         // Classified here, before serializing: the check reads the stack, and
+         // a plain Error crosses as a bare Error that the main thread answers
+         // as an outage. As a MalloyError it crosses as a compile problem,
+         // the same as Model.create's in-process path.
+         compilationError: serializeError(
+            translatorMalloyError(error) ?? error,
+         ),
       };
    }
 }

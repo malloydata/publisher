@@ -107,18 +107,12 @@ export function GivensPanel({
                disableElevation
                onClick={apply.onApply}
                disabled={!apply.pending}
-               sx={{ textTransform: "none" }}
             >
                Apply
             </Button>
          )}
          {hasValues && (
-            <Button
-               variant="text"
-               size="small"
-               onClick={onReset}
-               sx={{ textTransform: "none" }}
-            >
+            <Button variant="text" size="small" onClick={onReset}>
                Reset
             </Button>
          )}
@@ -178,7 +172,7 @@ export function GivensPanel({
          >
             <Typography
                variant="subtitle2"
-               sx={{ fontWeight: 600, color: "text.primary" }}
+               sx={{ fontWeight: "fontWeightMedium", color: "text.primary" }}
             >
                {title ?? "Filters"}
             </Typography>

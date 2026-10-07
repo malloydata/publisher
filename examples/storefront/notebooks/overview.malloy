@@ -1,0 +1,108 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// The overview dashboard (dashboards/overview.malloy) told as a notebook: the
+// same five controls and the same five charts, read top to bottom with a text
+// block before each chart saying what it answers. A notebook is a dashboard with
+// one column, so this is the same `## artifact { tiles=[…] }` tag with
+// `kind=notebook`, text tiles between the query tiles, and no widths.
+##! experimental.givens
+##" Revenue, margin and volume for the order lines the controls select, as a story: the summary first, then which way it is moving and where it came from.
+##| artifact { kind=notebook title="Storefront overview"
+  tiles=[
+    intro { kind=text },
+    "overview_tiles -> kpis",
+    trend_note { kind=text },
+    "overview_tiles -> revenue_trend",
+    geography_note { kind=text },
+    "overview_tiles -> revenue_by_state",
+    category_note { kind=text },
+    "overview_tiles -> revenue_by_category",
+    products_note { kind=text },
+    "overview_tiles -> best_sellers"
+  ]
+}
+|##
+// The same imports as the dashboard, for the same reason: the controls'
+// pickers read their options from `products`, `regions` and `brand_suggest`,
+// and a suggest source has to resolve in this file.
+import {
+   order_items,
+   products,
+   regions,
+   brand_suggest
+} from "../storefront.malloy"
+
+# description="Narrow to one product category. Leave empty for all"
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+# description="One or more brands. Leave empty for all"
+# label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
+given: BRAND :: filter<string> is f''
+
+# description="Narrow to one US sales region. Leave empty for all"
+# label="Region" control=select suggest { source=regions dimension=region }
+given: REGION :: filter<string> is f''
+
+# description="Only count orders placed on or after this date"
+# label="Ordered since"
+given: SINCE :: date is @2023-01-01
+
+# description="Ignore line items below this sale price"
+# label="Minimum line total" range_min=0 range_max=250
+given: MIN_SALE :: filter<number> is f''
+
+##|(markdown) intro
+Set the controls above and every chart below re-runs for the order lines they
+select. Leave a control empty to read everything. Start with the summary, then
+read down for where the numbers come from.
+|##
+
+##|(markdown) trend_note
+### Which way are the numbers moving?
+
+Revenue by month for the selection. A month that breaks from its neighbours is
+the place to narrow the controls and look again.
+|##
+
+##|(markdown) geography_note
+### Where do the orders come from?
+
+Revenue by the customer's state. Pick a **Region** to compare states within it.
+|##
+
+##|(markdown) category_note
+### What is selling?
+
+Revenue by product category. Pick one **Category** above and the whole page,
+this chart included, reframes around it.
+|##
+
+##|(markdown) products_note
+### Which products lead?
+
+The best sellers for the selection, with their margin and volume, so a product
+that sells a lot at a thin margin stands out from one that earns its place.
+|##
+
+// One thin wrapper per chart over the modelled view, as on the dashboard: the
+// view keeps its chart tag, and the wrapper says which controls it answers to.
+#(doc) The overview notebook's tiles, each over the order lines its controls select
+source: overview_tiles is order_items extend {
+  # label="Key figures"
+  # big_value
+  view: kpis is key_figures + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+
+  # label="Revenue by month"
+  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+
+  # label="Revenue by state"
+  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+
+  # label="Revenue by category"
+  view: revenue_by_category is by_category + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+
+  # label="Top products"
+  view: best_sellers is top_products + { where: category ~ $CATEGORY, where: brand ~ $BRAND, where: region ~ $REGION, where: created_at >= $SINCE, where: sale_price ~ $MIN_SALE }
+}

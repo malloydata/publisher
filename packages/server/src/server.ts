@@ -2018,6 +2018,15 @@ app.post(
       );
       if (includeHiddenFilesAndSources === undefined) return;
 
+      // A client that goes away (a superseded dashboard tile, a closed tab)
+      // cancels its query: the concurrency slot is released on `close`, so the
+      // query must not keep running past it.
+      const disconnected = new AbortController();
+      res.on("close", () => {
+         if (!res.writableFinished)
+            disconnected.abort(new Error("client disconnected"));
+      });
+
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
@@ -2045,6 +2054,7 @@ app.post(
             // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
             includeHiddenFilesAndSources,
+            disconnected.signal,
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
@@ -2052,6 +2062,8 @@ app.post(
          });
          res.status(200).json(result);
       } catch (error) {
+         // Nobody is waiting for the answer: not an error worth a log line.
+         if (disconnected.signal.aborted) return;
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);

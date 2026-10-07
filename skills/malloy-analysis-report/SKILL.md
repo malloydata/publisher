@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis-report
-description: Combine validated Malloy queries into a notebook report or dashboard. Use when the user asks to "create a report", "build a dashboard", "combine these into a report", or wants a persistent multi-query artifact.
+description: Combine validated Malloy queries into a notebook report. Use when the user asks to "create a report", "combine these into a report", or wants a persistent multi-query artifact.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Creating Reports
 
-An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy queries. An ad-hoc report is written as `run:` cells, which Publisher still reads and which convert to the one-column tile layout when saved in the Console; when the queries are views on a source, `skill:malloy-notebooks` describes the layout form (`tiles=[…]`) to author instead. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
+An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy queries. An ad-hoc report is written as `run:` cells, which Publisher still reads and which convert to the one-column tile layout when saved in the Console; when the queries are views on a source, `skill:malloy-notebooks` describes the layout form (`tiles=[…]`) to author instead. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
@@ -159,7 +159,7 @@ Key rendering rules to keep in mind when shaping a cell:
 
 ## Editing an existing report
 
-For small targeted changes (fix one cell, insert one new cell), edit the cell's statement or markdown in place rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file. An existing `.malloynb` is read-only in a Credible draft (it can be deleted): to edit its story, write a `.malloy` notebook.
+For small targeted changes (fix one cell, insert one new cell), edit the cell's statement or markdown in place rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file. An existing `.malloynb` is read, not edited: to change its story, write a `.malloy` notebook.
 
 ## IMPORTANT
 

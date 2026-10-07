@@ -11,7 +11,7 @@ import {
    type LocalGiven,
    type QueryTile,
 } from "./document";
-import { malloyPath } from "./malloyText";
+import { malloyPath } from "../../utils/malloyText";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
@@ -69,10 +69,11 @@ export function previewGivens(
 
 /** A `given:` this file declares, as the `Given` the control row renders. */
 function givenFromLocal(local: LocalGiven): Given {
+   const shown = displayDefault(local);
    return {
       name: local.name,
       type: local.type,
-      default: local.default,
+      ...(shown === undefined ? {} : { default: shown }),
       ...(local.label === undefined ? {} : { label: local.label }),
       ...(local.description === undefined
          ? {}
@@ -96,6 +97,14 @@ function givenFromLocal(local: LocalGiven): Given {
       ...(local.rangeMin === undefined ? {} : { rangeMin: local.rangeMin }),
       ...(local.rangeMax === undefined ? {} : { rangeMax: local.rangeMax }),
    };
+}
+
+/** The default the server would publish: it unwraps a filter's `f'…'`, so an empty one shows no caption. */
+function displayDefault(local: LocalGiven): string | undefined {
+   if (!local.type?.startsWith("filter<")) return local.default;
+   const body = local.default?.match(/^f(['"])([\s\S]*)\1$/)?.[2];
+   if (body === undefined) return local.default;
+   return body === "" ? undefined : body;
 }
 
 /**

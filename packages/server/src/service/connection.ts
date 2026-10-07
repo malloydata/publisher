@@ -46,6 +46,7 @@ import {
    getDuckLakeTargetFileSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
+   getPostgresPoolMax,
 } from "../config";
 import {
    catalogFormatRangeForEngine,
@@ -53,6 +54,7 @@ import {
 } from "../ducklake_version";
 import {
    ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
    TableNotFoundError,
    UnsupportedCatalogFormatError,
 } from "../errors";
@@ -2419,22 +2421,26 @@ function buildProxiedPostgresConnection(
    });
 }
 
-// Per-process cap on open sessions for one plain (non-proxied) Postgres
-// connection. Kept small because a role's CONNECTION LIMIT is shared by every
-// pod serving the environment.
-const POSTGRES_POOL_MAX_PER_CONNECTION = 5;
-// pg-pool also applies this to waiting for a free slot, not only to connecting.
-const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = 30_000;
 // One query per session, so session state (SET, SET ROLE, an open BEGIN) from
 // arbitrary SQL never reaches the next caller.
 const POSTGRES_POOL_MAX_USES = 1;
+
+// pg-pool's error for a caller that waited connectionTimeoutMillis for a free
+// session. A connect that itself times out fails with a different message.
+const PG_POOL_WAIT_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
 
 /**
  * `PooledPostgresConnection` whose pool options reach `pg.Pool`. The base
  * `buildClientConfig` drops `poolMin`/`poolMax`, so pg-pool's default size
  * applies regardless of what the constructor is given.
  */
-class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
+export class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
+   // Per-process cap on open sessions (PUBLISHER_POSTGRES_POOL_MAX). pg-pool
+   // applies the timeout to waiting for a free session as well as to connecting.
+   protected poolLimits(): { max: number; connectionTimeoutMillis: number } {
+      return { max: getPostgresPoolMax(), connectionTimeoutMillis: 30_000 };
+   }
+
    // getPool() passes this result to `new Pool(...)`, so it is a PoolConfig.
    protected buildClientConfig(
       cfg: Parameters<PooledPostgresConnection["buildClientConfig"]>[0],
@@ -2442,12 +2448,38 @@ class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
       const base = super.buildClientConfig(cfg);
       return {
          ...base,
-         max: POSTGRES_POOL_MAX_PER_CONNECTION,
+         ...this.poolLimits(),
          maxUses: POSTGRES_POOL_MAX_USES,
-         connectionTimeoutMillis: POSTGRES_POOL_CONNECTION_TIMEOUT_MS,
          // Identifies these sessions in the database's pg_stat_activity.
          application_name: "malloy-publisher",
       };
+   }
+
+   // The base class runs every pool checkout through withTlsHint, so this is
+   // where a query that gave up waiting for a free session is reclassified.
+   protected async withTlsHint<T>(op: () => Promise<T>): Promise<T> {
+      try {
+         return await super.withTlsHint(op);
+      } catch (err) {
+         if (
+            err instanceof Error &&
+            err.message === PG_POOL_WAIT_TIMEOUT_MESSAGE
+         ) {
+            const { max, connectionTimeoutMillis } = this.poolLimits();
+            const waitSeconds = connectionTimeoutMillis / 1000;
+            logger.warn("Postgres connection pool exhausted", {
+               connection: this.name,
+               poolMax: max,
+               waitSeconds,
+               remedy:
+                  "fewer concurrent queries on this connection, or raise PUBLISHER_POSTGRES_POOL_MAX",
+            });
+            throw new ConnectionPoolExhaustedError(
+               `Connection '${this.name}' has no free database session: this server opens at most ${max} at a time for it, and none came free within ${waitSeconds} s. Retry once fewer queries are running on this connection.`,
+            );
+         }
+         throw err;
+      }
    }
 }
 

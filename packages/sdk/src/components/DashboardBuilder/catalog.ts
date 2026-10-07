@@ -3,6 +3,7 @@
 
 import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
+import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
 
 export { CHART_TAGS };
@@ -40,8 +41,12 @@ export interface CatalogView {
 
 export interface CatalogSource {
    name: string;
-   /** The model that declares it, which is what a preview runs against. */
+   /** The model that exports it, which its import names. */
    modelPath: string;
+   /** Every model that exports it: a whole-file import of any of them carries the source. Absent from a hand-built catalog, where `modelPath` is the only one. */
+   exporters?: string[];
+   /** Every model that lists it, imported or exported: what a document extending that model can name without an import. */
+   visibleIn?: string[];
    description?: string;
    views: CatalogView[];
    /**
@@ -213,6 +218,19 @@ const pathOf = (model: CompiledModel): string =>
 export function buildCatalog(models: CompiledModel[]): PackageCatalog {
    const sources: CatalogSource[] = [];
    const seen = new Set<string>();
+   const exporters = new Map<string, string[]>();
+   const exported = new Map<CompiledModel, Set<string>>();
+   const listed = new Map<string, string[]>();
+   for (const model of models) {
+      const modelPath = pathOf(model);
+      if (isDashboardModel(modelPath)) continue;
+      const names = exportedSources(model.modelInfo);
+      exported.set(model, names);
+      for (const { name } of model.sources ?? [])
+         if (name) listed.set(name, [...(listed.get(name) ?? []), modelPath]);
+      for (const name of names)
+         exporters.set(name, [...(exporters.get(name) ?? []), modelPath]);
+   }
 
    for (const model of models) {
       const modelPath = pathOf(model);
@@ -223,10 +241,8 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
       for (const source of model.sources ?? []) {
          const name = source.name;
          if (!name) continue;
-         // A source reached through an import appears in every model that
-         // imports it. The first model to declare it wins, so a preview runs
-         // against the file that actually defines it.
-         if (seen.has(name)) continue;
+         // `sources` also lists imported names, which an import cannot reach unless the model re-exports them.
+         if (!exported.get(model)?.has(name) || seen.has(name)) continue;
          seen.add(name);
 
          const givens = (
@@ -238,6 +254,8 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
          sources.push({
             name,
             modelPath,
+            exporters: exporters.get(name) ?? [modelPath],
+            visibleIn: listed.get(name) ?? [modelPath],
             ...(docOf(source.annotations)
                ? { description: docOf(source.annotations) as string }
                : {}),
@@ -262,40 +280,4 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
    }
 
    return { sources };
-}
-
-/**
- * The part of the package catalog a dashboard file can actually use.
- *
- * The builder never writes an import, so a source the file cannot see would
- * produce a tile that does not compile. A named import says exactly which
- * names it brings. A whole-file import of a published model brings that
- * model's sources. A whole-file import of a file off the surface cannot be
- * read, so then every published source is offered and a wrong pick is caught
- * by the compile check the editor already runs.
- */
-export function visibleToDashboard(
-   catalog: PackageCatalog,
-   imports: ReadonlyArray<
-      | { kind: "all"; path: string }
-      | { kind: "names"; names: string[]; path: string }
-   >,
-   published: CompiledModel[],
-): PackageCatalog {
-   const visible = new Set<string>();
-   for (const imported of imports) {
-      if (imported.kind === "names") {
-         for (const name of imported.names) visible.add(name);
-         continue;
-      }
-      const model = published.find((m) => pathOf(m) === imported.path);
-      if (!model) return catalog;
-      for (const source of model.sources ?? []) {
-         if (source.name) visible.add(source.name);
-      }
-   }
-   return {
-      ...catalog,
-      sources: catalog.sources.filter((source) => visible.has(source.name)),
-   };
 }

@@ -72,6 +72,46 @@ const undo = () => fireEvent.click(button("Undo"));
 afterEach(cleanup);
 
 describe("click-to-edit text", () => {
+   it("selects a tile when keyboard focus lands in it, as a press does", async () => {
+      await mount();
+      fireEvent.focus(screen.getByLabelText("Settings for By category"));
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+   });
+
+   it("keeps the selection when Escape cancels a title being typed", async () => {
+      await mount();
+      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      fireEvent.click(screen.getByText("By category"));
+      const field = screen.getByLabelText("Tile title");
+      fireEvent.keyDown(field, { key: "Escape" });
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+   });
+
+   it("announces the save state for a screen reader", async () => {
+      await mount({ onSave: () => {} });
+      expect(screen.getByText("All changes saved")).toBeDefined();
+   });
+
+   it("selects the description or a tile, never both", async () => {
+      await mount();
+      const description = screen.getByLabelText("Description");
+      fireEvent.pointerDown(description);
+      expect(description.getAttribute("aria-current")).toBe("true");
+      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      expect(description.getAttribute("aria-current")).toBe("false");
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("true");
+      fireEvent.pointerDown(description);
+      expect(
+         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
+      ).toBe("false");
+   });
+
    it("opens on a click, commits on Enter, and is one undo step", async () => {
       await mount();
       editInline("By category", "Tile title", "Revenue");
@@ -122,9 +162,9 @@ describe("click-to-edit text", () => {
       await mount();
       expect(within(tile("by_cat")).getByText("Add a subtitle")).toBeDefined();
       // An unlabelled tile shows the name it falls back to.
-      expect(within(tile("by_brand")).getByText("by_brand")).toBeDefined();
+      expect(within(tile("by_brand")).getByText("By brand")).toBeDefined();
       editInline("By category", "Tile title", "");
-      expect(within(tile("by_cat")).getByText("by_cat")).toBeDefined();
+      expect(within(tile("by_cat")).getByText("By cat")).toBeDefined();
    });
 
    it("edits the page's title and description in place", async () => {
@@ -142,17 +182,17 @@ describe("click-to-edit text", () => {
       expect(screen.getByText("Storefront")).toBeDefined();
    });
 
-   it("has no title or subtitle fields in the tile menu, and none for the page in Settings", async () => {
+   it("has no title or subtitle fields in the tile menu, and no page settings window", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.queryByLabelText("Tile subtitle")).toBeNull();
-      expect(button("Drill-through…")).toBeDefined();
-      fireEvent.keyDown(button("Remove tile"), { key: "Escape" });
-      fireEvent.click(button("Settings"));
+      expect(button("Drill")).toBeDefined();
+      fireEvent.keyDown(button("Delete"), { key: "Escape" });
+      // There is no page settings window at all: the title and description
+      // are edited on the page.
+      expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
       expect(screen.queryByLabelText("Dashboard title")).toBeNull();
-      expect(screen.queryByLabelText("Dashboard description")).toBeNull();
-      expect(screen.getByLabelText("Grid width")).toBeDefined();
    });
 });
 
@@ -232,7 +272,7 @@ describe("click-to-edit markdown in a text tile", () => {
       fireEvent.change(field, { target: { value: "Typed in place" } });
       fireEvent.keyDown(field, { key: "Escape" });
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain("##|(markdown) text_1\nTyped in place\n|##");
    });
@@ -299,9 +339,15 @@ describe("undo and redo point at the tile they changed", () => {
 });
 
 describe("the save target", () => {
-   it("is a caption under Save, not only a tooltip", async () => {
+   /** Save's tooltip text, once hovered. */
+   const saveTooltip = async () => {
+      fireEvent.mouseOver(screen.getByRole("button", { name: /Save/ }));
+      return (await screen.findByRole("tooltip")).textContent;
+   };
+
+   it("is Save's tooltip", async () => {
       await mount({ onSave: () => {} });
-      expect(screen.getByText("Saves to the package file")).toBeDefined();
+      expect(await saveTooltip()).toBe("Saves to the package file");
    });
 
    it("is the workspace's own words when it supplies them", async () => {
@@ -310,20 +356,18 @@ describe("the save target", () => {
          savesTo: "host",
          saveLabel: "Saved to this draft",
       });
-      expect(screen.getByText("Saved to this draft")).toBeDefined();
-      expect(screen.queryByText(/embedded in/)).toBeNull();
+      expect(await saveTooltip()).toBe("Saved to this draft");
    });
 
    it("is a generic line, without the word host, when the workspace says nothing", async () => {
       await mount({ onSave: () => {}, savesTo: "host" });
-      expect(
-         screen.getByText("Saves to the app this is embedded in"),
-      ).toBeDefined();
-      expect(screen.queryByText(/host/i)).toBeNull();
+      const text = await saveTooltip();
+      expect(text).toBe("Saves to the app this is embedded in");
+      expect(text).not.toMatch(/host/i);
    });
 
    it("is absent when there is nowhere to save", async () => {
       await mount();
-      expect(screen.queryByText("Saves to the package file")).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
    });
 });

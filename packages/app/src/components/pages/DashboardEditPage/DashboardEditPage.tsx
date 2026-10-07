@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
-   DashboardBar,
    encodeResourceUri,
    type DashboardEvent,
    Loading,
+   LOADING_COPY,
    NarrowEditGate,
 } from "@malloy-publisher/sdk";
-import { Box, Stack } from "@mui/material";
+import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
 import {
    logDashboardEvent,
@@ -54,10 +52,7 @@ export default function DashboardEditPage({
    kind = "dashboard",
    path,
 }: DashboardEditPageProps) {
-   const navigate = useNavigate();
    const guard = useLeaveGuard();
-   const { pathname } = useLocation();
-   const dashboardPath = pathname.replace(/\/edit\/?$/, "");
    const onEvent = useMemo(() => {
       if (kind === "dashboard")
          return logDashboardEvent({
@@ -72,24 +67,12 @@ export default function DashboardEditPage({
       }) as (event: DashboardEvent | NotebookEvent) => void;
    }, [kind, environmentName, packageName, dashboardName]);
    return (
+      // The reader's page width and edges, the same for a dashboard and a
+      // notebook, so the margins do not move between modes or kinds.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         {/* The same way up the reader's view has, in the same place, so the
-             bar below it sits at the same height in both modes. */}
-         <BackLink
-            label={packageName}
-            href={`/${environmentName}/${packageName}`}
-            onClick={() => navigate(`/${environmentName}/${packageName}`)}
-         />
          <NarrowEditGate>
-            {/* The bar, at the height the reader's view had it, so the page does
-                not collapse and refill while the builder's chunk arrives. */}
             <Suspense
-               fallback={
-                  <Stack sx={{ gap: 2 }}>
-                     <DashboardBar />
-                     <Loading text="Opening the builder…" />
-                  </Stack>
-               }
+               fallback={<Loading text={LOADING_COPY.opening("builder")} />}
             >
                <DashboardEditor
                   // Remounts on a route change so another dashboard starts from a fresh read.
@@ -101,10 +84,6 @@ export default function DashboardEditPage({
                   dashboard={dashboardName}
                   kind={kind}
                   path={path}
-                  onExit={() => {
-                     guard.leaving();
-                     navigate(dashboardPath);
-                  }}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

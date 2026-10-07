@@ -291,9 +291,11 @@ function getStaticConnectionAttributes(
    }
 }
 
+// Field names follow Google's service-account key file format, so they are
+// fixed by that format and do not track Publisher's own vocabulary.
 type ServiceAccountKey = {
    type?: string;
-   environment_id?: string;
+   project_id?: string;
    private_key?: string;
    client_email?: string;
    [key: string]: unknown;
@@ -1259,8 +1261,8 @@ export function assembleEnvironmentConnections(
             pojo.connections[connection.name] = {
                is: "bigquery",
                projectId:
-                  connection.bigqueryConnection?.defaultProjectId ??
-                  serviceAccountKey?.environment_id,
+                  connection.bigqueryConnection?.defaultProjectId ||
+                  serviceAccountKey?.project_id,
                serviceAccountKey,
                // Spread rather than `authClient: x ?? undefined`: the property
                // is mustHaveValue, and core keys off the property being SET —

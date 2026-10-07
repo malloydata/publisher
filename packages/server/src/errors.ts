@@ -383,6 +383,20 @@ export class InvalidArgumentError extends BadRequestError {}
  */
 export class CompileRefusedError extends BadRequestError {}
 
+/** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
+export class RenderTagRefusedError extends CompileRefusedError {}
+
+/** The restricted-construct gate could not parse the text, so it judged nothing: a refusal for a fragment, a plain compile problem for one tile of a document. */
+export class UnparseableTextError extends CompileRefusedError {
+   constructor(
+      message: string,
+      /** The parser's own words, which the message alone does not carry. */
+      readonly detail: string,
+   ) {
+      super(message);
+   }
+}
+
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
@@ -459,6 +473,19 @@ export class ConnectionError extends Error {
    constructor(message: string, options?: { callerSafe?: boolean }) {
       super(message);
       this.callerSafe = options?.callerSafe ?? false;
+   }
+}
+
+/**
+ * Every database session a connection may open from this process was busy for
+ * the whole wait, so the query never reached the database. A 502 like any other
+ * connection-side failure, with a server-authored message, so the caller learns
+ * the cause instead of the generic upstream text.
+ */
+export class ConnectionPoolExhaustedError extends ConnectionError {
+   constructor(message: string) {
+      super(message, { callerSafe: true });
+      this.name = "ConnectionPoolExhaustedError";
    }
 }
 
@@ -541,6 +568,45 @@ export class MaterializationEligibilityError extends Error {
       super(error.message);
       this.name = "MaterializationEligibilityError";
       this.reason = error.reason;
+   }
+}
+
+/**
+ * A chained `storage=` build found that its downstream depends on a persisted
+ * source the build cannot see: one that was neither built in this run nor
+ * supplied by reference, or one whose table lives in another destination. Not a
+ * shape problem — the downstream may well compile over its parents — but a
+ * dispatch one: the orchestrator meant to pin that upstream and this build has
+ * no table for it. Recomputing it from raw would rebuild a stored table the
+ * orchestrator did not ask for, which is the mis-build `strictUpstreams`
+ * exists to refuse, so under strict this error is refused outright while a
+ * shape failure ({@link MaterializationEligibilityError}) falls back.
+ */
+export class ChainedUpstreamMissingError extends Error {
+   readonly missing: readonly string[];
+
+   constructor(missing: readonly string[], detail: string) {
+      super(detail);
+      this.name = "ChainedUpstreamMissingError";
+      this.missing = missing;
+   }
+}
+
+/**
+ * A chained `storage=` build had every stored upstream it depends on, and the
+ * downstream reaches nothing but those, yet the model assembled over them did
+ * not compile — a limit of what the build can carry (a refinement not
+ * re-emitted, a construct the destination's dialect lacks), not a property of
+ * the source. Recomputing from raw WOULD build it, but it would also rebuild
+ * stored tables the build was handed, so under `strictUpstreams` this is
+ * refused like a missing upstream rather than recomputed like a source that
+ * genuinely reaches the warehouse ({@link MaterializationEligibilityError}
+ * from the chained path).
+ */
+export class ChainedShapeNotCarriedError extends Error {
+   constructor(detail: string) {
+      super(detail);
+      this.name = "ChainedShapeNotCarriedError";
    }
 }
 

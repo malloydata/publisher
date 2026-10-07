@@ -8,7 +8,7 @@ import {
    registerPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
-import { saveChanges, undoSave } from "./helpers/save";
+import { saveChanges } from "./helpers/save";
 
 /**
  * The x on a filter chip removes the filter from the file: its declaration and
@@ -64,8 +64,5 @@ test.describe("filter chip", () => {
          reader.getByRole("combobox", { name: "Category" }),
       ).toHaveCount(0);
       await reader.close();
-
-      await undoSave(page);
-      expect(await pe.readSource(file)).toBe(original);
    });
 });

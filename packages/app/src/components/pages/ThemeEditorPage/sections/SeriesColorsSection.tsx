@@ -4,6 +4,7 @@
 import {
    DEFAULT_THEME,
    resolveTheme,
+   type PerModeColorKey,
    type Theme,
    type ThemeMode,
 } from "@malloy-publisher/sdk";
@@ -13,7 +14,9 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { Box, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { useRef } from "react";
 import { ColorPickerField } from "../ColorPickerField";
+import { perModeColor, withPerModeColor } from "../perModeColor";
 import { BarChartPreview } from "../previews/BarChartPreview";
+import { DashboardPreview } from "../previews/DashboardPreview";
 import { LineChartPreview } from "../previews/LineChartPreview";
 
 let __seriesRowCounter = 0;
@@ -33,10 +36,19 @@ interface SeriesColorsSectionProps {
 
 const DEFAULT_NEW_COLOR = "#1877f2";
 
+/** The per-mode chart chrome pickers, in the order they are shown. */
+const CHROME_PICKERS: ReadonlyArray<{ key: PerModeColorKey; label: string }> = [
+   { key: "chartText", label: "Chart text (axes, legends, titles)" },
+   { key: "axis", label: "Axis lines and ticks" },
+   { key: "gridline", label: "Gridlines" },
+   { key: "value", label: "Big value (KPI) number" },
+];
+
 /**
  * Edits the chart-side theme tokens: `palette.background` (per mode,
- * paints the chart canvas via Vega's background config) and
- * `palette.series` (shared, Vega's `range.category`). Tables get their
+ * paints the chart canvas via Vega's background config), the per-mode
+ * chart chrome (`chartText`, `axis`, `gridline`, and `value` for a KPI
+ * tile's number) and `palette.series` (shared, Vega's `range.category`). Tables get their
  * own section because they touch a different surface.
  */
 export function SeriesColorsSection({
@@ -48,20 +60,9 @@ export function SeriesColorsSection({
    const resolved = resolveTheme([theme], mode);
 
    // Background picker is per-mode (chart canvas in light vs dark).
-   const background = theme.palette?.background?.[mode] ?? resolved.background;
-   const setBackground = (hex: string) => {
-      // Legacy-shape guard: a string in this slot (pre-per-mode shape)
-      // would spread into character-indexed garbage.
-      const existing = theme.palette?.background;
-      const base =
-         existing && typeof existing === "object" && !Array.isArray(existing)
-            ? existing
-            : {};
-      onChange({
-         ...theme,
-         palette: { ...theme.palette, background: { ...base, [mode]: hex } },
-      });
-   };
+   const background = perModeColor(theme, "background", mode);
+   const setBackground = (hex: string) =>
+      onChange(withPerModeColor(theme, "background", mode, hex));
 
    // Defensive: if a stale schema shape sneaked past the server-side
    // sanitiser (e.g. an old per-mode `series` object from a previous
@@ -135,15 +136,41 @@ export function SeriesColorsSection({
          >
             <BarChartPreview theme={resolved} />
             <LineChartPreview theme={resolved} />
+            <DashboardPreview
+               tileBackground={resolved.tile}
+               tileBorder={resolved.cardBorder}
+               titleColor={resolved.tileTitle}
+               valueColor={resolved.valueColor}
+               fontFamily={resolved.font.family}
+            />
          </Stack>
 
-         <Box sx={{ mb: 3 }}>
+         <Box
+            sx={{
+               display: "grid",
+               gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+               columnGap: 2,
+               rowGap: 2,
+               mb: 3,
+            }}
+         >
             <ColorPickerField
                label="Chart background"
                value={background}
                onChange={setBackground}
                disabled={disabled}
             />
+            {CHROME_PICKERS.map(({ key, label }) => (
+               <ColorPickerField
+                  key={key}
+                  label={label}
+                  value={perModeColor(theme, key, mode)}
+                  onChange={(hex) =>
+                     onChange(withPerModeColor(theme, key, mode, hex))
+                  }
+                  disabled={disabled}
+               />
+            ))}
          </Box>
 
          <Typography variant="subtitle2" sx={{ mb: 1, mt: 1, fontWeight: 600 }}>

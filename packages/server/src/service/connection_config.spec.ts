@@ -963,6 +963,59 @@ describe("ducklake shape validation", () => {
    });
 });
 
+// Malloy qualifies every `dataset.table` path with the connection's projectId.
+// Left unset, the BigQuery SDK falls back to its own `{{projectId}}` token,
+// which the SDK rewrites in the requests it sends but which reaches the
+// warehouse verbatim from any path that sends compiled SQL another way, such
+// as DuckDB's bigquery_query() during a storage-destination build.
+describe("assembleEnvironmentConnections — bigquery projectId", () => {
+   const keyJson = JSON.stringify({
+      type: "service_account",
+      project_id: "key-project",
+      private_key: "key",
+      client_email: "sa@key-project.iam.gserviceaccount.com",
+   });
+
+   it("takes projectId from the service account key when no default is set", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: { serviceAccountKeyJson: keyJson },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("key-project");
+   });
+
+   it("treats a blank defaultProjectId as unset", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: {
+               defaultProjectId: "",
+               serviceAccountKeyJson: keyJson,
+            },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("key-project");
+   });
+
+   it("prefers an explicit defaultProjectId over the key's project", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: {
+               defaultProjectId: "data-project",
+               serviceAccountKeyJson: keyJson,
+            },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("data-project");
+   });
+});
+
 describe("assembleEnvironmentConnections — bigquery impersonation", () => {
    const impersonated: ApiConnection = {
       name: "bigquery",

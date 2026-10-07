@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { isTextTile, type DashboardDocument } from "./document";
-import { artifactTag } from "./malloyText";
+import { artifactTag } from "../../utils/malloyText";
 import {
    spliceDashboardDocument,
    spliceFailed,

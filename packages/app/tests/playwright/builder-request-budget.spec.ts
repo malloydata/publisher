@@ -199,7 +199,7 @@ test.describe("builder request budget", () => {
             () =>
                page.getByRole("button", { name: "Edit", exact: true }).click(),
             () =>
-               expect(page.getByText("Editing", { exact: true })).toBeVisible({
+               expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
                   timeout: 60_000,
                }),
          );

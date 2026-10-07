@@ -22,9 +22,10 @@ source: a is scoped_orders extend {
 }
 `;
 
-const source = (name: string, modelPath: string) => ({
+const source = (name: string, modelPath: string, ...also: string[]) => ({
    name,
    modelPath,
+   exporters: [modelPath, ...also],
    views: [{ name: "by_x" }],
    givens: [],
    fields: [],
@@ -34,8 +35,9 @@ const catalog = {
       source("scoped_orders", "data_app.malloy"),
       source("spare", "spare.malloy"),
       source("regions", "data_app.malloy"),
-      source("events", "events.malloy"),
-      source("hidden", "dashboards/shared.malloy"),
+      // Re-exported by spare.malloy, which the file already imports by name.
+      source("events", "events.malloy", "spare.malloy"),
+      source("reports", "reports.malloy"),
    ],
 };
 
@@ -49,76 +51,75 @@ const mount = async (onSave: (source: string) => void) =>
       />,
    );
 
-const openSettings = () =>
-   fireEvent.click(
-      screen.getByRole("button", { name: "Settings", hidden: true }),
-   );
-const closeSettings = () =>
-   fireEvent.keyDown(screen.getByLabelText("Show as"), { key: "Escape" });
 const save = () =>
+   fireEvent.click(screen.getByRole("button", { name: "Save", hidden: true }));
+
+/** Add a tile on `name`'s one view through the add-tile picker. */
+const addTileOn = (name: string) => {
    fireEvent.click(
-      screen.getByRole("button", { name: "Save changes", hidden: true }),
+      screen.getByRole("button", { name: "Add tile", hidden: true }),
    );
+   fireEvent.mouseDown(
+      screen.getByRole("combobox", { name: /Source/, hidden: true }),
+   );
+   fireEvent.click(
+      within(
+         screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
+      ).getByRole("option", { name: new RegExp(`^${name}`), hidden: true }),
+   );
+   fireEvent.click(screen.getByLabelText("View by_x"));
+   fireEvent.click(
+      screen.getByRole("button", { name: "Add tile", hidden: false }),
+   );
+};
+
+const written = async (pick: string) => {
+   let text: string | undefined;
+   await mount((source) => {
+      text = source;
+   });
+   addTileOn(pick);
+   save();
+   await waitFor(() => expect(text).toBeDefined());
+   return text as string;
+};
 
 afterEach(cleanup);
 
-describe("the settings list a document's sources", () => {
-   it("shows what is imported and only lets an unread source go", async () => {
-      await mount(() => {});
-      openSettings();
-      const sources = screen.getByLabelText("Sources");
-      expect(within(sources).getByText("scoped_orders")).toBeDefined();
-      expect(screen.queryByLabelText("Remove source scoped_orders")).toBeNull();
-      expect(screen.getByLabelText("Remove source spare")).toBeDefined();
+describe("adding a tile brings its source in", () => {
+   it("adds no import for a source the file already imports", async () => {
+      const text = await written("spare");
+      expect(text).toContain(
+         'import { scoped_orders } from "../data_app.malloy"\nimport { spare } from "../spare.malloy"\n\n',
+      );
+      expect(text.match(/^import /gm)).toHaveLength(2);
    });
 
-   it("writes a source taken off the picker as one import line, and adds nothing else", async () => {
-      let written: string | undefined;
-      await mount((text) => {
-         written = text;
-      });
-      openSettings();
-      fireEvent.click(screen.getByLabelText("Remove source spare"));
-      closeSettings();
-      save();
-      await waitFor(() => expect(written).toBeDefined());
-      expect(written).toBe(
-         NOTEBOOK.replace('import { spare } from "../spare.malloy"\n', ""),
-      );
-   });
-
-   it("adds a source from the package into the file's import for its model, or a new one", async () => {
-      let written: string | undefined;
-      await mount((text) => {
-         written = text;
-      });
-      openSettings();
-      const add = () =>
-         screen.getByRole("combobox", { name: /Add a source/, hidden: true });
-      fireEvent.mouseDown(add());
-      const options = within(
-         screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
-      ).getAllByRole("option", { hidden: true });
-      // Imported sources and the shared includes in dashboards/ are not on offer.
-      expect(options.map((o) => o.textContent)).toEqual([
-         "regionsdata_app.malloy",
-         "eventsevents.malloy",
-      ]);
-      fireEvent.click(options[0]);
-      fireEvent.mouseDown(add());
-      fireEvent.click(
-         within(
-            screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
-         ).getByRole("option", { name: /events/, hidden: true }),
-      );
-      closeSettings();
-      save();
-      await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain(
+   it("joins a source to its model's existing import", async () => {
+      const text = await written("regions");
+      expect(text).toContain(
          'import { scoped_orders, regions } from "../data_app.malloy"',
       );
-      expect(written).toContain(
-         'import { spare } from "../spare.malloy"\nimport { events } from "../events.malloy"\n',
+      expect(text.match(/^import /gm)).toHaveLength(2);
+   });
+
+   it("gives a source from a model the file does not import a line of its own", async () => {
+      const text = await written("reports");
+      expect(text).toContain(
+         'import { spare } from "../spare.malloy"\nimport { reports } from "../reports.malloy"\n',
       );
+   });
+
+   it("joins an import of a model that re-exports the source rather than adding another model's", async () => {
+      const text = await written("events");
+      expect(text).toContain('import { spare, events } from "../spare.malloy"');
+      expect(text).not.toContain("events.malloy");
+   });
+
+   it("offers no Settings to edit sources by hand", async () => {
+      await mount(() => {});
+      expect(
+         screen.queryByRole("button", { name: "Settings", hidden: true }),
+      ).toBeNull();
    });
 });

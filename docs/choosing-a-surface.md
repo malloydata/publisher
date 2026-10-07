@@ -57,8 +57,8 @@ write just as well as the builder can.
 
 Read the table this way: notebooks and dashboards differ in the rows above **Filters**, and from
 **Filters** down they behave the same, because the two surfaces run the same code. The one
-difference is which givens get a control. A dashboard is one query, so it can tell: it renders a
-control for each given that query references. A notebook is many queries, so it renders one per
+difference is which givens get a control. A dashboard names its tiles, so it can tell: it renders a
+control for each given its tiles reference. A notebook is many queries, so it renders one per
 given the file imports, and importing a given no cell filters by leaves a control that moves
 nothing. Import the ones you filter by.
 
@@ -120,7 +120,7 @@ queries, it's a notebook.
 ## Dashboards: the operational grid
 
 A dashboard is a self-contained `.malloy` file in the package's `dashboards/` directory: it
-imports the model, declares one query (or composes tiles), applies its filters, and tags the
+imports the model, composes tiles, applies its filters, and tags the
 layout. Filter controls render automatically from the givens the query references; `# drill`
 makes dimension cells navigate between dashboards; filter state lives in the URL. The package
 page lists them, and the Console renders them at `dashboards/<name>`. How to write one:
@@ -159,8 +159,8 @@ KPIs) filtered live by whoever's looking. If the reader scans rather than reads,
 
 An HTML data app is a custom page in the package's `public/` directory, served by Publisher with
 no build step, calling `Publisher.query` for data. You write the HTML, CSS and JavaScript, and an
-AI agent is a well-supported way to write it: the bundled skills (`malloy-html-data-apps`, plus its
-runtime and embedding companions) teach an agent the page structure, the `Publisher.*` runtime,
+AI agent is a well-supported way to write it: the bundled `malloy-html-data-apps` skill (with its
+design, runtime and embedding references) teaches an agent the page structure, the `Publisher.*` runtime,
 filter wiring, and error handling. Guide:
 [html-data-apps.md](html-data-apps.md). Try
 `http://localhost:4000/environments/examples/packages/storefront/`.

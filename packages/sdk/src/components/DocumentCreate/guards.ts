@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { annotationTextProblem } from "../DashboardBuilder/annotationText";
-import { isBareName } from "../DashboardBuilder/malloyText";
+import { isBareName } from "../../utils/malloyText";
 import type { DocumentType } from "../DocumentStorage";
 
 export const malloyName = (name: string) =>

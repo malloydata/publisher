@@ -13,20 +13,14 @@ const RETRY = path.join(
    import.meta.dir,
    "components/DocumentCreate/canRetry.ts",
 );
-const MODULE = path.join(
-   import.meta.dir,
-   "components/DashboardBuilder/malloyText.ts",
-);
+const MODULE = path.join(import.meta.dir, "utils/malloyText.ts");
 
 describe("@malloy-publisher/sdk/text", () => {
    // Hosts import this in vitest's plain node environment, where they also mock the main entry.
    it("re-exports two modules, which import nothing", () => {
       const entry = fs.readFileSync(ENTRY, "utf8");
       expect([...entry.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1])).toEqual(
-         [
-            "./components/DashboardBuilder/malloyText",
-            "./components/DocumentCreate/canRetry",
-         ],
+         ["./utils/malloyText", "./components/DocumentCreate/canRetry"],
       );
       expect(fs.readFileSync(RETRY, "utf8")).not.toMatch(
          /^\s*(import|export\s.*\sfrom)\b|\brequire\(|\bimport\(/m,
