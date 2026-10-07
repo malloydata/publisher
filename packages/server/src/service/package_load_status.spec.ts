@@ -425,7 +425,7 @@ describe("Package.status: serving and loading", () => {
       expect(onDisk.description).toBe("first");
       const record = JSON.parse(
          await fs.readFile(
-            path.join(envPath, "pkg", ".publisher-install.json"),
+            path.join(envPath, ".install-records", "pkg.json"),
             "utf-8",
          ),
       );
@@ -578,11 +578,12 @@ describe("Package.status: serving and loading", () => {
       expect(env.describePackageStatus("pkg").loading).toBe(false);
 
       expect(installed.getPackageMetadata().location).toBe(location);
-      // Recorded in the server's own file, not in the package's manifest: the
-      // manifest is the author's, and a reload fetches from this value.
+      // Recorded in the server's own file outside the package directory, not
+      // in the manifest: the manifest is the author's, and a reload fetches
+      // from this value.
       const record = JSON.parse(
          await fs.readFile(
-            path.join(envPath, "pkg", ".publisher-install.json"),
+            path.join(envPath, ".install-records", "pkg.json"),
             "utf-8",
          ),
       );
@@ -618,6 +619,59 @@ describe("Package.status: serving and loading", () => {
       expect(added?.getPackageMetadata().location).toBeUndefined();
    });
 
+   it("ignores an install record shipped inside the package content", async () => {
+      // The record lives outside the package directory precisely so that
+      // content, downloaded or added from a directory, cannot plant one.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      await fs.writeFile(
+         path.join(fixture, ".publisher-install.json"),
+         JSON.stringify({ location: "/etc" }),
+      );
+      const location = "gs://bucket/pkg___1.0.0.zip";
+      const installed = await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         { update: { location } },
+      );
+      expect(installed.getPackageMetadata().location).toBe(location);
+
+      await copyDir(fixture, path.join(envPath, "added"));
+      const added = await env.addPackage("added");
+      expect(added?.getPackageMetadata().location).toBeUndefined();
+   });
+
+   it("records the location even when the tree's own explores name a missing model", async () => {
+      // An explores entry that does not resolve is a warning at load. The
+      // metadata an install applies afterwards does not touch explores, so it
+      // must not fail on that warning after the swap, which would leave the
+      // new tree serving with no record and no binding.
+      const env = await Environment.create("testEnv", envPath, []);
+      const fixture = path.join(rootDir, "fixture");
+      await writePackageDir(fixture);
+      await fs.writeFile(
+         path.join(fixture, "publisher.json"),
+         JSON.stringify({ name: "pkg", explores: ["missing.malloy"] }),
+      );
+      const location = "gs://bucket/pkg___1.0.0.zip";
+      const installed = await env.installPackage(
+         "pkg",
+         (stagingPath) => copyDir(fixture, stagingPath),
+         undefined,
+         { update: { location } },
+      );
+      expect(installed.getPackageMetadata().location).toBe(location);
+      const record = JSON.parse(
+         await fs.readFile(
+            path.join(envPath, ".install-records", "pkg.json"),
+            "utf-8",
+         ),
+      );
+      expect(record.location).toBe(location);
+   });
+
    it("a metadata PATCH never changes where a package was installed from", async () => {
       // Only an install records a location. A PATCH naming a different one is
       // a reinstall, decided by the controller; if a PATCH could write the
@@ -643,7 +697,7 @@ describe("Package.status: serving and loading", () => {
       expect(after.location).toBe(first);
       const record = JSON.parse(
          await fs.readFile(
-            path.join(envPath, "pkg", ".publisher-install.json"),
+            path.join(envPath, ".install-records", "pkg.json"),
             "utf-8",
          ),
       );

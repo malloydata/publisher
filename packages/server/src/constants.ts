@@ -2,17 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import os from "os";
+import path from "path";
 export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
 /**
- * The server's own record of where it installed a package from, beside the
- * package's manifest. Written only by the server, so a reload trusts it as the
- * source to re-fetch; a `location` an author writes into `publisher.json` is
- * never read as one.
+ * Where an environment keeps the server's own records of where it installed
+ * each package from: `<environment>/.install-records/<package>.json`. Outside
+ * every package directory, so nothing a package's content carries, downloaded
+ * or added from a directory, can plant one; a reload trusts the record as the
+ * source to re-fetch, and a `location` an author writes into `publisher.json`
+ * is never read as one.
  */
-export const PACKAGE_INSTALL_RECORD_NAME = ".publisher-install.json";
+export const PACKAGE_INSTALL_RECORDS_DIR = ".install-records";
+
+export function installRecordPath(
+   environmentPath: string,
+   packageName: string,
+): string {
+   return path.join(
+      environmentPath,
+      PACKAGE_INSTALL_RECORDS_DIR,
+      `${packageName}.json`,
+   );
+}
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 

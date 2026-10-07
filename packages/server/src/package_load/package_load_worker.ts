@@ -78,7 +78,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
-   PACKAGE_INSTALL_RECORD_NAME,
+   installRecordPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import {
@@ -462,7 +462,10 @@ async function readInstallRecord(
 ): Promise<string | undefined> {
    try {
       const raw = await fs.promises.readFile(
-         path.join(packagePath, PACKAGE_INSTALL_RECORD_NAME),
+         installRecordPath(
+            path.dirname(packagePath),
+            path.basename(packagePath),
+         ),
          "utf8",
       );
       const record: unknown = JSON.parse(raw);
@@ -562,9 +565,10 @@ async function readPackageMetadata(
       name: parsed.name,
       description: parsed.description,
       // Where the package was installed from, from the server's own record
-      // beside the manifest (see Environment.writePackageManifest). A
-      // `location` in publisher.json itself is the author's and is not read:
-      // a reload re-fetches from this value, so only the server may set it.
+      // outside the package directory (see Environment.writePackageManifest).
+      // Nothing inside the tree is read as one, neither a `location` in
+      // publisher.json nor a record file shipped with the content: a reload
+      // re-fetches from this value, so only the server may set it.
       location: await readInstallRecord(packagePath),
       explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==

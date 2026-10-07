@@ -127,10 +127,11 @@ A package can also arrive through the API: a `POST` to an environment's `package
 copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
 until the swap. Four things follow from how that is recorded:
 
-- The server writes where it fetched the package from into its own file beside the manifest,
-  `.publisher-install.json`. It never writes that into `publisher.json`, and a `location` an
-  author puts in `publisher.json` is not read as one: a reload re-fetches from the recorded
-  location, so only the server may set it.
+- The server writes where it fetched the package from into its own file outside the package
+  directory, `publisher_data/<env>/.install-records/<pkg>.json`. It never writes that into
+  `publisher.json`, and nothing inside the package is read as one, neither a `location` an author
+  puts in `publisher.json` nor a record file shipped with the content: a reload re-fetches from
+  the recorded location, so only the server may set it.
 - A `PATCH` whose `location` equals the recorded one is a metadata update. Nothing is fetched or
   recompiled beyond what a new `manifestLocation` requires. A `PATCH` with a different `location`
   installs from it. A `PATCH` never changes the recorded location by itself. To fetch the same

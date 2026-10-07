@@ -29,7 +29,7 @@ import {
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
-   PACKAGE_INSTALL_RECORD_NAME,
+   installRecordPath,
 } from "../constants";
 import {
    AccessDeniedError,
@@ -3349,14 +3349,22 @@ export class Environment {
             JSON.stringify(updatedManifest, null, 2),
             "utf-8",
          );
-         // The install location lives in the server's own record beside the
-         // manifest, so an in-place reload and a restart know where the
-         // package came from, and a `location` an author wrote into
-         // publisher.json is never read as one. Written only when an install
-         // supplies it; never cleared from here.
+         // The install location lives in the server's own record outside the
+         // package directory, so an in-place reload and a restart know where
+         // the package came from, and nothing the package's content carries
+         // (a `location` in publisher.json, a file of this name in a downloaded
+         // tree) is ever read as one. Written only when an install supplies
+         // it; never cleared from here.
          if (metadata.location !== undefined && metadata.location !== "") {
+            const recordPath = installRecordPath(
+               this.environmentPath,
+               packageName,
+            );
+            await fs.promises.mkdir(path.dirname(recordPath), {
+               recursive: true,
+            });
             await fs.promises.writeFile(
-               safeJoinUnderRoot(packagePath, PACKAGE_INSTALL_RECORD_NAME),
+               recordPath,
                JSON.stringify({ location: metadata.location }, null, 2),
                "utf-8",
             );
@@ -3530,9 +3538,15 @@ export class Environment {
       const policyMsg = editingPolicy
          ? _package.formatInvalidPersistencePolicy()
          : "";
-      const invalidMsg = [_package.formatInvalidExplores(), policyMsg]
-         .filter(Boolean)
-         .join("\n");
+      // The explores check is gated the same way: a body that does not touch
+      // `explores` (a rebind, the location an install records, a reload) must
+      // not fail after the swap on a surface the load itself only warned
+      // about, leaving the new tree serving with no record and no binding.
+      const exploresMsg =
+         normalizedExplores !== undefined
+            ? _package.formatInvalidExplores()
+            : "";
+      const invalidMsg = [exploresMsg, policyMsg].filter(Boolean).join("\n");
       if (invalidMsg) {
          _package.setPackageMetadata(existing);
          throw new BadRequestError(invalidMsg);
@@ -3765,6 +3779,11 @@ export class Environment {
 
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
+         await fs.promises
+            .rm(installRecordPath(this.environmentPath, packageName), {
+               force: true,
+            })
+            .catch(() => {});
 
          if (renamed) {
             setImmediate(() => {
