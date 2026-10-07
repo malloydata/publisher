@@ -52,7 +52,7 @@ A failure that matches none of these keeps its old status. Not covered yet:
 - **BigQuery** on schema and table listing, the table lookup and `sqlSource`. Its SDK reports rejected credentials as a plain 401 error, and Malloy's driver returns table-lookup failures as text.
 - **Databricks**, and the **DuckDB family** (DuckLake, MotherDuck), whose errors carry no code. A catalog that is down still answers 400 on the query route.
 
-## [Unreleased] - Server: per-connection sslmode and statement timeout for Postgres
+## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.
 
@@ -63,7 +63,7 @@ A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgre
 
 A DuckLake catalog connection is unchanged and applies neither setting.
 
-## [Unreleased] - Server: plain Postgres connections cap their open sessions
+## [0.9.6] - Server: plain Postgres connections cap their open sessions
 
 A plain (non-proxied) Postgres connection used to open a new database session for every query with no limit, so concurrent queries across a fleet could exhaust a role's `CONNECTION LIMIT`. It now runs through a pool that holds at most 5 open sessions per connection per process. Each query still gets a fresh session that is closed when it finishes, so session state (`SET`, `SET ROLE`, an open `BEGIN`) never carries over to another caller.
 
