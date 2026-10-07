@@ -829,6 +829,14 @@ export class ServiceUnavailableError extends Error {
 }
 
 /**
+ * The memory governor refused to admit a new compiled copy of a package. A
+ * 503 like any {@link ServiceUnavailableError}, but an answer to one request
+ * rather than a fault of the server or the package: the caller places the
+ * package elsewhere, and nothing about this server is left to repair.
+ */
+export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
+
+/**
  * Thrown when a response would exceed a server-side size cap (e.g. an
  * ad-hoc connection SQL query that returned more than
  * `PUBLISHER_MAX_QUERY_ROWS` rows). Mapped to HTTP 413 so callers know
