@@ -68,7 +68,7 @@ test.describe("notebook-builder", () => {
 
       await editText(tileByKey(page, "text.prose"), EDITED);
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: "Save", exact: true }),
       ).toBeEnabled();
       await saveChanges(page);
 

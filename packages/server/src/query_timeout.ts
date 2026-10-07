@@ -110,6 +110,13 @@ export function resetQueryTimeoutTelemetryForTesting(): void {
 export async function runWithQueryTimeout<T>(
    fn: (signal: AbortSignal) => Promise<T>,
    timeoutMs: number,
+   /**
+    * Aborted when the caller stops waiting (the HTTP client disconnected).
+    * Forwarded to `fn`'s signal, so a query nobody will read is cancelled at
+    * the driver rather than left running after its concurrency slot is
+    * released on the response's `close`.
+    */
+   clientSignal?: AbortSignal,
 ): Promise<T> {
    // Install telemetry on every call (idempotent) so the
    // `publisher_query_timeout_ms` gauge shows up in `/metrics` as
@@ -119,15 +126,23 @@ export async function runWithQueryTimeout<T>(
    // you get paged" workflows.
    ensureTimeoutTelemetry();
 
+   const ac = new AbortController();
+   const onClientGone = () => ac.abort(clientSignal?.reason);
+   if (clientSignal?.aborted) onClientGone();
+   else clientSignal?.addEventListener("abort", onClientGone, { once: true });
+   const detach = () =>
+      clientSignal?.removeEventListener("abort", onClientGone);
+
    if (timeoutMs <= 0) {
-      // Opt-out path: no timer, no abort. We still pass a never-aborts
-      // signal so `fn`'s signature is uniform and forwarding stays
-      // mechanical — no per-call branching for "did we get a timeout?".
-      const ac = new AbortController();
-      return fn(ac.signal);
+      // Opt-out path: no timer. The signal still carries a client abort, and
+      // `fn`'s signature stays uniform so forwarding is mechanical.
+      try {
+         return await fn(ac.signal);
+      } finally {
+         detach();
+      }
    }
 
-   const ac = new AbortController();
    const reason = PUBLISHER_QUERY_TIMEOUT_REASON;
    let timedOut = false;
    const timer = setTimeout(() => {
@@ -162,6 +177,7 @@ export async function runWithQueryTimeout<T>(
       throw error;
    } finally {
       clearTimeout(timer);
+      detach();
    }
 }
 

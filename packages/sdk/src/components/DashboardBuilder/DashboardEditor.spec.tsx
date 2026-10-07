@@ -49,6 +49,9 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
                  ? { modelPath: path, sourceText: served }
                  : {
                       modelPath: path,
+                      modelInfo: JSON.stringify({
+                         entries: [{ kind: "source", name: "scoped_orders" }],
+                      }),
                       sources: [
                          {
                             name: "scoped_orders",
@@ -110,10 +113,7 @@ const DRAFT = {
    path: "env/pkg/dashboards/overview.malloy",
 };
 
-const mount = (
-   onExit?: () => void,
-   onEvent?: (event: DashboardEvent) => void,
-) => {
+const mount = (onEvent?: (event: DashboardEvent) => void) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -121,7 +121,6 @@ const mount = (
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
-            {...(onExit ? { onExit } : {})}
             {...(onEvent ? { onEvent } : {})}
          />
       </DocumentStorageProvider>,
@@ -193,7 +192,7 @@ describe("DashboardEditor", () => {
          await screen.findByText(/could not be re-read from the server/),
       ).toBeDefined();
       expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
-      expect(button("Save changes")).toBeDefined();
+      expect(button("Save")).toBeDefined();
    });
 
    it("does not call an undecided server writable or read-only while its status loads", async () => {
@@ -234,15 +233,20 @@ describe("DashboardEditor", () => {
             getModel.mock.calls.some((call) => call[2] === "broken.malloy"),
          ).toBe(true),
       );
-      // Adding a tile needs a catalog, so the button is the proof it built.
-      await screen.findByRole("button", { name: "Add tile", hidden: true });
+      // The picker offers the source the working model exports: an empty catalog would offer none.
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Add tile", hidden: true }),
+      );
+      expect(
+         await screen.findByRole("button", { name: "View by_category" }),
+      ).toBeDefined();
    });
 
    it("saves an edit into the browser and marks it saved", async () => {
       const storage = mount();
       await screen.findByText("Storefront");
       editInline("By category", "Tile title", "Categories");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(async () =>
          expect(await storage.getDocument(DRAFT)).toContain(
             '# label="Categories"',
@@ -262,7 +266,7 @@ describe("DashboardEditor", () => {
       );
       await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(undefined, onEvent);
+      mount(onEvent);
       expect(
          await screen.findByText(
             /edits to this dashboard saved in this browser/,
@@ -279,10 +283,9 @@ describe("DashboardEditor", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("hands the exit to the host and reports the open", async () => {
-      const onExit = mock(() => {});
+   it("reports the open, and offers Save rather than Close when it can save", async () => {
       const onEvent = mock((_event: DashboardEvent) => {});
-      mount(onExit, onEvent);
+      mount(onEvent);
       await screen.findByText("Storefront");
       await waitFor(() =>
          expect(onEvent.mock.calls.map((call) => call[0].type)).toContain(
@@ -294,7 +297,7 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      fireEvent.click(button("Close"));
-      expect(onExit).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+      expect(button("Saved")).toBeDefined();
    });
 });

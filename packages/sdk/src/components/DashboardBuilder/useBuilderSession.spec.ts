@@ -54,16 +54,6 @@ const mount = (
    return { ...view, editor, saved, refused, undone, undoRefused, onSave };
 };
 
-const press = (key: string) =>
-   window.dispatchEvent(
-      new KeyboardEvent("keydown", {
-         key,
-         metaKey: true,
-         ctrlKey: true,
-         bubbles: true,
-      }),
-   );
-
 describe("useBuilderSession save", () => {
    it("writes at once and reports the size and structure it saved", async () => {
       const { result, saved, editor } = mount(
@@ -170,24 +160,6 @@ describe("useBuilderSession reports", () => {
    });
 });
 
-describe("useBuilderSession exit", () => {
-   it("offers Done only when the host can leave, and leaves at once when clean", () => {
-      expect(mount().result.current.toolbarProps.onExit).toBeUndefined();
-      const onExit = mock(() => {});
-      const { result } = mount({ onExit }, makeEditor({ dirty: false }));
-      act(() => result.current.toolbarProps.onExit?.());
-      expect(onExit).toHaveBeenCalledTimes(1);
-   });
-
-   it("asks before leaving unsaved edits", () => {
-      const onExit = mock(() => {});
-      const { result } = mount({ onExit });
-      act(() => result.current.toolbarProps.onExit?.());
-      expect(onExit).not.toHaveBeenCalled();
-      expect(result.current.exitGuard.dialog.open).toBe(true);
-   });
-});
-
 describe("useBuilderSession undo save", () => {
    const LAST = {
       before: "a",
@@ -274,62 +246,5 @@ describe("useBuilderSession undo save", () => {
          await readOnly.result.current.undoSave();
       });
       expect(readOnly.editor.undoSave).not.toHaveBeenCalled();
-   });
-
-   it("pauses the keyboard while the change is being viewed, and closes the viewer with the offer", () => {
-      const { result, editor, rerender } = mount({}, offering());
-      act(() => result.current.notice.onView(true));
-      expect(result.current.notice.viewing).toBe(true);
-      press("z");
-      expect(editor.undo).not.toHaveBeenCalled();
-      act(() => result.current.notice.onView(false));
-      press("z");
-      expect(editor.undo).toHaveBeenCalledTimes(1);
-      act(() => result.current.notice.onView(true));
-      rerender({ editor: makeEditor() });
-      expect(result.current.notice.viewing).toBe(false);
-   });
-
-   it("counts what the save moved, from the saved document to the one written", async () => {
-      const { result } = mount(
-         {},
-         makeEditor({ document: { n: 3 }, saved: { n: 1 } }),
-      );
-      await act(async () => {
-         await result.current.save();
-      });
-      expect(result.current.notice.moved).toEqual({ before: 1, after: 3 });
-   });
-
-   it("says the save was undone until the next edit", async () => {
-      const document = { n: 1 };
-      const view = mount({}, offering({ document }));
-      await act(async () => {
-         await view.result.current.undoSave();
-      });
-      view.rerender({ editor: makeEditor({ document }) });
-      expect(view.result.current.notice.undone).toBe(true);
-      view.rerender({ editor: makeEditor({ document: { n: 2 } }) });
-      expect(view.result.current.notice.undone).toBe(false);
-   });
-
-   it("tells the host whether a save can still be undone, and that it cannot once unmounted", () => {
-      const onSaveNoticeChange = mock((_showing: boolean) => {});
-      const view = mount({ onSaveNoticeChange }, makeEditor());
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
-      view.rerender({ editor: offering() });
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(true);
-      view.unmount();
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
-   });
-
-   it("withdraws the notice when the writer goes away while it stands", () => {
-      const onSaveNoticeChange = mock((_showing: boolean) => {});
-      const over: Partial<BuilderSessionOptions<Doc>> = { onSaveNoticeChange };
-      const view = mount(over, offering());
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(true);
-      over.onSave = undefined;
-      view.rerender({ editor: offering() });
-      expect(onSaveNoticeChange).toHaveBeenLastCalledWith(false);
    });
 });

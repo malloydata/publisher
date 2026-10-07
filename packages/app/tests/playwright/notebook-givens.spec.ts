@@ -162,7 +162,7 @@ test.describe("notebook-givens", () => {
       await input.fill("Tops");
       await expect(page.getByText("Aurora Boxy Blouse").first()).toBeVisible();
 
-      const clearBtn = page.getByRole("button", { name: "clear value" });
+      const clearBtn = page.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
 
@@ -207,7 +207,7 @@ test.describe("notebook-givens", () => {
 
       // The × is present even though the field is empty — an override is active,
       // distinct from unset. Clicking it reverts to the model default.
-      const clearBtn = page.getByRole("button", { name: "clear value" });
+      const clearBtn = page.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
@@ -230,7 +230,7 @@ test.describe("notebook-givens", () => {
       await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
 
       // Revert (×) → drop the override, back to the default (checked).
-      await page.getByRole("button", { name: "clear value" }).click();
+      await page.getByRole("button", { name: "Clear value" }).click();
       await expect(box).toBeChecked();
       await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
    });

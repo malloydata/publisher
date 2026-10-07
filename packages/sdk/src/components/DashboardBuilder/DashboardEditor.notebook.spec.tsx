@@ -212,7 +212,7 @@ describe("DashboardEditor as a notebook", () => {
       });
    });
 
-   it("offers a notebook in the cell format as a conversion, and Save and Undo save are exact", async () => {
+   it("offers a notebook in the cell format as a conversion, and Save writes it exactly", async () => {
       served = LEGACY;
       servedHash = await sha256Hex(LEGACY);
       const onEvent = mock((_event: BuilderEvent) => {});
@@ -222,25 +222,19 @@ describe("DashboardEditor as a notebook", () => {
       ).toBeDefined();
       expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
 
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Convert and save" }),
+      );
       await waitFor(() => expect(writes).toHaveLength(1));
       expect(writes[0]).toContain("tiles=[\n    text_1 { kind=text }");
       expect(writes[0]).toContain("view: revenue_by_month is sales_by_month");
-      expect(
-         await screen.findByRole("button", { name: "Undo save" }),
-      ).toBeDefined();
-
-      fireEvent.click(screen.getByRole("button", { name: "Undo save" }));
-      await waitFor(() => expect(writes).toHaveLength(2));
-      expect(writes[1]).toBe(LEGACY);
-      expect(
-         await screen.findByText(/This notebook is in the cell format/),
-      ).toBeDefined();
-      expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
-         "notebook.opened",
-         "notebook.saved",
-         "notebook.save_undone",
-      ]);
+      await waitFor(() =>
+         expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+            "notebook.opened",
+            "notebook.saved",
+         ]),
+      );
       expect(onEvent.mock.calls[1][0]).toMatchObject({ converted: true });
    });
 
@@ -305,7 +299,7 @@ describe("DashboardEditor as a notebook: the host's record", () => {
       expect(await screen.findByText("From the record.")).toBeDefined();
       expect(store.types).toEqual(["notebook"]);
       editInline("Tour", "Notebook title", "Tour, again");
-      fireEvent.click(button("Save changes"));
+      fireEvent.click(button("Save"));
       await waitFor(() => expect(store.saved.size).toBe(1));
       expect(store.saved.get("env/pkg/notebooks/tour.malloy")).toContain(
          'title="Tour, again"',

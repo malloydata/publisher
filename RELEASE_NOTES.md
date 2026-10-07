@@ -21,6 +21,34 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
+
+Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
+
+Public SDK surface: `buildCatalog` credits a source only to a model whose `modelInfo` exports it, so **a model without `modelInfo` now contributes no catalog sources**, and a host passing a hand-built `PackageCatalog` should set `modelPath` to the exporting model. `CatalogSource` gains optional `exporters` (every model that exports the source; absent means `[modelPath]`) and `visibleIn` (every model that lists it), and `NewTile` carries `exporters`. **What to do:** a host that builds its catalog from models fetched without `modelInfo` will see an empty tile picker after upgrading, so keep `modelInfo` on the models it passes to `buildCatalog`, or pass a hand-built catalog with `modelPath` set to the exporting model. A document held as text (`DashboardEditor textSource`) is offered only the sources its run model lists and adds no import.
+
+## [Unreleased] — SDK: KPI strips line up, the range slider looks like its neighbours, and the storefront charts read cleaner
+
+- **KPI strip.** A renderer `# big_value` strip now lays out as a grid with cards of one width, instead of a wrapping row sized to each card's text that left a lone fifth card. A nested (embedded) `big_value` is unchanged. The column floor is 250px so a wide value never spills onto its neighbour.
+- **Range slider.** A `range_min`/`range_max` control is drawn as an outlined field with the label notched into its edge and min/max captions under the track. Labels, readouts and aria names are unchanged. It is taller than a text field, so a neighbour's helper line sits under its own box.
+- **Builder defaults.** The builder no longer shows `Default: (empty)` under a filter control the viewer shows nothing for, and an unwrapped filter default beginning with `f` (`fall`) is no longer shown as `all`.
+- **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
+- **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
+
+## [Unreleased] - Compile returns the document it describes
+
+`POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.
+
+The SDK builder opens a document held as text: `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` and `<DashboardView preamble runModelPath hiddenGivens />` run every tile, cell and control option as the viewer's own text. Existing responses and props are unchanged. `malloy-notebook-chat` is no longer part of the shared skills; it only makes sense in a host that binds a chat to a notebook.
+
+Submitted text has no folder to take a kind from, so a `## artifact` tag that names no `kind` is a dashboard when it lists `tiles=[…]` or carries a `dashboard { … }` grid tag, and a notebook otherwise; the builder's "Show as: Dashboard" now writes `kind=dashboard` for a document held as text.
+
+The query route's 404 for a source a gated model hides now reads `Query target is not queryable.` in place of `No queryable source "x".`, the sentence it already gave for a source that is absent, so the wording cannot tell the two apart.
+
+The notebook GET now serves a layout notebook's (`tiles=[…]`) query cells like any other: each carries `queryInfo` and `proseLines: []`, where it carried neither, so a client no longer reads its cells as withheld. A cell the surface refuses still carries no `queryInfo`.
+
+Compile at scope `append` now refuses document text (a source carrying a model-level `## artifact` tag) that writes `# image` or `# link` (the render tags that make a cell value a URL the viewer's browser loads) or HTML inside a `# label`, that reads `@env.` in an annotation or a `##` note, that writes an annotation the tag parser rejects or that is over 8,192 characters, or that frees a column with `except:` or `rename:` and then declares one of the same name in the same extend chain, or that carries more than 1,000 annotations or 64 KB of annotation text; each is a 400 with the same message whether or not the data exists. Plain `append` text without that tag, and a model file, keep the tags they define; existing callers of `compile_model` see no change. This removes the direct author-written paths; it does not close the channel. The renderer has other sinks that draw a data value as HTML or a URL (a chart x-axis label is measured through `innerHTML`, table headers too), and the except-and-redeclare refusal is partial: it does not cover a source whose tagged expression reads a parameter or a given, or a route the token scan does not follow. A `# label` is refused only when it holds markup that a `>` closes. A host that opens documents held as text should run the viewer under a Content-Security-Policy. In text-source mode the SDK also removes `# image`, `# link` and markup-bearing `# label` properties from the result annotations it draws, model-defined fields included; other properties on the line are kept, and a line that reads `@env.` or does not parse is dropped whole. A consumer that renders query results with `@malloydata/render` itself gets none of that. The SDK's markdown (`Prose`, so text tiles and descriptions) no longer parses raw HTML: tags such as `<iframe>`, `<form>` and `<meta>` render as text.
+
 ## Packages that version on their own line
 
 `@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.
@@ -30,6 +58,117 @@ To ship one of them, bump its `package.json` on `main` and run an ordinary relea
 One behaviour change to know about: `skills-npm.yml` now publishes only from `main`, matching the guard `create-malloy-package-npm.yml` already had. Dispatching it from a branch still runs `check_pack`, but the publish job is skipped, and a skipped job reports success, so check the job list rather than the run's green tick if you expected a publish. See [.github/workflows/CONTEXT.md](.github/workflows/CONTEXT.md) for the publishing rules that are easy to get wrong.
 
 ---
+
+## [Unreleased] — a `storage=` source reads its stored upstreams through the sources between them, and a build reports whether it read them
+
+A `storage=` source that depends on another stored source is built by reading that source's table in the destination. Until now that worked only when the dependent source named the stored one directly: a non-persisted source in between — `checklists_kept is checklists_all extend { … }` over a stored `site_seasons`, or a `select: *` wrapper the public sources are declared on — was absent from the model the build compiled, so the build failed with `Reference to undefined object`, and under `strictUpstreams` (every orchestrated build) the whole run failed with it. The build now carries those intermediate sources into the model, in dependency order and under the `##!` flags of the files that declare them, so a dependent source reads its stored upstreams however many non-persisted sources stand between them. The model that build compiles carries only the sources on the dependent's own path — a source elsewhere in the model that cannot be carried no longer fails a chain it is not part of — declares the author model's `given:`s so a carried source whose text reads one compiles, and sees through an inline parenthesized extension (`hits is (daily extend { … }) -> { … }`) to the base and joins it reads. It also sees a stored parent reached only through an import — `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly` is built from, out of the importing model's namespace — and stacks on its table rather than recomputing it; before, such a parent read as a warehouse table. A `storage=` source over a `partition=` upstream is now built from that upstream's table too: the partition layout is part of the address the publisher files the entry under and no part of the key the compiler substitutes by, so such a downstream was always recomputed from the warehouse — refused outright under `strictUpstreams` — and now stacks on the table like any other chained source.
+
+An intermediate that reaches the source warehouse — one that joins a table nothing materializes — cannot be carried, since the destination holds no such table. Such a source is now recomputed from the warehouse, with the upstream inlined, and the build succeeds; under `strictUpstreams` this is the one recompute strict permits, because no build over the stored tables exists for it. Strict still refuses what it exists to refuse — anything whose recompute would rebuild a table the orchestrator pinned: a persisted upstream the build neither materialized nor was handed by reference, including one whose table lives in another destination, and a source that reads only stored upstreams yet could not be built over them (a refinement the build does not carry), where the limit is the build's rather than the source's.
+
+Every manifest entry for a source that reads a persisted upstream now carries `upstreamReuse`: `reused` when every upstream was read from its materialized table, `recomputed` when one was recomputed from its definition, with `upstreamRecomputeReason` saying which and why. It is reported on both tiers, since a colocated build also inlines an upstream it cannot read. The field is not a location and never names a table. A recomputed source's rows reflect the warehouse at that build's time rather than the upstream's snapshot, so the two can disagree when their refresh cadences differ; this is how to tell. The `publisher_storage_chained_build_total` counter gains the outcome `strict_shape_fallback` for the strict recompute. Note what that changes: `strictUpstreams` no longer means a build never recomputes a stored upstream — for a source that reaches the warehouse, it recomputes and says so, and the warehouse does work the orchestrator did not schedule. `strict_shape_fallback` is the signal to watch; an orchestrator that must refuse it has no knob yet.
+
+A chained build re-declares on each parent's binding what the parent's source adds to its table — its extend-block `where:`, dimensions, measures, joins and views — the same way the serve shape does, and thins them through the same tiers when they do not compile: a view, then a join, then a dimension or measure on the parent that reads a join to a source the destination cannot bind drops out; the `where:` never does. A colocated delta or skip entry carries the same `upstreamReuse` its rebuild would. A persist source's build SQL is the persisted relation alone, so a stored source declared `extend { where: total > 100 }` holds every row and is filtered when read; a downstream built over its table without that filter summed the unfiltered rows. Strict's missing-upstream verdict now comes from the compiler's own strict render over the run's whole manifest — the persisted source the SQL actually reads that nothing supplied — so a dependency reached only through a join declared on a stored upstream is refused as it was, and a declared join the query never reads is not.
+
+The storage serve shape now compiles under the `##!` flags of the author files whose declarations it carries, and carries an ungrouped-aggregate measure (`total.sum() / all(total.sum())`) as a measure. Before, a non-persisted wrapper written under `access_modifiers` (`daily_public is daily -> { select: * } include { public: … }`), or a source with an `all(…)` measure and a view that read it, lifted into text the shape could not compile — and one such lift withheld every lifted source in the model, so every query on the public surface ran live against the warehouse while the stored tables sat unread.
+
+## [Unreleased] - BigQuery connections take their project from the service account key again
+
+Since 0.0.196, a BigQuery connection configured with `serviceAccountKeyJson` and no `defaultProjectId` has given Malloy no project id. Without one, compiled SQL qualifies every `dataset.table` path with the BigQuery SDK's placeholder `{{projectId}}`. Queries the SDK sends itself still work, because the SDK rewrites that token in each request. Anything that sends compiled SQL another way does not, most visibly a build into a storage destination, which runs it through DuckDB's `bigquery_query()` and fails with `Invalid project ID '{{projectId}}'`. The connection now takes the key's `project_id` again, and a blank `defaultProjectId` falls back to it as well.
+
+The project id is part of the connection digest, so persisted sources on such connections get new BuildIDs and are rebuilt on their next build. Connections that set `defaultProjectId` are unaffected.
+
+## [Unreleased] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
+
+- **No renderer download at idle.** `RenderedResult` no longer starts importing `@malloydata/render`
+  (about 3.4 MB, 1 MB gzipped) the moment its module is evaluated, which made every page of a host
+  that loaded the main entry download it whether or not it drew a result. A result panel now starts
+  the import when its query is in flight, so the first chart still does not wait on it. A host that
+  stripped the old statement at build time can drop that patch; one that fails its build when the
+  statement is missing will now fail and should drop the check.
+- **Offscreen dashboard tiles wait.** A dashboard or notebook-layout tile runs its query once it is
+  within about 600px of the viewport, rather than on mount, so a long dashboard no longer bills the
+  warehouse for tiles nobody scrolls to. The distance is measured in whatever box scrolls the page
+  (the Console scrolls inside one), and printing runs every tile. Where `IntersectionObserver` is
+  unavailable every tile runs as before. A tile waiting to come near reads "Loading…", not
+  "Running…".
+- **Superseded queries are cancelled.** Tile, result, suggestion and filter-value queries pass
+  react-query's abort signal to the request, so a query whose givens changed or whose tile unmounted
+  is aborted instead of finishing. A cancelled query shows as still loading, never as an error. The
+  server cancels the query with it: when a client disconnects from `POST …/models/{path}/query`,
+  the query's abort signal fires (the path a query timeout already takes), so the database stops
+  work that nobody will read rather than running on after its concurrency slot was released.
+- **`usePublisherTheme` from `@malloy-publisher/sdk/client`.** The light entry now exports it (and the
+  `Theme`, `ThemeMode` and `ResolvedTheme` types), so a host following the SDK's colour mode at its
+  root no longer needs the main entry on its critical path.
+- **No refetch on refocus.** The SDK's `globalQueryClient` no longer refetches every stale query
+  when the tab regains focus, including the package, model and status queries of a host that shares
+  that client. Retries stay off. _What to do:_ a host that relied on a refresh on refocus calls
+  `invalidateQueries` itself.
+
+## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
+
+`simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it
+passes to `git`. When Publisher clones a package or environment from a GitHub URL, the `git` child
+process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINAL_PROMPT`,
+`GIT_CONFIG_*` and the rest), or `SSH_ASKPASS`, `EDITOR`, `VISUAL` and `PAGER`. Proxy variables
+(`HTTPS_PROXY`, `NO_PROXY`), `SSL_CERT_FILE` and `HOME` still pass through, so settings in the
+server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
+`GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
+
+## [Unreleased] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
+
+The builder is the read-only page in a second state, with fewer controls around it.
+
+- **Edit and View are in the Console's header**, beside the breadcrumbs, on every dashboard and notebook page. View returns to the read-only page and asks first if there are unsaved edits. The page's own Edit bar, and the "Back to …" links on every page, are gone. Reading and editing have the same header and margins, and dashboards, notebooks and data apps share one page width.
+- **Save saves in place.** The builder stays open after a save, and the notice after a save (View change, Undo save) is removed; undo and redo still step through edits. The first save of a cell-format notebook, which rewrites it in the tile layout, asks first.
+- **The builder's actions sit on the title's line**: + Tile, undo, redo and Save. + Filter is a chip after the filter chips.
+- **Settings is gone.** A document stays the kind it was created as. A tile's width is set by dragging its right edge, or by focusing that edge and pressing the arrow keys (Home and End for one column and the full grid); the tile menu's width presets, Grid width and "Run as controls change" are removed, and a file's own `columns` and `autorun` are kept. Adding a tile imports its source by name when the file cannot see it yet, so there is no Sources list.
+- **Tile menu**: Drill, Delete, and a viz type that applies as it is picked. Editable titles, subtitles and descriptions carry a small pencil after their text. The description is drawn as the document's text tiles are, in both modes (a dashboard boxes it, a notebook leaves it bare), and selected like a tile.
+- **Dashboard tiles no longer offer Explore.**
+
+**Theme.** The Console's accent — primary buttons, sliders, the builder's selection — is the palette's first series colour (`ResolvedTheme.accent`, `accentHover`, `accentContrast`, and `accentFor`), kept as picked when it reads against the page at 3:1 and otherwise moved only as far as it takes. In dark mode a series colour too dark for the canvas is lifted the same way, and a map colour set only for light is carried into dark. Drill links keep the Console's default blue. The light/dark toggle and the theme editor link moved into the sidebar. Scatter charts do not follow the palette yet: `@malloydata/render` writes a fixed colour into their spec.
+
+**Themeable chart and table chrome (not breaking).** Six new per-mode palette keys set colours that were fixed until now: `border` (table gridlines), `cardBorder` (a dashboard card's edge and a pinned table header's rule), `axis` (chart axis domain and ticks), `gridline` (chart gridlines), `chartText` (chart axis, legend and title text) and `value` (a KPI tile's number). Their defaults are the colours drawn before, so an unthemed page looks the same. Set them in `publisher.config.json`'s `theme.palette`, the Theme editor (Charts and Tables), or a `# theme.palette.<key>.{light,dark}` annotation; a host that overrode these with CSS can set them through the theme instead. `ResolvedTheme` gains `gridline`; `foreground`, `axisFaint` and `valueColor` keep their names and now read `chartText`, `axis` and `value`.
+
+**For SDK embedders (BREAKING).** The viewer and the builder are separate in both directions: the builder reuses the viewer's pieces, the viewer imports nothing from the builder, and switching between them is the host's.
+
+- **`onExit` is optional.** Without it, `DashboardEditor`, `NotebookEditor` and `DashboardBuilder` draw no way out, and leaving is the host's (the Console's is View in its header): draw your own and guard it with `onDirtyChange`; `UnsavedChangesDialog` is still exported. With it, the toolbar shows **Close** after Save, and Close on unsaved work asks first, as before. _What to do:_ nothing, if you pass it.
+- **`onSaveNoticeChange` is removed** from `DashboardBuilder`, with the save notice. _What to do:_ drop the prop; there is no notice to hold a newer version behind.
+- **`DashboardBar` is removed.** _What to do:_ draw your own bar; nothing in the SDK used it.
+- **The builder's Show as switch is removed.** _What to do:_ nothing; a document's kind is chosen when it is created (`NewDocumentDialog`'s `allowKindChange` is unchanged).
+- **`Dashboard` no longer offers Explore from here on its tiles.** _What to do:_ if you want it, render `DashboardTile` with its `onExplore` prop, which is unchanged.
+- **`Notebook` no longer caps its width** at 1200px or pads its sides; it fills its container, as `Dashboard` does. _What to do:_ give it a container with the width you want. `DataAppViewer` lays out at 1600px.
+- **New: `Package`'s `onOpenDocument({ kind, slug, mode })`** hands the host the dashboard or notebook to open, to `view` or to `edit`. Without it, `Package` navigates to the Console's routes as before.
+
+**Consistency and polish.**
+
+- Destructive text (Delete on a tile, Remove filter) takes the host MUI theme's error palette — `error.dark` in light mode, `error.main` in dark — through the exported `dangerTextColor`, so a host with its own error red gets it.
+- Filter wording is one set: the chip's ×, and the filter window's **Remove filter**; the drill window is titled **Drill**, matching the tile menu.
+- New exported tokens: `MOTION_FAST`, `reducedMotionSx`, `scrollBehavior`, `visibleWithoutHoverSx`, `ResolvedTheme.shadow` (`lift`, `drag`), `LOADING_COPY`, `STICKY_CONTROLS_Z`, `TILE_MIN_HEIGHT`, and `MONO_FONT_FAMILY` (which the Console now reads from the SDK). Motion respects `prefers-reduced-motion`.
+- `TileCard` takes `kind` (`query` or `text`), which sets its floor; the builder's text tiles and description use it.
+- `Notebook`'s embed dialog is removed; its copy-link button remains. The model page's copy link is a labelled button.
+- No bold: headings and labels use the theme's medium weight, as Credible's do.
+- Prose (package READMEs, notebook markdown, descriptions, text tiles) is set in the instance theme's `font.family`, as tile titles are, rather than the host MUI theme's font. The filter panel's Apply and Reset take the host theme's button casing.
+- Notebook blocks have one clear space around them when hovered or selected: the ring stands 12px off bare content, its menu sits on the ring's edge rather than over the text, notebook tiles are 40px apart in both modes, and document prose is flush at its top and bottom so a text tile lines up with a chart tile's title.
+- The builder's undo and redo shortcuts do nothing while a dialog or menu is open.
+- The builder's save state is announced to screen readers, and a tile's resize edge is a focusable separator with its width as its value.
+- `DashboardBuilder` and `DashboardEditor` are split into hooks and parts; their exports and props are unchanged.
+
+**Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
+
+## [Unreleased] - The Docker image is signed with cosign
+
+`ms2data/malloy-publisher` is now signed at release with Sigstore cosign (keyless, through GitHub Actions OIDC). Verify a release with:
+
+```bash
+cosign verify ms2data/malloy-publisher:<version> \
+  --certificate-identity https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Use cosign v3 or later: the signature is a Sigstore bundle stored as an OCI referrer, which an older cosign or a policy engine that only looks for a `.sig` tag does not find.
+
+The signature is on the multi-platform manifest list, so it also covers the per-platform images and their SBOM and provenance attestations. Earlier releases are unsigned. See [packages/server/README.docker.md](packages/server/README.docker.md#verifying-the-image).
 
 ## [Unreleased] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
 

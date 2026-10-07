@@ -224,8 +224,8 @@ matter:
 
 Where you must build query text from input, constrain it to a known set and
 escape it, or keep the filtering in model-defined views. The
-`malloy-html-data-app-runtime` skill covers the same ground for an agent writing
-the page.
+`malloy-html-data-apps` skill (its `reference/runtime.md`) covers the same ground for an agent
+writing the page.
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand

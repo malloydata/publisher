@@ -6,7 +6,7 @@ import type { PackageEnv } from "./packageEnv";
 
 /** Waits for the builder to be open on a document. */
 export async function editorOpen(page: Page): Promise<void> {
-   await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
       timeout: 60_000,
    });
 }

@@ -15,9 +15,10 @@ import {
 import { useEffect, useRef } from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
+import { isIdentifier, tileSteps } from "../../utils/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { MONO_FONT_FAMILY } from "../styles";
 import { now } from "../../utils/clock";
 
 /**
@@ -170,7 +171,7 @@ export function RowsDialog({
                   sx={{
                      mr: "auto",
                      color: theme.tileTitle,
-                     fontFamily: "ui-monospace, monospace",
+                     fontFamily: MONO_FONT_FAMILY,
                      overflow: "hidden",
                      textOverflow: "ellipsis",
                      whiteSpace: "nowrap",

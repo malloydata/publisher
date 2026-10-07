@@ -11,33 +11,35 @@ import {
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import type { CatalogSource, PackageCatalog } from "./catalog";
+import type { PackageCatalog } from "./catalog";
 import type { ChartPick } from "./chartLine";
-import { isBareName } from "./malloyText";
+import { isBareName } from "../../utils/malloyText";
 import type { DashboardDocument } from "./document";
 import { ChartPicker } from "./ChartPicker";
 import { AppDialog } from "../AppDialog";
 import { SourceViewPicker } from "./SourceViewPicker";
 
 /**
- * What a new tile is: a view, picked from the package, on a source this file
- * can reach.
+ * What a new tile is: a view, picked from the package.
  *
  * The picker is what makes a tile expression correct BY CONSTRUCTION. Every
  * `source -> view` it offers came from the catalog, so the builder never emits
  * a tile that does not resolve — which is why saving needs no compile step
  * beyond the reader's own round-trip.
  *
- * "Can reach" is the rule the writer enforces and the reason some sources are
- * not offered: a tile's view is declared in an extension of a model source, and
- * that source has to be in this file's scope. The builder never adds an
- * import, so a model source is offered only when the file already extends it,
- * or imports it BY NAME. A bare `import "../m.malloy"` may well bring it in,
- * but the file cannot say so, and a guess here fails the whole package load.
+ * Every source a model of the package exports is offered. A tile's view is
+ * declared in an extension of its model source, so a source the file cannot see
+ * yet is imported by name when the tile is added (`withSource`); one the file
+ * already reaches, by name or through a whole-file import of an exporter, is
+ * left alone.
  */
 export interface NewTile {
    /** The model source the view lives on. */
    base: string;
+   /** The model that exports it, for the import a source the file cannot see yet needs. */
+   modelPath: string;
+   /** Every model that exports it; absent when only `modelPath` does. */
+   exporters?: string[];
    /** The view, as the catalog names it. */
    view: string;
    label?: string;
@@ -59,20 +61,6 @@ export interface AddTileDialogProps {
    onAddText: () => void;
 }
 
-/** The catalog sources this file can put a tile on; see the note above. */
-function reachableSources(
-   document: DashboardDocument,
-   catalog: PackageCatalog | undefined,
-): CatalogSource[] {
-   if (!catalog) return [];
-   const reachable = new Set<string>();
-   for (const source of document.sources) reachable.add(source.base);
-   for (const imported of document.imports)
-      if (imported.kind === "names")
-         for (const name of imported.names) reachable.add(name);
-   return catalog.sources.filter((source) => reachable.has(source.name));
-}
-
 export function AddTileDialog({
    open,
    document,
@@ -83,11 +71,7 @@ export function AddTileDialog({
    onAddText,
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
-   const noun = document.kind === "notebook" ? "notebook" : "dashboard";
-   const sources = useMemo(
-      () => reachableSources(document, catalog),
-      [document, catalog],
-   );
+   const sources = useMemo(() => catalog?.sources ?? [], [catalog]);
    const [mode, setMode] = useState<"query" | "text">("query");
    const [base, setBase] = useState<string>("");
    const [view, setView] = useState<string>("");
@@ -122,16 +106,17 @@ export function AddTileDialog({
          (name) =>
             `"${name}" is not a plain Malloy name, so a tile cannot be written for it.`,
       )[0];
-   const picked = sources
-      .find((source) => source.name === base)
-      ?.views.find((candidate) => candidate.name === view);
+   const pickedSource = sources.find((source) => source.name === base);
+   const picked = pickedSource?.views.find(
+      (candidate) => candidate.name === view,
+   );
 
    return (
       <AppDialog
          open={open}
          onClose={onClose}
          title="Add a tile"
-         description={`A tile shows one view of one source this ${noun} imports.`}
+         description="A tile shows one view of a source in this package."
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>
@@ -145,6 +130,10 @@ export function AddTileDialog({
                         ? onAddText()
                         : onAdd({
                              base,
+                             modelPath: pickedSource?.modelPath ?? "",
+                             ...(pickedSource?.exporters
+                                ? { exporters: pickedSource.exporters }
+                                : {}),
                              view,
                              ...(label.trim() ? { label: label.trim() } : {}),
                              ...(chart !== "default"
@@ -193,7 +182,7 @@ export function AddTileDialog({
             ) : sources.length === 0 ? (
                <Typography variant="body2" sx={{ color: theme.tileTitle }}>
                   {catalog
-                     ? `This ${noun} imports no source by name, so there is nothing to put a tile on. Import a source in the file first.`
+                     ? "This package publishes no source with a view to put on a tile."
                      : "The package's sources are still loading."}
                </Typography>
             ) : (
@@ -220,6 +209,7 @@ export function AddTileDialog({
                      state={chart}
                      view={picked}
                      cellLabel="new tile"
+                     variant="outlined"
                      {...(picked
                         ? {}
                         : {
@@ -239,31 +229,6 @@ export function AddTileDialog({
                         inputProps={{ "aria-label": "Tile title" }}
                         sx={{ flex: 1 }}
                      />
-                     {columns > 1 && (
-                        <TextField
-                           size="small"
-                           type="number"
-                           label={`Width (of ${columns})`}
-                           value={colspan}
-                           onChange={(event) =>
-                              setColspan(
-                                 Math.min(
-                                    Math.max(
-                                       Number(event.target.value) || 1,
-                                       1,
-                                    ),
-                                    columns,
-                                 ),
-                              )
-                           }
-                           inputProps={{
-                              min: 1,
-                              max: columns,
-                              "aria-label": "Tile width",
-                           }}
-                           sx={{ width: 140 }}
-                        />
-                     )}
                   </Stack>
                </>
             )}

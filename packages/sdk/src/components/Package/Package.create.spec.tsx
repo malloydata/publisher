@@ -27,6 +27,7 @@ import {
    type Workspace,
 } from "../DocumentStorage/DocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
+import type { OpenDocumentRequest } from "./Package";
 
 const listModels = mock((_env: string, _pkg: string, _version?: string) =>
    Promise.resolve({
@@ -109,7 +110,10 @@ function fakeStorage(workspaces: Workspace[] | Error) {
 
 const onClickPackageFile = mock((_to: string) => {});
 
-function mount(storage?: DocumentStorage) {
+function mount(
+   storage?: DocumentStorage,
+   onOpenDocument?: (request: OpenDocumentRequest) => void,
+) {
    const wrap = ({ children }: { children: ReactNode }) =>
       serverWrapper({
          children: storage ? (
@@ -124,6 +128,7 @@ function mount(storage?: DocumentStorage) {
       <Package
          resourceUri="publisher://environments/env/packages/pkg"
          onClickPackageFile={onClickPackageFile}
+         {...(onOpenDocument ? { onOpenDocument } : {})}
       />,
       { wrapper: wrap },
    );
@@ -322,6 +327,22 @@ describe("creating", () => {
          expect(listNotebooks).toHaveBeenCalledTimes(before.notebooks + 1);
          expect(listModels).toHaveBeenCalledTimes(before.models + 1);
       });
+   });
+
+   it("hands the new document to the host's onOpenDocument, which owns the route", async () => {
+      const onOpenDocument = mock((_request: OpenDocumentRequest) => {});
+      mount(undefined, onOpenDocument);
+      await settled();
+      await openNew("Dashboard");
+      fireEvent.click(screen.getByRole("button", { name: "Create dashboard" }));
+      await waitFor(() =>
+         expect(onOpenDocument).toHaveBeenCalledWith({
+            kind: "dashboard",
+            slug: "by-category",
+            mode: "edit",
+         }),
+      );
+      expect(onClickPackageFile).not.toHaveBeenCalled();
    });
 
    it("writes a notebook into the package and opens its editor", async () => {

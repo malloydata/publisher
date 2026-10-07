@@ -11,9 +11,9 @@ import {
 } from "./helpers/packageEnv";
 
 /**
- * Leaving the notebook editor: the unsaved-changes prompt by Back and by
- * Close, the ways out that must not prompt, and a text tile's Cancel and
- * keyboard commit.
+ * Leaving the notebook editor: the app's unsaved-changes prompt by Back and
+ * by the header's View button, the ways out that must not prompt, and a text
+ * tile's Cancel and keyboard commit. The builder draws no way out of itself.
  */
 
 const PKG = "notebooks-malloyyo";
@@ -68,8 +68,9 @@ test.describe("notebook exit guard", () => {
    const markdownField = (page: Page) =>
       page.getByLabel("Markdown", { exact: true });
 
-   const close = (page: Page) =>
-      page.getByRole("button", { name: "Close", exact: true });
+   /** The header's View button, which returns to the read-only page. */
+   const view = (page: Page) =>
+      page.getByRole("button", { name: "View", exact: true });
 
    /** Opens the first note's field. */
    const openFirstNote = (page: Page) =>
@@ -118,13 +119,13 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Half-typed thought");
    });
 
-   test("Close with unsaved edits asks, and Discard changes exits with no second prompt", async ({
+   test("View with unsaved edits asks, and Discard changes leaves with no second prompt", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await close(page).click();
+      await view(page).click();
       await expect(prompt(page)).toBeVisible();
       await prompt(page)
          .getByRole("button", { name: "Discard changes" })
@@ -138,7 +139,7 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
    });
 
-   test("Tab to a text tile's Done, then Close, still asks and Save and exit keeps the draft", async ({
+   test("Tab to a text tile's Done, then View, still asks, and Keep editing keeps the draft", async ({
       page,
    }) => {
       await openEditor(page);
@@ -149,22 +150,27 @@ test.describe("notebook exit guard", () => {
          page.getByRole("button", { name: "Done", exact: true }),
       ).toBeFocused();
 
-      await close(page).click();
+      await view(page).click();
       await expect(prompt(page)).toBeVisible();
-      await prompt(page).getByRole("button", { name: "Save and exit" }).click();
+      await prompt(page).getByRole("button", { name: "Keep editing" }).click();
 
-      await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
-      expect(await pe.readSource(TOUR)).toContain("Tabbed draft");
+      await expect(prompt(page)).toHaveCount(0);
+      await expect(page).toHaveURL(/\/edit$/);
+      await expect(markdownField(page)).toHaveValue("Tabbed draft");
    });
 
-   test("Close then Save and exit writes the file and leaves with no prompt after", async ({
+   test("View with unsaved edits, Keep editing, then Save and View leaves with no prompt", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await close(page).click();
-      await prompt(page).getByRole("button", { name: "Save and exit" }).click();
+      await view(page).click();
+      await prompt(page).getByRole("button", { name: "Keep editing" }).click();
+      await expect(page).toHaveURL(/\/edit$/);
+
+      await saveChanges(page);
+      await view(page).click();
 
       await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
       await expect(prompt(page)).toHaveCount(0);
@@ -219,7 +225,7 @@ test.describe("notebook exit guard", () => {
       await expect(markdownField(page)).toHaveCount(0);
       await expect(page.getByText("Committed by keyboard")).toBeVisible();
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: "Save", exact: true }),
       ).toBeEnabled();
    });
 });

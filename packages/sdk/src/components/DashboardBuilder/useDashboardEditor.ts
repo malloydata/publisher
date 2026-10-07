@@ -48,8 +48,13 @@ export function useDashboardEditor(options: {
    replaces?: string;
    /** The file's path within the package. */
    modelPath?: string;
+   /** The document is held as text: a kind switch always writes `kind=`. */
+   explicitKind?: boolean;
+   /** The sources a document held as text sees without an `import`. */
+   visibleSources?: readonly string[];
 }): DashboardEditor {
-   const { conversion, modelPath, ...rest } = options;
+   const { conversion, modelPath, explicitKind, visibleSources, ...rest } =
+      options;
    const from = conversion?.from;
    const to = conversion?.to;
    const splice = useCallback(
@@ -61,9 +66,11 @@ export function useDashboardEditor(options: {
             {
                changeKind: true,
                ...(modelPath !== undefined ? { modelPath } : {}),
+               ...(explicitKind ? { explicitKind } : {}),
+               ...(visibleSources ? { visibleSources } : {}),
             },
          ),
-      [from, to, modelPath],
+      [from, to, modelPath, explicitKind, visibleSources],
    );
    return useDocumentEditor({
       ...rest,

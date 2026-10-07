@@ -28,6 +28,7 @@ import {
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { loadMalloyRenderer } from "./loadRenderer";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -121,7 +122,7 @@ const createRenderer = async (
       throw new Error("MalloyRenderer can only be used in browser environment");
    }
 
-   const { MalloyRenderer } = await import("@malloydata/render");
+   const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
@@ -138,12 +139,9 @@ const createRenderer = async (
    return renderer.createViz() as MalloyVizHandle;
 };
 
-// Warm the renderer chunk as soon as this module loads so the first chart
-// paint doesn't have to wait on the dynamic import resolving (the async
-// import is what widened the clear-then-repaint gap into a visible flicker).
-if (typeof window !== "undefined") {
-   void import("@malloydata/render");
-}
+// No module-level warm-up here: evaluating this module must not download the
+// renderer. `ResultPanel` and `ResultContainer` warm it when a result is on its
+// way; see `loadRenderer.ts`.
 
 /**
  * Pull a per-chart Theme override out of a parsed Malloy result by reading
@@ -302,6 +300,18 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
       pick. Dropped whole rather than rebuilt layer by layer: the ring's job is
       the border's job, and the border is already doing it. */
    box-shadow: none !important;
+}
+/* The strip of big-value cards as a grid, so cards share a width and the last one does not wrap
+   alone. The renderer's wrapping flex row sizes each card to its own text. The 250px floor is the
+   widest realistic value: it is nowrap at 32px in an overflow:visible card, so a narrower track
+   would spill it onto its neighbour. Embedded (a nested big_value) is left as the renderer draws it. */
+.malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+.malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   width: auto;
+   max-width: none;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;

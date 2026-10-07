@@ -1819,7 +1819,10 @@ paths:
         Ad-hoc query text that does not compile is a 400 whose `problems` locate each error in the
         submitted text. On a package with a discovery surface this holds when every `run:` in the
         text targets a source on the surface, or one the text derives only from such sources; text
-        reaching any other source is answered with the 404 a hidden or missing source gets.
+        reaching any other source is answered with the 404 a hidden or missing source gets. Text that
+        fails only at the grammar and names no source to run (for example `run` with no colon) is also
+        a 400, because a grammar error says nothing about the model, unless the model carries any
+        `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
       parameters:
         - name: environmentName
           in: path
@@ -1884,6 +1887,33 @@ paths:
         access to all sources, imports, and queries defined in the model.
         Relative imports resolve correctly against sibling model files.
         Returns compilation status and any problems (errors or warnings) found.
+
+        When the submitted source (scope `append`) carries a model-level
+        `## artifact` tag, it is read as a document and the response gains a
+        `document`: the cells and manifest the same text would serve once saved,
+        read from the submitted text alone so the model's own `run:` statements
+        and `##` notes never mix in. The compile runs nothing, including a
+        control's `suggest` query. A cell or tile whose source the caller may
+        not read is not compiled at all and comes back `restricted` with no
+        diagnostic; the rest of the document compiles. A tile expression that
+        uses a construct `append` refuses (a data root of its own, such as
+        `duckdb.table(...)`) is refused with 400, and a tile that does not parse
+        is reported as a `tile-does-not-compile` problem. Submitted text that is a document (it carries the tag, at scope `append`) and writes a render tag turning a value
+        into a URL (`# image`, `# link`), or HTML in a `# label`, is refused with 400
+        before anything compiles, for a field, view or query alike, because other
+        viewers run it; plain `append` text without the tag, and a model file,
+        keep the tags they define themselves. The same refusal covers an annotation that
+        reads `@env.` (in a `##` note too), one the tag parser rejects or that exceeds 8,192 characters,
+        text that frees a column (`except:`, `rename:`) and declares one of the same name
+        in the same extend chain, and one with over 1,000 annotations or 64 KB of them.
+        This removes the author-written paths only: the renderer's other
+        value-to-HTML sinks are not covered by it. A cell that names a source
+        that is both gated and hidden from the caller answers 404 for the whole
+        request, as it does without a document. In a document, problem positions
+        are lines of the submitted text, problems carry no `model` tag, and
+        `includeSql` returns no `sql`. A tag that names no `kind` is a dashboard
+        when it lists `tiles` or carries a `dashboard { … }` grid tag, and a
+        notebook otherwise, since submitted text has no folder to take a kind from.
       parameters:
         - name: environmentName
           in: path
@@ -3073,6 +3103,60 @@ components:
                   type: string
                 dark:
                   type: string
+            border:
+              type: object
+              description: Hairline color for table gridlines and row rules,
+                per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            cardBorder:
+              type: object
+              description: Edge color of a dashboard card and of a pinned table
+                header row, per mode. A step stronger than `border`, so a
+                card reads as a card on a page whose ground and tile share
+                one colour.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            axis:
+              type: object
+              description: Color of chart axis domain and tick lines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            gridline:
+              type: object
+              description: Color of chart gridlines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            chartText:
+              type: object
+              description: Color of chart text (axis labels and titles, legend,
+                chart and header titles), per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            value:
+              type: object
+              description: Color of the big-value (KPI) number in a dashboard
+                tile, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
         font:
           type: object
           description:
@@ -4195,6 +4279,12 @@ components:
             the `query` field of a `POST …/models/{path}/query` body, prefixed
             with `run:`. Sending it in `queryName`, the field
             `DashboardManifest.query` takes, is rejected.
+        restricted:
+          type: boolean
+          description: >-
+            Set on a tile of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. The tile carries its `query` and
+            nothing derived from the source: no `givenNames`, no layout tags.
         givenNames:
           type: array
           items:
@@ -4523,6 +4613,13 @@ components:
           description: Annotations attached to the given declaration
           items:
             type: string
+        secure:
+          type: boolean
+          description: >-
+            True when the declaration carries `#(secure)`: its value is the
+            host's to set. The builder withholds its control only when it edits
+            a document held as text; a saved dashboard or notebook renders it
+            as before. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal
@@ -4862,6 +4959,12 @@ components:
             maxItems: 2
             items:
               type: integer
+        restricted:
+          type: boolean
+          description: >-
+            Set on a cell of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. It was not compiled, so nothing else
+            is known about what it reads.
         codeLine:
           type: integer
           description:
@@ -6158,6 +6261,16 @@ components:
             and a model that does not exist is a 400 that deliberately says only
             that it could not be loaded. An invalid scope value is rejected with
             a 400 naming the valid set.
+
+            "append" text that carries a model-level `## artifact` tag is a
+            document, which other viewers run, and is also refused with a 400
+            for `# image`, `# link`, markup in a `# label`, `@env.` in an
+            annotation, an annotation the tag parser rejects or that exceeds
+            8,192 characters, `except:` or `rename:` followed by a declaration
+            of the same name in the same extend chain, and more than 1,000
+            annotations or 64 KB of them. Plain "append" text without that tag
+            keeps those tags; a model file defines them itself, and its edit is
+            checked at "file".
         includeSql:
           type: boolean
           default: false
@@ -6224,6 +6337,40 @@ components:
           description:
             Generated SQL for the compiled query. Only present when includeSql
             is true and compilation succeeds with a runnable query.
+        document:
+          $ref: "#/components/schemas/CompiledDocument"
+
+    CompiledDocument:
+      type: object
+      description: >-
+        The document a compiled source describes, in the shape the same text
+        serves once saved. Present only when the source carries a model-level
+        `## artifact` tag and compiled far enough to read.
+      properties:
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: >-
+            From the tag's `kind`. When it names none, a document that lists
+            `tiles` or carries a `dashboard { … }` grid tag is a dashboard and
+            any other is a notebook: submitted text has no folder to decide.
+        manifest:
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            Shaped like a served dashboard's manifest, with two differences:
+            `path` is absent (the text runs on the model it was compiled on top
+            of, which is the model in the request URL) and `name` is that
+            model's file slug rather than a document name, which the host owns;
+            `title` is the heading.
+        cells:
+          type: array
+          description: >-
+            The file's own cells. A document laid out as tiles lists only its
+            definition cells, as a saved one does; its prose and queries are
+            `manifest.tiles`.
+          items:
+            $ref: "#/components/schemas/NotebookCell"
 
     CompileProblem:
       type: object
@@ -7461,6 +7608,36 @@ components:
             has no per-statement tag to carry one. And a bag whose every
             property is unusable as a BigQuery label key renders no label, so
             such a read is issued the untagged way and reports null too.
+        upstreamReuse:
+          type: string
+          enum: [reused, recomputed]
+          description: >-
+            For a source that reads another persisted source, how this table's
+            rows were computed from it. `reused`: every persisted upstream was
+            read from its already-materialized table, so the rows are a
+            function of those snapshots and consistent with them. `recomputed`:
+            at least one persisted upstream was recomputed from its definition
+            and inlined into this build, because its table could not be read --
+            on either tier, an upstream this build neither materialized nor was
+            handed by reference; for a colocated build, an upstream that
+            landed in a `storage=` destination; for a `storage=` build, a
+            source that reaches the warehouse through a non-persisted source,
+            or whose shape does not compile in the destination.
+            `upstreamRecomputeReason` says which. Such a table reflects the
+            warehouse at THIS build's time rather than the upstream's
+            snapshot, so the two can disagree when their refresh cadences
+            differ.
+
+            Not a location: it does not name the table the rows came from.
+            Absent for a source that reads no persisted upstream, which has one
+            way to build and no choice to report.
+        upstreamRecomputeReason:
+          type: string
+          description: >-
+            Why a persisted upstream was not read from its table, present only
+            when `upstreamReuse` is `recomputed`: which upstream, and the
+            compiler's or engine's own words for what could not be expressed
+            over it, redacted against the connections involved.
         dataAsOf:
           type: string
           format: date-time

@@ -29,7 +29,7 @@ import {
    isBareName,
    isStrictName,
    malloyPath,
-} from "./malloyText";
+} from "../../utils/malloyText";
 import {
    parseMalloy,
    parseRefused,
@@ -336,6 +336,8 @@ interface SpliceContext extends TileMembership {
    edits: Edit[];
    /** The file's package path, when known. */
    modelPath?: string;
+   /** A kind switch writes `kind=` whichever way it goes; see {@link SpliceOptions.explicitKind}. */
+   explicitKind?: boolean;
 }
 
 /**
@@ -346,6 +348,7 @@ function checkShape(
    current: DashboardDocument,
    next: DashboardDocument,
    changeKind: boolean,
+   visibleSources: readonly string[] | undefined,
 ): SpliceFailure | TileMembership {
    if (kindOf(current) !== kindOf(next) && !changeKind) {
       return {
@@ -382,12 +385,14 @@ function checkShape(
    }
    // Sources may only be ADDED, and only for a tile being added on them — the
    // builder never renames or removes an extension, so a new extension's base
-   // has to be a source the file imports by name (or already extends).
+   // has to be a source the file imports by name, already extends, or gets
+   // through a whole-file import; a document held as text sees its run model's.
    const currentSources = new Map(current.sources.map((s) => [s.name, s]));
    const importedByName = new Set(
       next.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
    );
    for (const source of current.sources) importedByName.add(source.base);
+   const wholeFile = next.imports.some((i) => i.kind === "all");
    const newSources = next.sources.filter((s) => !currentSources.has(s.name));
    for (const source of current.sources) {
       const still = next.sources.find((s) => s.name === source.name);
@@ -405,12 +410,14 @@ function checkShape(
             reason: `A new source \`${source.name}\` needs a tile on it.`,
          };
       }
-      if (!importedByName.has(source.base)) {
+      if (
+         !importedByName.has(source.base) &&
+         !wholeFile &&
+         !visibleSources?.includes(source.base)
+      ) {
          return {
             ok: false,
-            reason:
-               `\`${source.base}\` is not imported by name in this file, so a ` +
-               `tile cannot be put on it. Add it as a source first.`,
+            reason: `\`${source.base}\` is not imported in this file, so a tile cannot be put on it.`,
          };
       }
    }
@@ -748,10 +755,10 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
       };
       if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
          inner = append("kind=notebook");
-      // The server reads an untagged file under notebooks/ as a notebook, so a dashboard there must say so.
+      // A tag with no kind takes its folder's, and the server's compile of text takes none: a switch that leaves it off lets the two disagree.
       else if (
          kindOf(current) !== kindOf(next) &&
-         ctx.modelPath?.startsWith("notebooks/")
+         (ctx.explicitKind || !ctx.modelPath?.startsWith("dashboards/"))
       )
          inner = append("kind=dashboard");
       if (current.title !== next.title)
@@ -2070,6 +2077,10 @@ export interface SpliceOptions {
    changeKind?: boolean;
    /** The file's path within the package; a dashboard under `notebooks/` is tagged `kind=dashboard` rather than left untagged. */
    modelPath?: string;
+   /** Write `kind=dashboard` too, whatever the folder: for a document held as text, which the server reads by its tags and not by a folder. */
+   explicitKind?: boolean;
+   /** The sources a document held as text sees without an `import`: its run model's. */
+   visibleSources?: readonly string[];
 }
 
 export async function spliceDashboardDocument(
@@ -2104,7 +2115,12 @@ async function spliceLines(
    }
    const current = before.document;
    const next = keepUnstatedCharts(current, requested);
-   const shape = checkShape(current, next, options.changeKind === true);
+   const shape = checkShape(
+      current,
+      next,
+      options.changeKind === true,
+      options.visibleSources,
+   );
    if ("reason" in shape) return shape;
    const problem = unwritable(current, next);
    if (problem) return { ok: false, reason: problem };
@@ -2139,6 +2155,7 @@ async function spliceLines(
       ...(options.modelPath !== undefined
          ? { modelPath: options.modelPath }
          : {}),
+      ...(options.explicitKind ? { explicitKind: true } : {}),
    };
 
    // Each concern plans its own edits against the file as it stands; the

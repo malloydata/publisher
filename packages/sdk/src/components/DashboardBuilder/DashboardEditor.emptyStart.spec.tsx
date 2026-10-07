@@ -3,7 +3,6 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { globalQueryClient } from "../../utils/queryClient";
 import {
    clearCache,
    mockServerProvider,
@@ -36,6 +35,9 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
                  ? { modelPath: path, sourceText: served }
                  : {
                       modelPath: path,
+                      modelInfo: JSON.stringify({
+                         entries: [{ kind: "source", name: "scoped_orders" }],
+                      }),
                       sources: [
                          {
                             name: "scoped_orders",
@@ -107,55 +109,7 @@ beforeEach(() => {
    updateModelSource.mockClear();
 });
 
-const saveFirstTile = async () => {
-   fireEvent.click(
-      (
-         await screen.findAllByRole("button", {
-            name: "Add tile",
-            hidden: true,
-         })
-      )[0],
-   );
-   fireEvent.click(await screen.findByLabelText("View by_brand"));
-   fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
-   fireEvent.click(
-      screen.getByRole("button", { name: "Save changes", hidden: true }),
-   );
-   await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
-};
-
-const manifestQuery = () =>
-   globalQueryClient
-      .getQueryCache()
-      .findAll({ queryKey: ["dashboard-editor-manifest"] })[0];
-
 describe("DashboardEditor, starting empty", () => {
-   it("stops asking for the manifest once an undone save leaves the file with no tile, and undoes against the save's hash", async () => {
-      render(
-         <DashboardEditor
-            environmentName="env"
-            packageName="pkg"
-            dashboardName="overview"
-         />,
-         { wrapper: serverWrapper },
-      );
-      await screen.findByText(/not served until it has a tile/);
-      await saveFirstTile();
-      await waitFor(() => expect(getDashboard).toHaveBeenCalledTimes(1));
-      expect(manifestQuery()?.isDisabled()).toBe(false);
-      const written = updateModelSource.mock.calls[0][3].source;
-
-      fireEvent.click(await screen.findByRole("button", { name: "Undo save" }));
-      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(2));
-      expect(updateModelSource).toHaveBeenCalledTimes(2);
-      const [, , , body] = updateModelSource.mock.calls[1];
-      expect(body.source).toBe(served);
-      expect((body as { expectedHash?: string }).expectedHash).toBe(
-         `hash-of-${written.length}`,
-      );
-      await waitFor(() => expect(manifestQuery()?.isDisabled()).toBe(true));
-   });
-
    it("fetches the manifest once, after the save that gives it its first tile", async () => {
       render(
          <DashboardEditor
@@ -179,7 +133,7 @@ describe("DashboardEditor, starting empty", () => {
       fireEvent.click(await screen.findByLabelText("View by_brand"));
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(
-         screen.getByRole("button", { name: "Save changes", hidden: true }),
+         screen.getByRole("button", { name: "Save", hidden: true }),
       );
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));

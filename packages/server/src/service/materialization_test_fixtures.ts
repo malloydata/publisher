@@ -194,11 +194,20 @@ export function fakeSource(opts: {
     * a test exercising that path has to declare them.
     */
    columns?: string[];
+   /**
+    * The compiled model's `_modelDef`, for the walk that finds a source's
+    * stored upstreams (`reachedPersistedSources`). Absent, the walk finds
+    * nothing, as for a source with no persisted upstream.
+    */
+   modelDef?: unknown;
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
       name: opts.name,
       sourceID: opts.name,
+      ...(opts.modelDef !== undefined
+         ? { _model: { _modelDef: opts.modelDef } }
+         : {}),
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
       _sourceDef: opts.sourceDef ?? {},

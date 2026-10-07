@@ -109,8 +109,8 @@ The skill list above is abridged; the real file names every directory under `ski
   its group, so installing the group leaves nothing telling the agent to read what it does
   not have. Where a skill needs to mention another role's doctrine, it names it in prose
   instead of as a `skill:` reference. `manifest.spec.ts` holds groups to this, with one
-  documented exception: the `malloy` index has a table row per skill by definition, and is
-  itself referenced too widely to drop from a group.
+  documented exception: the catalogue in `malloy-getting-started` names every skill by
+  definition, so it names them as plain text rather than `skill:` references.
 
 **Every channel resolves the manifest; none globs `skills/`.** The npm pack, the MCP prompt
 bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list. The pack and

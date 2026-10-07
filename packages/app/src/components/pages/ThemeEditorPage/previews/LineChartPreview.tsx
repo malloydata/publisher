@@ -33,7 +33,7 @@ export function LineChartPreview({ theme }: { theme: ResolvedTheme }) {
       <Box
          sx={{
             backgroundColor: theme.background,
-            color: theme.tableHeader,
+            color: theme.foreground,
             borderRadius: 1,
             p: 1,
             display: "inline-block",
@@ -45,8 +45,20 @@ export function LineChartPreview({ theme }: { theme: ResolvedTheme }) {
             role="img"
             aria-label="Line chart preview"
          >
-            {/* Faint baseline so the line has a horizontal reference,
-                same role as Vega's axis domain. */}
+            {/* Two gridlines, in the gridline colour, as Vega draws them. */}
+            {[0.33, 0.66].map((f) => (
+               <line
+                  key={f}
+                  x1={padX}
+                  y1={padY + f * (height - padY * 2)}
+                  x2={width - padX}
+                  y2={padY + f * (height - padY * 2)}
+                  stroke={theme.gridline}
+                  strokeWidth={1}
+               />
+            ))}
+            {/* Baseline so the line has a horizontal reference, in the
+                axis colour: the same role as Vega's axis domain. */}
             <line
                x1={padX}
                y1={height - padY}
@@ -55,6 +67,16 @@ export function LineChartPreview({ theme }: { theme: ResolvedTheme }) {
                stroke={theme.axisFaint}
                strokeWidth={1}
             />
+            {/* An axis title, in the chart text colour. */}
+            <text
+               x={padX}
+               y={padY + 2}
+               fontSize={10}
+               fontFamily={theme.font.family}
+               fill={theme.foreground}
+            >
+               total_sales
+            </text>
             <polyline
                points={points}
                fill="none"

@@ -619,16 +619,30 @@ work and makes the downstream **consistent by construction**: it is a pure
 function of the parent's stored rows, so a chain built in one package run cannot
 drift between levels.
 
-If the downstream can't be built that way — it reaches a field defined on the
-parent that isn't a stored column, joins a live (non-materialized) source in the
-same query, or its upstream lives in a _different_ destination — Publisher falls
-back to **recomputing the upstream from raw** (inlining it into the downstream's
-build query). That still produces a correct table, but two independently-timed
-builds can then drift; rebuild the whole package together (`forceRefresh`) to
-keep them aligned. Under `strictUpstreams` (orchestrated builds) the fallback is
-refused rather than silently recomputing — the build fails loudly instead. The
+The downstream need not name the upstream directly. Non-persisted sources
+between them — a `select: *` wrapper, an `extend` that adds a dimension, a query
+over the upstream — are carried into the build, in dependency order and under
+the `##!` flags of the files that declare them, so the downstream still reads
+the upstream's stored table through them.
+
+If the downstream can't be built that way — it reads the warehouse through a
+source between them (one that joins a live, non-materialized table), or it
+reaches a field defined on the parent that isn't a stored column — Publisher
+falls back to **recomputing the upstream from raw** (inlining it into the
+downstream's build query). That still produces a correct table, but two
+independently-timed builds can then drift; rebuild the whole package together
+(`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
+builds) only the first kind is recomputed, because no build over the stored
+tables exists for a source that reaches the warehouse; everything else strict
+refuses, since recomputing it would rebuild a table the orchestrator meant to
+pin — an upstream the build neither materialized nor was handed by reference,
+one whose table lives in a _different_ destination, or a shape over stored
+upstreams the build could not carry. Each entry says which happened: `upstreamReuse` is `reused` when
+every persisted upstream was read from its table and `recomputed` when one was
+inlined, with `upstreamRecomputeReason` naming it. The
 `publisher_storage_chained_build_total` counter (labeled `parent_reuse` /
-`inline_fallback` / `strict_refused`) reports which path each chained build took.
+`inline_fallback` / `strict_shape_fallback` / `strict_refused`) reports which
+path each chained build took.
 
 ### Eligibility refusals (refused at build time)
 
@@ -807,11 +821,14 @@ Everything you need is on the package status and the logs:
     transform was *ineligible*, which the field reports as `null`; the run-time
     store failure the field calls `live_fallback` is `runtime_live_fallback` here.
     Correlating the two on the token is wrong in both directions.
-  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused|infra_failure}`
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_shape_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
-    (`parent_reuse`) or fell back to recompute-from-raw. `infra_failure` is a
-    destination that was unreachable, kept distinct from the shape limits so a
-    store outage is not read as an un-carriable query.
+    (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
+    non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
+    shape the destination cannot express is recomputed). `strict_refused` is an
+    upstream strict would not recompute. `infra_failure` is a destination that
+    was unreachable, kept distinct from the shape limits so a store outage is not
+    read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with
     `served_from=storage`, or `served_from=live_fallback` when a run-time store
     failure degraded it to live (so a fallback never counts as a storage hit).
