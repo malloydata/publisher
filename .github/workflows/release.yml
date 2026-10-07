@@ -129,11 +129,18 @@ jobs:
 
           # A version is taken once its release branch or release tag exists, so
           # reruns don't collide with a previously prepared release.
+          #
+          # Release branches were named `release/sdk-<v>` through 0.9.6. A
+          # release that failed before its tag left only that branch, so an
+          # explicit `-f version=` naming such a number must still be refused.
           version_taken() {
             local v="$1"
-            if git ls-remote --exit-code --heads origin "release/sdk-${v}" >/dev/null 2>&1; then
-              return 0
-            fi
+            local branch
+            for branch in "release/v${v}" "release/sdk-${v}"; do
+              if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+                return 0
+              fi
+            done
             if git ls-remote --exit-code --tags origin "v${v}" >/dev/null 2>&1; then
               return 0
             fi
@@ -146,7 +153,7 @@ jobs:
             NEW_VERSION="$(echo "$NEW_VERSION" | tr -d '[:space:]')"
             echo "::notice title=Version::Using provided version $NEW_VERSION"
             if version_taken "$NEW_VERSION"; then
-              echo "::error title=Version::release/sdk-${NEW_VERSION} or tag v${NEW_VERSION} already exists"
+              echo "::error title=Version::a release branch (release/v${NEW_VERSION} or release/sdk-${NEW_VERSION}) or tag v${NEW_VERSION} already exists"
               exit 1
             fi
           else
@@ -213,7 +220,7 @@ jobs:
             # bumping the minor again would abandon the whole 0.3.x line and
             # burn a minor per collision.
             while version_taken "$NEW_VERSION"; do
-              echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping the patch again"
+              echo "::notice title=Version::${NEW_VERSION} already has a release branch or tag — bumping the patch again"
               NEW_VERSION="$(bump_version patch "$NEW_VERSION")"
             done
           fi
@@ -226,7 +233,7 @@ jobs:
           node scripts/set-version.mjs "$NEW_VERSION" $PKGS >/dev/null
 
           # A release whose version main already declares has nothing to bump.
-          # It is reachable when neither `release/sdk-<v>` nor `v<v>` exists: a
+          # It is reachable when neither `release/v<v>` nor `v<v>` exists: a
           # hand-edit of those three files, or a release branch AND its tag both
           # deleted. `version_taken` above catches every other route here. It
           # would fail closed regardless, so this buys a readable message.
@@ -256,7 +263,7 @@ jobs:
             fi
           fi
 
-          BRANCH_NAME="release/sdk-${NEW_VERSION}"
+          BRANCH_NAME="release/v${NEW_VERSION}"
           git checkout -b "$BRANCH_NAME"
 
           # The title is what main's history records: the repo squash-merges,
@@ -421,7 +428,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # `contents: write` covers the tag and the release. No
-      # `pull-requests: write`: this job links the PR for release/sdk-<v>
+      # `pull-requests: write`: this job links the PR for release/v<v>
       # into main and a person (or the agent driving the publisher-release
       # skill, on their credentials) opens it. A PR opened with GITHUB_TOKEN
       # triggers no workflows, so main's required checks would sit at
@@ -527,7 +534,7 @@ jobs:
           fi
 
           # Pin the changelog base to the immediately preceding release tag.
-          # Each release is cut from a fresh release/sdk-* branch that returns
+          # Each release is cut from a fresh release/v* branch that returns
           # to main only as a squash commit, so prior release tags are not
           # ancestors of this release's commit. Left to --generate-notes alone,
           # GitHub's ancestor walk skips every diverged sibling tag and lands on

@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 
 A release is one `workflow_dispatch` of `Release (NPM + Docker)`
 (`.github/workflows/release.yml`), followed by one pull request: the
-`release/sdk-<version>` branch the release published from, merged back into
+`release/v<version>` branch the release published from, merged back into
 `main`. That branch already carries the version bump and the stamped release
 notes, so **you never create a branch or stamp anything by hand**. You open the
 PR from the branch the workflow pushed.
@@ -70,7 +70,7 @@ Three states, in order:
    #1024 (pre-aggregation off by default) and #1030 (on by default) are one
    section for exactly this reason.
 3. **`## [<version>] — <what changed>`** once a release has shipped it. **CI
-   writes this** — `prepare` stamps it on `release/sdk-<version>`, and it
+   writes this** — `prepare` stamps it on `release/v<version>`, and it
    reaches `main` when that branch's PR merges (step 6). You do not stamp by
    hand, and you do not guess the number in advance.
 
@@ -166,7 +166,7 @@ not a precaution.
 
 | Packages | Version | Decided by | Missing bump caught by |
 | --- | --- | --- | --- |
-| `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/sdk-<v>` branch | n/a — the release sets it |
+| `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/v<v>` branch | n/a — the release sets it |
 | `skills` | its own line, `package.json` carries a fixed `0.0.0-dev` placeholder | release time, from npm's own state (`scripts/independent-version.mjs`); you, for a minor | n/a — nothing is committed ahead of time to forget |
 | `create-malloy-package` | its own line, same placeholder | release time, the same way | n/a, same reason |
 | `malloy-publisher-sdk` (Python) | its own line | you, by hand, on `main` | `python-sdk.yml` PR check — but see below |
@@ -371,7 +371,7 @@ gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<n
 **Do not merge to `main` while it runs.** `publish-packages` aborts if `main`
 moves under a watched path mid-release. A `RELEASE_NOTES.md`-only merge is not
 watched, but the window is short — just wait. **Do not push to
-`release/sdk-<version>` while it runs either**: `npm-sdk.yml` and
+`release/v<version>` while it runs either**: `npm-sdk.yml` and
 `docker-image.yml` check it out by name, so a push mid-run can publish two
 different commits under one version.
 
@@ -391,7 +391,7 @@ gh release view "v<version>" --repo malloydata/publisher
 This is the one step the release cannot finish itself, and as the agent running
 this skill **you open the PR**. The branch already exists and already holds
 everything: `prepare` committed the three `packages/{sdk,app,server}/package.json`
-versions and the stamped `RELEASE_NOTES.md` headings to `release/sdk-<version>`
+versions and the stamped `RELEASE_NOTES.md` headings to `release/v<version>`
 as one commit. Do not create another branch and do not stamp anything by hand.
 
 Open it once the run has finished, for any release whose sdk reached npm
@@ -408,16 +408,16 @@ A prerelease or a `+build` version never gets a PR.
 V=<version>
 git fetch origin
 # 1. prepare pushed it
-git ls-remote --exit-code --heads origin "release/sdk-$V"
+git ls-remote --exit-code --heads origin "release/v$V"
 # 2. one commit ahead of main, titled chore(release): $V
-git log --oneline "origin/main..origin/release/sdk-$V"
+git log --oneline "origin/main..origin/release/v$V"
 # 3. only the three manifests and RELEASE_NOTES.md
-git diff --stat "origin/main...origin/release/sdk-$V"
+git diff --stat "origin/main...origin/release/v$V"
 # 4. the [$V] sections it stamped, which should match the release page
-NOTES="$(mktemp)" && git show "origin/release/sdk-$V:RELEASE_NOTES.md" > "$NOTES"
+NOTES="$(mktemp)" && git show "origin/release/v$V:RELEASE_NOTES.md" > "$NOTES"
 RELEASE_NOTES_FILE="$NOTES" node scripts/release-notes.mjs extract "$V" | grep '^## '
 # 5. no PR for it yet
-gh pr list --repo malloydata/publisher --head "release/sdk-$V" --state all
+gh pr list --repo malloydata/publisher --head "release/v$V" --state all
 ```
 
 Read them in order, and stop at the first surprise:
@@ -436,7 +436,7 @@ Read them in order, and stop at the first surprise:
 Then open it against `main`:
 
 ```bash
-gh pr create --repo malloydata/publisher --base main --head "release/sdk-$V" \
+gh pr create --repo malloydata/publisher --base main --head "release/v$V" \
   --title "chore(release): $V" \
   --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
 
@@ -457,7 +457,7 @@ the DCO check is required:
 
 ```bash
 git fetch origin
-git switch -c "release/sdk-$V" "origin/release/sdk-$V"
+git switch -c "release/v$V" "origin/release/v$V"
 git merge --signoff origin/main
 # Only if the merge stopped on a RELEASE_NOTES.md conflict: keep BOTH sides,
 # main's new [Unreleased] sections exactly as they are and this branch's [$V]
@@ -466,7 +466,7 @@ git merge --signoff origin/main
 #   git add RELEASE_NOTES.md && git commit -s --no-edit
 node scripts/release-notes.mjs extract "$V" | grep '^## '   # exactly v$V's sections
 node scripts/release-notes.mjs extract | grep '^## '        # only what merged since
-git push origin "release/sdk-$V"
+git push origin "release/v$V"
 ```
 
 The two `extract` lines are the check that the resolution is right: the first
@@ -475,7 +475,7 @@ merged after the release was cut. Pushing to the release branch is safe once the
 run has finished, since the tag pins the published commit.
 
 Ask the user to merge the PR, or merge it if they asked you to. Merging deletes
-`release/sdk-$V` (the repo deletes head branches on merge); the tag keeps the
+`release/v$V` (the repo deletes head branches on merge); the tag keeps the
 commit. Then confirm:
 
 ```bash

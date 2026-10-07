@@ -218,7 +218,7 @@ Requiring it means first giving it an always-run gate job that reports success w
 not match.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/sdk-<version>`
+bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
 branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
 ref. `publish-packages` triggers the other three trains (see below). `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
@@ -228,7 +228,7 @@ heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs st
 commit that sets the three `packages/{sdk,app,server}/package.json` versions
 (`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
 page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
-`release/sdk-<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
+`release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
 one PR is the whole post-release step. It does **not** touch `packages/skills/package.json` or
 `packages/create-malloy-package/package.json`: those two carry a fixed `0.0.0-dev` placeholder and
 their published version is decided at release time from npm's own state (see *Skills and
@@ -262,7 +262,7 @@ push to `main`, and right after each `release.yml` run (`workflow_run`, against 
 code does. `main`'s version moves only when a release PR merges, so npm ahead
 of it means a release published and its PR has not merged. The next release would then stamp that
 release's still-`[Unreleased]` sections a second time under the new number. The fix is to merge
-`release/sdk-<npm latest>` into `main`, which is also the only thing that clears the check; the
+`release/v<npm latest>` into `main`, which is also the only thing that clears the check; the
 release PR itself passes because its tree declares the new version. It reads npm rather than the
 git tags because a release whose npm publish succeeded and whose `gh-release` failed has no tag
 but did ship. It is not a required status check, so it reports rather than blocks; making it
@@ -277,7 +277,7 @@ conflicts. Keep both sides: `main`'s new `[Unreleased]` sections as they are, an
 **Do not push to the release branch until the release has finished**, because `npm-sdk.yml` and
 `docker-image.yml` check out the branch by name, not by commit.
 
-**`delete_branch_on_merge` is on, so merging the PR deletes `release/sdk-<version>`.** The tag keeps
+**`delete_branch_on_merge` is on, so merging the PR deletes `release/v<version>`.** The tag keeps
 the commit, `version_taken` checks the tag as well as the branch, and the release page's
 "Release branch" line is the only thing left pointing at a name that no longer exists.
 

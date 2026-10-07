@@ -3,7 +3,7 @@
 
 # Fails while a published release has not been merged back into main.
 #
-# `release.yml` publishes sdk/app/server from a `release/sdk-<v>` branch that
+# `release.yml` publishes sdk/app/server from a `release/v<v>` branch that
 # carries the version bump and the stamped RELEASE_NOTES.md headings, and a
 # person merges that branch back as a PR. Until it merges, main's
 # packages/sdk/package.json declares the previous version and its
@@ -65,7 +65,7 @@ jobs:
           DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
           if [ "$PUBLISHED" != "$DECLARED" ] \
             && [ "$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)" = "$PUBLISHED" ]; then
-            echo "::error title=Release sync::npm latest is ${PUBLISHED} but packages/sdk/package.json declares ${DECLARED}: release ${PUBLISHED} has not been merged back. Merge the pull request from release/sdk-${PUBLISHED} into main (titled 'chore(release): ${PUBLISHED}'); that is the only fix."
+            echo "::error title=Release sync::npm latest is ${PUBLISHED} but packages/sdk/package.json declares ${DECLARED}: release ${PUBLISHED} has not been merged back. Merge the pull request from release/v${PUBLISHED} into main (titled 'chore(release): ${PUBLISHED}'); that is the only fix."
             exit 1
           fi
           echo "npm latest ${PUBLISHED}, packages/sdk/package.json ${DECLARED}: nothing waiting to merge back"
