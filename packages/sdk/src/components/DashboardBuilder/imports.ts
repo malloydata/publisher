@@ -37,44 +37,47 @@ export function importPathOf(modelPath: string, documentPath: string): string {
 }
 
 /**
- * Whether the file can already see `name` from `modelPath`: it extends it,
- * imports it by name, or imports that model whole. A whole-file import brings
- * every source the model exports, and naming one of them again would declare
- * it twice. A source the file sees only through another model that re-exports
- * it is not followed: that needs the catalog to say which model declares each
- * source, and the compile check on save catches the duplicate.
+ * Whether the file can already see `name`: it extends it, imports it by name,
+ * or imports a model that exports it whole. A whole-file import brings every
+ * source the model exports, and naming one again would declare it twice.
+ * `exporters` is every model that exports `name`, `[modelPath]` when the
+ * catalog names one.
  */
 export function reaches(
    document: Pick<DashboardDocument, "imports" | "sources">,
    name: string,
    modelPath: string,
    documentPath: string = DEFAULT_DOCUMENT_PATH,
+   exporters: readonly string[] = [modelPath],
 ): boolean {
    if (document.sources.some((s) => s.base === name)) return true;
    return document.imports.some((i) =>
       i.kind === "names"
          ? i.names.includes(name)
-         : resolvedOf(i.from, documentPath) === modelPath,
+         : exporters.includes(resolvedOf(i.from, documentPath)),
    );
 }
 
 /**
- * `imports` with `name` from `modelPath` brought in, by name — into that
- * model's existing `{ … }` import when there is one, else as a new statement
- * written relative to where the document sits. Unchanged when the file can
- * already see it.
+ * `imports` with `name` brought in by name, from the exporter the file already
+ * imports by name when there is one (else `modelPath`) — into that model's
+ * existing `{ … }` import, else as a new statement written relative to where
+ * the document sits. Unchanged when the file can already see it.
  */
 export function withSource(
    document: Pick<DashboardDocument, "imports" | "sources">,
    name: string,
    modelPath: string,
    documentPath: string = DEFAULT_DOCUMENT_PATH,
+   exporters: readonly string[] = [modelPath],
 ): DashboardImport[] {
    const { imports } = document;
-   if (reaches(document, name, modelPath, documentPath)) return imports;
+   if (reaches(document, name, modelPath, documentPath, exporters))
+      return imports;
    const at = imports.findIndex(
       (i) =>
-         i.kind === "names" && resolvedOf(i.from, documentPath) === modelPath,
+         i.kind === "names" &&
+         exporters.includes(resolvedOf(i.from, documentPath)),
    );
    if (at < 0)
       return [

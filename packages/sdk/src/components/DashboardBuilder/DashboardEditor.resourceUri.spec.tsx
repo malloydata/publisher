@@ -43,6 +43,9 @@ const getModel = mock(
                ? { modelPath: path, sourceText: PACKAGE_FILE }
                : {
                     modelPath: path,
+                    modelInfo: JSON.stringify({
+                       entries: [{ kind: "source", name: "scoped_orders" }],
+                    }),
                     sources: [
                        {
                           name: "scoped_orders",

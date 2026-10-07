@@ -18,7 +18,7 @@ The `get_context` tool description defines each field and what a call returns. T
 
 **Do not enumerate.** Omitting `search_text` lists a catalog rather than searching it. Knowing the package narrows *where* to look; it does not substitute for saying *what* you need: if you know the package, that is a reason to scope, not a reason to skip `search_text`. Enumerated listings are capped per source and per entity type, and with no relevance signal the cap drops the fields your question is about while keeping join-path noise.
 
-A bare listing has two legitimate uses. The first is answering "what data is here?" when the user has named no subject at all. The second is reading a specific entity you already have the exact name of: scope to its source, set `entity_name`, and pass `search_text: null`, which returns that entity's docstring and Malloy code without spending a search. Every other call carries `search_text` on every target.
+A bare listing has three legitimate uses. The first is answering "what data is here?" when the user has named no subject at all. The second is reading a specific entity you already have the exact name of: scope to its source, set `entity_name`, and pass `search_text: null`, which returns that entity's docstring and Malloy code without spending a search. The third is checking whether a source you can name is in the catalog at all, after a ranked search did not return it (`malloy-source-unreachable` covers this). Every other call carries `search_text` on every target.
 
 ## Authoring `search_text` for entity targets
 

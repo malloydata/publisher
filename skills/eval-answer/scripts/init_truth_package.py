@@ -96,7 +96,14 @@ def place_ref(package: pathlib.Path, src: pathlib.Path,
         return ref, None
     if "/" not in ref and not DATA_EXT.search(ref):
         return ref, None  # a warehouse table name, not a file
+    # Beside the model file first (what this has always done). If nothing is
+    # there, the ref was written from the package root, as a model in a
+    # subfolder such as `_shared/` does: resolving it against that folder again
+    # doubles the folder name and finds nothing.
     target = (src.parent / ref).resolve()
+    from_root = (package / ref).resolve()
+    if not target.exists() and from_root.exists():
+        target = from_root
     try:
         rel = target.relative_to(package.resolve())
     except ValueError:

@@ -14,8 +14,8 @@ import type { ResolvedTheme } from "./types";
  * (computed once in `resolveTheme`), so this builder no longer branches
  * on mode itself.
  *
- * The same config is returned for every chart type today. The
- * parameter is reserved for future per-chart-type tweaks.
+ * The same config is returned for every chart type except `shape_map`,
+ * which also moves its legend below the map.
  */
 export function buildVegaThemeOverride(theme: ResolvedTheme) {
    const { foreground, axisFaint, gridline, font } = theme;
@@ -43,5 +43,12 @@ export function buildVegaThemeOverride(theme: ResolvedTheme) {
       range: { category: theme.series },
    };
 
-   return (_chartType: string) => config;
+   // The renderer draws a shape_map fixed-width with its legend on the right, which clips in a tile.
+   const shapeMapConfig = {
+      ...config,
+      legend: { ...(config.legend as object), orient: "bottom" },
+   };
+
+   return (chartType: string) =>
+      chartType === "shape_map" ? shapeMapConfig : config;
 }

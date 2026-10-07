@@ -84,9 +84,19 @@ describe("buildVegaThemeOverride", () => {
       expect(cfg.header.labelColor).toBe("#333333");
    });
 
-   it("returns the same config across chart types in v1", () => {
+   it("returns the same config across chart types, bar and line alike", () => {
       const t = resolveTheme([], "light");
       const cb = buildVegaThemeOverride(t);
       expect(cb("bar")).toBe(cb("line"));
+   });
+
+   it("puts a shape_map's legend below it, without touching the shared config", () => {
+      const t = resolveTheme([], "light");
+      const cb = buildVegaThemeOverride(t);
+      const map = cb("shape_map") as { legend: Record<string, unknown> };
+      const bar = cb("bar") as { legend: Record<string, unknown> };
+      expect(map.legend.orient).toBe("bottom");
+      expect(map.legend.labelColor).toBe(bar.legend.labelColor);
+      expect(bar.legend.orient).toBeUndefined();
    });
 });

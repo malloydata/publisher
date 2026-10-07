@@ -27,7 +27,7 @@ source: order_summary is raw_orders -> {
 }
 ```
 
-`name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill helps decide.
+`name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) helps decide.
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.
 
@@ -592,7 +592,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Tune for cost and performance
 
-The materialization history (`list` + `get` above) records per-run timings and how many sources were built vs. reused — enough to decide what to persist, what to stop persisting, and how to schedule it. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill walks an agent through reading those signals and proposing (recommendations-only) changes.
+The materialization history (`list` + `get` above) records per-run timings and how many sources were built vs. reused — enough to decide what to persist, what to stop persisting, and how to schedule it. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) walks an agent through reading those signals and proposing (recommendations-only) changes.
 
 ## Pre-aggregation
 
