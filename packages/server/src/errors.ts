@@ -522,6 +522,19 @@ export class ConnectionError extends Error {
 }
 
 /**
+ * Every database session a connection may open from this process was busy for
+ * the whole wait, so the query never reached the database. A 502 like any other
+ * connection-side failure, with a server-authored message, so the caller learns
+ * the cause instead of the generic upstream text.
+ */
+export class ConnectionPoolExhaustedError extends ConnectionError {
+   constructor(message: string) {
+      super(message, { callerSafe: true });
+      this.name = "ConnectionPoolExhaustedError";
+   }
+}
+
+/**
  * A storage destination was named but is not configured on the
  * environment. Distinct from {@link ConnectionNotFoundError} so a misconfigured
  * destination is diagnosable in logs, and mapped to 422 rather than 404 because
