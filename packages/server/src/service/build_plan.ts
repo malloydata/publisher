@@ -656,6 +656,25 @@ export function computeSourceEntityId(
 }
 
 /**
+ * The key the compiler itself files a persist source's table under when it
+ * substitutes a manifest entry: `makeBuildId` of the connection digest and
+ * the source's SQL, with no partition layout. {@link computeSourceEntityId}
+ * folds the layout in, so for a partitioned source the two differ and the
+ * compiler cannot find the publisher's entry by its own key; a manifest
+ * handed to the compiler for a partitioned chain carries the entry under both
+ * (see `manifestForCompiler`).
+ */
+export function compilerBuildId(
+   source: PersistSource,
+   connectionDigests: Record<string, string>,
+): string {
+   return source.makeBuildId(
+      connectionDigests[source.connectionName],
+      source.getSQL(),
+   );
+}
+
+/**
  * Fold a source's `partition=` into the text its address is computed from.
  *
  * The layout is part of what the stored artifact IS, and `getSQL()` deliberately

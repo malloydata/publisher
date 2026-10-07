@@ -768,6 +768,7 @@ export class Package {
       return {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
+         location: outcome.packageMetadata.location,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,

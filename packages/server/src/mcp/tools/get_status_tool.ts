@@ -15,7 +15,7 @@ A JSON object with:
 - operationalState: "initializing" | "serving" | "throttled" | "draining".
 - initialized: whether startup finished.
 - version: this server's release version.
-- environments: each environment's name with its loaded package names.
+- environments: each environment's name with the packages serving there, each carrying a status of {serving, loading}; a package reloading while it serves reports both. A package loading here for the first time is not listed (the REST endpoint lists it on request, with includeLoading=true).
 - emptyReason (only present when the server found no config at startup, or the --config path was missing): why environments is empty, and the path it checked. The server still reports serving in that state.
 - initError (only present when startup failed): why. The server stays at "initializing" and never serves; the cause is usually a config file it cannot read or parse, or a server root it cannot write (publisher.db). A package or environment that failed to load is under loadErrors instead.
 - loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments; that includes a package add that failed on the server's side. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.

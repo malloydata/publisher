@@ -28,8 +28,16 @@ A tile naming a view that does not exist, a `# drill` pointing at no dashboard, 
 `compile_model` and `POST …/compile` at `scope: "package"` now run the render-tag and dashboard checks a reload runs, over the compiled result, what-if replacement included. Findings come back with code `render-tag` or `dashboard-lint`, no position, and the subject (the view, field or given) leading the message. Each keeps the severity a load gives it, so a finding the load reports as an error makes the compile `status: "error"`. `scope: "file"` is unchanged and does not run these checks. `publisher_notebook_discovery_total` still counts served packages only.
 
 - **A what-if dashboard that does not compile is still a dashboard.** It is judged by the replacement text you sent, so a `# drill` to it is no longer reported as pointing at nothing.
-- **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets a `warn` of its own, and every other file keeps its findings.
+- **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
 - **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
+
+## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+
+A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
+
+The usual cause is a package version that was replaced and unloaded while a caller still held its old name. A router that caches which server holds which package can treat the 404 as "look again", which it could not do with a 400. If you branch on the 400 for this case, branch on 404 instead.
+
+A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
 
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
@@ -45,7 +53,21 @@ Public SDK surface: `buildCatalog` credits a source only to a model whose `model
 - **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
 - **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
 
-## [Unreleased] - Compile returns the document it describes
+## [Unreleased] — A package stays listed while it reloads, and an install is refused under memory back-pressure
+
+Every listed package now carries a `status` object with two independent facts: `serving`, whether a compiled copy answers queries on this server, and `loading`, whether a load, reinstall or recompile is in progress here, with `loadingSince` while it is. A package that is reloaded while it serves reports both, because the previous copy keeps answering until the new one is swapped in. Until now the listing, and so `/status`, left such a package out for the whole compile, which read as the package having left the server; an orchestrator that reads `/status` to place packages took it that way, unloaded the replica, and the reload in flight then failed for nothing. A package loading for the first time is listed only on request, as its name and `status` on `GET /status?includeLoading=true`, so an orchestrator that reads `status` can tell a dispatched load from an absence; every other listing shows only packages that can be queried, as before, since a listed package has always meant one that can serve.
+
+Three install behaviours change with it:
+
+- An install, whether a `POST` or a `PATCH` with a `location`, is refused with a 503 while the memory governor reports back-pressure, before the download starts, the way a lazy load and an add already were. A reinstall holds the new compiled copy beside the serving one until the swap, so it was the one allocation the governor could not see.
+- A `PATCH` whose `location` matches the one the package was installed from is a metadata update, not a reinstall: the manifest is rebound in place and nothing is downloaded or recompiled beyond what the manifest itself requires. A `PATCH` that arrives while any install of the package is in progress, downloading or compiling, a first install or a reinstall, waits for it and is decided against the copy that install leaves resident, so it lands on the installed copy, and a `PATCH` naming a location whose install failed installs it. Only an install records a location; a metadata `PATCH` never changes it. To make the comparison hold across an in-place reload and a restart, the server records the install location in its own file outside the package directory, `<environment>/.install-records/<package>.json`, and reads nothing inside the package as one, neither a `location` an author writes into `publisher.json` nor a record shipped with the content, since a reload fetches from it. `GET …?reload=true` and the `reload_package` tool re-fetch from the recorded location and re-apply the manifest binding; that is the way to fetch the same location again.
+- A `POST` that carries a `manifestLocation` binds it as part of the install. The downloaded tree's own `publisher.json` does not carry it, so until now the package came up serving live and was rebound, with a full reload, by the next drift check.
+
+A metadata `PATCH` also preserves what it does not mention: `description`, `resource` and `location` were replaced by the body's absent values, and `publisher.json` lost its `description`. A field sent as `null` counts as not mentioned, the rule `scope` already followed, so a client that serializes unset fields as null does not blank them; an empty string is a value. And the metadata sent with an install is applied inside the install's own lock hold, so a delete queued behind the swap can no longer run between the two and leave the update answering 404 for an install that had completed.
+
+A package installed before this release has no recorded location, so its first `PATCH` that names its location reinstalls it once and records it; every later one is a metadata update.
+
+## [0.9.4] - Compile returns the document it describes
 
 `POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.
 
@@ -69,13 +91,25 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a `storage=` source reads its stored upstreams through the sources between them, and a build reports whether it read them
+
+A `storage=` source that depends on another stored source is built by reading that source's table in the destination. Until now that worked only when the dependent source named the stored one directly: a non-persisted source in between — `checklists_kept is checklists_all extend { … }` over a stored `site_seasons`, or a `select: *` wrapper the public sources are declared on — was absent from the model the build compiled, so the build failed with `Reference to undefined object`, and under `strictUpstreams` (every orchestrated build) the whole run failed with it. The build now carries those intermediate sources into the model, in dependency order and under the `##!` flags of the files that declare them, so a dependent source reads its stored upstreams however many non-persisted sources stand between them. The model that build compiles carries only the sources on the dependent's own path — a source elsewhere in the model that cannot be carried no longer fails a chain it is not part of — declares the author model's `given:`s so a carried source whose text reads one compiles, and sees through an inline parenthesized extension (`hits is (daily extend { … }) -> { … }`) to the base and joins it reads. It also sees a stored parent reached only through an import — `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly` is built from, out of the importing model's namespace — and stacks on its table rather than recomputing it; before, such a parent read as a warehouse table. A `storage=` source over a `partition=` upstream is now built from that upstream's table too: the partition layout is part of the address the publisher files the entry under and no part of the key the compiler substitutes by, so such a downstream was always recomputed from the warehouse — refused outright under `strictUpstreams` — and now stacks on the table like any other chained source.
+
+An intermediate that reaches the source warehouse — one that joins a table nothing materializes — cannot be carried, since the destination holds no such table. Such a source is now recomputed from the warehouse, with the upstream inlined, and the build succeeds; under `strictUpstreams` this is the one recompute strict permits, because no build over the stored tables exists for it. Strict still refuses what it exists to refuse — anything whose recompute would rebuild a table the orchestrator pinned: a persisted upstream the build neither materialized nor was handed by reference, including one whose table lives in another destination, and a source that reads only stored upstreams yet could not be built over them (a refinement the build does not carry), where the limit is the build's rather than the source's.
+
+Every manifest entry for a source that reads a persisted upstream now carries `upstreamReuse`: `reused` when every upstream was read from its materialized table, `recomputed` when one was recomputed from its definition, with `upstreamRecomputeReason` saying which and why. It is reported on both tiers, since a colocated build also inlines an upstream it cannot read. The field is not a location and never names a table. A recomputed source's rows reflect the warehouse at that build's time rather than the upstream's snapshot, so the two can disagree when their refresh cadences differ; this is how to tell. The `publisher_storage_chained_build_total` counter gains the outcome `strict_shape_fallback` for the strict recompute. Note what that changes: `strictUpstreams` no longer means a build never recomputes a stored upstream — for a source that reaches the warehouse, it recomputes and says so, and the warehouse does work the orchestrator did not schedule. `strict_shape_fallback` is the signal to watch; an orchestrator that must refuse it has no knob yet.
+
+A chained build re-declares on each parent's binding what the parent's source adds to its table — its extend-block `where:`, dimensions, measures, joins and views — the same way the serve shape does, and thins them through the same tiers when they do not compile: a view, then a join, then a dimension or measure on the parent that reads a join to a source the destination cannot bind drops out; the `where:` never does. A colocated delta or skip entry carries the same `upstreamReuse` its rebuild would. A persist source's build SQL is the persisted relation alone, so a stored source declared `extend { where: total > 100 }` holds every row and is filtered when read; a downstream built over its table without that filter summed the unfiltered rows. Strict's missing-upstream verdict now comes from the compiler's own strict render over the run's whole manifest — the persisted source the SQL actually reads that nothing supplied — so a dependency reached only through a join declared on a stored upstream is refused as it was, and a declared join the query never reads is not.
+
+The storage serve shape now compiles under the `##!` flags of the author files whose declarations it carries, and carries an ungrouped-aggregate measure (`total.sum() / all(total.sum())`) as a measure. Before, a non-persisted wrapper written under `access_modifiers` (`daily_public is daily -> { select: * } include { public: … }`), or a source with an `all(…)` measure and a view that read it, lifted into text the shape could not compile — and one such lift withheld every lifted source in the model, so every query on the public surface ran live against the warehouse while the stored tables sat unread.
+
 ## [Unreleased] - BigQuery connections take their project from the service account key again
 
 Since 0.0.196, a BigQuery connection configured with `serviceAccountKeyJson` and no `defaultProjectId` has given Malloy no project id. Without one, compiled SQL qualifies every `dataset.table` path with the BigQuery SDK's placeholder `{{projectId}}`. Queries the SDK sends itself still work, because the SDK rewrites that token in each request. Anything that sends compiled SQL another way does not, most visibly a build into a storage destination, which runs it through DuckDB's `bigquery_query()` and fails with `Invalid project ID '{{projectId}}'`. The connection now takes the key's `project_id` again, and a blank `defaultProjectId` falls back to it as well.
 
 The project id is part of the connection digest, so persisted sources on such connections get new BuildIDs and are rebuilt on their next build. Connections that set `defaultProjectId` are unaffected.
 
-## [Unreleased] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
+## [0.9.4] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
 
 - **No renderer download at idle.** `RenderedResult` no longer starts importing `@malloydata/render`
   (about 3.4 MB, 1 MB gzipped) the moment its module is evaluated, which made every page of a host
@@ -103,7 +137,7 @@ The project id is part of the connection digest, so persisted sources on such co
   that client. Retries stay off. _What to do:_ a host that relied on a refresh on refocus calls
   `invalidateQueries` itself.
 
-## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
+## [0.9.4] — cloning a GitHub package no longer passes `GIT_*` variables to git
 
 `simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it
 passes to `git`. When Publisher clones a package or environment from a GitHub URL, the `git` child
@@ -113,7 +147,7 @@ process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINA
 server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
 `GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
 
-## [Unreleased] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
+## [0.9.4] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
 
 The builder is the read-only page in a second state, with fewer controls around it.
 
@@ -154,7 +188,7 @@ The builder is the read-only page in a second state, with fewer controls around 
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 
-## [Unreleased] - The Docker image is signed with cosign
+## [0.9.4] - The Docker image is signed with cosign
 
 `ms2data/malloy-publisher` is now signed at release with Sigstore cosign (keyless, through GitHub Actions OIDC). Verify a release with:
 
@@ -168,7 +202,7 @@ Use cosign v3 or later: the signature is a Sigstore bundle stored as an OCI refe
 
 The signature is on the multi-platform manifest list, so it also covers the per-platform images and their SBOM and provenance attestations. Earlier releases are unsigned. See [packages/server/README.docker.md](packages/server/README.docker.md#verifying-the-image).
 
-## [Unreleased] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
+## [0.9.4] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
 
 Publisher now builds on `@malloydata/*` 0.0.435, up from 0.0.434. No Malloy API that Publisher calls changed, and a model that compiled on 0.0.434 compiles the same way, except a Trino or Presto source on a table whose `DESCRIBE` returns no columns (the last item below). The changes that reach a running server are in the Postgres and Trino drivers:
 
@@ -179,7 +213,7 @@ Publisher now builds on `@malloydata/*` 0.0.435, up from 0.0.434. No Malloy API 
 
 The release also adds an experimental SQL Server dialect. Publisher does not offer a SQL Server connection type, so it has no effect here.
 
-## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
+## [0.9.4] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
 
 With no embedding provider and no LLM configured, `get_context` ranks by words as before, and a listing request is unchanged. Everything below applies once a provider is configured. Read the first four items if you poll the status API, run a server with an embedding provider, or write `publisher.json` files.
 
@@ -210,7 +244,7 @@ Also changed, when the matching provider is configured:
 
 **A capped keyphrase or summary sync resumes on the next restart.** When `retrieval.llm.maxCallsPerSync` stops a sync early, the status can read `ready` with `done` below `total`. A package reload does not continue it, because a reload of an unchanged package starts no sync work.
 
-## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
+## [0.9.2] — Console can edit notebooks, and create notebooks and dashboards
 
 A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
 `notebooks/*.malloy` notebook has an **Edit** button in the Console, and a dashboard and a notebook
@@ -319,7 +353,7 @@ came from the wrong field. It now keeps the full path, always quoted in the file
 now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
 the source had no such field.
 
-## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
+## [0.9.2] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
 
 **Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder` and `DashboardEditor` (and `NotebookEditor`, which wraps them) shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
 
@@ -332,7 +366,7 @@ Smaller changes in the same pass:
 - **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
 - **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
 
-## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
+## [0.9.2] — `#(authorize)` mentioned in markdown prose is no longer refused
 
 Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
 except where the tag sits inside the body of a `(markdown)` or `(text)` block note, or after the
@@ -341,7 +375,7 @@ gate can be previewed and saved. The same tag anywhere else, including a line no
 route, a block's opener or closer line, a comment or a string, is refused as before, and text the
 server cannot lex is judged the old way.
 
-## [Unreleased] — A query that reads a given with no default no longer keeps its package from loading
+## [0.9.2] — A query that reads a given with no default no longer keeps its package from loading
 
 A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload failed the same way but kept serving the model compiled before it, marked `stale`, so the package went missing only on a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
 
