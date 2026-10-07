@@ -57,6 +57,8 @@ If it doesn't exist, create one. Suggest a package name based on the model conte
 
 A package with no `index.malloy` and no `explores` exposes **everything**: every model is listed and every source is directly queryable.
 
+**Say so before a first publish.** When a package that has never been published has no `index.malloy` and some of its sources sit directly on warehouse tables, tell the user before publishing that each of those sources will be listed and queryable by name, and name them. Name any columns that hold personal data too (names, email addresses, street addresses, phone numbers), wherever they sit: curation hides a source, not a column (see below). Then offer a curated `index.malloy` that exports the analysis sources and leaves the raw ones off. Publishing as it is stays the user's call; don't add the file without their yes.
+
 To curate, add an **`index.malloy`** at the package root. Publisher reads it as the package's published surface, so no manifest field is involved:
 
 ```malloy

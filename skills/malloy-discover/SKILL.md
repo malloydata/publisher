@@ -85,6 +85,7 @@ When reviewing tables and columns, capture:
 - Reserved word columns that need backticking (`Date`, `Type`, `number`, `source`, etc.)
 - Column cardinality and NULL rates (via `execute_query`)
 - Data distributions for key numeric and categorical columns
+- **Personal data**: columns holding names, email addresses, street addresses, phone numbers or birth dates. Record them: the scope proposal names them, so whether they are published is decided rather than inherited.
 
 ### Data Quality
 - **Check for duplicate rows** on primary keys. Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
