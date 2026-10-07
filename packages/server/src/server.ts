@@ -1831,21 +1831,61 @@ app.get(
       }
    },
 );
-// The lifecycle routes land ahead of their handlers, so until then they answer
-// 501, the same answer a `versionId` gets where it is not implemented yet.
-const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
-   setVersionIdError(res);
 app.patch(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
-   versionsNotImplemented,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await packageController.updatePackageVersion(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.versionId,
+               req.body,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
 );
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId/manifest`,
-   versionsNotImplemented,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await packageController.setVersionManifest(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.versionId,
+               req.body,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
 );
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/latest`,
-   versionsNotImplemented,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await packageController.setLatestVersion(
+               req.params.environmentName,
+               req.params.packageName,
+               req.body,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
 );
 
 app.get(

@@ -252,6 +252,110 @@ describe("Environment versions from the registry", () => {
       );
    });
 
+   it("leaves a version archived during an in-flight load out of memory, and refuses reads of it", async () => {
+      const source = path.join(rootDir, "source");
+      await writeTree(source, 1);
+      const registry = memoryRegistry();
+      registry.rows.push(
+         version("sales", "1.0.0", {
+            sourceLocation: source,
+            contentHash: await hashPackageTree(source),
+         }),
+         version("sales", "1.1.0"),
+      );
+      registry.latest.set("sales", "1.1.0");
+      // The tree is missing, so the load re-fetches it; holding the fetch open
+      // keeps the load in flight while the archive lands.
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let fetching: () => void = () => {};
+      const started = new Promise<void>((resolve) => (fetching = resolve));
+      env.setVersionRegistry(registry, async (location, target) => {
+         fetching();
+         await gate;
+         await fs.cp(location, target, { recursive: true });
+      });
+      await env.loadPackageVersions();
+
+      const load = env.getPackage("sales", false, { versionId: "1.0.0" });
+      await started;
+      const archive = env.setVersionArchiveStatus("sales", "1.0.0", "archive");
+      release();
+      await load;
+      expect((await archive).archiveStatus).toBe("archive");
+
+      // The /status view, which names every loaded version: the archived one
+      // must not be among them. (getLoadedPackages shows only latest.)
+      await writeTree(path.join(envPath, "sales", "1.1.0"), 2);
+      const loaded = (await env.listPackages({ everyLoadedVersion: true })).map(
+         (p) => p.versionId,
+      );
+      expect(loaded).toContain("1.1.0");
+      expect(loaded).not.toContain("1.0.0");
+      expect(refusal(() => env.resolveSlot("sales", "1.0.0"))).toEqual({
+         status: 410,
+         reason: "VERSION_ARCHIVED",
+      });
+      await expect(
+         env.getPackage("sales", false, { versionId: "1.0.0" }),
+      ).rejects.toThrow("archived");
+   });
+
+   it("refuses to archive latest, and treats the current state as a no-op", async () => {
+      const registry = memoryRegistry();
+      registry.rows.push(version("sales", "1.0.0"), version("sales", "1.1.0"));
+      registry.latest.set("sales", "1.1.0");
+      env.setVersionRegistry(registry);
+      await env.loadPackageVersions();
+
+      await expect(
+         env.setVersionArchiveStatus("sales", "1.1.0", "archive"),
+      ).rejects.toMatchObject({ reason: "VERSION_IS_LATEST" });
+      const unchanged = await env.setVersionArchiveStatus(
+         "sales",
+         "1.0.0",
+         "unarchive",
+      );
+      expect(unchanged.archiveStatus).toBe("unarchive");
+      expect(registry.rows.every((r) => r.archivedAt === null)).toBe(true);
+   });
+
+   it("tells the lifecycle hook about an archive and an unarchive, but not a no-op", async () => {
+      const registry = memoryRegistry();
+      registry.rows.push(version("sales", "1.0.0"), version("sales", "1.1.0"));
+      registry.latest.set("sales", "1.1.0");
+      env.setVersionRegistry(registry);
+      await env.loadPackageVersions();
+      const seen: string[] = [];
+      env.setVersionLifecycleHook((event) =>
+         seen.push(`${event.version.version}:${event.version.archiveStatus}`),
+      );
+
+      await env.setVersionArchiveStatus("sales", "1.0.0", "archive");
+      await env.setVersionArchiveStatus("sales", "1.0.0", "archive");
+      await env.setVersionArchiveStatus("sales", "1.0.0", "unarchive");
+
+      expect(seen).toEqual(["1.0.0:archive", "1.0.0:unarchive"]);
+   });
+
+   it("refuses to move latest to a version that cannot load, leaving latest where it was", async () => {
+      const registry = memoryRegistry();
+      registry.rows.push(
+         version("sales", "1.0.0", { sourceLocation: null }),
+         version("sales", "1.1.0"),
+      );
+      registry.latest.set("sales", "1.1.0");
+      env.setVersionRegistry(registry);
+      await env.loadPackageVersions();
+
+      // 1.0.0's tree is not on disk and has no location to fetch it from.
+      await expect(env.setLatestVersion("sales", "1.0.0")).rejects.toThrow(
+         "missing",
+      );
+      expect(registry.latest.get("sales")).toBe("1.1.0");
+      expect(env.resolveSlot("sales").version?.version).toBe("1.1.0");
+   });
+
    it("refuses to serve a re-fetched tree whose content changed since publish", async () => {
       const source = path.join(rootDir, "source");
       await writeTree(source, 1);

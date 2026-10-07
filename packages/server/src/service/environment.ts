@@ -83,6 +83,7 @@ import {
    FreshnessManifest,
    ManifestEntry,
    PackageVersion,
+   PackageVersionArchiveStatus,
    PackageVersionUpdate,
 } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
@@ -367,6 +368,12 @@ export interface VersionRegistry {
    ): Promise<PackageVersion>;
 }
 
+/** A version was archived or unarchived; `version` is its row after the change. */
+export interface VersionLifecycleEvent {
+   packageName: string;
+   version: PackageVersion;
+}
+
 /** Fetch a package from `location` into `targetPath`, as a publish does. */
 export type VersionTreeFetcher = (
    location: string,
@@ -559,6 +566,9 @@ export class Environment {
    // Called with each package the moment it enters `this.packages`. Set by
    // EnvironmentStore (see setPackageLoadedHook); null means nobody listens.
    private packageLoadedHook: ((pkg: Package) => void) | null = null;
+   private versionLifecycleHook:
+      | ((event: VersionLifecycleEvent) => void)
+      | null = null;
 
    /** Absolute path on disk where this environment's package files live. */
    public getEnvironmentPath(): string {
@@ -3289,6 +3299,208 @@ export class Environment {
          );
          this.packages.delete(key);
       });
+   }
+
+   /**
+    * Look up one published version under the package lock, re-read from the
+    * registry so a decision is never made on a stale index. 404 when the
+    * package has no such version (or no versions at all).
+    */
+   private async requirePublishedVersionLocked(
+      packageName: string,
+      versionId: string,
+   ): Promise<{ index: PackageVersionIndex; version: PackageVersion }> {
+      await this.refreshPackageVersions(packageName);
+      const index = this.packageVersions.get(packageName);
+      const version = index?.versions.get(versionId);
+      if (!index || !version) {
+         throw new PackageVersionError(
+            "VERSION_NOT_FOUND",
+            index
+               ? `Package ${packageName} has no version ${versionId}.`
+               : `Package ${packageName} has no published versions, so it has no version ${versionId}.`,
+         );
+      }
+      return { index, version };
+   }
+
+   /**
+    * Point the package's `latest` at a published, unarchived version. Nothing
+    * is rebuilt or fetched: the pointer moves, which is also how a rollback is
+    * done. The version that stops being latest leaves memory, as on publish,
+    * and the new one feeds the package's retrieval index once it is loaded.
+    */
+   public async setLatestVersion(
+      packageName: string,
+      versionId: string,
+   ): Promise<PackageVersion> {
+      assertSafePackageName(packageName);
+      const registry = this.requireVersionRegistry();
+      return this.withPackageLock(packageName, async () => {
+         const { index, version } = await this.requirePublishedVersionLocked(
+            packageName,
+            versionId,
+         );
+         if (version.archiveStatus === "archive") {
+            throw new PackageVersionError(
+               "VERSION_ARCHIVED",
+               `Version ${versionId} of package ${packageName} is archived, so it cannot be latest. Unarchive it first.`,
+            );
+         }
+         const previous = index.latest;
+         // Load the target before the pointer moves, so a version that cannot
+         // load never becomes what every nameless request reaches.
+         // Through getPackage, so memory admission applies as to any load.
+         const target = this.resolveSlot(packageName, versionId);
+         await this.getPackage(packageName, false, { versionId });
+         let moved = previous === versionId;
+         for (let attempt = 0; !moved && attempt < 5; attempt++) {
+            const current = await registry.getLatest(packageName);
+            moved =
+               current === versionId ||
+               (await registry.setLatest(packageName, current, versionId));
+         }
+         if (!moved) {
+            throw new Error(
+               `Could not move the latest version of package ${packageName} to ${versionId}: it kept changing under this request.`,
+            );
+         }
+         await this.refreshPackageVersions(packageName);
+         if (previous !== versionId) {
+            if (previous) await this.unloadVersionSlot(packageName, previous);
+            // The target loaded above while it was not yet latest, so it has
+            // not fed the package's retrieval index; it does now.
+            const loaded = this.packages.get(target.key);
+            if (loaded) this.notifyPackageLoaded(loaded);
+         }
+         logger.info("Moved a package's latest version", {
+            environmentName: this.environmentName,
+            packageName,
+            from: previous,
+            to: versionId,
+         });
+         return this.packageVersions
+            .get(packageName)
+            ?.versions.get(versionId) as PackageVersion;
+      });
+   }
+
+   /**
+    * Bind one version to a build manifest, or back to live with null. The
+    * binding is serving state, so it is the one thing about a published
+    * version that changes: it is recorded on the version's registry row and
+    * applied to the loaded version right away (or when it next loads). The
+    * request is explicit, so a loaded version is rebound even when the
+    * location is unchanged: the manifest behind it may have been rewritten.
+    */
+   public async setVersionManifest(
+      packageName: string,
+      versionId: string,
+      manifestLocation: string | null,
+   ): Promise<Package> {
+      assertSafePackageName(packageName);
+      const registry = this.requireVersionRegistry();
+      return this.withPackageLock(packageName, async () => {
+         const { version } = await this.requirePublishedVersionLocked(
+            packageName,
+            versionId,
+         );
+         if (version.manifestLocation !== manifestLocation) {
+            await registry.updateVersion(version.id, { manifestLocation });
+            await this.refreshPackageVersions(packageName);
+         }
+         // Resolving refuses an archived version with 410, as a read does.
+         const slot = this.resolveSlot(packageName, versionId);
+         return this.withSlotLock(slot, async () => {
+            const loaded = this.packages.get(slot.key);
+            if (!loaded) return this._loadVersionLocked(slot);
+            await this.applyVersionManifest(loaded, manifestLocation);
+            return loaded;
+         });
+      });
+   }
+
+   /**
+    * Archive or unarchive one version. Archive takes it out of service: it is
+    * unloaded, and reads that name it answer 410 VERSION_ARCHIVED. Its files
+    * stay on disk; the publisher never reclaims an archived version's tree.
+    * The package's latest cannot be archived (409 VERSION_IS_LATEST). Sending
+    * the state the version is already in changes nothing.
+    *
+    * What else follows from the change (stopping or re-arming the version's
+    * schedule, reclaiming its `scope: version` tables) is the lifecycle hook's
+    * to do, off the request path.
+    */
+   public async setVersionArchiveStatus(
+      packageName: string,
+      versionId: string,
+      archiveStatus: PackageVersionArchiveStatus,
+   ): Promise<PackageVersion> {
+      assertSafePackageName(packageName);
+      const registry = this.requireVersionRegistry();
+      return this.withPackageLock(packageName, async () => {
+         const { index, version } = await this.requirePublishedVersionLocked(
+            packageName,
+            versionId,
+         );
+         if (version.archiveStatus === archiveStatus) return version;
+         if (archiveStatus === "archive" && index.latest === versionId) {
+            throw new PackageVersionError(
+               "VERSION_IS_LATEST",
+               `Version ${versionId} is the latest version of package ${packageName}, so it cannot be archived. Point latest at another version first.`,
+            );
+         }
+         await registry.updateVersion(version.id, {
+            archiveStatus,
+            archivedAt: archiveStatus === "archive" ? new Date() : null,
+         });
+         await this.refreshPackageVersions(packageName);
+         if (archiveStatus === "archive") {
+            await this.unloadVersionSlot(packageName, versionId);
+         }
+         const updated = this.packageVersions
+            .get(packageName)
+            ?.versions.get(versionId) as PackageVersion;
+         this.notifyVersionLifecycle({
+            packageName,
+            version: updated,
+         });
+         logger.info(
+            archiveStatus === "archive"
+               ? "Archived a package version"
+               : "Unarchived a package version",
+            {
+               environmentName: this.environmentName,
+               packageName,
+               version: versionId,
+            },
+         );
+         return updated;
+      });
+   }
+
+   /**
+    * Attach (or detach with `null`) a callback run after a version is
+    * archived or unarchived. Like the package-loaded hook it must only
+    * schedule work, and a throwing hook is logged and swallowed.
+    */
+   public setVersionLifecycleHook(
+      hook: ((event: VersionLifecycleEvent) => void) | null,
+   ): void {
+      this.versionLifecycleHook = hook;
+   }
+
+   private notifyVersionLifecycle(event: VersionLifecycleEvent): void {
+      try {
+         this.versionLifecycleHook?.(event);
+      } catch (error) {
+         logger.warn("Version lifecycle hook failed", {
+            environmentName: this.environmentName,
+            packageName: event.packageName,
+            version: event.version.version,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 
    private removeRetiredLater(retiredPath: string): void {

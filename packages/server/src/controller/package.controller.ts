@@ -8,6 +8,7 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
+   MaterializationConflictError,
    PackageNotFoundError,
    PackageVersionError,
 } from "../errors";
@@ -71,6 +72,13 @@ function formatPublishRejections(
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
+   private versionBuildCheck:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => Promise<boolean>)
+      | undefined;
 
    constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
@@ -375,6 +383,140 @@ export class PackageController {
          );
       }
       return toApiPackageVersion(environmentName, version, latest);
+   }
+
+   /**
+    * Point the package's `latest` at a published, unarchived version. This
+    * is how an orchestrator running `versionPromotion: "explicit"` promotes,
+    * and how anyone rolls back.
+    */
+   public async setLatestVersion(
+      environmentName: string,
+      packageName: string,
+      body: unknown,
+   ): Promise<ApiPackageVersion> {
+      if (this.environmentStore.publisherConfigIsFrozen) {
+         throw new FrozenConfigError();
+      }
+      const versionId = (body as { versionId?: unknown } | undefined)
+         ?.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         throw new BadRequestError(
+            "versionId must be a string naming one of the package's published versions.",
+         );
+      }
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const version = await environment.setLatestVersion(
+         packageName,
+         versionId,
+      );
+      return toApiPackageVersion(environmentName, version, versionId);
+   }
+
+   /**
+    * Bind one version to a build manifest, or back to live with null. Answers
+    * the version as a package resource, which is where the binding's outcome
+    * (`manifestBindingStatus`, `boundManifestUri`) is reported.
+    */
+   public async setVersionManifest(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+      body: unknown,
+   ): Promise<ApiPackage> {
+      if (this.environmentStore.publisherConfigIsFrozen) {
+         throw new FrozenConfigError();
+      }
+      const fields = (body ?? {}) as { manifestLocation?: unknown };
+      if (
+         !("manifestLocation" in fields) ||
+         (fields.manifestLocation !== null &&
+            (typeof fields.manifestLocation !== "string" ||
+               fields.manifestLocation === ""))
+      ) {
+         throw new BadRequestError(
+            "manifestLocation is required: a manifest URI, or null to serve the version live.",
+         );
+      }
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.setVersionManifest(
+         packageName,
+         versionId,
+         fields.manifestLocation as string | null,
+      );
+      return pkg.getPackageMetadata();
+   }
+
+   /**
+    * Archive or unarchive one version. Refused while a materialization of
+    * that version is running, since archiving reclaims the tables it is
+    * writing.
+    */
+   public async updatePackageVersion(
+      environmentName: string,
+      packageName: string,
+      versionId: string,
+      body: unknown,
+   ): Promise<ApiPackageVersion> {
+      if (this.environmentStore.publisherConfigIsFrozen) {
+         throw new FrozenConfigError();
+      }
+      const archiveStatus = (body as { archiveStatus?: unknown } | undefined)
+         ?.archiveStatus;
+      if (archiveStatus !== "archive" && archiveStatus !== "unarchive") {
+         throw new BadRequestError(
+            'archiveStatus must be "archive" or "unarchive".',
+         );
+      }
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      if (
+         archiveStatus === "archive" &&
+         (await this.versionBuildCheck?.(
+            environmentName,
+            packageName,
+            versionId,
+         ))
+      ) {
+         throw new MaterializationConflictError(
+            `A materialization of version ${versionId} of package ${packageName} is running. Wait for it to finish, or stop it, before archiving the version.`,
+         );
+      }
+      const version = await environment.setVersionArchiveStatus(
+         packageName,
+         versionId,
+         archiveStatus,
+      );
+      return toApiPackageVersion(
+         environmentName,
+         version,
+         environment.listPackageVersions(packageName).latest,
+      );
+   }
+
+   /**
+    * Say how to tell whether a version has a materialization running. Set by
+    * the server once the materialization service exists; without it an
+    * archive is never refused for a running build.
+    */
+   public setVersionBuildCheck(
+      check:
+         | ((
+              environmentName: string,
+              packageName: string,
+              versionId: string,
+           ) => Promise<boolean>)
+         | null,
+   ): void {
+      this.versionBuildCheck = check ?? undefined;
    }
 
    public async deletePackage(environmentName: string, packageName: string) {

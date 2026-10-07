@@ -57,29 +57,30 @@ describe("package versions, before they are implemented", () => {
       }
    });
 
-   it("answers 501 on the versions routes that change a version", async () => {
+   it("404s the versions routes that change a version, for a package that has none", async () => {
       const json = { "Content-Type": "application/json" };
-      await expect501(
+      for (const res of [
          await fetch(pkgUrl("/versions/1.0.0"), {
             method: "PATCH",
             headers: json,
             body: JSON.stringify({ archiveStatus: "archive" }),
          }),
-      );
-      await expect501(
          await fetch(pkgUrl("/versions/1.0.0/manifest"), {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ manifestLocation: null }),
          }),
-      );
-      await expect501(
          await fetch(pkgUrl("/latest"), {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ versionId: "1.0.0" }),
          }),
-      );
+      ]) {
+         expect(res.status).toBe(404);
+         expect(((await res.json()) as { reason?: string }).reason).toBe(
+            "VERSION_NOT_FOUND",
+         );
+      }
    });
 
    it("lists no versions for a package that has none", async () => {
