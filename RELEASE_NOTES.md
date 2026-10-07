@@ -53,7 +53,7 @@ A plain (non-proxied) Postgres connection used to open a new database session fo
 - **New failure mode.** When every session is busy, a query waits up to 30 s for one and then fails with HTTP 502 and a message saying the connection had no free session. It never reached the database, so retrying once other queries finish is safe. The same condition is logged as `Postgres connection pool exhausted`.
 - **New `application_name`.** These sessions show up as `malloy-publisher` in the database's `pg_stat_activity`.
 
-## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+## [0.9.5] - A per-package connection call naming a package the server does not hold answers 404, not 400
 
 A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
 
@@ -61,13 +61,13 @@ The usual cause is a package version that was replaced and unloaded while a call
 
 A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
 
-## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
+## [0.9.5] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
 
 Public SDK surface: `buildCatalog` credits a source only to a model whose `modelInfo` exports it, so **a model without `modelInfo` now contributes no catalog sources**, and a host passing a hand-built `PackageCatalog` should set `modelPath` to the exporting model. `CatalogSource` gains optional `exporters` (every model that exports the source; absent means `[modelPath]`) and `visibleIn` (every model that lists it), and `NewTile` carries `exporters`. **What to do:** a host that builds its catalog from models fetched without `modelInfo` will see an empty tile picker after upgrading, so keep `modelInfo` on the models it passes to `buildCatalog`, or pass a hand-built catalog with `modelPath` set to the exporting model. A document held as text (`DashboardEditor textSource`) is offered only the sources its run model lists and adds no import.
 
-## [Unreleased] — SDK: KPI strips line up, the range slider looks like its neighbours, and the storefront charts read cleaner
+## [0.9.5] — SDK: KPI strips line up, the range slider looks like its neighbours, and the storefront charts read cleaner
 
 - **KPI strip.** A renderer `# big_value` strip now lays out as a grid with cards of one width, instead of a wrapping row sized to each card's text that left a lone fifth card. A nested (embedded) `big_value` is unchanged. The column floor is 250px so a wide value never spills onto its neighbour.
 - **Range slider.** A `range_min`/`range_max` control is drawn as an outlined field with the label notched into its edge and min/max captions under the track. Labels, readouts and aria names are unchanged. It is taller than a text field, so a neighbour's helper line sits under its own box.
@@ -75,7 +75,7 @@ Public SDK surface: `buildCatalog` credits a source only to a model whose `model
 - **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
 - **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
 
-## [Unreleased] — A package stays listed while it reloads, and an install is refused under memory back-pressure
+## [0.9.5] — A package stays listed while it reloads, and an install is refused under memory back-pressure
 
 Every listed package now carries a `status` object with two independent facts: `serving`, whether a compiled copy answers queries on this server, and `loading`, whether a load, reinstall or recompile is in progress here, with `loadingSince` while it is. A package that is reloaded while it serves reports both, because the previous copy keeps answering until the new one is swapped in. Until now the listing, and so `/status`, left such a package out for the whole compile, which read as the package having left the server; an orchestrator that reads `/status` to place packages took it that way, unloaded the replica, and the reload in flight then failed for nothing. A package loading for the first time is listed only on request, as its name and `status` on `GET /status?includeLoading=true`, so an orchestrator that reads `status` can tell a dispatched load from an absence; every other listing shows only packages that can be queried, as before, since a listed package has always meant one that can serve.
 
@@ -113,7 +113,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a `storage=` source reads its stored upstreams through the sources between them, and a build reports whether it read them
+## [0.9.5] — a `storage=` source reads its stored upstreams through the sources between them, and a build reports whether it read them
 
 A `storage=` source that depends on another stored source is built by reading that source's table in the destination. Until now that worked only when the dependent source named the stored one directly: a non-persisted source in between — `checklists_kept is checklists_all extend { … }` over a stored `site_seasons`, or a `select: *` wrapper the public sources are declared on — was absent from the model the build compiled, so the build failed with `Reference to undefined object`, and under `strictUpstreams` (every orchestrated build) the whole run failed with it. The build now carries those intermediate sources into the model, in dependency order and under the `##!` flags of the files that declare them, so a dependent source reads its stored upstreams however many non-persisted sources stand between them. The model that build compiles carries only the sources on the dependent's own path — a source elsewhere in the model that cannot be carried no longer fails a chain it is not part of — declares the author model's `given:`s so a carried source whose text reads one compiles, and sees through an inline parenthesized extension (`hits is (daily extend { … }) -> { … }`) to the base and joins it reads. It also sees a stored parent reached only through an import — `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly` is built from, out of the importing model's namespace — and stacks on its table rather than recomputing it; before, such a parent read as a warehouse table. A `storage=` source over a `partition=` upstream is now built from that upstream's table too: the partition layout is part of the address the publisher files the entry under and no part of the key the compiler substitutes by, so such a downstream was always recomputed from the warehouse — refused outright under `strictUpstreams` — and now stacks on the table like any other chained source.
 
@@ -125,7 +125,7 @@ A chained build re-declares on each parent's binding what the parent's source ad
 
 The storage serve shape now compiles under the `##!` flags of the author files whose declarations it carries, and carries an ungrouped-aggregate measure (`total.sum() / all(total.sum())`) as a measure. Before, a non-persisted wrapper written under `access_modifiers` (`daily_public is daily -> { select: * } include { public: … }`), or a source with an `all(…)` measure and a view that read it, lifted into text the shape could not compile — and one such lift withheld every lifted source in the model, so every query on the public surface ran live against the warehouse while the stored tables sat unread.
 
-## [Unreleased] - BigQuery connections take their project from the service account key again
+## [0.9.5] - BigQuery connections take their project from the service account key again
 
 Since 0.0.196, a BigQuery connection configured with `serviceAccountKeyJson` and no `defaultProjectId` has given Malloy no project id. Without one, compiled SQL qualifies every `dataset.table` path with the BigQuery SDK's placeholder `{{projectId}}`. Queries the SDK sends itself still work, because the SDK rewrites that token in each request. Anything that sends compiled SQL another way does not, most visibly a build into a storage destination, which runs it through DuckDB's `bigquery_query()` and fails with `Invalid project ID '{{projectId}}'`. The connection now takes the key's `project_id` again, and a blank `defaultProjectId` falls back to it as well.
 
