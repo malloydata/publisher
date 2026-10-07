@@ -30,7 +30,14 @@ When no single column is unique (bridge tables, time-series snapshots), use `on`
 join_one: items on order_id = items.order_id and product_id = items.product_id
 ```
 
-`primary_key` is single-column only, pick the highest-cardinality column.
+`primary_key` takes one column, and that column must be unique. When no single column is unique, add a dimension that joins the key columns and use that:
+
+```malloy
+dimension: row_key is concat(acct::string, '-', mon::string)
+primary_key: row_key
+```
+
+Check the new key with the cardinality query below (`group_by: row_key`). If you cannot make a unique key, leave `primary_key` off and say in the source `#(doc)` what one row is. Never pick the column with the most distinct values: if it repeats, `count()` on the source comes back low and nothing reports an error. The grain (what one row is) is a decision for the user, so state it and ask them to confirm it.
 
 ## Cardinality Verification
 
@@ -47,10 +54,12 @@ For composite keys, test multi-column: `group_by: col_a, col_b`, same pattern.
 
 ## Post-Join Verification
 
-After writing joins, verify row counts haven't inflated:
+A plain `count()` on the base source cannot show a bad join: Malloy leaves the join out of the SQL until the query uses a joined field, so the count equals the raw table even when a `join_one` target key repeats. Once the query uses the join (a `group_by` or `count(joined.field)`), rows do multiply: with 3 orders and one repeated target key, `count()` is 4 against 3 and a revenue sum is 340 against a true 240. Run the cardinality query above on the target before you write the join. After the join, group by one field of the joined table and check that the groups add up to the ungrouped total:
 
 ```malloy
-run: source -> { aggregate: row_count is count() }
+// revenue stands for any additive measure on the source
+run: source -> { group_by: customer_name is joined.name, aggregate: revenue }  // add the revenue column up
+run: source -> { aggregate: revenue }                                          // must equal that sum
 ```
 
-If higher than the raw table, a `join_one` target key isn't unique, switch to `join_many`.
+If the grouped total is higher, the target key is not unique. Make it `join_many`, or fix the key.

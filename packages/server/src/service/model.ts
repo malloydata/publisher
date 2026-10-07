@@ -75,20 +75,19 @@ import {
    liftDerivedSources,
    type ServeShapeGiven,
    buildVirtualMap,
-   extractJoins,
-   extractRefinements,
-   extractSourceFilters,
    buildServeShapeTiers,
-   extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
-   sliceSourceRange,
+   authorModelLiftContext,
    type ServeBinding,
    type DerivedSourceLift,
    type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
    withholdUnreproducibleCallerScopedJoins,
+   documentFlagsForLifts,
+   authorRefinementsFor,
+   reachedPersistedSources,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -181,6 +180,7 @@ import {
    stringifyQueryResponse,
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
+import { onlyParseFailures } from "./compile_restriction";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -263,6 +263,7 @@ import {
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+import { translatorMalloyError } from "./translator_error";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -611,7 +612,8 @@ async function compileErrorOf(runnable: {
       await runnable.getPreparedQuery();
       return undefined;
    } catch (error) {
-      return error instanceof MalloyError ? error : undefined;
+      if (error instanceof MalloyError) return error;
+      return translatorMalloyError(error);
    }
 }
 
@@ -4594,11 +4596,14 @@ export class Model {
          model.setGateRuntime(runtime as HydrationRuntime);
          model.compiledSourceText = compiledTextFor(modelURL);
          return model;
-      } catch (error) {
-         let computedError = error;
-         if (error instanceof Error && error.stack) {
-            logger.error("Error stack", error.stack);
+      } catch (thrown) {
+         if (thrown instanceof Error && thrown.stack) {
+            logger.error("Error stack", thrown.stack);
          }
+         // The translator's plain Error is the author's mistake too, as it is
+         // on the worker path (package_load_worker.ts compileOneModel).
+         const error = translatorMalloyError(thrown) ?? thrown;
+         let computedError = error;
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
@@ -5429,6 +5434,44 @@ export class Model {
          }
       }
       return "deferred";
+   }
+
+   /**
+    * Whether `compileError` for ad-hoc `query` may be shown although
+    * {@link queryTextSourcesQueryable} cannot vouch for the text, because no
+    * run target can be read off it (`run` with no colon, SQL, a bare `run:`).
+    *
+    * A grammar failure says nothing about the model, so the only way the
+    * answer could depend on a hidden name is a check that reads names before
+    * the compile and refuses on one. Three do, and this is false whenever one
+    * could act, so a hidden name and a missing one still get the same answer:
+    *   - the run-target check, which has no target to read here (zero names);
+    *   - the caller-join check, which refuses a hidden join base before the
+    *     compile and lets a missing one through to it, so every join base
+    *     must be curated or derived from curated sources in the text;
+    *   - the lock checks, which read every name in the text and answer
+    *     differently for a gated one: false when anything is gated, using the
+    *     same test {@link notQueryable} applies before it will explain a
+    *     refusal.
+    * Where nothing is gated, the boundary already says a hidden source is real
+    * (see {@link OffSurfaceError}), so there is no existence to protect.
+    */
+   private parseFailureNamesNothing(
+      query: string,
+      compileError: MalloyError,
+   ): boolean {
+      return (
+         onlyParseFailures(compileError.problems) &&
+         extractRunTargetSourceNames(query).length === 0 &&
+         [...buildJoinBaseMap(query).values()].every((bases) =>
+            [...bases].every(
+               (b) =>
+                  this.isCuratedSource(b) || this.derivesFromCurated(b, query),
+            ),
+         ) &&
+         !this.declaresAnyGate() &&
+         !this.hasAnyAuthorizeNote()
+      );
    }
 
    /**
@@ -6781,6 +6824,15 @@ export class Model {
          rollupGroups,
          this.serveShapeGivens(),
          derived,
+         // The flags of every file whose text the shape carries: a lift's
+         // declaration, and a bound source's re-emitted views and joins.
+         documentFlagsForLifts(
+            [
+               ...bindings.map((b) => ({ sourceName: b.sourceName })),
+               ...derived,
+            ],
+            this.authorModelLift(),
+         ),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -6838,44 +6890,15 @@ export class Model {
       contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
       sourceNameById: Map<string, string>;
       liftText: (location: SourceLocation) => string | undefined;
+      fileText: (url: string) => string | undefined;
    } {
-      const contents =
-         (
-            this.modelDef as
-               | {
-                    contents?: Record<
-                       string,
-                       DerivedSourceDef & { sourceID?: unknown }
-                    >;
-                 }
-               | undefined
-         )?.contents ?? {};
-      // sourceID -> author source name, for the join materialization gate and
-      // for resolving what a derived source extends.
-      const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents)) {
-         if (typeof def?.sourceID === "string") {
-            sourceNameById.set(def.sourceID, name);
+      return authorModelLiftContext(this.modelDef, (url) => {
+         try {
+            return readFileSync(fileURLToPath(url), "utf8");
+         } catch {
+            return undefined;
          }
-      }
-      // Cache each source file's text (or null when unreadable) across lookups.
-      const fileCache = new Map<string, string | null>();
-      const liftText = (location: SourceLocation): string | undefined => {
-         if (!location?.url?.startsWith("file:")) return undefined;
-         if (!fileCache.has(location.url)) {
-            try {
-               fileCache.set(
-                  location.url,
-                  readFileSync(fileURLToPath(location.url), "utf8"),
-               );
-            } catch {
-               fileCache.set(location.url, null);
-            }
-         }
-         const text = fileCache.get(location.url);
-         return text ? sliceSourceRange(text, location.range) : undefined;
-      };
-      return { contents, sourceNameById, liftText };
+      });
    }
 
    /**
@@ -6889,10 +6912,29 @@ export class Model {
     * fails.
     */
    private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
-      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const lift = this.authorModelLift();
+      const { contents, sourceNameById, liftText } = lift;
+      // Only what a query against this model can name — its namespace — and
+      // what those sources derive from. The lift context also holds the
+      // model's hidden dependencies (sources an import brought in without
+      // naming them), so a base reached through an import is still carried
+      // when a namespace source needs it; one nothing in the namespace
+      // reaches is not a candidate, and cannot withhold the shape.
+      const namespace = Object.keys(
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+      const candidateNames = new Set(namespace);
+      for (const name of namespace) {
+         for (const reached of reachedPersistedSources(lift, name, () => false)
+            .visited) {
+            candidateNames.add(reached);
+         }
+      }
       return liftDerivedSources({
          contents,
          sourceNameById,
+         candidateNames,
          // Bases a lift may extend: the FRESH bindings it is handed.
          shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
          // Candidates are excluded against EVERY binding, including the ones
@@ -6955,23 +6997,16 @@ export class Model {
          );
       }
       const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
-      return kept.map((b) => {
-         const fields = contents?.[b.sourceName]?.fields;
-         const refinements = [
-            ...extractJoins(fields, {
-               sourceNameById,
-               materializedSourceNames,
-               liftText,
-            }),
-            ...extractRefinements(fields),
-            // The source's own `where:` clauses. Not part of the materialized
-            // relation (the build SQL is the persisted relation alone), so
-            // without these the shape serves rows the source excludes.
-            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-            ...extractViews(fields, liftText),
-         ];
-         return { ...b, refinements };
-      });
+      // What each source adds to its table, re-declared on the binding — the
+      // same assembly the chained build uses for its parents.
+      return kept.map((b) => ({
+         ...b,
+         refinements: authorRefinementsFor(
+            b.sourceName,
+            { contents, sourceNameById, liftText },
+            materializedSourceNames,
+         ),
+      }));
    }
 
    /**
@@ -7717,7 +7752,9 @@ export class Model {
       // that reaches here is in text the caller may run: when every run target
       // is queryable (curated, or derived only from curated sources) the caller
       // gets the compiler's problems as a 400 located in its own text;
-      // otherwise the answer is the backstop's 404. A given that will not bind
+      // otherwise the answer is the backstop's 404. The one exception is text
+      // that fails only at the grammar and names no run target, in a model
+      // where nothing is gated (see parseFailureNamesNothing). A given that will not bind
       // is left to the run path, which answers it opaquely when a gate reads it.
       // Skipped when the query routed: the routed runnable compiled the same
       // text, so checking the live one would cost a second compile.
@@ -7732,7 +7769,8 @@ export class Model {
          if (compileError && !isGivenBindingFailure(compileError)) {
             if (
                boundary === "deferred" &&
-               !this.queryTextSourcesQueryable(query)
+               !this.queryTextSourcesQueryable(query) &&
+               !this.parseFailureNamesNothing(query, compileError)
             ) {
                // Explain the refusal (`OffSurfaceError`, ungated only) when a
                // run target is a real model source off the surface — the same

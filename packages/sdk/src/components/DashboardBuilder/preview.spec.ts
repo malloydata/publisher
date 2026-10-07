@@ -64,6 +64,27 @@ describe("previewGivens", () => {
       });
    });
 
+   it("shows a filter default as the server publishes it: unwrapped, and none when empty", () => {
+      const filtered: DashboardDocument = {
+         ...document,
+         localGivens: [
+            { name: "EMPTY", type: "filter<string>", default: "f''" },
+            { name: "STATE", type: "filter<string>", default: "f'WN'" },
+         ],
+         tiles: [
+            tile("t", "v", [
+               { field: "a", given: "EMPTY" },
+               { field: "b", given: "STATE" },
+            ]),
+         ],
+      };
+      const [empty, state] = previewGivens(filtered, []);
+      expect(empty.default).toBeUndefined();
+      expect(state.default).toBe("WN");
+      // The document keeps the literal the file is written from.
+      expect(filtered.localGivens?.[1].default).toBe("f'WN'");
+   });
+
    it("uses the model's own spec for a model given a tile binds", () => {
       const withModel: DashboardDocument = {
          ...document,

@@ -559,6 +559,45 @@ export class MaterializationEligibilityError extends Error {
 }
 
 /**
+ * A chained `storage=` build found that its downstream depends on a persisted
+ * source the build cannot see: one that was neither built in this run nor
+ * supplied by reference, or one whose table lives in another destination. Not a
+ * shape problem — the downstream may well compile over its parents — but a
+ * dispatch one: the orchestrator meant to pin that upstream and this build has
+ * no table for it. Recomputing it from raw would rebuild a stored table the
+ * orchestrator did not ask for, which is the mis-build `strictUpstreams`
+ * exists to refuse, so under strict this error is refused outright while a
+ * shape failure ({@link MaterializationEligibilityError}) falls back.
+ */
+export class ChainedUpstreamMissingError extends Error {
+   readonly missing: readonly string[];
+
+   constructor(missing: readonly string[], detail: string) {
+      super(detail);
+      this.name = "ChainedUpstreamMissingError";
+      this.missing = missing;
+   }
+}
+
+/**
+ * A chained `storage=` build had every stored upstream it depends on, and the
+ * downstream reaches nothing but those, yet the model assembled over them did
+ * not compile — a limit of what the build can carry (a refinement not
+ * re-emitted, a construct the destination's dialect lacks), not a property of
+ * the source. Recomputing from raw WOULD build it, but it would also rebuild
+ * stored tables the build was handed, so under `strictUpstreams` this is
+ * refused like a missing upstream rather than recomputed like a source that
+ * genuinely reaches the warehouse ({@link MaterializationEligibilityError}
+ * from the chained path).
+ */
+export class ChainedShapeNotCarriedError extends Error {
+   constructor(detail: string) {
+      super(detail);
+      this.name = "ChainedShapeNotCarriedError";
+   }
+}
+
+/**
  * The config file exists but could not be turned into a manifest: malformed
  * JSON, a shape the loader rejects, or a `${VAR}` reference to an unset
  * environment variable.

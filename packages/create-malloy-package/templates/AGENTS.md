@@ -206,8 +206,8 @@ model, `malloy-analysis` to answer questions, and `malloy-review` to check Mallo
 correctness.
 
 Read the gotchas before you write, not after you fail: `malloy-gotchas-modeling` for
-sources, dimensions, measures and joins, `malloy-gotchas-queries` for views and
-queries, and `malloy-gotchas-rendering` for chart and formatting tags. They hold the
+sources, dimensions, measures and joins, `malloy-queries` for views and
+queries, and `malloy-charts` for chart and formatting tags. They hold the
 traps that cost the most time on a first model, including the two that a column of
 real data usually springs:
 
@@ -221,6 +221,6 @@ real data usually springs:
   `avg(nullif(score, 'NA')::number)`. Where the two skills disagree,
   `malloy-gotchas-modeling` is the correct one.
 
-When something does not compile, reach for `malloy-debug` rather than guessing at the
-error: it covers reading Malloy's messages, and why fixing the first error usually
-clears the rest of a 20-error cascade.
+When something does not compile, read "When a Model Will Not Compile" in
+`malloy-gotchas-modeling` rather than guessing at the error: it covers reading Malloy's
+messages, and why fixing the first error usually clears the rest of a 20-error cascade.

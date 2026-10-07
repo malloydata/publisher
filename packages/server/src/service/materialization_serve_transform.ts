@@ -651,6 +651,25 @@ export interface DerivedLiftContext {
     */
    boundSourceNames?: ReadonlySet<string>;
    liftText: (location: SourceLocation) => string | undefined;
+   /**
+    * Carry a persist source that EXTENDS another as a lift over its base. By
+    * design `#@ persist` is inherited and `extend` does not change the SQL, so
+    * such an extension is its base's table plus what it adds; a lift over the
+    * base's rebound source, re-declaring the additions, is exactly its meaning.
+    * Off by default, which is what the serve path wants: there the extension is
+    * bound as an ALIAS of its base's entry, with that entry's freshness gate, and
+    * a lift beside the alias would be two declarations of one name. The chained
+    * build binds no alias for an extension, so it is the lift or nothing.
+    */
+   carryPersistExtensions?: boolean;
+   /**
+    * The names a lift may be chosen from. When given, a derived source not in
+    * it is never a candidate, though it stays in `contents` as a base another
+    * candidate may extend. The serve path uses it to lift only what a query
+    * against the model can name — its namespace and what that derives from —
+    * so a hidden dependency the model never exposes cannot fail the shape.
+    */
+   candidateNames?: ReadonlySet<string>;
 }
 
 /** The subset of a compiled source definition this reads. */
@@ -737,6 +756,7 @@ export function liftDerivedSources(
    const pending = Object.entries(ctx.contents).filter(
       ([name, def]) =>
          derivedFrom(def) !== undefined &&
+         (ctx.candidateNames === undefined || ctx.candidateNames.has(name)) &&
          !(ctx.boundSourceNames ?? ctx.shapeSourceNames).has(name) &&
          // A source that is itself a build target is never a lift candidate,
          // however it came to be one — `persistent` is true for a plain
@@ -749,7 +769,9 @@ export function liftDerivedSources(
          // serves the base's artifact under the derived source's name while
          // reporting `servedFrom: storage`, which is precisely what a
          // `freshnessFallback` of `live` or `fail` exists to prevent.
-         def?.persistent !== true &&
+         (def?.persistent !== true ||
+            (ctx.carryPersistExtensions === true &&
+               typeof def.extends === "string")) &&
          // `#@ -persist` is documented as recomputing the query INSTEAD of using
          // the pre-built table, and `opt-out-persist-recomputes` pins that
          // reading. Carrying such a source here would serve it from the stored
@@ -796,7 +818,34 @@ export function liftDerivedSources(
 function derivedFrom(def: DerivedSourceDef | undefined): string | undefined {
    if (typeof def?.extends === "string") return def.extends;
    if (def?.type !== "query_source") return undefined;
-   return structRefSourceId(def.query?.structRef);
+   return (
+      structRefSourceId(def.query?.structRef) ??
+      inlineExtendBase(def.query?.structRef)
+   );
+}
+
+/**
+ * The source an inline parenthesized extension is built on, for a declaration
+ * of the form `h is (base extend { … }) -> { … }`. The compiler embeds the
+ * parenthesized source as the `structRef` itself: a definition with `extends`
+ * and its own join fields but no `sourceID`, since nothing names it. Its text
+ * is part of the declaration's, so it is carried with the declaration; what
+ * the lift needs from it is what it reads — its base, and its joins (see
+ * {@link inlineExtendJoins}).
+ */
+function inlineExtendBase(structRef: unknown): string | undefined {
+   if (structRef === null || typeof structRef !== "object") return undefined;
+   if (structRefSourceId(structRef) !== undefined) return undefined;
+   const ext = (structRef as { extends?: unknown }).extends;
+   return typeof ext === "string" ? ext : undefined;
+}
+
+/** The join fields an inline parenthesized extension declares (see {@link inlineExtendBase}). */
+function inlineExtendJoins(structRef: unknown): unknown[] {
+   if (inlineExtendBase(structRef) === undefined) return [];
+   return ((structRef as { fields?: unknown[] }).fields ?? []).filter(
+      (f) => typeof (f as { join?: unknown }).join === "string",
+   );
 }
 
 /**
@@ -845,9 +894,13 @@ function liftQueryDerivedSource(
       const name = ctx.sourceNameById.get(sourceID);
       if (!name || !available.has(name)) return undefined;
    }
-   const declaredJoins = (def.fields ?? []).filter(
-      (f) => typeof (f as { join?: unknown }).join === "string",
-   );
+   const declaredJoins = [
+      ...(def.fields ?? []).filter(
+         (f) => typeof (f as { join?: unknown }).join === "string",
+      ),
+      // A join the inline parenthesized base declares is read by the same text.
+      ...inlineExtendJoins(def.query?.structRef),
+   ];
    for (const join of declaredJoins) {
       const sourceID = (join as { sourceID?: unknown }).sourceID;
       const name =
@@ -1006,6 +1059,14 @@ export function buildServeShapeModelForBindings(
     * extend, which is what makes them resolve.
     */
    derived: DerivedSourceLift[] = [],
+   /**
+    * The `##!` flags of the author files whose declarations `derived` carries,
+    * verbatim. A lift is the author's text, and text written under
+    * `access_modifiers` (an `include { public: … }` wrapper) or any other
+    * experiment compiles only under the same flag; without them one such lift
+    * fails the shape and every lift with it.
+    */
+   documentFlags: string[] = [],
 ): {
    modelText: string;
 } {
@@ -1031,10 +1092,11 @@ export function buildServeShapeModelForBindings(
    const enabled = ["virtual_source"];
    if (rollupGroups.length) enabled.push("composite_sources");
    if (givens.length) enabled.push("givens");
-   const flags =
+   const ownFlags =
       enabled.length === 1
          ? "##! experimental.virtual_source"
          : `##! experimental { ${enabled.join(" ")} }`;
+   const flags = [...documentFlags, ownFlags].join("\n");
    // Before the sources, because a source's re-emitted `where:` reads them.
    const givenBlock = givens.length
       ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
@@ -1053,6 +1115,60 @@ export function buildServeShapeModelForBindings(
  * {@link buildServeShapeTiers}.
  */
 export const NEVER_THINNED: readonly string[] = ["filter"];
+
+/**
+ * The refinement kinds each tier keeps, richest first: everything a source
+ * declares, then without views, then without joins, then only the kinds that
+ * change rows ({@link NEVER_THINNED}). One ladder for the serve shape and the
+ * chained build, so a parent's table is read the same way wherever it is
+ * read, and thinned the same way when a declaration will not compile over
+ * the virtual base.
+ */
+export const REFINEMENT_TIER_KINDS: ReadonlyArray<ReadonlySet<string>> = [
+   new Set([...NEVER_THINNED, "join", "dimension", "measure", "view"]),
+   new Set([...NEVER_THINNED, "join", "dimension", "measure"]),
+   new Set([...NEVER_THINNED, "dimension", "measure"]),
+   new Set(NEVER_THINNED),
+];
+
+/**
+ * Run `attempt` over `bindings` thinned to each tier in turn, richest first,
+ * until one succeeds. A tier that keeps the same refinements as the one before
+ * it is skipped (nothing to retry); an error `retryOn` does not recognize
+ * passes through at once (infrastructure, not shape); when every tier fails,
+ * the last tier's error is the one thrown — the shape the floor could not
+ * carry. The floor keeps {@link NEVER_THINNED}, so no tier reads a parent
+ * unfiltered.
+ */
+export async function buildOverTiers<T>(
+   bindings: ServeBinding[],
+   tiers: ReadonlyArray<ReadonlySet<string>>,
+   attempt: (parents: ServeBinding[]) => Promise<T>,
+   retryOn: (err: unknown) => boolean,
+): Promise<T> {
+   let previous: string | undefined;
+   let lastError: unknown;
+   let attempted = false;
+   for (const keep of tiers) {
+      const parents = bindings.map((b) => ({
+         ...b,
+         refinements: (b.refinements ?? []).filter((r) => keep.has(r.kind)),
+      }));
+      const shape = parents
+         .map((p) => (p.refinements ?? []).map((r) => r.kind).join("/"))
+         .join("|");
+      if (attempted && shape === previous) continue;
+      previous = shape;
+      attempted = true;
+      try {
+         return await attempt(parents);
+      } catch (err) {
+         if (!retryOn(err)) throw err;
+         lastError = err;
+      }
+   }
+   throw lastError;
+}
 
 /**
  * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
@@ -1077,12 +1193,7 @@ export function buildServeShapeTiers(
 ): ServeShapeTier[] {
    const always = [...NEVER_THINNED];
    // Richest first; each keeps fewer optional kinds than the last.
-   const keepKinds: Array<ReadonlySet<string>> = [
-      new Set([...always, "join", "dimension", "measure", "view"]),
-      new Set([...always, "join", "dimension", "measure"]),
-      new Set([...always, "dimension", "measure"]),
-      new Set(always),
-   ];
+   const keepKinds: Array<ReadonlySet<string>> = [...REFINEMENT_TIER_KINDS];
    const hasGroups = rollupGroups.length > 0;
    return [
       // Richest, with groups.
@@ -1157,12 +1268,36 @@ function rollupServeShapeFragment(group: RollupShapeGroup): string {
  * refinement not carried here fails to compile against this model, and the
  * caller falls back to recompute-from-raw — re-emitting parent
  * refinements to widen coverage is a follow-on.
+ *
+ * `derived` carries the non-persisted sources between the downstream and its
+ * stored parents (see {@link liftDerivedSources}), emitted after the parents and
+ * before the downstream so each resolves what it names. A downstream need not
+ * read a stored parent directly: `checklists_kept is checklists_all extend {…}`
+ * over a stored `site_seasons` reads it through `checklists_all`, and without
+ * that intermediate in the model the downstream's definition names an undefined
+ * object.
+ *
+ * `documentFlags` are the `##!` lines of the author files the lifted text came
+ * from, emitted verbatim ahead of the flags this model needs itself. A lifted
+ * declaration is compiled under the flags its own file enabled — `include {}`
+ * needs `access_modifiers` — and a transient model that carried only its own two
+ * would refuse exactly the declarations the author's file accepts.
  */
 export function buildChainedStorageBuildModel(params: {
    upstreams: ServeBinding[];
    downstreamName: string;
    downstreamDefText: string;
    destinationName: string;
+   derived?: DerivedSourceLift[];
+   documentFlags?: string[];
+   /**
+    * The author model's given surface, declared on this model as the serve
+    * shape declares it. A carried intermediate's text is the author's verbatim,
+    * and a dimension on it that reads `$REGION` compiles only if `REGION` is
+    * declared — whether or not the downstream reads that dimension. The build
+    * binds no given; the declarations are what lets the text compile.
+    */
+   givens?: ServeShapeGiven[];
 }): string {
    // A rollup is never an upstream — nothing can reference one, its name being
    // synthesized and absent from every model file — so one arriving here means a
@@ -1186,12 +1321,448 @@ export function buildChainedStorageBuildModel(params: {
    const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
       .map(serveShapeFragment)
       .join("\n");
+   // The author's flags first, this model's own last: Malloy accumulates `##!`
+   // lines, so repeating a flag the author also enabled is harmless, and the
+   // two this model always needs are stated once wherever the author's stand.
+   const givens = params.givens ?? [];
+   const flags = [
+      ...(params.documentFlags ?? []),
+      givens.length
+         ? "##! experimental { persistence virtual_source givens }"
+         : "##! experimental { persistence virtual_source }",
+   ].join("\n");
+   const givenBlock = givens.length
+      ? `given:\n${givens.map(serveShapeGivenLine).join("\n")}\n`
+      : "";
+   const derived = (params.derived ?? []).map(derivedSourceFragment).join("\n");
    return (
-      `##! experimental { persistence virtual_source }\n` +
+      `${flags}\n` +
+      givenBlock +
       `${upstreamFragments}\n` +
+      (derived ? `${derived}\n` : "") +
       `#@ persist storage=${params.destinationName}\n` +
       `source: ${params.downstreamDefText}\n`
    );
+}
+
+/** What {@link reachedPersistedSources} found on the paths out of a source. */
+export interface ReachedSources {
+   /**
+    * The persist sources the walk stopped at — the stored tables the source
+    * depends on, whether it reads them directly or through intermediates — as
+    * the model's name for each and its `sourceID`. Neither is a table: several
+    * names share one (`#@ persist` is inherited and `extend` never changes the
+    * SQL), and a name is not unique across a package's models, so the caller
+    * resolves each to its content address by `sourceID` before asking whether
+    * the table is present.
+    */
+   persisted: { name: string; sourceID: string }[];
+   /**
+    * Set when some path ends at a source with no stored table behind it — a
+    * table or SQL source, or a reference with no in-model identity — which is a
+    * read of the source warehouse nothing stored can stand in for.
+    */
+   raw: boolean;
+   /** The sources those paths ended at (`regions`), for the reason text. */
+   rawLeaves: string[];
+   /** The non-persisted sources that reach them (`daily_regional`). */
+   rawVia: string[];
+   /**
+    * Every named source the walk passed through or stopped at, the root
+    * excluded: the downstream's dependency closure, which is exactly the set
+    * of sources a build over its stored parents needs declared — and no
+    * other. A model declares more than one chain, and a source off this
+    * one's path is not this build's concern, however it lifts.
+    */
+   visited: string[];
+}
+
+/**
+ * What a source reaches, walking the author model from `name` through the
+ * sources it is built from and stopping at each persist source on the way —
+ * `isPersisted(name)`, which the caller answers from the build plan.
+ *
+ * Which names are persist sources is the plan's to say, not the annotation's.
+ * `#@ persist` is inherited: a plain `extend` of a persisted source, or a rename
+ * of one, is a persist source too and shares the base's table, because neither
+ * changes the SQL the table is built from. Nothing on a definition says which
+ * of several names "declared" the annotation (the compiler copies the base's
+ * notes onto an extension), and the design does not ask: a stored table is a
+ * content address, and every name whose SQL hashes to it is that table. So the
+ * walk records the NAMES it stopped at, and the caller resolves each to its
+ * address group to decide whether the table is present.
+ *
+ * An extension's own refinements are the one thing of its that is NOT in the
+ * table: `daily_regional is daily extend { join_one: r is regions … }` has
+ * `daily`'s SQL and `daily`'s table, and the join to `regions` is computed over
+ * it at read time. A downstream reading `r.region` therefore reaches `regions`
+ * — a warehouse table — even though every persist source on its path is
+ * stored. So at a persist source that extends another, the walk still follows
+ * the joins the extension adds (those its base does not carry) and nothing
+ * else of it; its base's query is the table.
+ *
+ * A reference carried as the referenced definition embedded whole (an inline
+ * `(daily extend { … }) -> …`, a join written in place) is walked as that
+ * definition; only a reference with no identity at all, or to a name the model
+ * does not hold, reads as raw.
+ *
+ * The distinction this draws is the one a chained build's refusal turns on. A
+ * stored table the walk finds that this build did not materialize or reference
+ * is an upstream the orchestrator meant to pin and the build cannot see — the
+ * case `strictUpstreams` exists to refuse. A path that reaches raw is a shape
+ * the destination alone cannot express, where recomputing from the warehouse is
+ * the only build there is. And a source that reaches neither raw nor a missing
+ * table, yet cannot be carried over its parents, is a limit of the carrying —
+ * which strict must not read as licence to recompute a table it pinned.
+ */
+export function reachedPersistedSources(
+   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById">,
+   name: string,
+   isPersisted: (sourceName: string, sourceID: string) => boolean,
+): ReachedSources {
+   const persisted = new Map<string, { name: string; sourceID: string }>();
+   const rawLeaves = new Set<string>();
+   const rawVia = new Set<string>();
+   const visited = new Set<string>();
+   const seen = new Set<unknown>();
+   const defName = (def: DerivedSourceDef): string | undefined => {
+      const id = (def as { sourceID?: unknown }).sourceID;
+      return typeof id === "string" ? ctx.sourceNameById.get(id) : undefined;
+   };
+   const reachRaw = (leaf: string, via: string): void => {
+      rawLeaves.add(leaf);
+      rawVia.add(via);
+   };
+   // A reference is a sourceID (string), the referenced definition embedded
+   // whole (object), or nothing usable.
+   // A `sourceID` is `name@<model URL>`; the name alone is what a reason may
+   // carry, since the URL is the server's path to the file.
+   const nameOf = (sourceID: string): string => sourceID.split("@")[0];
+   const follow = (ref: unknown, via: string): void => {
+      if (typeof ref === "string") {
+         const next = ctx.sourceNameById.get(ref);
+         if (next !== undefined) {
+            visit(ctx.contents[next], next, false, via);
+            return;
+         }
+         // No definition to descend into, but the plan knows the id as a
+         // persist source: a stored table reached through an import the
+         // model's own view does not carry. A stop, never raw.
+         const name = nameOf(ref);
+         if (isPersisted(name, ref)) {
+            visited.add(name);
+            persisted.set(ref, { name, sourceID: ref });
+            return;
+         }
+         reachRaw(name, via);
+         return;
+      }
+      if (ref !== null && typeof ref === "object") {
+         const def = ref as DerivedSourceDef;
+         visit(def, defName(def), false, via);
+         return;
+      }
+      reachRaw("(unnamed)", via);
+   };
+   const followJoins = (
+      fields: unknown[] | undefined,
+      sourceName: string,
+   ): void => {
+      for (const field of fields ?? []) {
+         const f = field as { join?: unknown; sourceID?: unknown };
+         if (typeof f.join !== "string") continue;
+         // A join field is the joined definition itself, with its identity on it
+         // when the model names it.
+         follow(
+            typeof f.sourceID === "string" ? f.sourceID : field,
+            sourceName,
+         );
+      }
+   };
+   // The joins an extension adds: its join fields minus the ones its base
+   // already carries, matched by the name a shape refers to them by.
+   const ownJoins = (def: DerivedSourceDef): unknown[] => {
+      const baseName =
+         typeof def.extends === "string"
+            ? ctx.sourceNameById.get(def.extends)
+            : undefined;
+      const baseFields = new Set(
+         (baseName ? (ctx.contents[baseName]?.fields ?? []) : []).map(fieldKey),
+      );
+      return (def.fields ?? []).filter((f) => !baseFields.has(fieldKey(f)));
+   };
+   // `sourceName` is the model's name for the definition, or undefined for one
+   // embedded in place, which no plan fact can be about. `via` is the source
+   // whose definition referenced this one — what the reason names as reaching a
+   // leaf, since the leaf itself (`regions`) says nothing about which
+   // intermediate dragged it in, and what an embedded definition is reported as.
+   const visit = (
+      def: DerivedSourceDef | undefined,
+      sourceName: string | undefined,
+      root: boolean,
+      via: string,
+   ): void => {
+      const label = sourceName ?? via;
+      if (!def) {
+         reachRaw(label, via);
+         return;
+      }
+      if (seen.has(def)) return;
+      seen.add(def);
+      if (!root && sourceName !== undefined) visited.add(sourceName);
+      // The root is the source being built: it is persisted by definition, and
+      // the question is what IT reaches, so only its descendants can stop the walk.
+      const sourceID = (def as { sourceID?: unknown }).sourceID;
+      if (
+         !root &&
+         sourceName !== undefined &&
+         typeof sourceID === "string" &&
+         isPersisted(sourceName, sourceID)
+      ) {
+         persisted.set(sourceID, { name: sourceName, sourceID });
+         // Its table is its base's; only what it adds is computed over it.
+         if (typeof def.extends === "string") {
+            followJoins(ownJoins(def), sourceName);
+         }
+         return;
+      }
+      const base =
+         typeof def.extends === "string"
+            ? def.extends
+            : def.type === "query_source"
+              ? def.query?.structRef
+              : undefined;
+      if (base === undefined) {
+         // A table or a SQL source: nothing stored stands behind it.
+         reachRaw(label, via);
+         return;
+      }
+      follow(base, label);
+      // An extension's `query` is its base's, copied; the base is walked above.
+      if (typeof def.extends !== "string") {
+         for (const ref of pipelineReferences(def.query?.pipeline)) {
+            follow(ref, label);
+         }
+      }
+      followJoins(def.fields, label);
+   };
+   visit(ctx.contents[name], name, true, name);
+   return {
+      persisted: [...persisted.values()],
+      raw: rawLeaves.size > 0,
+      rawLeaves: [...rawLeaves],
+      rawVia: [...rawVia],
+      visited: [...visited],
+   };
+}
+
+/**
+ * Which stored tables a walk's `persisted` names stand for, and whether each is
+ * available to a build: the names sharing a table (`aliasesBySourceName`, from
+ * {@link groupAliasesByName} over the plan) are one table, present when ANY of
+ * them is among `bound`. Returns the names whose table is not.
+ */
+export function missingPersistedTables(
+   persisted: readonly string[],
+   aliasesBySourceName: Record<string, readonly string[]>,
+   bound: ReadonlySet<string>,
+): string[] {
+   return persisted.filter(
+      (name) =>
+         !(aliasesBySourceName[name] ?? [name]).some((alias) =>
+            bound.has(alias),
+         ),
+   );
+}
+
+/**
+ * Every reference a query pipeline makes — a stage's `structRef`, and anything
+ * it joins — as the sourceID when the model names it, else the embedded
+ * definition itself, so a caller can walk into an inline source rather than
+ * give up on it. A named source is not descended into: its definition is the
+ * caller's to look up, and descending here would walk it twice.
+ */
+function pipelineReferences(pipeline: unknown): unknown[] {
+   const out: unknown[] = [];
+   const walk = (node: unknown, depth: number): void => {
+      if (depth > 200 || node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+         for (const item of node) walk(item, depth + 1);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      if (typeof record.join === "string") {
+         out.push(typeof record.sourceID === "string" ? record.sourceID : node);
+         return;
+      }
+      if (record.structRef !== undefined) out.push(record.structRef);
+      for (const [key, value] of Object.entries(record)) {
+         if (key === "structRef") continue;
+         walk(value, depth + 1);
+      }
+   };
+   walk(pipeline, 0);
+   return out;
+}
+
+/**
+ * The `##!` lines of an author file — the document flags its declarations
+ * compile under. Order is kept and blank lines are dropped.
+ */
+/**
+ * What a bound source adds to the relation its table holds: the joins,
+ * dimensions and measures, extend-block filters and views declared on it,
+ * which its build SQL leaves out (a persist source's build is the persisted
+ * relation alone) and which must be re-declared on its virtual binding to be
+ * applied when the table is read. One assembly for the serve shape and the
+ * chained build, so a table is read the same way wherever it is read; a
+ * binding missing its source's `where:` reads unfiltered rows, silently.
+ * `materializedSourceNames` bounds the joins carried: one to a source that is
+ * not on the shape is left off, and text that reads it then fails to compile.
+ */
+export function authorRefinementsFor(
+   sourceName: string,
+   ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById" | "liftText">,
+   materializedSourceNames: ReadonlySet<string>,
+): SourceRefinement[] {
+   const fields = ctx.contents[sourceName]?.fields;
+   return [
+      ...extractJoins(fields, {
+         sourceNameById: ctx.sourceNameById,
+         materializedSourceNames,
+         liftText: ctx.liftText,
+      }),
+      ...extractRefinements(fields),
+      ...extractSourceFilters(ctx.contents[sourceName]?.filterList),
+      ...extractViews(fields, ctx.liftText),
+   ];
+}
+
+/**
+ * The `##!` flags of every author file a set of lifts carries declarations
+ * from, deduplicated in first-seen order — what a model that carries their
+ * text must enable to compile it.
+ */
+export function documentFlagsForLifts(
+   lifts: readonly { sourceName: string }[],
+   ctx: {
+      contents: Record<string, { location?: { url?: string } } | undefined>;
+      fileText: (url: string) => string | undefined;
+   },
+): string[] {
+   const files = new Set<string>();
+   for (const lift of lifts) {
+      const url = ctx.contents[lift.sourceName]?.location?.url;
+      if (url) files.add(url);
+   }
+   return [...files]
+      .flatMap((url) => documentFlagLines(ctx.fileText(url) ?? ""))
+      .filter((line, i, all) => all.indexOf(line) === i);
+}
+
+export function documentFlagLines(text: string): string[] {
+   // Block comments first, so a `##!` quoted inside one is not a flag.
+   return text
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("##!"));
+}
+
+/**
+ * The compiled-model facts a lift reads, assembled from a compiled `ModelDef`:
+ * its `contents` by source name, a sourceID index over them, and readers that
+ * recover a declaration's verbatim text, or a whole file, from the author's
+ * source by location. One file cache per call, so a package's sources read each
+ * file once between them.
+ *
+ * Shared by the serve path (refinement extraction and the derived-source lift)
+ * and the chained build (the intermediates it carries), so both read ONE view
+ * of the model.
+ */
+export type AuthorModelLiftContext = {
+   contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
+   sourceNameById: Map<string, string>;
+   liftText: (location: SourceLocation) => string | undefined;
+   fileText: (url: string) => string | undefined;
+};
+
+/**
+ * One context per compiled model: a compiled `ModelDef` is immutable, and the
+ * files it was compiled from are what they were when it was — a republish
+ * compiles a new one. Without this a run rebuilt the context, and re-read the
+ * author files, once or twice per persist source.
+ */
+const liftContextByModel = new WeakMap<object, AuthorModelLiftContext>();
+
+export function authorModelLiftContext(
+   modelDef: unknown,
+   readFile: (url: string) => string | undefined,
+): AuthorModelLiftContext {
+   const cacheable = modelDef !== null && typeof modelDef === "object";
+   if (cacheable) {
+      const cached = liftContextByModel.get(modelDef);
+      if (cached) return cached;
+   }
+   const built = buildAuthorModelLiftContext(modelDef, readFile);
+   if (cacheable) liftContextByModel.set(modelDef, built);
+   return built;
+}
+
+function buildAuthorModelLiftContext(
+   modelDef: unknown,
+   readFile: (url: string) => string | undefined,
+): AuthorModelLiftContext {
+   type Def = DerivedSourceDef & { sourceID?: unknown };
+   const md = modelDef as
+      | {
+           contents?: Record<string, Def>;
+           sourceRegistry?: Record<
+              string,
+              { entry?: (Def & { type?: unknown; as?: unknown }) | undefined }
+           >;
+        }
+      | undefined;
+   const namespace = md?.contents ?? {};
+   // The model's namespace, plus its hidden dependencies: a source an import
+   // brought in transitively without placing it in this model's namespace —
+   // `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly`
+   // is built from, out of `contents` — lives in `sourceRegistry` as a full
+   // definition under its declared name (`as`). The walk, the lift and the
+   // flag gathering read one view of what this model's sources are built
+   // from, so a stored parent reached only through an import is a stop and a
+   // carried declaration, not a table the model cannot name. The namespace
+   // wins a name clash: it is what the model's own text refers to.
+   const contents: Record<string, Def> = {};
+   for (const value of Object.values(md?.sourceRegistry ?? {})) {
+      const entry = value?.entry;
+      if (!entry || entry.type === "source_registry_reference") continue;
+      const name = typeof entry.as === "string" ? entry.as : undefined;
+      if (!name || name in namespace || name in contents) continue;
+      contents[name] = entry;
+   }
+   Object.assign(contents, namespace);
+   // sourceID -> author source name, for the join materialization gate and
+   // for resolving what a derived source extends.
+   const sourceNameById = new Map<string, string>();
+   for (const [name, def] of Object.entries(contents)) {
+      if (typeof def?.sourceID === "string") {
+         sourceNameById.set(def.sourceID, name);
+      }
+   }
+   // Cache each source file's text (or null when unreadable) across lookups.
+   const fileCache = new Map<string, string | null>();
+   const fileText = (url: string): string | undefined => {
+      if (!url.startsWith("file:")) return undefined;
+      if (!fileCache.has(url)) fileCache.set(url, readFile(url) ?? null);
+      return fileCache.get(url) ?? undefined;
+   };
+   const liftText = (location: SourceLocation): string | undefined => {
+      if (!location?.url) return undefined;
+      const text = fileText(location.url);
+      return text ? sliceSourceRange(text, location.range) : undefined;
+   };
+   return { contents, sourceNameById, liftText, fileText };
 }
 
 /**
@@ -1451,11 +2022,18 @@ export function extractRefinements(
       if (typeof f.code !== "string" || f.code.length === 0) continue; // raw column
       if (f.expressionType === "scalar") {
          out.push({ kind: "dimension", name: f.name, code: f.code });
-      } else if (f.expressionType === "aggregate") {
+      } else if (
+         f.expressionType === "aggregate" ||
+         // `all(…)` / `exclude(…)` over a measure: a measure like any other
+         // on the relation it is declared over, which a virtual base is. A
+         // view on the same source commonly reads one, and a view is carried
+         // verbatim — leaving the measure off makes that view fail to compile.
+         f.expressionType === "ungrouped_aggregate"
+      ) {
          out.push({ kind: "measure", name: f.name, code: f.code });
       }
-      // analytic / calculation / ungrouped-aggregate and non-atomic fields
-      // (joins, turtles have no `code`) are skipped → those queries fall back.
+      // analytic / calculation and non-atomic fields (joins, turtles have no
+      // `code`) are skipped → those queries fall back.
    }
    return out;
 }
