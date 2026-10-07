@@ -250,15 +250,15 @@ describe("internalErrorToHttpError", () => {
 });
 
 describe("connection failure vs a rejected query", () => {
-   it("maps ConnectionFailedError to 424 with reason CONNECTION_FAILED and no driver text", () => {
-      // 4xx: a customer's database being down is not Credible failing.
+   it("maps ConnectionFailedError to 502 with reason CONNECTION_FAILED and no driver text", () => {
       const { status, json } = internalErrorToHttpError(
          new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
       );
-      expect(status).toBe(424);
+      expect(status).toBe(502);
       expect(json).toEqual({
-         code: 424,
-         message: "The database for this connection could not be reached.",
+         code: 502,
+         message:
+            "The database connection is down: the database could not be reached, so the query did not run.",
          reason: "CONNECTION_FAILED",
       });
    });

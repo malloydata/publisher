@@ -13,9 +13,8 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // Generalizing is decided per branch, not by status class -- 501, 503 and 504
 // are 5xx and still return their messages. Every 4xx returns its message
 // because a client error names what the caller must change, with one
-// exception: the 424s for an unreachable database and for rejected
-// credentials return a fixed message, because their driver text can name a
-// host, a user or an account. The 5xx branches
+// exception: the 424 for rejected credentials returns a fixed message, because
+// its driver text can name a user or an account. The 5xx branches
 // that return theirs do so because the message is one this server composed (a
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
@@ -47,7 +46,7 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 const GENERIC_UNREACHABLE_MESSAGE =
-   "The database for this connection could not be reached.";
+   "The database connection is down: the database could not be reached, so the query did not run.";
 const GENERIC_AUTH_MESSAGE =
    "The database rejected the connection's credentials. Check the connection's user, password, key or token.";
 
@@ -139,8 +138,9 @@ export function logInternalFailure(
  */
 export type ErrorReason =
    | "TABLE_NOT_FOUND"
-   // On a 424: the database could not be reached, so the query never ran. The
-   // query and the model are fine, and rewriting either will not help.
+   // On a 502: the database could not be reached, so the query never ran. The
+   // query and the model are fine, and rewriting either will not help. Marks a
+   // 502 as the customer's database being down, not Credible failing.
    | "CONNECTION_FAILED"
    // On a 400: the database ran the query and rejected it (a type mismatch, a
    // division by zero, a permission on a table). Distinct from a Malloy
@@ -305,7 +305,8 @@ export function isCredentialRejection(error: unknown): boolean {
 /**
  * The error to answer with when a failure is about the connection rather than
  * the statement: rejected credentials, an unreachable database, or a
- * connection the environment does not have. All three are 424. Undefined for
+ * connection the environment does not have. The first is a 502 (something is
+ * down); the other two are 424 (something is misconfigured). Undefined for
  * anything else, which keeps the status its route gave it.
  *
  * Credentials are checked first, because mysql2 also marks a rejected login
@@ -440,10 +441,10 @@ export function internalErrorToHttpError(
       logInternal("Connection credentials rejected", error, "warn");
       return httpError(424, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
    } else if (error instanceof ConnectionFailedError) {
-      // Checked ahead of ConnectionError, which it extends. Same logging, but
-      // a 424: a customer's database being down is not Credible failing.
+      // Checked ahead of ConnectionError, which it extends: the same 502 and
+      // the same logging, plus the reason that says the database is down.
       logInternal("Database unreachable", error, "warn");
-      return httpError(424, GENERIC_UNREACHABLE_MESSAGE, "CONNECTION_FAILED");
+      return httpError(502, GENERIC_UNREACHABLE_MESSAGE, "CONNECTION_FAILED");
    } else if (error instanceof UnconfiguredConnectionError) {
       return httpError(424, error.message, "CONNECTION_NOT_FOUND");
    } else if (error instanceof UnsupportedCatalogFormatError) {
@@ -671,14 +672,15 @@ export class ConnectionError extends Error {
 
 /**
  * The database could not be reached: the connection was refused, reset or
- * timed out, or the server closed it. The query never ran, so it maps to 424
+ * timed out, or the server closed it. The query never ran, so it maps to 502
  * with `reason: CONNECTION_FAILED`, not to the 400 a rejected query gets.
  *
- * 4xx, not 5xx, by the rule this server follows: 5xx means Credible itself
- * failed, and a customer's database being down is not that. It also keeps a
- * warehouse outage off the router's error budget, and out of the router's 503
- * handling, which would rerun the query on another worker against the same
- * database.
+ * 5xx because something is down, and a retry can succeed; a misconfigured
+ * connection (rejected credentials, a deleted connection) is a 424 instead.
+ * 502 is already what this server answers for a driver failure, rather than
+ * 500 (our bug), 503 (our overload: a router cools the worker down and reruns
+ * the query elsewhere, against the same database) or 504 (our query timeout).
+ * The reason is what tells it from Credible failing.
  *
  * Raised only where {@link isConnectionFailure} recognized the driver's error.
  * The message is the driver's, so it is logged and generalized: it can name an

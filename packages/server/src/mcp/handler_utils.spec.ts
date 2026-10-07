@@ -50,7 +50,7 @@ describe("classifyToolError", () => {
       );
       expect(details).toEqual({
          message:
-            "Could not reach the database for env/pkg. The query never ran.",
+            "The database connection for env/pkg is down: the database could not be reached, so the query never ran.",
          suggestions: [
             "The query and the model are fine. Do not rewrite them.",
             "Retry once. If it fails again, report that the database connection is down rather than changing the query.",

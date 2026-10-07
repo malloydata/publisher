@@ -121,7 +121,7 @@ export function classifyToolError(
          "warn",
       );
       return {
-         message: `Could not reach the database for ${identifier}. The query never ran.`,
+         message: `The database connection for ${identifier} is down: the database could not be reached, so the query never ran.`,
          suggestions: [
             "The query and the model are fine. Do not rewrite them.",
             "Retry once. If it fails again, report that the database connection is down rather than changing the query.",

@@ -21,23 +21,23 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] - A connection that cannot be used answers 424, not 400 or 500
+## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
-When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had failed (500 on schema listing). The driver text could also name an internal host, port or user.
+When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.
 
-The rule now: **5xx means Publisher failed; 4xx means the request, the model, or the customer's database or configuration.** A connection that cannot be used answers **424** with a `reason`, on the query route, notebook cells, `sqlQuery`, `sqlTemporaryTable`, `sqlSource`, the table lookup, and schema and table listing:
+Now a connection that cannot be used answers with a `reason`, on the query route, notebook cells, `sqlQuery`, `sqlTemporaryTable`, `sqlSource`, the table lookup, and schema and table listing. A 5xx means something is down and a retry can succeed; a 4xx means something is misconfigured and a retry fails the same way:
 
-| `reason`                 | Meaning                                                                                                      | Body                                           |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| `CONNECTION_FAILED`      | the database could not be reached: refused, reset, timed out, or closed by the server                        | fixed message                                  |
-| `CONNECTION_AUTH_FAILED` | the database rejected the connection's credentials                                                           | fixed message                                  |
-| `CONNECTION_NOT_FOUND`   | the model names a connection the environment does not have, usually one deleted after the package was loaded | `No connection named "<name>" found in config` |
+| Status | `reason`                 | Meaning                                                                                                      | Body                                           |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| 502    | `CONNECTION_FAILED`      | the database connection is down: refused, reset, timed out, or closed by the server                          | fixed message                                  |
+| 424    | `CONNECTION_AUTH_FAILED` | the database rejected the connection's credentials                                                           | fixed message                                  |
+| 424    | `CONNECTION_NOT_FOUND`   | the model names a connection the environment does not have, usually one deleted after the package was loaded | `No connection named "<name>" found in config` |
 
-The driver's text for the first two goes to the server log at `warn`. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
+`CONNECTION_FAILED` is what marks a 502 as the customer's database being down rather than Publisher failing. The driver's text for the first two goes to the server log at `warn`. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
 
 A query the database ran and rejected (a type mismatch, a division by zero, a permission on a table) is still a 400 with the database's text, and now carries `reason: QUERY_EXECUTION_FAILED`.
 
-**If you branch on the old 400 or 500**, branch on `reason` instead. `sqlQuery`, `sqlTemporaryTable` and `sqlSource` still answer 502 for a driver failure that is none of these.
+**If you branch on the old 400 or 500**, branch on `reason` instead. `sqlQuery`, `sqlTemporaryTable` and `sqlSource` still answer 502 with no reason for a driver failure that is none of these.
 
 How each is recognized, from the driver's own fields on the error and its `cause`:
 

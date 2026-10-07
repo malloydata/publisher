@@ -641,6 +641,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -700,6 +702,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1000,6 +1004,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1064,6 +1070,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1880,6 +1888,8 @@ paths:
           $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2326,6 +2336,8 @@ paths:
           $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2869,15 +2881,25 @@ components:
             $ref: "#/components/schemas/Error"
     ConnectionUnavailable:
       description: |
-        The connection the request needs could not be used, so the query never
-        ran. `reason` says why: CONNECTION_FAILED (the database could not be
-        reached), CONNECTION_AUTH_FAILED (it rejected the connection's
-        credentials), or CONNECTION_NOT_FOUND (the model names a connection the
-        environment does not have). The query is fine; the connection has to
-        be fixed. A 4xx because the failure is the customer's database or
-        configuration, not this server. For the first two the body carries a
-        fixed message, because the driver's text can name a host or a user;
-        it is logged.
+        The connection is misconfigured, so the query never ran. `reason`
+        says how: CONNECTION_AUTH_FAILED (the database rejected the
+        connection's credentials) or CONNECTION_NOT_FOUND (the model names a
+        connection the environment does not have). The query is fine, and a
+        retry fails the same way until the connection is fixed. For
+        CONNECTION_AUTH_FAILED the body carries a fixed message, because the
+        driver's text can name a user; it is logged.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DatabaseUnreachable:
+      description: |
+        The database connection failed. With `reason: CONNECTION_FAILED` the
+        connection is down: the database could not be reached (refused, reset, timed out,
+        or closed by the server), so the query never ran and a retry can
+        succeed. That reason is what marks the customer's database being down
+        rather than this server failing. The body carries a fixed message,
+        because the driver's text can name an internal host; it is logged.
       content:
         application/json:
           schema:
@@ -6151,7 +6173,7 @@ components:
             says nothing about whether the caller reached the right server; the
             latter is a routing problem worth retrying elsewhere.
 
-            CONNECTION_FAILED, on a 424, means the database could not be
+            CONNECTION_FAILED, on a 502, means the database could not be
             reached (the connection was refused, reset or timed out, or the
             server closed it), so the query never ran. The query and the model
             are fine; retrying elsewhere will not help, and neither will
