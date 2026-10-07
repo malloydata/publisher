@@ -55,6 +55,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    databaseAccessFailure,
+   ConnectionError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -8095,6 +8096,13 @@ export class Model {
                throw new BadRequestError(
                   err instanceof Error ? err.message : String(err),
                );
+            }
+
+            // A connection-side failure the connection already classified
+            // (an exhausted pool) keeps its own status rather than becoming a
+            // 400 the caller would read as a problem with the query.
+            if (err instanceof ConnectionError) {
+               throw err;
             }
 
             // Re-throw Malloy errors as-is (they will be handled by error handler)

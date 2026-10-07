@@ -244,6 +244,9 @@ function classifyDriverFailure(error: unknown): Error {
  * `reason: CONNECTION_AUTH_FAILED`).
  */
 function sqlRunFailure(error: unknown): Error {
+   // Already classified (an exhausted pool), with a message written for the
+   // caller.
+   if (error instanceof ConnectionError) return error;
    return (
       databaseAccessFailure(error) ??
       new ConnectionError((error as Error).message)
@@ -825,7 +828,12 @@ export class ConnectionController {
                   { maxRows, maxBytes },
                );
             } catch (error) {
-               if (error instanceof PayloadTooLargeError) throw error;
+               // Already classified, with a message written for the caller.
+               if (
+                  error instanceof PayloadTooLargeError ||
+                  error instanceof ConnectionError
+               )
+                  throw error;
                // If runWithQueryTimeout is about to wrap this in a
                // QueryTimeoutError (because the timer fired), the
                // ConnectionError we'd throw here is discarded — the

@@ -37,6 +37,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -45,6 +46,7 @@ import {
    getDuckLakeTargetFileSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
+   getPostgresPoolMax,
 } from "../config";
 import {
    catalogFormatRangeForEngine,
@@ -52,6 +54,7 @@ import {
 } from "../ducklake_version";
 import {
    ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
    TableNotFoundError,
    UnconfiguredConnectionError,
    UnsupportedCatalogFormatError,
@@ -65,9 +68,11 @@ import {
 } from "../path_safety";
 import {
    assembleEnvironmentConnections,
+   buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
+   postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
@@ -585,11 +590,186 @@ async function attachSnowflake(
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
-function buildPgConnectionString(
+// A server switch that sets statement_timeout: `-cstatement_timeout=N` or
+// `--statement_timeout=N` (Postgres reads `-` in a switch name as `_`). The
+// two-token `-c statement_timeout=N` form is handled where tokens are walked.
+const STATEMENT_TIMEOUT_SWITCH = /^(?:-c|--)statement[_-]timeout=/i;
+
+/**
+ * libpq `options` with every statement_timeout switch removed and the
+ * connection's own appended, so the string carries exactly one. Other switches
+ * are kept in order. Splits on unescaped whitespace, as the server does.
+ */
+function mergeStatementTimeoutOption(
+   existing: string,
+   ms: number,
+): { value: string; replaced: boolean } {
+   const tokens = existing.split(/(?<!\\)\s+/).filter((t) => t !== "");
+   const kept: string[] = [];
+   let replaced = false;
+   for (let i = 0; i < tokens.length; i++) {
+      if (
+         tokens[i] === "-c" &&
+         /^statement[_-]timeout=/i.test(tokens[i + 1] ?? "")
+      ) {
+         i++;
+         replaced = true;
+      } else if (STATEMENT_TIMEOUT_SWITCH.test(tokens[i])) {
+         replaced = true;
+      } else {
+         kept.push(tokens[i]);
+      }
+   }
+   kept.push("-c", `statement_timeout=${ms}`);
+   return { value: kept.join(" "), replaced };
+}
+
+/**
+ * The key/value pairs of a libpq keyword/value conninfo string, with each pair's
+ * span so it can be replaced in place. Values are unquoted and unescaped.
+ * Stops at the first token that is not a `key=value` pair.
+ */
+function conninfoPairs(
+   conninfo: string,
+): { key: string; value: string; start: number; end: number }[] {
+   const pairs: { key: string; value: string; start: number; end: number }[] =
+      [];
+   const isSpace = (c: string | undefined) => c !== undefined && /\s/.test(c);
+   let i = 0;
+   while (i < conninfo.length) {
+      while (isSpace(conninfo[i])) i++;
+      if (i >= conninfo.length) break;
+      const start = i;
+      let key = "";
+      while (
+         i < conninfo.length &&
+         conninfo[i] !== "=" &&
+         !isSpace(conninfo[i])
+      ) {
+         key += conninfo[i++];
+      }
+      while (isSpace(conninfo[i])) i++;
+      if (conninfo[i] !== "=") break;
+      i++;
+      while (isSpace(conninfo[i])) i++;
+      let value = "";
+      if (conninfo[i] === "'") {
+         i++;
+         while (i < conninfo.length && conninfo[i] !== "'") {
+            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
+            value += conninfo[i++];
+         }
+         i++;
+      } else {
+         while (i < conninfo.length && !isSpace(conninfo[i])) {
+            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
+            value += conninfo[i++];
+         }
+      }
+      pairs.push({ key, value, start, end: Math.min(i, conninfo.length) });
+   }
+   return pairs;
+}
+
+function decodeUriComponentOrRaw(value: string): string {
+   try {
+      return decodeURIComponent(value);
+   } catch {
+      return value;
+   }
+}
+
+/**
+ * A raw connectionString with the connection's statement timeout added, in
+ * whichever of libpq's two forms the string is written: a URI takes it as an
+ * `options` query parameter, a keyword/value string as an `options` pair.
+ *
+ * libpq honors only the last `options`, so the timeout is merged into that one
+ * rather than added beside it, which would drop the string's other server
+ * settings. A statement_timeout the string already sets is replaced, with a
+ * warning: the explicit field wins, as it does on the query driver, where the
+ * session SET runs after connecting. Unchanged when the connection sets no
+ * statement timeout.
+ */
+function withLibpqStatementTimeout(
+   name: string,
+   connectionString: string,
    pg: components["schemas"]["PostgresConnection"],
 ): string {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   if (ms === undefined) return connectionString;
+   const merged = (existing: string | undefined): string => {
+      if (existing === undefined) return `-c statement_timeout=${ms}`;
+      const { value, replaced } = mergeStatementTimeoutOption(existing, ms);
+      if (replaced) {
+         logger.warn(
+            `Connection '${name}' sets statementTimeoutMilliseconds and its connectionString's ` +
+               `options also set statement_timeout; statementTimeoutMilliseconds applies.`,
+         );
+      }
+      return value;
+   };
+
+   if (/^postgres(ql)?:\/\//i.test(connectionString)) {
+      const queryStart = connectionString.indexOf("?");
+      if (queryStart === -1) {
+         return `${connectionString}?options=${encodeURIComponent(merged(undefined))}`;
+      }
+      const params = connectionString.slice(queryStart + 1).split("&");
+      const isOptions = (param: string) =>
+         decodeUriComponentOrRaw(param.split("=", 1)[0]) === "options";
+      const last = params.map(isOptions).lastIndexOf(true);
+      if (last === -1) {
+         params.push(`options=${encodeURIComponent(merged(undefined))}`);
+      } else {
+         const raw = params[last].slice(params[last].indexOf("=") + 1);
+         params[last] =
+            `options=${encodeURIComponent(merged(decodeUriComponentOrRaw(raw)))}`;
+      }
+      return `${connectionString.slice(0, queryStart)}?${params.join("&")}`;
+   }
+
+   const existing = conninfoPairs(connectionString)
+      .filter((pair) => pair.key === "options")
+      .pop();
+   if (!existing) {
+      return `${connectionString} ${pgConninfoPair("options", merged(undefined))}`;
+   }
+   return (
+      connectionString.slice(0, existing.start) +
+      pgConninfoPair("options", merged(existing.value)) +
+      connectionString.slice(existing.end)
+   );
+}
+
+/**
+ * The libpq conninfo a DuckDB `TYPE postgres` attach opens a postgres connection
+ * with.
+ *
+ * `applyConnectionOptions` decides whether the connection's own `sslmode` and
+ * `statementTimeoutMilliseconds` reach the string. It is false for a DuckLake
+ * catalog, whose string is built exactly as it was before those fields existed;
+ * true for an attached database and a federated source. When false, or when
+ * the field is unset, TLS comes from the deployment PGSSLMODE as before.
+ *
+ * Exported for tests.
+ */
+export function buildPgConnectionString(
+   pg: components["schemas"]["PostgresConnection"],
+   {
+      name,
+      applyConnectionOptions,
+   }: { name: string; applyConnectionOptions: boolean },
+): string {
    if (pg.connectionString) {
-      return pg.connectionString;
+      if (!applyConnectionOptions) return pg.connectionString;
+      if (pg.sslmode != null) {
+         logger.warn(
+            `Connection '${name}' sets both postgresConnection.sslmode and ` +
+               `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
+         );
+      }
+      return withLibpqStatementTimeout(name, pg.connectionString, pg);
    }
 
    const parts: string[] = [];
@@ -598,6 +778,20 @@ function buildPgConnectionString(
    if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
    if (pg.userName) parts.push(`user=${pg.userName}`);
    if (pg.password) parts.push(`password=${pg.password}`);
+
+   if (applyConnectionOptions) {
+      parts.push(...libpqStatementTimeoutParts(name, pg));
+      if (pg.sslmode != null) {
+         parts.push(
+            ...libpqSslmodeParts(
+               `Connection '${name}'`,
+               pg.sslmode,
+               defaultProxiedAttachTrust(),
+            ),
+         );
+         return parts.join(" ");
+      }
+   }
 
    const pgSSLMode = process.env.PGSSLMODE;
 
@@ -638,7 +832,10 @@ async function attachPostgres(
    await installAndLoadExtension(connection, "postgres");
 
    const config = attachedDb.postgresConnection;
-   const attachString: string = buildPgConnectionString(config);
+   const attachString: string = buildPgConnectionString(config, {
+      name: attachedDb.name,
+      applyConnectionOptions: true,
+   });
 
    const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
    await connection.runSQL(attachCommand);
@@ -864,7 +1061,10 @@ async function attachDuckLakeWithMode(
    }
 
    const pg = ducklakeConfig.catalog.postgresConnection;
-   const pgConnString: string = buildPgConnectionString(pg);
+   const pgConnString: string = buildPgConnectionString(pg, {
+      name: dbName,
+      applyConnectionOptions: false,
+   });
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
    // READ_ONLY: the client manages metadata, we only read the catalog.
    // READ_WRITE (build only): a build-scoped session materializes into it.
@@ -1265,7 +1465,10 @@ async function federatePostgres(
          });
          attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
       } else {
-         attachString = buildPgConnectionString(pg);
+         attachString = buildPgConnectionString(pg, {
+            name: config.name,
+            applyConnectionOptions: true,
+         });
       }
       logger.info(
          `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
@@ -1426,43 +1629,72 @@ export function buildProxiedPgAttachString(
    if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
    if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
    if (pg.password) parts.push(pgConninfoPair("password", pg.password));
+   parts.push(
+      ...libpqSslmodeParts(
+         `Connection proxy on '${name}'`,
+         pg.sslmode ?? "no-verify",
+         trust,
+      ),
+   );
+   parts.push(...libpqStatementTimeoutParts(name, pg));
+   return parts.join(" ");
+}
+
+/**
+ * The libpq conninfo pairs for an explicit sslmode, shared by the proxied and
+ * the direct DuckDB attach so a mode means the same thing on both. `subject` is
+ * the phrase an error leads with.
+ */
+function libpqSslmodeParts(
+   subject: string,
+   mode: ProxiedSslmode,
+   trust: ProxiedAttachTrust,
+): string[] {
    // Typed against PROXIED_SSLMODES, the one list the config validator and the
    // query path derive from: a mode added there without a case below is a
    // compile error here, not a throw at build time.
-   const mode: ProxiedSslmode = pg.sslmode ?? "no-verify";
    switch (mode) {
       case "disable":
-         parts.push("sslmode=disable");
-         break;
+         return ["sslmode=disable"];
       case "no-verify":
-         parts.push("sslmode=require");
-         break;
+         return ["sslmode=require"];
       case "verify-ca": {
          if (!trust.caBundle) {
             throw new Error(
-               `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+               `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
             );
          }
-         parts.push(
+         return [
             "sslmode=verify-ca",
             pgConninfoPair("sslrootcert", trust.caBundle),
-         );
-         break;
+         ];
       }
       case "verify-full":
-         parts.push(
+         return [
             "sslmode=verify-full",
             pgConninfoPair("sslrootcert", trust.ambientBundle()),
-         );
-         break;
+         ];
       default: {
          const unhandled: never = mode;
          throw new Error(
-            `Connection proxy on '${name}' has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
+            `${subject} has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
          );
       }
    }
-   return parts.join(" ");
+}
+
+/**
+ * The libpq conninfo pair that applies a connection's statement timeout, as a
+ * server option on every session the attach opens. Empty when it sets none.
+ */
+function libpqStatementTimeoutParts(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): string[] {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   return ms === undefined
+      ? []
+      : [pgConninfoPair("options", `-c statement_timeout=${ms}`)];
 }
 
 /**
@@ -2239,8 +2471,9 @@ export function buildProxiedSslQuery(name: string, sslmode?: string): string {
    switch (mode) {
       case "disable":
          // Explicit: with no sslmode in the connectionString, pg falls back to
-         // the PGSSLMODE env (set on the non-proxied path), which would verify
-         // and fail the 127.0.0.1 hostname check. Force plaintext explicitly.
+         // the deployment's PGSSLMODE (the default for a direct connection that
+         // sets no sslmode), which would verify and fail the 127.0.0.1 hostname
+         // check. Force plaintext explicitly.
          return "?sslmode=disable";
       case "no-verify":
          return "?sslmode=no-verify";
@@ -2310,14 +2543,120 @@ function buildProxiedPostgresConnection(
    const db = pg.databaseName ? `/${enc(pg.databaseName)}` : "";
    const { query, ssl } = resolveProxiedTls(name, pg.host, pg.sslmode);
    const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${query}`;
+   const setupSQL = statementTimeoutSetupSQL(name, pg);
    return new PooledPostgresConnection({
       name,
       connectionString,
       ...(ssl ? { ssl } : {}),
+      ...(setupSQL ? { setupSQL } : {}),
       // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
       poolMin: 1,
       poolMax: 20,
    });
+}
+
+// One query per session, so session state (SET, SET ROLE, an open BEGIN) from
+// arbitrary SQL never reaches the next caller.
+const POSTGRES_POOL_MAX_USES = 1;
+
+// pg-pool's error for a caller that waited connectionTimeoutMillis for a free
+// session. A connect that itself times out fails with a different message.
+const PG_POOL_WAIT_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
+
+/**
+ * `PooledPostgresConnection` whose pool options reach `pg.Pool`. The base
+ * `buildClientConfig` drops `poolMin`/`poolMax`, so pg-pool's default size
+ * applies regardless of what the constructor is given.
+ */
+export class EnvironmentPooledPostgresConnection extends PooledPostgresConnection {
+   // Per-process cap on open sessions (PUBLISHER_POSTGRES_POOL_MAX). pg-pool
+   // applies the timeout to waiting for a free session as well as to connecting.
+   protected poolLimits(): { max: number; connectionTimeoutMillis: number } {
+      return { max: getPostgresPoolMax(), connectionTimeoutMillis: 30_000 };
+   }
+
+   // getPool() passes this result to `new Pool(...)`, so it is a PoolConfig.
+   protected buildClientConfig(
+      cfg: Parameters<PooledPostgresConnection["buildClientConfig"]>[0],
+   ): PoolConfig {
+      const base = super.buildClientConfig(cfg);
+      return {
+         ...base,
+         ...this.poolLimits(),
+         maxUses: POSTGRES_POOL_MAX_USES,
+         // Identifies these sessions in the database's pg_stat_activity.
+         application_name: "malloy-publisher",
+      };
+   }
+
+   // The base class runs every pool checkout through withTlsHint, so this is
+   // where a query that gave up waiting for a free session is reclassified.
+   protected async withTlsHint<T>(op: () => Promise<T>): Promise<T> {
+      try {
+         return await super.withTlsHint(op);
+      } catch (err) {
+         if (
+            err instanceof Error &&
+            err.message === PG_POOL_WAIT_TIMEOUT_MESSAGE
+         ) {
+            const { max, connectionTimeoutMillis } = this.poolLimits();
+            const waitSeconds = connectionTimeoutMillis / 1000;
+            logger.warn("Postgres connection pool exhausted", {
+               connection: this.name,
+               poolMax: max,
+               waitSeconds,
+               remedy:
+                  "fewer concurrent queries on this connection, or raise PUBLISHER_POSTGRES_POOL_MAX",
+            });
+            throw new ConnectionPoolExhaustedError(
+               `Connection '${this.name}' has no free database session: this server opens at most ${max} at a time for it, and none came free within ${waitSeconds} s. Retry once fewer queries are running on this connection.`,
+            );
+         }
+         throw err;
+      }
+   }
+}
+
+function buildEnvironmentPostgresConnection(
+   metadata: EnvironmentConnectionMetadata,
+): EnvironmentPooledPostgresConnection {
+   const name = metadata.apiConnection.name!;
+   const pg = metadata.apiConnection.postgresConnection;
+   if (!pg) {
+      throw new Error(
+         `Connection '${name}' has type 'postgres' but no postgresConnection config.`,
+      );
+   }
+   // buildPostgresConnectionString applies the connection's sslmode, else the
+   // deployment's PGSSLMODE, and returns undefined when there is nothing to
+   // apply, in which case pg falls back to the individual fields.
+   const setupSQL = statementTimeoutSetupSQL(name, pg);
+   return new EnvironmentPooledPostgresConnection({
+      name,
+      connectionString: buildPostgresConnectionString(pg, {
+         applySslmode: true,
+      }),
+      host: pg.host,
+      port: pg.port,
+      username: pg.userName,
+      password: pg.password,
+      databaseName: pg.databaseName,
+      ...(setupSQL ? { setupSQL } : {}),
+   });
+}
+
+/**
+ * The per-session SQL that applies a connection's statement timeout, or
+ * undefined when it sets none. Run as the driver's setupSQL, so it executes on
+ * every session - each pool acquire and each fresh client - rather than being
+ * sent as a startup parameter, which a connection pooler can refuse.
+ */
+function statementTimeoutSetupSQL(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): string | undefined {
+   const ms = postgresStatementTimeoutMs(name, pg);
+   return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
 function buildDuckLakeConnection(
@@ -2421,6 +2760,10 @@ export function buildEnvironmentMalloyConfig(
    const proxyConnectionCache = new Map<
       string,
       Promise<PooledPostgresConnection>
+   >();
+   const postgresConnectionCache = new Map<
+      string,
+      Promise<EnvironmentPooledPostgresConnection>
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
@@ -2582,6 +2925,29 @@ export function buildEnvironmentMalloyConfig(
                return connection;
             }
 
+            // Plain (non-proxied) Postgres, which would otherwise fall through
+            // to the registry's unpooled PostgresConnection.
+            if (metadata?.apiConnection.type === "postgres") {
+               let connectionPromise = postgresConnectionCache.get(name!);
+               if (!connectionPromise) {
+                  connectionPromise = Promise.resolve(
+                     buildEnvironmentPostgresConnection(metadata),
+                  );
+                  postgresConnectionCache.set(name!, connectionPromise);
+                  // Evict a rejected build so a later lookup can retry.
+                  connectionPromise.catch(() => {
+                     if (
+                        postgresConnectionCache.get(name!) === connectionPromise
+                     ) {
+                        postgresConnectionCache.delete(name!);
+                     }
+                  });
+               }
+               const connection = await connectionPromise;
+               await attachOnce(connection, metadata);
+               return connection;
+            }
+
             const connection = await base.lookupConnection(name);
             if (metadata) {
                await attachOnce(connection, metadata);
@@ -2641,6 +3007,7 @@ export function buildEnvironmentMalloyConfig(
             ...snowflakeJwtCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
+            ...postgresConnectionCache.values(),
          ];
          const closeResults = await Promise.allSettled([
             malloyConfig.shutdown("close"),
@@ -2661,6 +3028,7 @@ export function buildEnvironmentMalloyConfig(
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
+         postgresConnectionCache.clear();
          proxyEndpoints.clear();
 
          const failures = [...closeResults, ...endpointResults].filter(

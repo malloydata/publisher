@@ -16,6 +16,7 @@ import {
    BadRequestError,
    ConnectionError,
    ConnectionFailedError,
+   ConnectionPoolExhaustedError,
    internalErrorToHttpError,
    InvalidArgumentError,
    PackageNotFoundError,
@@ -414,6 +415,60 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
  * the way in, plus an overflow check on the way out (same sentinel
  * pattern as the non-streaming path).
  */
+describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
+   afterEach(() => sinon.restore());
+
+   const exhausted = () =>
+      new ConnectionPoolExhaustedError(
+         "Connection 'conn' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+      );
+
+   it("passes a ConnectionPoolExhaustedError from runSQL through unwrapped", async () => {
+      const error = exhausted();
+      const runSQL = sinon.stub().rejects(error);
+      const { controller } = buildController(runSQL);
+
+      const thrown = await controller
+         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+
+   it("passes a ConnectionPoolExhaustedError from runSQLStream through unwrapped", async () => {
+      const error = exhausted();
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         // eslint-disable-next-line require-yield -- the stream fails before its first row
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            throw error;
+         },
+      } as unknown as Connection;
+      const fakeStore = {
+         getEnvironment: sinon
+            .stub()
+            .resolves({ assertCanAdmitQuery: sinon.stub().returns(undefined) }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+
+      const thrown = await controller
+         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+});
+
 describe("ConnectionController.getConnectionQueryData streaming", () => {
    const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
    const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
