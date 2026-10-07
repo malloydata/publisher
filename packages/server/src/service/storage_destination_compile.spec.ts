@@ -40,6 +40,10 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   startClosingListener,
+   type ClosingListener,
+} from "../test_helpers/closing_listener";
+import {
    buildEnvironmentMalloyConfig,
    restrictMalloyConfigToConnections,
 } from "./connection";
@@ -61,6 +65,9 @@ const SHARED_NAME = "shared";
 /** What Malloy says when a name is not in the config it was handed. */
 const NOT_IN_CONFIG = `No connection named "${DESTINATION_NAME}" found in config`;
 
+/** Accepts and drops each connection, so a catalog behind it fails at once. */
+let unreachableCatalog: ClosingListener;
+
 /** A DuckLake destination whose catalog is not reachable. */
 function ducklakeDestination(name: string): ApiConnection {
    return {
@@ -70,7 +77,7 @@ function ducklakeDestination(name: string): ApiConnection {
          catalog: {
             postgresConnection: {
                host: "127.0.0.1",
-               port: 5,
+               port: unreachableCatalog.port,
                databaseName: "no_such_catalog",
                userName: "publisher",
                password: "catalog-secret",
@@ -92,9 +99,11 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
+      unreachableCatalog = await startClosingListener();
    });
 
    afterAll(async () => {
+      await unreachableCatalog.close();
       await __setPackageLoadPoolForTests(null);
       if (ORIGINAL_WORKERS === undefined)
          delete process.env.PACKAGE_LOAD_WORKERS;
