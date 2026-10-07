@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
 import type { components } from "../api";
-import { BadRequestError } from "../errors";
+import {
+   BadRequestError,
+   PackageAdmissionRefusedError,
+   ServiceUnavailableError,
+} from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
 
@@ -336,7 +340,12 @@ describe("PackageController.updatePackage explores validation", () => {
             },
          );
       const updatePackage = sinon.stub().resolves(mockPackage);
-      const environment = { installPackage, updatePackage };
+      const environment = {
+         peekPackage: () => undefined,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -384,7 +393,10 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const metadata = { name: "pkg", resource: "/pkg" };
       const _package = { getPackageMetadata: () => metadata };
       const getPackage = sinon.stub().resolves(_package);
-      const environment = { getPackage };
+      const environment = {
+         getPackage,
+         describePackageStatus: () => ({ serving: true, loading: false }),
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const environmentStore = {
          getEnvironment,
@@ -436,5 +448,399 @@ describe("PackageController.getPackage embeddingIndex", () => {
       const { controller } = controllerWithIndex(undefined);
       const pkg = await controller.getPackage("env", "pkg", true);
       expect("embeddingIndex" in pkg).toBe(false);
+   });
+});
+
+describe("PackageController.updatePackage reinstall decision", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   const servedPackage = {
+      getPackageMetadata: () => ({
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+      }),
+   };
+
+   function controllerWith(environment: object) {
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+      return {
+         controller: new PackageController(environmentStore),
+         addPackageToDatabase,
+      };
+   }
+
+   it("a PATCH whose location matches the installed one updates metadata without reinstalling", async () => {
+      // The orchestrator's post-build rebind carries the package's own location
+      // alongside the new manifestLocation. Nothing about the content changes
+      // under one URI, so this must not re-download and recompile the package.
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller, addPackageToDatabase } = controllerWith({
+         peekPackage: () => servedPackage,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.called).toBe(false);
+      expect(updatePackage.calledOnce).toBe(true);
+      expect(addPackageToDatabase.calledOnce).toBe(true);
+   });
+
+   it("a PATCH with a different location reinstalls, applying the body inside the install", async () => {
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => servedPackage,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+      const body = {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.1.zip",
+         description: "next",
+      };
+
+      await controller.updatePackage("env", "pkg", body);
+
+      expect(installPackage.calledOnce).toBe(true);
+      // The metadata rides with the install so both land under one lock hold;
+      // a separate update call is exactly the second lock acquisition that a
+      // queued delete could run between.
+      expect(installPackage.firstCall.args[3]).toEqual({ update: body });
+      expect(updatePackage.called).toBe(false);
+   });
+
+   it("a PATCH matching the location of an install in flight waits for it and is then a metadata update", async () => {
+      // Nothing is resident while the first install downloads. The decision is
+      // made once the install has landed, against the copy it installed, so
+      // the PATCH is a metadata update and not a second install of the same
+      // location beside the first.
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      let resident: typeof servedPackage | undefined;
+      const { controller } = controllerWith({
+         peekPackage: () => resident,
+         awaitPackageLoads: async () => {
+            resident = servedPackage; // the install landed while we waited
+         },
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.called).toBe(false);
+      expect(updatePackage.calledOnce).toBe(true);
+   });
+
+   it("a PATCH whose location is null is a metadata update", async () => {
+      // A client that serializes unset fields as null names nothing to fetch.
+      // Read as a location it would reach the downloader, which has no path to
+      // make of null, and the request would fail 500.
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => servedPackage,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: null as unknown as string,
+         description: "renamed",
+      });
+
+      expect(installPackage.called).toBe(false);
+      expect(updatePackage.calledOnce).toBe(true);
+   });
+
+   it("a PATCH naming the location of a reinstall in flight waits, and reinstalls only if that install failed", async () => {
+      // While a reinstall from a new location runs, the resident copy still
+      // names the old one. Decided then, the PATCH would start a second
+      // install of the location already in flight. It waits instead, and is
+      // decided against what the reinstall leaves resident: the new copy, so a
+      // metadata update; or, after a rollback, the old copy, so a reinstall.
+      const upgraded = {
+         getPackageMetadata: () => ({
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.1.zip",
+         }),
+      };
+      const body = { name: "pkg", location: "gs://bucket/pkg___1.0.1.zip" };
+
+      let resident: typeof servedPackage = servedPackage; // …1.0.0.zip
+      const succeeded = {
+         installPackage: sinon.stub().resolves(upgraded),
+         updatePackage: sinon.stub().resolves({ name: "pkg" }),
+      };
+      await controllerWith({
+         peekPackage: () => resident,
+         awaitPackageLoads: async () => {
+            resident = upgraded;
+         },
+         ...succeeded,
+      }).controller.updatePackage("env", "pkg", body);
+      expect(succeeded.installPackage.called).toBe(false);
+      expect(succeeded.updatePackage.calledOnce).toBe(true);
+
+      const rolledBack = {
+         installPackage: sinon.stub().resolves(upgraded),
+         updatePackage: sinon.stub().resolves({ name: "pkg" }),
+      };
+      await controllerWith({
+         peekPackage: () => servedPackage, // the rollback restored …1.0.0.zip
+         awaitPackageLoads: async () => {},
+         ...rolledBack,
+      }).controller.updatePackage("env", "pkg", body);
+      expect(rolledBack.installPackage.calledOnce).toBe(true);
+      expect(rolledBack.updatePackage.called).toBe(false);
+   });
+
+   it("a PATCH that waited out a failed first install installs from its location", async () => {
+      // Nothing resident once the wait ends means the install it waited for
+      // failed; a PATCH that names a location then installs from it, as it
+      // did before, rather than answering 404 for a package the caller is
+      // trying to place here.
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => undefined,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(updatePackage.called).toBe(false);
+   });
+
+   it("a PATCH on a package not loaded here installs it", async () => {
+      const installPackage = sinon.stub().resolves(servedPackage);
+      const updatePackage = sinon.stub().resolves({ name: "pkg" });
+      const { controller } = controllerWith({
+         peekPackage: () => undefined,
+         awaitPackageLoads: async () => {},
+         installPackage,
+         updatePackage,
+      });
+
+      await controller.updatePackage("env", "pkg", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(updatePackage.called).toBe(false);
+   });
+});
+
+describe("PackageController.reloadPackage", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("a reload from the install location re-records that location on the reinstalled copy", async () => {
+      // The re-fetched tree's publisher.json carries no `location`, so a
+      // reinstall that does not write it back leaves the next same-location
+      // PATCH reading as a change, and reinstalling again.
+      const location = "gs://bucket/pkg___1.0.0.zip";
+      const manifestLocation = "gs://bucket/pkg___1.0.0.manifest.json";
+      // What callers set on the served copy since it was installed; the
+      // re-fetched tree's publisher.json has none of it.
+      const cached = {
+         getPackageMetadata: () => ({
+            name: "pkg",
+            location,
+            description: "set by a PATCH",
+            manifestLocation,
+            scope: "version" as const,
+         }),
+      };
+      const reinstalled = {
+         getPackageMetadata: () => ({ name: "pkg", location }),
+      };
+      const getPackage = sinon.stub().resolves(cached);
+      const installPackage = sinon.stub().resolves(reinstalled);
+      const environmentStore = {
+         getEnvironment: sinon.stub().resolves({ getPackage, installPackage }),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+      sinon
+         .stub(
+            controller as unknown as { downloadInto: () => Promise<void> },
+            "downloadInto",
+         )
+         .resolves();
+
+      const result = await controller.reloadPackage("env", "pkg");
+
+      expect(result.mode).toBe("reinstalled");
+      expect(installPackage.calledOnce).toBe(true);
+      // The location is re-recorded and the manifest binding re-applied
+      // inside the install, or the package would serve live until the next
+      // drift check rebinds it. Nothing else the served copy carried is: the
+      // description, surface and policy are the re-fetched tree's to declare,
+      // and re-applying them would run publish-time checks after the swap.
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: { location, manifestLocation },
+      });
+   });
+});
+
+describe("PackageController.addPackage manifestLocation", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   const installedPackage = {
+      formatInvalidExplores: () => "",
+      formatInvalidPersistencePolicy: () => "",
+      formatInvalidIncrementalPolicy: () => "",
+      formatInvalidPreaggregatePolicy: () => "",
+      formatPersistenceCollisionRejections: () => "",
+   };
+
+   function addPackageController(environment: object) {
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment: sinon.stub().resolves(environment),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      return new PackageController(environmentStore);
+   }
+
+   it("a null manifestLocation is not forwarded into the install", async () => {
+      // A fresh install serves live already. Forwarded, a null would take the
+      // revert-to-live branch and recompile every model a second time inside
+      // the install's lock hold, and write `manifestLocation: null` to disk.
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const controller = addPackageController({ installPackage });
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: null,
+      });
+
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: { location: "gs://bucket/pkg___1.0.0.zip" },
+      });
+   });
+
+   it("an admission refusal is answered, not recorded as a load failure", async () => {
+      // The refusal is this request's answer; the caller places the package
+      // elsewhere. Recorded, it would sit in /status's load errors until this
+      // server next loaded that package, which it may never do. A failure of
+      // the server's own (any other 5xx) is still recorded.
+      const recordPackageAddFailure = sinon.stub();
+      const refused = sinon
+         .stub()
+         .rejects(new PackageAdmissionRefusedError("under memory pressure"));
+      const refusing = addPackageController({
+         installPackage: refused,
+         recordPackageAddFailure,
+      });
+      await expect(
+         refusing.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(recordPackageAddFailure.called).toBe(false);
+
+      // Any other 5xx is the server's own problem and is recorded, including
+      // a worker-pool failure that is also a ServiceUnavailableError: its
+      // message carries the cause (an errno) an operator has to fix.
+      const failing = addPackageController({
+         installPackage: sinon.stub().rejects(new Error("bucket unreachable")),
+         recordPackageAddFailure,
+      });
+      await expect(
+         failing.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toThrow("bucket unreachable");
+      expect(recordPackageAddFailure.calledOnce).toBe(true);
+
+      const workerPool = addPackageController({
+         installPackage: sinon
+            .stub()
+            .rejects(
+               new ServiceUnavailableError(
+                  "Package-load worker pool unavailable: EACCES: permission denied",
+               ),
+            ),
+         recordPackageAddFailure,
+      });
+      await expect(
+         workerPool.addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg___1.0.0.zip",
+         }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+      expect(recordPackageAddFailure.calledTwice).toBe(true);
+   });
+
+   it("a publish with a location binds the body's manifestLocation as part of the install", async () => {
+      // The downloaded tree's publisher.json does not carry the manifest the
+      // orchestrator computed, so the body is the only place it arrives. Left
+      // unapplied, the package came up unbound and was fully reloaded by the
+      // next drift check.
+      const installPackage = sinon.stub().resolves({
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      });
+      const environment = { installPackage };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment: sinon.stub().resolves(environment),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: {
+            location: "gs://bucket/pkg___1.0.0.zip",
+            manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         },
+      });
    });
 });

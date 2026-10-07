@@ -93,6 +93,20 @@ paths:
         Returns the current status of the Malloy Publisher server, including initialization state,
         available environments, and server timestamp. This endpoint is useful for health checks and
         monitoring server availability.
+      parameters:
+        - name: includeLoading
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Also list, in each environment's `packages`, a package that is
+            loading here for the first time and so cannot serve yet, as its
+            `name` and `status` only. Off by default: a listed package has
+            always meant one that can serve here, and only a caller that reads
+            `Package.status` can tell the two apart. A package being reloaded
+            while it serves is listed either way.
       responses:
         "200":
           description: Returns server status
@@ -3262,7 +3276,15 @@ components:
             and live-reloads them instead. The mount is chosen when the
             environment is first loaded from config, so adding `--watch-env`
             to a later boot needs `--init` to re-mount a package already
-            copied.
+            copied. On an update, a `location` equal to the one the package
+            was installed from is a metadata update and nothing is fetched; a
+            different one reinstalls the package from it, and an update that
+            arrives while an install is in progress waits for it and is decided
+            against the copy that install leaves resident. To fetch the same
+            location again, reload the package (`GET …?reload=true`). The
+            location a package was installed from is recorded by the server
+            when it installs it and read back from that record; a `location`
+            written into a package's own `publisher.json` is not.
         scope:
           type: string
           enum:
@@ -3682,6 +3704,41 @@ components:
             is a live reference regardless of `manifestBindingStatus` — see that
             field for the invariant a caller reclaiming superseded physical
             tables has to hold.
+        status:
+          type: object
+          readOnly: true
+          description: >-
+            Server-computed, read-only: how this server holds the package right
+            now. `serving` is whether a compiled copy answers queries here;
+            `loading` is whether a load, reinstall or recompile of the package
+            is in progress here. The two are independent. A first load reports
+            `loading` without `serving`. A reload of a package that is already
+            served reports both, because the previous copy keeps answering until
+            the new one is swapped in. Steady state reports `serving` alone.
+            `loadingSince` is when the in-progress load began, so a caller can
+            bound one that never completes. Which tables a serving copy answers
+            from is a separate question, answered by `manifestBindingStatus`.
+
+            A package that is loading for the first time, so is not yet
+            serving, is listed only where a caller asks for it:
+            `GET /status?includeLoading=true` includes it as its name and
+            `status`. Every other listing, the environment resources included,
+            shows packages that can be queried.
+          required: [serving, loading]
+          properties:
+            serving:
+              type: boolean
+              description: A compiled copy of the package answers queries here now.
+            loading:
+              type: boolean
+              description: >-
+                A load, reinstall or recompile of the package is in progress
+                here. While true, `manifestBindingStatus` describes the copy
+                being replaced, not the one being built.
+            loadingSince:
+              type: string
+              format: date-time
+              description: When the in-progress load began. Present only while `loading` is true.
         storageServeBindings:
           type: array
           readOnly: true

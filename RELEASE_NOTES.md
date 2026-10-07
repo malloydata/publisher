@@ -29,6 +29,14 @@ A plain (non-proxied) Postgres connection used to open a new database session fo
 - **New failure mode.** When every session is busy, a query waits up to 30 s for one and then fails with HTTP 502 and a message saying the connection had no free session. It never reached the database, so retrying once other queries finish is safe. The same condition is logged as `Postgres connection pool exhausted`.
 - **New `application_name`.** These sessions show up as `malloy-publisher` in the database's `pg_stat_activity`.
 
+## [Unreleased] - A per-package connection call naming a package the server does not hold answers 404, not 400
+
+A call to a per-package `duckdb` connection route (`.../packages/<pkg>/connections/duckdb/...`: `sqlSource`, `sqlQuery`, `sqlTemporaryTable`, `schemas`, `tables` and the table lookup) that names a package this server does not hold now answers 404, not 400. The message is unchanged: `Package "<pkg>" not found in environment "<env>"`.
+
+The usual cause is a package version that was replaced and unloaded while a caller still held its old name. A router that caches which server holds which package can treat the 404 as "look again", which it could not do with a 400. If you branch on the 400 for this case, branch on 404 instead.
+
+A named package on a server that holds no packages at all also answers this 404. It used to fail with an untyped error. A `duckdb` call that names no package, on a server holding several, is still a 400.
+
 ## [Unreleased] — SDK: the builder's add-tile imports a source from the model that exports it
 
 Adding a tile on a source now writes an import Malloy accepts. The catalog used to credit a source to the first model whose `sources` listed it, and that list includes names a model only imports, so a tile on `order_items` could write `import { order_items } from "../data_app.malloy"` ("Reference to undefined object"), or add a named import to a file that already did `import "../storefront.malloy"` ("Cannot redefine"). A whole-file import of any model that exports the source now counts as seeing it, and Save accepts a tile on it without a named import.
@@ -43,7 +51,21 @@ Public SDK surface: `buildCatalog` credits a source only to a model whose `model
 - **Shape maps.** A `# shape_map` legend now sits below the map, which draws 512px wide instead of 588px, so it fits a narrower tile. A tile narrower than that still clips it.
 - **Storefront example.** Chart views tag `# currency=usd0`, so axes read `$130,000`; tables and KPI cards keep their cents. Category labels on the bar charts are thinned less, not never: the renderer's label-overlap rule is not configurable.
 
-## [Unreleased] - Compile returns the document it describes
+## [Unreleased] — A package stays listed while it reloads, and an install is refused under memory back-pressure
+
+Every listed package now carries a `status` object with two independent facts: `serving`, whether a compiled copy answers queries on this server, and `loading`, whether a load, reinstall or recompile is in progress here, with `loadingSince` while it is. A package that is reloaded while it serves reports both, because the previous copy keeps answering until the new one is swapped in. Until now the listing, and so `/status`, left such a package out for the whole compile, which read as the package having left the server; an orchestrator that reads `/status` to place packages took it that way, unloaded the replica, and the reload in flight then failed for nothing. A package loading for the first time is listed only on request, as its name and `status` on `GET /status?includeLoading=true`, so an orchestrator that reads `status` can tell a dispatched load from an absence; every other listing shows only packages that can be queried, as before, since a listed package has always meant one that can serve.
+
+Three install behaviours change with it:
+
+- An install, whether a `POST` or a `PATCH` with a `location`, is refused with a 503 while the memory governor reports back-pressure, before the download starts, the way a lazy load and an add already were. A reinstall holds the new compiled copy beside the serving one until the swap, so it was the one allocation the governor could not see.
+- A `PATCH` whose `location` matches the one the package was installed from is a metadata update, not a reinstall: the manifest is rebound in place and nothing is downloaded or recompiled beyond what the manifest itself requires. A `PATCH` that arrives while any install of the package is in progress, downloading or compiling, a first install or a reinstall, waits for it and is decided against the copy that install leaves resident, so it lands on the installed copy, and a `PATCH` naming a location whose install failed installs it. Only an install records a location; a metadata `PATCH` never changes it. To make the comparison hold across an in-place reload and a restart, the server records the install location in its own file outside the package directory, `<environment>/.install-records/<package>.json`, and reads nothing inside the package as one, neither a `location` an author writes into `publisher.json` nor a record shipped with the content, since a reload fetches from it. `GET …?reload=true` and the `reload_package` tool re-fetch from the recorded location and re-apply the manifest binding; that is the way to fetch the same location again.
+- A `POST` that carries a `manifestLocation` binds it as part of the install. The downloaded tree's own `publisher.json` does not carry it, so until now the package came up serving live and was rebound, with a full reload, by the next drift check.
+
+A metadata `PATCH` also preserves what it does not mention: `description`, `resource` and `location` were replaced by the body's absent values, and `publisher.json` lost its `description`. A field sent as `null` counts as not mentioned, the rule `scope` already followed, so a client that serializes unset fields as null does not blank them; an empty string is a value. And the metadata sent with an install is applied inside the install's own lock hold, so a delete queued behind the swap can no longer run between the two and leave the update answering 404 for an install that had completed.
+
+A package installed before this release has no recorded location, so its first `PATCH` that names its location reinstalls it once and records it; every later one is a metadata update.
+
+## [0.9.4] - Compile returns the document it describes
 
 `POST …/models/{path}/compile` at scope `append` now answers a source that carries a model-level `## artifact` tag with a `document`: the `kind`, the `manifest` and the cells the same text would serve once saved, read from the submitted text alone. A tile or cell the caller may not read (`#(authorize)`) is not compiled and comes back `restricted: true` with no diagnostic. `Given` gains `secure`, true for a `#(secure)` declaration.
 
@@ -85,7 +107,7 @@ Since 0.0.196, a BigQuery connection configured with `serviceAccountKeyJson` and
 
 The project id is part of the connection digest, so persisted sources on such connections get new BuildIDs and are rebuilt on their next build. Connections that set `defaultProjectId` are unaffected.
 
-## [Unreleased] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
+## [0.9.4] — SDK: the renderer loads only when a result does, and dashboards run only the tiles near the screen
 
 - **No renderer download at idle.** `RenderedResult` no longer starts importing `@malloydata/render`
   (about 3.4 MB, 1 MB gzipped) the moment its module is evaluated, which made every page of a host
@@ -113,7 +135,7 @@ The project id is part of the connection digest, so persisted sources on such co
   that client. Retries stay off. _What to do:_ a host that relied on a refresh on refocus calls
   `invalidateQueries` itself.
 
-## [Unreleased] — cloning a GitHub package no longer passes `GIT_*` variables to git
+## [0.9.4] — cloning a GitHub package no longer passes `GIT_*` variables to git
 
 `simple-git` moves from 3.36 to 4.0 to clear three advisories, and 4.0 filters the environment it
 passes to `git`. When Publisher clones a package or environment from a GitHub URL, the `git` child
@@ -123,7 +145,7 @@ process no longer sees ambient `GIT_*` variables (`GIT_SSL_CAINFO`, `GIT_TERMINA
 server user's `~/.gitconfig` still apply. An operator who pointed clones at a private CA with
 `GIT_SSL_CAINFO` should set `http.sslCAInfo` in that gitconfig instead.
 
-## [Unreleased] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
+## [0.9.4] (BREAKING) — A calmer dashboard and notebook builder, and one theme accent
 
 The builder is the read-only page in a second state, with fewer controls around it.
 
@@ -164,7 +186,7 @@ The builder is the read-only page in a second state, with fewer controls around 
 
 **Examples.** `storefront` gains `notebooks/overview.malloy`, the overview dashboard as a notebook with text between the charts, and no longer pins its own chart palette, so it follows the instance theme.
 
-## [Unreleased] - The Docker image is signed with cosign
+## [0.9.4] - The Docker image is signed with cosign
 
 `ms2data/malloy-publisher` is now signed at release with Sigstore cosign (keyless, through GitHub Actions OIDC). Verify a release with:
 
@@ -178,7 +200,7 @@ Use cosign v3 or later: the signature is a Sigstore bundle stored as an OCI refe
 
 The signature is on the multi-platform manifest list, so it also covers the per-platform images and their SBOM and provenance attestations. Earlier releases are unsigned. See [packages/server/README.docker.md](packages/server/README.docker.md#verifying-the-image).
 
-## [Unreleased] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
+## [0.9.4] - Malloy 0.0.435: Postgres sessions close when a query fails, and Trino `map` and `json` columns return their values
 
 Publisher now builds on `@malloydata/*` 0.0.435, up from 0.0.434. No Malloy API that Publisher calls changed, and a model that compiled on 0.0.434 compiles the same way, except a Trino or Presto source on a table whose `DESCRIBE` returns no columns (the last item below). The changes that reach a running server are in the Postgres and Trino drivers:
 
@@ -189,7 +211,7 @@ Publisher now builds on `@malloydata/*` 0.0.435, up from 0.0.434. No Malloy API 
 
 The release also adds an experimental SQL Server dialect. Publisher does not offer a SQL Server connection type, so it has no effect here.
 
-## [Unreleased] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
+## [0.9.4] — Semantic retrieval: no lexical fallback when embeddings are configured, new `embeddingIndex.status` values, and optional LLM keyphrases, summaries, refine, rerank and source matching
 
 With no embedding provider and no LLM configured, `get_context` ranks by words as before, and a listing request is unchanged. Everything below applies once a provider is configured. Read the first four items if you poll the status API, run a server with an embedding provider, or write `publisher.json` files.
 
@@ -220,7 +242,7 @@ Also changed, when the matching provider is configured:
 
 **A capped keyphrase or summary sync resumes on the next restart.** When `retrieval.llm.maxCallsPerSync` stops a sync early, the status can read `ready` with `done` below `total`. A package reload does not continue it, because a reload of an unchanged package starts no sync work.
 
-## [Unreleased] — Console can edit notebooks, and create notebooks and dashboards
+## [0.9.2] — Console can edit notebooks, and create notebooks and dashboards
 
 A notebook is now a one-column dashboard, edited in the same builder as a dashboard. A tagged
 `notebooks/*.malloy` notebook has an **Edit** button in the Console, and a dashboard and a notebook
@@ -329,7 +351,7 @@ came from the wrong field. It now keeps the full path, always quoted in the file
 now accepts one level of join in a control's `suggest { dimension=… }`, where it used to warn that
 the source had no such field.
 
-## [Unreleased] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
+## [0.9.2] — The dashboard and notebook builders ask before discarding edits, and say why a control is off
 
 **Leaving with unsaved edits now asks.** "Close" in `DashboardBuilder` and `DashboardEditor` (and `NotebookEditor`, which wraps them) shows a "Leave with unsaved changes?" prompt when there are edits the record does not have: Keep editing, Discard changes, or Save and exit (Save and exit is absent where nothing can be written, such as a read-only host or a pinned version). An open text draft counts as an edit. In the Console, the dashboard and notebook edit pages also block Back, a link to another page, and closing the tab while dirty; the Console prompt offers Keep editing or Discard changes only, and Back used to leave without asking.
 
@@ -342,7 +364,7 @@ Smaller changes in the same pass:
 - **One create entry.** The package page's header New menu is the only create button; an empty Dashboards or Notebooks section offers "New dashboard" or "New notebook" in its own row.
 - **Small screens.** Below 600px the Console hides Edit and New, and an edit page opened there says editing works best on a larger screen, with Edit anyway.
 
-## [Unreleased] — `#(authorize)` mentioned in markdown prose is no longer refused
+## [0.9.2] — `#(authorize)` mentioned in markdown prose is no longer refused
 
 Query, compile and write text that carries `#(authorize)` or `#(access_filter)` is still refused,
 except where the tag sits inside the body of a `(markdown)` or `(text)` block note, or after the
@@ -351,7 +373,7 @@ gate can be previewed and saved. The same tag anywhere else, including a line no
 route, a block's opener or closer line, a comment or a string, is refused as before, and text the
 server cannot lex is judged the old way.
 
-## [Unreleased] — A query that reads a given with no default no longer keeps its package from loading
+## [0.9.2] — A query that reads a given with no default no longer keeps its package from loading
 
 A model, notebook, or dashboard whose query reads a given that has no default (every `#(access_filter)` given, by rule, and any `given: ORG :: number` a `run:` filters on) failed to compile while the package loaded, and one failing file aborted the whole load: the package was missing from its environment. A reload failed the same way but kept serving the model compiled before it, marked `stale`, so the package went missing only on a first load or restart. Such a package now loads, and the query is listed. Running it without a value for the given is refused exactly as before; with one it returns rows.
 
