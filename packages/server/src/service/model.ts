@@ -75,20 +75,19 @@ import {
    liftDerivedSources,
    type ServeShapeGiven,
    buildVirtualMap,
-   extractJoins,
-   extractRefinements,
-   extractSourceFilters,
    buildServeShapeTiers,
-   extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
-   sliceSourceRange,
+   authorModelLiftContext,
    type ServeBinding,
    type DerivedSourceLift,
    type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
    withholdUnreproducibleCallerScopedJoins,
+   documentFlagsForLifts,
+   authorRefinementsFor,
+   reachedPersistedSources,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -6825,6 +6824,15 @@ export class Model {
          rollupGroups,
          this.serveShapeGivens(),
          derived,
+         // The flags of every file whose text the shape carries: a lift's
+         // declaration, and a bound source's re-emitted views and joins.
+         documentFlagsForLifts(
+            [
+               ...bindings.map((b) => ({ sourceName: b.sourceName })),
+               ...derived,
+            ],
+            this.authorModelLift(),
+         ),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -6882,44 +6890,15 @@ export class Model {
       contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
       sourceNameById: Map<string, string>;
       liftText: (location: SourceLocation) => string | undefined;
+      fileText: (url: string) => string | undefined;
    } {
-      const contents =
-         (
-            this.modelDef as
-               | {
-                    contents?: Record<
-                       string,
-                       DerivedSourceDef & { sourceID?: unknown }
-                    >;
-                 }
-               | undefined
-         )?.contents ?? {};
-      // sourceID -> author source name, for the join materialization gate and
-      // for resolving what a derived source extends.
-      const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents)) {
-         if (typeof def?.sourceID === "string") {
-            sourceNameById.set(def.sourceID, name);
+      return authorModelLiftContext(this.modelDef, (url) => {
+         try {
+            return readFileSync(fileURLToPath(url), "utf8");
+         } catch {
+            return undefined;
          }
-      }
-      // Cache each source file's text (or null when unreadable) across lookups.
-      const fileCache = new Map<string, string | null>();
-      const liftText = (location: SourceLocation): string | undefined => {
-         if (!location?.url?.startsWith("file:")) return undefined;
-         if (!fileCache.has(location.url)) {
-            try {
-               fileCache.set(
-                  location.url,
-                  readFileSync(fileURLToPath(location.url), "utf8"),
-               );
-            } catch {
-               fileCache.set(location.url, null);
-            }
-         }
-         const text = fileCache.get(location.url);
-         return text ? sliceSourceRange(text, location.range) : undefined;
-      };
-      return { contents, sourceNameById, liftText };
+      });
    }
 
    /**
@@ -6933,10 +6912,29 @@ export class Model {
     * fails.
     */
    private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
-      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const lift = this.authorModelLift();
+      const { contents, sourceNameById, liftText } = lift;
+      // Only what a query against this model can name — its namespace — and
+      // what those sources derive from. The lift context also holds the
+      // model's hidden dependencies (sources an import brought in without
+      // naming them), so a base reached through an import is still carried
+      // when a namespace source needs it; one nothing in the namespace
+      // reaches is not a candidate, and cannot withhold the shape.
+      const namespace = Object.keys(
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+      const candidateNames = new Set(namespace);
+      for (const name of namespace) {
+         for (const reached of reachedPersistedSources(lift, name, () => false)
+            .visited) {
+            candidateNames.add(reached);
+         }
+      }
       return liftDerivedSources({
          contents,
          sourceNameById,
+         candidateNames,
          // Bases a lift may extend: the FRESH bindings it is handed.
          shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
          // Candidates are excluded against EVERY binding, including the ones
@@ -6999,23 +6997,16 @@ export class Model {
          );
       }
       const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
-      return kept.map((b) => {
-         const fields = contents?.[b.sourceName]?.fields;
-         const refinements = [
-            ...extractJoins(fields, {
-               sourceNameById,
-               materializedSourceNames,
-               liftText,
-            }),
-            ...extractRefinements(fields),
-            // The source's own `where:` clauses. Not part of the materialized
-            // relation (the build SQL is the persisted relation alone), so
-            // without these the shape serves rows the source excludes.
-            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-            ...extractViews(fields, liftText),
-         ];
-         return { ...b, refinements };
-      });
+      // What each source adds to its table, re-declared on the binding — the
+      // same assembly the chained build uses for its parents.
+      return kept.map((b) => ({
+         ...b,
+         refinements: authorRefinementsFor(
+            b.sourceName,
+            { contents, sourceNameById, liftText },
+            materializedSourceNames,
+         ),
+      }));
    }
 
    /**

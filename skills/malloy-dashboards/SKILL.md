@@ -19,7 +19,7 @@ SPDX-License-Identifier: MIT
 | A recurring, at-a-glance view behind shared filters  | this skill (a dashboard)                         |
 | A narrative, with prose between the numbers          | a notebook (`skill:malloy-notebooks`)            |
 | Custom design, branding, or interactions beyond tags | an HTML data app                                 |
-| The model itself: sources, measures, joins           | `skill:malloy-model`                             |
+| The model itself: sources, measures, joins           | `malloy-model`                                   |
 
 Notebooks and dashboards run the same engine, so **interactivity is not the axis**: both get filter
 controls, URL-addressable state, Apply batching, and `# drill`. Pick on the shape of the document.
@@ -280,8 +280,7 @@ chart cell is capped and a table cell hugs its rows.
   and on a file that still built it opens "Annotation" rather than "Tag". See "Legacy single-query pages" below.
 - **Only table cells are marked drillable.** See "Drill".
 
-`skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
-choosing them.
+`skill:malloy-charts` covers the renderer tags and choosing them.
 
 ## Filter controls
 
@@ -323,7 +322,7 @@ one-column suggest query, silently wrong for a multi-column one.
 `filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare
 `date` or `timestamp` renders a date picker. Which controls appear is per-dashboard, decided by which
 givens the query references.
-`skill:malloy-model` and `docs/givens.md` cover givens themselves.
+`malloy-model` (a modeling skill) and `docs/givens.md` cover givens themselves.
 
 Two per-dashboard options on the artifact tag:
 

@@ -72,13 +72,20 @@ export type EligibilityRefusalReason =
  * lake table ("stack on the parent" — reuses the parent's work and is
  * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
  * so the upstream was recomputed from raw against the warehouse (non-strict);
- * `strict_refused` = stacking was ineligible under `strictUpstreams`, so
- * the build failed loudly rather than silently recomputing. This is the headline
- * signal for how far the parent-reuse path gets us in practice.
+ * `strict_shape_fallback` = under `strictUpstreams`, the downstream reaches the
+ * source warehouse (a table joined beside a stored parent, through a
+ * non-persisted source), so no build over the parents exists and it was
+ * recomputed from raw — the one recompute strict permits; `strict_refused` =
+ * under `strictUpstreams`, a persisted upstream was neither built in the run
+ * nor referenced, or the downstream reads only stored upstreams yet could not be
+ * built over them, so the build failed loudly rather than recomputing a table
+ * the orchestrator meant to pin. This is the headline signal for how far the
+ * parent-reuse path gets us in practice.
  */
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
+   | "strict_shape_fallback"
    | "strict_refused"
    // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
    // destination being unreachable) rather than on shape. Distinct from
@@ -275,8 +282,9 @@ const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
       "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
-      "'strict_refused'). The parent_reuse share is the headline signal for how " +
-      "far the stack-on-the-parent path gets us vs recompute-from-raw.",
+      "'strict_shape_fallback'|'strict_refused'|'infra_failure'). The " +
+      "parent_reuse share is the headline signal for how far the " +
+      "stack-on-the-parent path gets us vs recompute-from-raw.",
 );
 const colocatedBindDroppedCounter = lazyCounter(
    "publisher_materialization_colocated_bind_dropped_total",

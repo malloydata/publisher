@@ -7608,6 +7608,36 @@ components:
             has no per-statement tag to carry one. And a bag whose every
             property is unusable as a BigQuery label key renders no label, so
             such a read is issued the untagged way and reports null too.
+        upstreamReuse:
+          type: string
+          enum: [reused, recomputed]
+          description: >-
+            For a source that reads another persisted source, how this table's
+            rows were computed from it. `reused`: every persisted upstream was
+            read from its already-materialized table, so the rows are a
+            function of those snapshots and consistent with them. `recomputed`:
+            at least one persisted upstream was recomputed from its definition
+            and inlined into this build, because its table could not be read --
+            on either tier, an upstream this build neither materialized nor was
+            handed by reference; for a colocated build, an upstream that
+            landed in a `storage=` destination; for a `storage=` build, a
+            source that reaches the warehouse through a non-persisted source,
+            or whose shape does not compile in the destination.
+            `upstreamRecomputeReason` says which. Such a table reflects the
+            warehouse at THIS build's time rather than the upstream's
+            snapshot, so the two can disagree when their refresh cadences
+            differ.
+
+            Not a location: it does not name the table the rows came from.
+            Absent for a source that reads no persisted upstream, which has one
+            way to build and no choice to report.
+        upstreamRecomputeReason:
+          type: string
+          description: >-
+            Why a persisted upstream was not read from its table, present only
+            when `upstreamReuse` is `recomputed`: which upstream, and the
+            compiler's or engine's own words for what could not be expressed
+            over it, redacted against the connections involved.
         dataAsOf:
           type: string
           format: date-time

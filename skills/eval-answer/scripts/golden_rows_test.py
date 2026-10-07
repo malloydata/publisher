@@ -41,6 +41,12 @@ class LoadRows(unittest.TestCase):
         self.assertEqual(golden_rows.load_rows(g, self.set_dir, "q1"),
                          [{"a": 1, "b": None}])
 
+    def test_true_and_false_become_booleans(self):
+        g = self.csv("q1.csv", "id,active,note\n1,true,False\n2,false,truex\n")
+        self.assertEqual(golden_rows.load_rows(g, self.set_dir, "q1"),
+                         [{"id": 1, "active": True, "note": "False"},
+                          {"id": 2, "active": False, "note": "truex"}])
+
     def test_a_row_longer_than_the_header_is_a_golden_rows_error(self):
         g = self.csv("q1.csv", "region,total\nWest,12,EXTRA\n")
         with self.assertRaises(golden_rows.GoldenRowsError) as cm:
