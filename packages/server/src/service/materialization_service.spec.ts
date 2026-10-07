@@ -44,6 +44,7 @@ import {
    upstreamReuseFromManifest,
    strictMissSourceId,
    manifestForCompiler,
+   versionedTableName,
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -386,6 +387,167 @@ describe("MaterializationService", () => {
       });
    });
 
+   describe("reclaimVersionTables", () => {
+      type ManifestEntries = NonNullable<
+         NonNullable<Parameters<typeof makeMaterialization>[0]>["manifest"]
+      >["entries"];
+      const entry = (id: string, table: string, connectionName = "wh") => ({
+         [id]: {
+            sourceEntityId: id,
+            sourceName: "daily",
+            physicalTableName: table,
+            connectionName,
+         },
+      });
+      const run = (
+         id: string,
+         version: string | null,
+         metadata: Record<string, unknown>,
+         entries: Record<string, unknown>,
+      ) =>
+         makeMaterialization({
+            id,
+            status: "MANIFEST_FILE_READY",
+            version,
+            metadata,
+            manifest: {
+               builtAt: "2026-01-01T00:00:00Z",
+               strict: false,
+               entries: entries as ManifestEntries,
+            },
+         });
+
+      /**
+       * An environment whose version 1.0.0 is in `archiveStatus`, holding:
+       *  - r-own: 1.0.0's scope: version auto-run, with a table only it
+       *    references, one another version's run also references, and one in
+       *    the package-local in-memory duckdb;
+       *  - r-orch: 1.0.0's orchestrated run, whose names its caller owns;
+       *  - r-other: another version's run, referencing the shared table.
+       */
+      function setup(archiveStatus: "archive" | "unarchive") {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon
+            .stub()
+            .resolves({ runSQL, dialectName: "duckdb" });
+         const rebind = sinon.stub().resolves();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               withVersionLock: async (
+                  _name: string,
+                  _version: string,
+                  fn: (v: unknown) => Promise<unknown>,
+               ) => fn({ version: "1.0.0", archiveStatus }),
+               getMalloyConnection,
+               getApiConnection: () => ({ name: "wh", type: "duckdb" }),
+               getEnvironmentPath: () => "/test",
+               getLoadedVersionIds: () => [],
+               bindPackageColocatedServeManifest: rebind,
+            }),
+         );
+         const own = run(
+            "r-own",
+            "1.0.0",
+            { mode: "auto", scope: "version", versionId: "1.0.0" },
+            {
+               ...entry("a", "daily__v1_0_0"),
+               ...entry("b", "shared_t"),
+               ...entry("c", "mem_t", "duckdb"),
+            },
+         );
+         const orch = run(
+            "r-orch",
+            "1.0.0",
+            { mode: "orchestrated", scope: "version", versionId: "1.0.0" },
+            entry("d", "caller_named_t"),
+         );
+         const other = run(
+            "r-other",
+            "1.1.0",
+            { mode: "auto", scope: "version", versionId: "1.1.0" },
+            entry("e", "shared_t"),
+         );
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.listMaterializations.callsFake(
+            async (
+               _env: string,
+               _pkg: string,
+               opts?: { version?: string | null },
+            ) => (opts?.version === "1.0.0" ? [own, orch] : [own, orch, other]),
+         );
+         return { runSQL, getMalloyConnection };
+      }
+
+      const dropped = (runSQL: sinon.SinonStub) =>
+         runSQL
+            .getCalls()
+            .map((c) => c.args[0] as string)
+            .filter((s) => !s.includes("daily__v1_0_0_")); // staging leftovers
+
+      it("drops only the archived version's own tables, and deletes only the runs it reclaimed", async () => {
+         const { runSQL, getMalloyConnection } = setup("archive");
+         await ctx.service.reclaimVersionTables("my-env", "pkg", "1.0.0");
+
+         expect(dropped(runSQL)).toEqual([
+            'DROP TABLE IF EXISTS "daily__v1_0_0"',
+         ]);
+         // The in-memory duckdb is never reached for: its tables went with
+         // the unload.
+         expect(getMalloyConnection.calledWith("duckdb")).toBe(false);
+         expect(
+            ctx.repository.deleteMaterialization
+               .getCalls()
+               .map((c) => c.args[0]),
+         ).toEqual(["r-own"]);
+      });
+
+      it("reclaims nothing for a version unarchived before it ran", async () => {
+         const { runSQL } = setup("unarchive");
+         await ctx.service.reclaimVersionTables("my-env", "pkg", "1.0.0");
+         expect(runSQL.called).toBe(false);
+         expect(ctx.repository.deleteMaterialization.called).toBe(false);
+      });
+
+      it("defers to a running build of the version, which reclaims when it settles", async () => {
+         const { runSQL } = setup("archive");
+         ctx.repository.getActiveMaterialization.resolves(
+            makeMaterialization({
+               id: "r-running",
+               status: "PENDING",
+               version: "1.0.0",
+            }),
+         );
+         await ctx.service.reclaimVersionTables("my-env", "pkg", "1.0.0");
+         expect(runSQL.called).toBe(false);
+         expect(ctx.repository.deleteMaterialization.called).toBe(false);
+      });
+   });
+
+   describe("versionedTableName", () => {
+      it("appends the version to a short name, and to a qualified name's table", () => {
+         expect(versionedTableName("summary", "__v1_2_0")).toBe(
+            "summary__v1_2_0",
+         );
+         expect(versionedTableName("analytics.summary", "__v1_2_0")).toBe(
+            "analytics.summary__v1_2_0",
+         );
+      });
+
+      it("keeps a long table segment within 50 characters, distinct per name", () => {
+         const a = versionedTableName(`${"x".repeat(60)}_a`, "__v1_2_0");
+         const b = versionedTableName(`${"x".repeat(60)}_b`, "__v1_2_0");
+         expect(a.length).toBeLessThanOrEqual(50);
+         expect(a.endsWith("__v1_2_0")).toBe(true);
+         expect(a).not.toBe(b);
+      });
+
+      it("leaves a name the author quoted as written", () => {
+         expect(versionedTableName('"My Table"', "__v1_2_0")).toBe(
+            '"My Table"__v1_2_0',
+         );
+      });
+   });
+
    describe("deleteMaterialization drop of a storage= table", () => {
       it("routes a storage entry to a destination-aware RW drop (best-effort, delete still completes)", async () => {
          // getApiConnection returns a non-storage type so the RW drop refuses
@@ -556,9 +718,19 @@ describe("MaterializationService", () => {
             undefined,
       ): sinon.SinonStub {
          const colocatedSpy = sinon.stub().resolves();
+         const loaded = (versionId: string) => ({
+            getVersionId: () => versionId,
+            getPackageMetadata: () => ({
+               scope: scopeOf(versionId),
+               manifestLocation: manifestLocationOf(versionId),
+            }),
+            getMalloyConnection: async () => ({}),
+         });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
             unversionedEnvironment({
                getLoadedVersionIds: () => ["1.0.0", "1.1.0"],
+               peekVersion: (_name: string, versionId: string) =>
+                  loaded(versionId),
                getPackage: sinon
                   .stub()
                   .callsFake(
@@ -566,16 +738,7 @@ describe("MaterializationService", () => {
                         _name: string,
                         _reload: boolean,
                         opts: { versionId?: string },
-                     ) => ({
-                        getVersionId: () => opts.versionId,
-                        getPackageMetadata: () => ({
-                           scope: scopeOf(opts.versionId as string),
-                           manifestLocation: manifestLocationOf(
-                              opts.versionId as string,
-                           ),
-                        }),
-                        getMalloyConnection: async () => ({}),
-                     }),
+                     ) => loaded(opts.versionId as string),
                   ),
                bindPackageStorageServeBindings: sinon.stub().resolves(),
                bindPackageColocatedServeManifest: colocatedSpy,
@@ -643,6 +806,45 @@ describe("MaterializationService", () => {
          );
          await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
          expect(boundTo(spy)).toEqual({ "1.1.0": ["ce-package"] });
+      });
+
+      it('never binds a "scope: package" version to the tables another version owns', async () => {
+         const spy = setupVersions(() => "package");
+         const run = (
+            id: string,
+            version: string,
+            scope: string,
+            entry: string,
+         ) =>
+            makeMaterialization({
+               id,
+               status: "MANIFEST_FILE_READY",
+               version,
+               metadata: { mode: "auto", versionId: version, scope },
+               manifest: {
+                  builtAt: "2026-01-01T00:00:00Z",
+                  strict: false,
+                  entries: {
+                     [entry]: {
+                        sourceEntityId: entry,
+                        sourceName: "daily",
+                        physicalTableName: `daily_${entry}`,
+                        connectionName: "wh",
+                     },
+                  },
+               },
+            });
+         // Newest first: a scope: version run of 1.2.0, whose table archiving
+         // 1.2.0 drops, then the package's own shared run.
+         ctx.repository.listMaterializations.callsFake(async () => [
+            run("owned-run", "1.2.0", "version", "ce-owned"),
+            run("shared-run", "1.0.0", "package", "ce-shared"),
+         ]);
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+         expect(boundTo(spy)).toEqual({
+            "1.0.0": ["ce-shared"],
+            "1.1.0": ["ce-shared"],
+         });
       });
 
       it("re-derives storage bindings from the next-latest materialization (on)", async () => {

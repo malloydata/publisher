@@ -118,22 +118,37 @@ describe("version lifecycle: latest, manifest, archive", () => {
       return ((await res.json()) as ErrorBody).reason;
    }
 
-   async function loadedVersions(name: string = PKG): Promise<string[]> {
+   /** The package's entries in /status: every version held, loaded or not. */
+   async function heldVersions(
+      name: string = PKG,
+   ): Promise<
+      { versionId?: string; loaded?: boolean; archiveStatus?: string }[]
+   > {
       const status = (await (
          await fetch(`${baseUrl}/api/v0/status`)
       ).json()) as {
          environments: {
             name: string;
-            packages: { name: string; versionId?: string }[];
+            packages: {
+               name: string;
+               versionId?: string;
+               loaded?: boolean;
+               archiveStatus?: string;
+            }[];
          }[];
       };
       return (
          status.environments
             .find((e) => e.name === ENV_NAME)
-            ?.packages.filter((p) => p.name === name)
-            .map((p) => p.versionId ?? "")
-            .sort() ?? []
+            ?.packages.filter((p) => p.name === name) ?? []
       );
+   }
+
+   async function loadedVersions(name: string = PKG): Promise<string[]> {
+      return (await heldVersions(name))
+         .filter((p) => p.loaded !== false)
+         .map((p) => p.versionId ?? "")
+         .sort();
    }
 
    beforeAll(async () => {
@@ -188,11 +203,26 @@ describe("version lifecycle: latest, manifest, archive", () => {
          expect(await n("2.0.0")).toBe(3);
       });
 
-      it("drops the version that stopped being latest from memory", async () => {
+      it("drops the version that stopped being latest from memory, and still reports it held", async () => {
          expect((await setLatest("1.1.0")).status).toBe(200);
          expect(await loadedVersions()).not.toContain("1.0.0");
          expect(await loadedVersions()).toContain("1.1.0");
+         // Unloaded is not gone: /status still lists it, so an orchestrator
+         // reconciling from /status does not publish it again.
+         expect(
+            (await heldVersions()).find((p) => p.versionId === "1.0.0"),
+         ).toMatchObject({ loaded: false, archiveStatus: "unarchive" });
          expect(await n()).toBe(2);
+      });
+
+      it("reports the versioning settings it runs with on /status", async () => {
+         const status = (await (
+            await fetch(`${baseUrl}/api/v0/status`)
+         ).json()) as { packageVersioning?: string; versionPromotion?: string };
+         expect(status).toMatchObject({
+            packageVersioning: "on",
+            versionPromotion: "on-publish",
+         });
       });
 
       it("answers 200 and changes nothing when the version is already latest", async () => {
@@ -384,10 +414,15 @@ describe("version lifecycle: latest, manifest, archive", () => {
          const latest = await setLatest("1.0.0");
          expect(latest.status).toBe(410);
          expect(await reasonOf(latest)).toBe("VERSION_ARCHIVED");
+         // A real location, so a write that happened anyway would show.
          const manifest = await setManifest("1.0.0", {
-            manifestLocation: null,
+            manifestLocation: path.join(scratch, "never-bound.json"),
          });
          expect(manifest.status).toBe(410);
+         expect(
+            (await versions()).find((v) => v.id === "1.0.0")
+               ?.manifestLocation ?? null,
+         ).toBeNull();
       });
 
       it("refuses a republish of an archived version", async () => {

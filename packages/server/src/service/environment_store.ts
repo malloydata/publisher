@@ -52,6 +52,7 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import {
    Environment,
    PackageStatus,
+   isVersionOwnedRun,
    type VersionLifecycleEvent,
    type VersionRegistry,
 } from "./environment";
@@ -992,7 +993,11 @@ export class EnvironmentStore {
                               const latest = runs.find(
                                  (m) =>
                                     m.status === "MANIFEST_FILE_READY" &&
-                                    m.manifest?.entries,
+                                    m.manifest?.entries &&
+                                    // The package's shared runs never include
+                                    // a version-owned one: see isVersionOwnedRun.
+                                    (version !== undefined ||
+                                       !isVersionOwnedRun(m)),
                               );
                               return latest?.manifest?.entries ?? {};
                            },
@@ -1651,7 +1656,7 @@ export class EnvironmentStore {
 
    public async listEnvironments(
       skipInitializationCheck: boolean = false,
-      options: { everyLoadedVersion?: boolean } = {},
+      options: { everyVersion?: boolean } = {},
    ) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
@@ -1661,6 +1666,26 @@ export class EnvironmentStore {
             environment.serialize(options),
          ),
       );
+   }
+
+   /**
+    * The two package-versioning settings as this server runs with them, for
+    * /status: an orchestrator talking to a fleet in mid-rollout reads them to
+    * know which protocol each server speaks. Omitted when a setting cannot be
+    * read, which only a bad value causes, and that already fails startup.
+    */
+   private versioningSettings(): {
+      packageVersioning?: "off" | "on";
+      versionPromotion?: "on-publish" | "explicit";
+   } {
+      try {
+         return {
+            packageVersioning: getPackageVersioningMode(this.serverRootPath),
+            versionPromotion: getVersionPromotionMode(this.serverRootPath),
+         };
+      } catch {
+         return {};
+      }
    }
 
    public async getStatus() {
@@ -1684,6 +1709,8 @@ export class EnvironmentStore {
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
          version: string;
+         packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
+         versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
          emptyReason?: string;
          initError?: string;
          loadErrors?: LoadError[];
@@ -1694,12 +1721,14 @@ export class EnvironmentStore {
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState,
          version: SERVER_VERSION,
+         ...this.versioningSettings(),
       };
 
-      // Every loaded version, not only `latest`: an orchestrator reconciles what
-      // this server serves from this list (see ServerStatus in api-doc.yaml).
+      // Every version held, loaded or not, not only `latest`: an orchestrator
+      // reconciles what this server holds from this list (see ServerStatus in
+      // api-doc.yaml).
       const environments = await this.listEnvironments(true, {
-         everyLoadedVersion: true,
+         everyVersion: true,
       });
 
       await Promise.all(

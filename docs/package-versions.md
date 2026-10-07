@@ -68,6 +68,8 @@ Every route that reaches into a package takes `versionId`: queries (in the body)
 
 The package resource says which version answered: `versionId` is the version described, and `latestVersion` is the package's `latest`.
 
+`GET /api/v0/status` lists every version each package holds, not only `latest`. A loaded version has its full entry; one that is not loaded (the version that stopped being `latest`, or an archived one) is listed with `loaded: false` and its `archiveStatus`, because the server still holds it and serves it when it is next named. The status also reports the two settings, `packageVersioning` and `versionPromotion`, so an orchestrator can tell which servers take native versions.
+
 `GET …/packages/{pkg}/versions` lists the versions, highest first, each with its `latest` flag, `archiveStatus`, content hash, location and manifest binding. `GET …/versions/{versionId}` reads one.
 
 ### Static files and data apps
@@ -100,7 +102,7 @@ This replaces `PATCH …/packages/{pkg}` for a versioned package. That route is 
 `PATCH …/versions/{versionId}` with `{"archiveStatus": "archive"}` takes a version out of service. Reads that name it answer 410 `VERSION_ARCHIVED`, and it is unloaded. `"unarchive"` puts it back; it loads on its next read.
 
 - The package's `latest` cannot be archived (409 `VERSION_IS_LATEST`). Move `latest` first.
-- An archive is refused with 409 while a materialization of that version is running.
+- An archive is refused with 409 `VERSION_BUILDING` while a materialization of that version is running. A run that starts just after the archive fails, and what it built is reclaimed once it ends.
 - Sending the state a version is already in changes nothing.
 - **The version's files stay on disk.** See [Disk growth](#disk-growth).
 
@@ -110,7 +112,7 @@ A materialization of a versioned package builds one version: the one `versionId`
 
 Who owns the tables a run builds is the package's materialization scope (`"materialization": { "scope": … }` in `publisher.json`):
 
-- **`scope: "version"`.** Each version builds into tables of its own: a self-assigned name gains the version (`order_summary__v1_2_0`), skip-if-unchanged reuses only that version's earlier runs, and each version serves from its own tables after a restart. Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references.
+- **`scope: "version"`.** Each version builds into tables of its own: a self-assigned name gains the version (`order_summary__v1_2_0`), skip-if-unchanged reuses only that version's earlier runs, and each version serves from its own tables after a restart. Archiving the version reclaims the tables its auto-runs built, in the background, keeping any table another run still references. A long name is kept within 50 characters before the suffix by cutting it and adding a short hash, so a dialect that truncates identifiers (Postgres, at 63) never folds two versions into one table. The package's other versions never read these runs: they are this version's alone.
 - **`scope: "package"` (the default).** The versions share the package's tables under their usual names. An auto-run builds `latest`, and an auto-run of another version is refused with 400, because it would rebuild the table `latest` serves. To build another version, pass `buildInstructions` with table names of your own. After `latest` builds, every other loaded version is rebound to the new run. A version whose source is defined the same way keeps the shared table, and one whose source is defined differently serves live, never another version's table.
 
 One run is active per package at a time, whichever version it builds. A schedule builds only `latest`.

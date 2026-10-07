@@ -391,6 +391,19 @@ export function ownedVersionOf(pkg: Package): string | undefined {
    return pkg.getPackageMetadata().scope === "version" ? version : undefined;
 }
 
+/**
+ * Whether a materialization run built tables one version owns: a run of a
+ * `scope: version` version, which archiving that version reclaims. Such a run
+ * is never read as one of the package's shared runs, whose tables any version
+ * may serve.
+ */
+export function isVersionOwnedRun(m: {
+   version: string | null;
+   metadata: Record<string, unknown> | null;
+}): boolean {
+   return m.version !== null && m.metadata?.scope === "version";
+}
+
 /** A version was archived or unarchived; `version` is its row after the change. */
 export interface VersionLifecycleEvent {
    packageName: string;
@@ -2003,13 +2016,15 @@ export class Environment {
     * One entry per package, each as a request that names no version sees it:
     * the unversioned package, or its `latest` version.
     *
-    * With `everyLoadedVersion`, a versioned package also contributes an entry
-    * for every other version currently loaded, each carrying its own
-    * `versionId`. That is the `/status` view: an orchestrator reconciles what a
-    * server is serving from it, so it must name every loaded version.
+    * With `everyVersion`, a versioned package also contributes an entry for
+    * every other version it has published, each carrying its own `versionId`,
+    * `archiveStatus`, and `loaded` (whether it is in memory): a loaded one with
+    * its full description, an unloaded one with only those. That is the
+    * `/status` view: an orchestrator reconciles what a server holds from it,
+    * so it must name every version the server holds, not only the loaded ones.
     */
    public async listPackages(
-      options: { everyLoadedVersion?: boolean } = {},
+      options: { everyVersion?: boolean } = {},
    ): Promise<ApiPackage[]> {
       logger.debug("Listing packages", {
          environmentPath: this.environmentPath,
@@ -2077,7 +2092,7 @@ export class Environment {
             return packageStatus?.status !== PackageStatus.UNLOADING;
          });
 
-         if (options.everyLoadedVersion) {
+         if (options.everyVersion) {
             const listed = new Set(
                finalMetadata.map((m) => `${m.name}@${m.versionId ?? ""}`),
             );
@@ -2085,7 +2100,35 @@ export class Environment {
                const versionId = pkg.getVersionId();
                if (!key.includes("@") || versionId === undefined) continue;
                if (listed.has(`${pkg.getPackageName()}@${versionId}`)) continue;
+               listed.add(`${pkg.getPackageName()}@${versionId}`);
                finalMetadata.push(pkg.getPackageMetadata());
+            }
+            // Every version a versioned package has published is held here,
+            // loaded or not: the one that stopped being latest, an archived
+            // one. Each is listed, so a reader reconciling what this server
+            // holds never takes an unloaded version for a missing one.
+            for (const [packageName, index] of this.packageVersions) {
+               for (const version of index.versions.values()) {
+                  if (listed.has(`${packageName}@${version.version}`)) continue;
+                  finalMetadata.push({
+                     resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+                     name: packageName,
+                     versionId: version.version,
+                     latestVersion: index.latest,
+                     loaded: false,
+                     archiveStatus: version.archiveStatus,
+                  } as ApiPackage);
+               }
+            }
+            for (const entry of finalMetadata) {
+               const index = this.packageVersions.get(entry.name ?? "");
+               const version = entry.versionId
+                  ? index?.versions.get(entry.versionId)
+                  : undefined;
+               if (version && entry.loaded === undefined) {
+                  entry.loaded = true;
+                  entry.archiveStatus = version.archiveStatus;
+               }
             }
          }
 
@@ -2659,6 +2702,23 @@ export class Environment {
       fn: () => Promise<T>,
    ): Promise<T> {
       return this.withSlotLock(this.resolveSlot(packageName, versionId), fn);
+   }
+
+   /**
+    * One version of a package if it is loaded, else undefined. Never loads
+    * anything, archived versions included: for callers that act only on what
+    * is already in memory.
+    */
+   public peekVersion(
+      packageName: string,
+      versionId: string,
+   ): Package | undefined {
+      const dirName = this.packageVersions
+         .get(packageName)
+         ?.versions.get(versionId)?.dirName;
+      return dirName
+         ? this.packages.get(`${packageName}@${dirName}`)
+         : undefined;
    }
 
    /**
@@ -3476,18 +3536,26 @@ export class Environment {
             packageName,
             versionId,
          );
+         // Refused before anything is written: an archived version answers
+         // 410, as a read does, and keeps the binding it had.
+         this.resolveSlot(packageName, versionId);
          if (version.manifestLocation !== manifestLocation) {
             await registry.updateVersion(version.id, { manifestLocation });
             await this.refreshPackageVersions(packageName);
          }
-         // Resolving refuses an archived version with 410, as a read does.
          const slot = this.resolveSlot(packageName, versionId);
-         return this.withSlotLock(slot, async () => {
+         const rebound = await this.withSlotLock(slot, async () => {
             const loaded = this.packages.get(slot.key);
-            if (!loaded) return this._loadVersionLocked(slot);
+            if (!loaded) return undefined;
             await this.applyVersionManifest(loaded, manifestLocation);
             return loaded;
          });
+         // Not loaded: it binds from its row when it loads, which is now,
+         // through getPackage so memory admission applies as to any load.
+         return (
+            rebound ??
+            (await this.getPackage(packageName, false, { versionId }))
+         );
       });
    }
 
@@ -3506,6 +3574,11 @@ export class Environment {
       packageName: string,
       versionId: string,
       archiveStatus: PackageVersionArchiveStatus,
+      options: {
+         // Whether a materialization of the version is running, asked under the
+         // package lock: archiving reclaims the tables it would be writing.
+         isBuilding?: () => Promise<boolean>;
+      } = {},
    ): Promise<PackageVersion> {
       assertSafePackageName(packageName);
       const registry = this.requireVersionRegistry();
@@ -3519,6 +3592,12 @@ export class Environment {
             throw new PackageVersionError(
                "VERSION_IS_LATEST",
                `Version ${versionId} is the latest version of package ${packageName}, so it cannot be archived. Point latest at another version first.`,
+            );
+         }
+         if (archiveStatus === "archive" && (await options.isBuilding?.())) {
+            throw new PackageVersionError(
+               "VERSION_BUILDING",
+               `A materialization of version ${versionId} of package ${packageName} is running. Wait for it to finish, or stop it, before archiving the version.`,
             );
          }
          await registry.updateVersion(version.id, {
@@ -4948,12 +5027,12 @@ export class Environment {
    }
 
    /**
-    * The environment as the API returns it. `everyLoadedVersion` lists every
-    * loaded version of a versioned package rather than only its `latest`
-    * (see {@link listPackages}); `/status` asks for it.
+    * The environment as the API returns it. `everyVersion` lists every version
+    * a versioned package has published rather than only its `latest` (see
+    * {@link listPackages}); `/status` asks for it.
     */
    public async serialize(
-      options: { everyLoadedVersion?: boolean } = {},
+      options: { everyVersion?: boolean } = {},
    ): Promise<ApiEnvironment> {
       return {
          ...this.metadata,

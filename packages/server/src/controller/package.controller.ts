@@ -8,7 +8,6 @@ import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
-   MaterializationConflictError,
    PackageNotFoundError,
    PackageVersionError,
 } from "../errors";
@@ -478,22 +477,18 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (
-         archiveStatus === "archive" &&
-         (await this.versionBuildCheck?.(
-            environmentName,
-            packageName,
-            versionId,
-         ))
-      ) {
-         throw new MaterializationConflictError(
-            `A materialization of version ${versionId} of package ${packageName} is running. Wait for it to finish, or stop it, before archiving the version.`,
-         );
-      }
+      const check = this.versionBuildCheck;
       const version = await environment.setVersionArchiveStatus(
          packageName,
          versionId,
          archiveStatus,
+         {
+            // Asked under the package lock, after the latest check, so the
+            // answer is never stale by the time the archive commits.
+            isBuilding: check
+               ? () => check(environmentName, packageName, versionId)
+               : undefined,
+         },
       );
       return toApiPackageVersion(
          environmentName,

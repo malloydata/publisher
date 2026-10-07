@@ -1723,8 +1723,10 @@ paths:
         A materialization schedule only ever builds the package's `latest`, which cannot be
         archived (409, `reason` `VERSION_IS_LATEST`: move `latest` first), so archiving never
         stops a running schedule, and an unarchived version is scheduled again once it is made
-        `latest`. An archive is also refused with 409 while a materialization of that version is
-        running, since it would reclaim the tables that run is writing. Sending the state the
+        `latest`. An archive is also refused with 409 (`reason` `VERSION_BUILDING`) while a
+        materialization of that version is running, since it would reclaim the tables that run is
+        writing; a run that starts after the archive fails, and what it built is reclaimed when it
+        ends. Sending the state the
         version is already in changes nothing and answers 200.
       parameters:
         - $ref: "#/components/parameters/environmentName"
@@ -1745,14 +1747,14 @@ paths:
                 $ref: "#/components/schemas/PackageVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1793,14 +1795,14 @@ paths:
                 $ref: "#/components/schemas/Package"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1840,14 +1842,14 @@ paths:
                 $ref: "#/components/schemas/PackageVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2893,6 +2895,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -3100,6 +3104,8 @@ components:
             immutable, so it cannot be changed in place.
           * VERSION_IS_LATEST: the version is the package's `latest` and cannot
             be archived. Move `latest` first.
+          * VERSION_BUILDING: a materialization of the version is running, and
+            archiving would reclaim the tables it is writing. Wait for it, or stop it.
       content:
         application/json:
           schema:
@@ -3348,11 +3354,14 @@ components:
           description: >-
             List of available environments. Each environment's `packages` lists
             one entry per package, as `GET .../packages` does, except that a
-            versioned package is listed once for EVERY version this server has
-            loaded, each entry with its own `versionId` and its own manifest
-            binding (`manifestBindingStatus`, `boundManifestUri`). An orchestrator
-            reconciles what a server is serving from this list, so it names every
-            loaded version rather than only `latest`; `resource` keeps its shape.
+            versioned package is listed once for EVERY version this server holds,
+            each entry with its own `versionId`, `archiveStatus` and `loaded`. A
+            loaded version's entry also carries its manifest binding
+            (`manifestBindingStatus`, `boundManifestUri`); an unloaded one (the
+            version that stopped being `latest`, an archived one) carries only
+            its name and version. An orchestrator reconciles what a server holds
+            from this list, so it names every version rather than only `latest`
+            or only what is in memory; `resource` keeps its shape.
           items:
             $ref: "#/components/schemas/Environment"
         initialized:
@@ -3378,6 +3387,23 @@ components:
             This server's release version, for example "0.8.2". Use it to tell
             which build answered, for instance to rule out an old copy served
             from the npx cache.
+        packageVersioning:
+          type: string
+          enum: ["off", "on"]
+          readOnly: true
+          description: >-
+            The `packageVersioning` setting this server runs with. With "on", a
+            publish from a location publishes an immutable version. An
+            orchestrator talking to servers in mid-rollout reads it to know
+            which ones take native versions.
+        versionPromotion:
+          type: string
+          enum: ["on-publish", "explicit"]
+          readOnly: true
+          description: >-
+            The `versionPromotion` setting this server runs with. With
+            "explicit", a publish never moves a package's `latest`; only
+            `PUT .../packages/{packageName}/latest` does.
         emptyReason:
           type: string
           readOnly: true
@@ -3723,6 +3749,23 @@ components:
           description: >-
             The package's `latest` version, or null for a package that has no
             versions. Equal to `versionId` unless the request named another one.
+        loaded:
+          type: boolean
+          readOnly: true
+          description: >-
+            Set only on a version's entry in `GET /status`: whether this server
+            holds the version in memory. A published version that is not loaded
+            (one that stopped being `latest`, or one that is archived) is still
+            held, so it is still listed, with `loaded: false` and no more than
+            its name, version, `latestVersion` and `archiveStatus`. It loads when
+            a request next names it.
+        archiveStatus:
+          type: string
+          enum: [archive, unarchive]
+          readOnly: true
+          description: >-
+            Set only on a version's entry in `GET /status`: whether the version
+            is archived.
         description:
           type: string
           description: Package description
@@ -6634,12 +6677,15 @@ components:
                 so it cannot be changed in place.
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
                 archived.
+              * VERSION_BUILDING (409): a materialization of the version is
+                running, so it cannot be archived yet.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
 
             Known values: TABLE_NOT_FOUND, MANIFEST_VERSION_MISSING,
             MANIFEST_VERSION_INVALID, VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
-            VERSION_IS_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
+            VERSION_IS_LATEST, VERSION_BUILDING, VERSION_NOT_FOUND,
+            VERSION_ARCHIVED.
         problems:
           type: array
           description: |

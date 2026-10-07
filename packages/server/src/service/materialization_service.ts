@@ -87,7 +87,7 @@ import {
 } from "./query_metadata";
 import type { components } from "../api";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
-import { ownedVersionOf } from "./environment";
+import { isVersionOwnedRun, ownedVersionOf } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
@@ -653,6 +653,38 @@ function tableKey(destination: string, physicalTableName: string): string {
  * dashes and plus signs cannot stand in an identifier and the underscored
  * form alone could name two versions (`1.0.0-rc.1` and `1.0.0-rc-1`).
  */
+/**
+ * The longest table segment a version-owned name may have: Postgres truncates
+ * identifiers at 63 characters, and a build appends a 13-character staging
+ * suffix to the name while it builds (see stagingSuffix).
+ */
+const VERSIONED_TABLE_SEGMENT_MAX = 50;
+
+/**
+ * A self-assigned name made one version's own: `base` with `suffix` on its
+ * table segment (the part after the last dot), kept within
+ * VERSIONED_TABLE_SEGMENT_MAX so a dialect that truncates long identifiers
+ * never folds two versions' tables into one. A segment too long for the
+ * suffix is cut and given 8 hex of its hash, so distinct names stay distinct.
+ * A name the author quoted is left exactly as written, suffix appended, as
+ * the staging suffix is: quoting is the author's.
+ */
+export function versionedTableName(base: string, suffix: string): string {
+   if (/["`[\]]/.test(base)) return `${base}${suffix}`;
+   const dot = base.lastIndexOf(".");
+   const prefix = base.slice(0, dot + 1);
+   const segment = base.slice(dot + 1);
+   if (segment.length + suffix.length <= VERSIONED_TABLE_SEGMENT_MAX) {
+      return `${prefix}${segment}${suffix}`;
+   }
+   const digest = createHash("sha256")
+      .update(segment)
+      .digest("hex")
+      .substring(0, 8);
+   const room = VERSIONED_TABLE_SEGMENT_MAX - suffix.length - digest.length - 1;
+   return `${prefix}${segment.slice(0, Math.max(room, 1))}_${digest}${suffix}`;
+}
+
 export function versionTableSuffix(version: string): string {
    const release = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
    const base = release
@@ -1421,28 +1453,48 @@ export class MaterializationService {
          throw err;
       }
 
-      this.runInBackground(created.id, (signal) =>
-         this.runBuild(
-            created.id,
-            environmentName,
-            packageName,
-            {
-               sourceNames: options.sourceNames,
-               forceRefresh,
-               reseed,
-               buildInstructions,
-               // Orchestrated-only, and clamped here rather than trusted: an
-               // auto-run has no caller to take a ledger from, and taking one
-               // would replace the local store it depends on.
-               ledger: orchestrated ? options.ledger : undefined,
-               referenceManifest: options.referenceManifest,
-               strictUpstreams: options.strictUpstreams,
-               trigger,
-               runContext: options.runContext ?? undefined,
-               version,
-            },
-            signal,
-         ),
+      this.runInBackground(
+         created.id,
+         (signal) =>
+            this.runBuild(
+               created.id,
+               environmentName,
+               packageName,
+               {
+                  sourceNames: options.sourceNames,
+                  forceRefresh,
+                  reseed,
+                  buildInstructions,
+                  // Orchestrated-only, and clamped here rather than trusted: an
+                  // auto-run has no caller to take a ledger from, and taking one
+                  // would replace the local store it depends on.
+                  ledger: orchestrated ? options.ledger : undefined,
+                  referenceManifest: options.referenceManifest,
+                  strictUpstreams: options.strictUpstreams,
+                  trigger,
+                  runContext: options.runContext ?? undefined,
+                  version,
+               },
+               signal,
+            ),
+         // A version archived while this run was building has its tables
+         // reclaimed once the run settles: the archive's reclaim deferred to it.
+         version !== null
+            ? () => {
+                 if (
+                    environment
+                       .listPackageVersions(packageName)
+                       .versions.find((v) => v.version === version)
+                       ?.archiveStatus === "archive"
+                 ) {
+                    void this.reclaimVersionTables(
+                       environmentName,
+                       packageName,
+                       version,
+                    );
+                 }
+              }
+            : undefined,
       );
 
       return created;
@@ -1904,7 +1956,12 @@ export class MaterializationService {
             // orchestrated build ignores this and trusts the host-supplied
             // `physicalTableName`; the host owns any generational,
             // ownership-scoped naming.
-            const logicalName = `${selfAssignTableName(persistSource)}${tableSuffix}`;
+            const logicalName = tableSuffix
+               ? versionedTableName(
+                    selfAssignTableName(persistSource),
+                    tableSuffix,
+                 )
+               : selfAssignTableName(persistSource);
 
             // Gated on the SAME predicate the build's dispatch uses, so the two
             // can never disagree about which sources are incremental. A
@@ -2130,6 +2187,10 @@ export class MaterializationService {
          )) ?? [];
       for (const m of list) {
          if (m.id === excludeId) continue;
+         // The package's shared runs never include a `scope: version` run:
+         // its tables are one version's own, and go when that version is
+         // archived.
+         if (version === undefined && isVersionOwnedRun(m)) continue;
          if (m.status === "MANIFEST_FILE_READY" && m.manifest?.entries) {
             // Legacy tolerance, removable with `ManifestEntry.error`: a manifest
             // written by 0.0.245-0.0.246 records a failed source among its
@@ -4763,24 +4824,6 @@ export class MaterializationService {
    }
 
    /**
-    * Re-derive a package's serve routing from its latest remaining successful
-    * materialization and push it onto the loaded models — BOTH tiers, mirroring
-    * the load-time {@link Environment.rebindServeBindingsFromLocalStore}. Called
-    * after a delete so serving never points at a removed table; picks the
-    * next-latest generation, or clears the bindings when none remain.
-    * Best-effort (a failure logs and leaves the current bindings — a later
-    * reload/build re-derives).
-    *
-    * The manifest is split by tier:
-    *  - **colocated** (same-connection) → re-derived regardless of
-    *    `PERSIST_STORAGE_MODE`: colocated is the v0 path and is not gated by the
-    *    storage kill switch, so a reclaimed colocated table must not be left
-    *    routed even when the tier is off.
-    *  - **storage=** (cross-connection) → re-derived only when the tier is not
-    *    `off` (its serve routing requires the tier on; an off deployment does no
-    *    extra work here).
-    */
-   /**
     * Reclaim what an archived version owned: the tables its auto-runs built
     * under `scope: version`, which are its alone (named for it, see
     * versionTableSuffix). Runs off the request path, after the archive has
@@ -4808,11 +4851,30 @@ export class MaterializationService {
             false,
          );
          const environmentId = await this.resolveEnvironmentId(environmentName);
-         await environment.withVersionLock(
+         const reclaimed = await environment.withVersionLock(
             packageName,
             versionId,
-            async (version) => {
-               if (version?.archiveStatus !== "archive") return;
+            async (version): Promise<boolean> => {
+               if (version?.archiveStatus !== "archive") return false;
+               // A run of this version is still writing: its tables are not in
+               // a run record yet. Leave everything to the reclaim that run
+               // starts when it settles (see createMaterialization).
+               const active = await this.repository.getActiveMaterialization(
+                  environmentId,
+                  packageName,
+               );
+               if (active?.version === versionId) {
+                  logger.info(
+                     "Deferred reclaiming an archived version's tables until its running build settles",
+                     {
+                        environmentName,
+                        packageName,
+                        version: versionId,
+                        materializationId: active.id,
+                     },
+                  );
+                  return false;
+               }
                const runs = (
                   await this.repository.listMaterializations(
                      environmentId,
@@ -4826,7 +4888,7 @@ export class MaterializationService {
                      m.status !== "PENDING" &&
                      m.status !== "MANIFEST_ROWS_READY",
                );
-               if (runs.length === 0) return;
+               if (runs.length === 0) return false;
                const reclaimed = new Set(runs.map((m) => m.id));
                const stillReferenced = await this.tablesStillReferenced(
                   environmentId,
@@ -4854,8 +4916,16 @@ export class MaterializationService {
                   version: versionId,
                   runs: runs.length,
                });
+               return true;
             },
          );
+         // A loaded version may have been bound to what was just dropped: a
+         // binding read from the store before this reclaim, say. Re-derive
+         // every loaded version's routing from the runs that remain, outside
+         // the archived version's lock (the rebind takes other versions').
+         if (reclaimed) {
+            await this.rebindLoadedVersions(environmentName, packageName);
+         }
       } catch (err) {
          logger.warn("Failed to reclaim an archived version's tables", {
             environmentName,
@@ -4866,6 +4936,25 @@ export class MaterializationService {
       }
    }
 
+   /**
+    * Re-derive a package's serve routing from its latest remaining successful
+    * materialization and push it onto the loaded models — BOTH tiers, mirroring
+    * the load-time {@link Environment.rebindServeBindingsFromLocalStore}. Called
+    * after a delete so serving never points at a removed table; picks the
+    * next-latest generation, or clears the bindings when none remain.
+    * Best-effort (a failure logs and leaves the current bindings — a later
+    * reload/build re-derives). For a versioned package, every loaded version
+    * is re-derived (see rebindLoadedVersions).
+    *
+    * The manifest is split by tier:
+    *  - **colocated** (same-connection) → re-derived regardless of
+    *    `PERSIST_STORAGE_MODE`: colocated is the v0 path and is not gated by the
+    *    storage kill switch, so a reclaimed colocated table must not be left
+    *    routed even when the tier is off.
+    *  - **storage=** (cross-connection) → re-derived only when the tier is not
+    *    `off` (its serve routing requires the tier on; an off deployment does no
+    *    extra work here).
+    */
    private async rebindServeBindingsAfterDelete(
       environmentName: string,
       packageName: string,
@@ -4914,9 +5003,10 @@ export class MaterializationService {
             // manifest is authoritative for it.
             let owned: string | undefined;
             if (versionId !== undefined) {
-               const pkg = await environment.getPackage(packageName, false, {
-                  versionId,
-               });
+               // Only what is loaded: a version unloaded since it was listed
+               // rebinds from the store when it next loads.
+               const pkg = environment.peekVersion(packageName, versionId);
+               if (!pkg) continue;
                if (pkg.getPackageMetadata().manifestLocation) continue;
                owned = ownedVersionOf(pkg);
             }
@@ -5047,12 +5137,17 @@ export class MaterializationService {
       version: string | null,
    ): Promise<(name: string) => Promise<MalloyConnection | undefined>> {
       let pkg: Awaited<ReturnType<typeof environment.getPackage>> | undefined;
-      try {
-         pkg = await environment.getPackage(packageName, false, {
-            versionId: version ?? undefined,
-         });
-      } catch {
-         pkg = undefined;
+      if (version !== null) {
+         // Never loaded for a drop: an unloaded version's package-local
+         // duckdb went with it, so the environment's connections are all
+         // there is to reach.
+         pkg = environment.peekVersion(packageName, version);
+      } else {
+         try {
+            pkg = await environment.getPackage(packageName, false);
+         } catch {
+            pkg = undefined;
+         }
       }
       if (pkg) {
          const servable = pkg;
@@ -5268,6 +5363,8 @@ export class MaterializationService {
    private runInBackground(
       id: string,
       run: (signal: AbortSignal) => Promise<void>,
+      // Called once the run has settled and its final status is recorded.
+      onSettled?: () => void,
    ): void {
       const abortController = new AbortController();
       this.runningAbortControllers.set(id, abortController);
@@ -5318,6 +5415,7 @@ export class MaterializationService {
          })
          .finally(() => {
             this.runningAbortControllers.delete(id);
+            onSettled?.();
          });
    }
 

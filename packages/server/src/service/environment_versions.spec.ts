@@ -284,14 +284,24 @@ describe("Environment versions from the registry", () => {
       await load;
       expect((await archive).archiveStatus).toBe("archive");
 
-      // The /status view, which names every loaded version: the archived one
-      // must not be among them. (getLoadedPackages shows only latest.)
+      // The /status view, which names every version held and says which are
+      // loaded: the archived one is held, and must not be loaded.
+      // (getLoadedPackages shows only latest.)
       await writeTree(path.join(envPath, "sales", "1.1.0"), 2);
-      const loaded = (await env.listPackages({ everyLoadedVersion: true })).map(
-         (p) => p.versionId,
+      const held = Object.fromEntries(
+         (await env.listPackages({ everyVersion: true })).map((p) => [
+            p.versionId,
+            { loaded: p.loaded, archiveStatus: p.archiveStatus },
+         ]),
       );
-      expect(loaded).toContain("1.1.0");
-      expect(loaded).not.toContain("1.0.0");
+      expect(held["1.1.0"]).toEqual({
+         loaded: true,
+         archiveStatus: "unarchive",
+      });
+      expect(held["1.0.0"]).toEqual({
+         loaded: false,
+         archiveStatus: "archive",
+      });
       expect(refusal(() => env.resolveSlot("sales", "1.0.0"))).toEqual({
          status: 410,
          reason: "VERSION_ARCHIVED",
@@ -422,7 +432,8 @@ describe("Environment versions under concurrency and failure", () => {
 
    /** Every version loaded, as /status reports them. */
    const loadedVersions = async () =>
-      (await env.listPackages({ everyLoadedVersion: true }))
+      (await env.listPackages({ everyVersion: true }))
+         .filter((p) => p.loaded !== false)
          .map((p) => p.versionId)
          .filter((v): v is string => typeof v === "string")
          .sort();
