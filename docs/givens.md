@@ -71,16 +71,36 @@ A given has a name, a Malloy type, and an optional default. Queries reference th
 | `timestamptz` | `given: since :: timestamptz is @2024-01-01 00:00:00::timestamptz` | Zone-aware timestamp thresholds      |
 | `filter<T>`   | `given: REGION :: filter<string> is f''`                           | First-class Malloy filter expression |
 
-These are the scalar types Malloy's grammar accepts in a `given:` declaration. **Array and record
-givens are not among them**: `given: categories :: string[] is []` is a compile error
-(`unexpected ']'`), not an unsupported-but-tolerated form. To let a caller pass several values, use
-`filter<string>` and send a Malloy filter expression such as `Footwear, Outerwear`.
+The table lists the scalar and filter types, but the grammar is not limited to them: an
+array-typed declaration such as `given: ROLES :: string[]` compiles, and the given surfaces with type
+`string[]`. What does not compile is an **empty-array literal default** --
+`given: categories :: string[] is []` fails with `unexpected ']'`, while a non-empty default such as
+`is ['admin']` compiles. To let a caller pass several values, use `filter<string>` and send a Malloy
+filter expression such as `Footwear, Outerwear`.
 
 The `timestamptz` cast is not decoration. A bare `@2024-01-01 00:00:00` literal is a `timestamp`,
 so using it as a `timestamptz` default fails to compile with a type-mismatch error. Declaring the
 given with no default at all also works.
 
 A query, notebook cell or dashboard tile that reads a given with no default still loads with its package; it is refused only when it runs without a value for that given.
+
+### `#(secure)`: a given the deployment resolves, not the caller
+
+A `given:` declaration annotated `#(secure)` marks a given whose value is meant to come from a
+deployment in front of Publisher, which resolves it from the caller's identity and replaces whatever
+the request supplied. Publisher itself has no identity source, so the marker is a contract with that
+deployment rather than something the server enforces on its own -- see
+[security-posture.md](security-posture.md). Publisher's part is to carry the marker through package
+load: it stays in the given's `annotations` list in the API, so the deployment can act on it.
+
+Which givens a deployment resolves, including which given types it supports, is defined by that
+deployment rather than by the `given:` grammar. A `#(secure)` given the deployment does not resolve
+keeps whatever value the request supplied, so a gate over it can be satisfied by the caller. Check
+your deployment's documentation for its current requirements before relying on the marker.
+
+A given that an `#(authorize)` or `#(access_filter)` gate references may not carry a default, since
+a caller who supplies no value would receive it; a model that declares one is refused at load (see
+[Authorize: Validation](authorize.md#validation)).
 
 ### Annotations
 
