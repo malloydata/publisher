@@ -2938,9 +2938,11 @@ export class Environment {
          name: packageName,
          version,
          key: `${packageName}@${version.dirName}`,
+         // From the registry row, not the request: a version's files are
+         // where its row says, and the row was found under this same name.
          path: safeJoinUnderRoot(
             this.environmentPath,
-            packageName,
+            version.packageName,
             version.dirName,
          ),
       };
