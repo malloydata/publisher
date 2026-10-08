@@ -11,24 +11,24 @@ SPDX-License-Identifier: MIT
 
 Materialize an expensive source once so queries read a **pre-built warehouse table** instead of recomputing it every time. You tag a source `#@ persist`, a materialization run builds it into a physical table, and queries against it are rewritten to read that table.
 
-> **The #1 gotcha, up front:** if a persist source isn't materializing, it is almost always one of two things - a `.malloy` file in the package missing the `##! experimental.persistence` flag (which aborts the *whole* package's build plan), or no build ever ran (a standalone Publisher does not build on publish - see **Building and refreshing**). Jump to **Debugging a no-op build**.
+> **The #1 gotcha, up front:** if a persist source isn't materializing, it is almost always one of three things - no build ever ran (a standalone Publisher does not build on publish - see **Building and refreshing**), a build ran and failed (read the run's error: it names the source), or the file declaring the source has no `##! experimental.persistence` flag, of its own or from a file it imports (that file is skipped without a warning). Jump to **Debugging a no-op build**.
 
 **Deciding what to persist, what to stop persisting, and how to schedule it** (making a package cheaper or faster): read `reference/tuning.md`. It reads the materialization history with the `malloy-pub` CLI and proposes changes; it recommends and does not edit.
 
 ## The recipe (get this right and it just works)
 
-1. **`##! experimental.persistence` on EVERY `.malloy` file in the package** - not only the file that declares the persist source. Either form enables it:
+1. **`##! experimental.persistence` on every `.malloy` file that declares a persist source.** Either form enables it:
    - `##! experimental.persistence`, or
    - `##! experimental { access_modifiers, sql_functions, persistence }` (add `persistence` to the existing list).
 
-   **Why every file:** the build plan is computed by asking *every* `.malloy` file in the package for its persist sources, and that call **throws on any file whose model lacks the flag** (`Model must have ##! experimental.persistence`). One unflagged helper or import file, even one with no persist source of its own, aborts the whole package's build plan, so *every* persist source in the package drops out. This is the most common cause of a no-op build.
+   **Why it matters:** the build plan reads persist sources only from files whose model carries the flag, and skips every other file **without a warning**. A file's model carries the flag when the file declares it or imports a file that does. So a `#@ persist` in a file with neither is silently never built, while the rest of the package builds normally. Put the flag in the declaring file itself rather than relying on an import to supply it. A file with no persist source of its own (a helper or import file) does not need the flag; adding it anyway is harmless.
 
 2. **`#@ persist name="..."` on a query-based source, with the name quoted:**
    ```malloy
    #@ persist name="my_dataset.my_table"
    source: my_rollup is some_source -> { group_by: ...; aggregate: ... }
    ```
-   - **Only `query_source` and `sql_select` sources are persistable** - a source whose definition has a `-> { ... }` pipeline or a `conn.sql("...")`. This **includes** one refined by a trailing `extend { ... }`. What is **not** persistable is a *plain* `extend` over a bare `conn.table(...)`; a `#@ persist` on such a source is **silently ignored** (its annotation is never read) - that one source just won't materialize, and the rest of the package still builds.
+   - **Only `query_source` and `sql_select` sources are persistable** - a source whose definition has a `-> { ... }` pipeline or a `conn.sql("...")`. This **includes** one refined by a trailing `extend { ... }`. Both build a table, and queries against either read it. What is **not** persistable is a *plain* `extend` over a bare `conn.table(...)` (a filtered pass-through). A `#@ persist` on such a source is **refused, not ignored**: the package carries a warning naming the source, and any materialization run that covers it fails with an error naming it, so a whole-package run builds nothing until you fix it. Persist a query source instead (`source: x is raw -> { where: ...; select: * }`), or remove the annotation.
    - **Quote the name.** `name="my_table"` (or a path `name="dataset.table"` / `name="project.dataset.table"`) is required. A **bare** `name=my_table` **always fails the build/publish** with `persist annotation name must be quoted` (a raw-source scan that hard-stops); it never silently no-ops.
    - `name=` is the target table name. In a standalone Publisher this **is** the physical table (rebuilt in place); a hosted (control-plane) deployment builds it under a content-addressed generation name. In both, the source's identity for reuse is a content address of its connection and canonical SQL (its `sourceEntityId`), so **republishing unchanged persist logic reuses the existing table** and changing the logic builds fresh.
 
@@ -55,34 +55,30 @@ Materialize an expensive source once so queries read a **pre-built warehouse tab
 
 A `#@ persist` tag declares *what* to materialize; it does not by itself build anything.
 
-- **Standalone Publisher:** publishing or loading a package only computes its build plan - **no table is built until a materialization run executes.** Trigger one explicitly (`malloy-pub materialize --package <pkg> --wait`, or the materialization API), or turn on the opt-in local scheduler (off unless `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is set) to fire the package's `schedule` cron. Refresh is a re-run or that cron; `freshness` is not a refresh trigger here, so a freshness-only standalone package builds once and is not auto-refreshed.
+- **Standalone Publisher:** publishing or loading a package only computes its build plan - **no table is built until a materialization run executes.** Trigger one explicitly (`malloy-pub materialize --environment <env> --package <pkg> --wait`, or the materialization API), or turn on the opt-in local scheduler (off unless `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is set) to fire the package's `schedule` cron. Refresh is a re-run or that cron; `freshness` is not a refresh trigger here, so a freshness-only standalone package builds once and is not auto-refreshed.
 - **Hosted (control-plane) deployment:** the build runs automatically on publish, best-effort - a build failure does **not** fail the publish (which is why a broken persist can look like a silent no-op), and the control plane drives refresh to meet the `freshness` objective.
 
 Either way, a successful publish alone does not prove a table exists - confirm the build separately.
 
-## Serve-time routing is `query_source`-only (today)
-
-Both persistable types *build* a table, but only a **`query_source`** (a `-> { ... }` pipeline) is rewritten to *read* it at query time. A raw **`sql_select`** (`conn.sql("...")`, including `conn.sql("...") extend { ... }`) builds its table and then the query path re-inlines its SQL, so the table is built and never read, and queries are no faster. If you have raw SQL you want served from a table, wrap it in a thin `query_source` and persist that:
-
-```malloy
-source: x_raw is my_conn.sql("select ...")
-#@ persist name="scratch_dataset.x"
-source: x is x_raw -> { select: * }
-```
-
 ## Confirming it worked
 
-After a build runs, re-run one of the source's queries - a persisted `query_source` should return quickly, reading the pre-built table instead of recomputing the upstream. Your host also reports each persisted source as **ready** with its physical table name (a materialization run detail, CLI listing, or materialization view, depending on the host); if nothing is listed, either no build ran (standalone) or the build plan was empty - see **Debugging a no-op build**.
+A green run is not proof, and neither is a fast query (on small data a live recompute is fast too). Check what the server says it serves:
+
+1. **The run lists your source.** A run's detail (`malloy-pub get materialization <id> --environment <env> --package <pkg>`) names each built or reused source with its physical table. A run can finish ready having built nothing - a source missing from its manifest was not built; see **Debugging a no-op build**.
+2. **The package is bound to those tables.** On a standalone Publisher the package's details report `manifestBindingStatus` and `manifestEntryCount`. `"bound"` alone is not proof: an empty manifest also reports `"bound"` with a count of 0 while everything serves live. Require a nonzero count that includes your source. `"unbound"` means every query computes live, whatever tables exist, and `"live_fallback"` means a bound `storage=` table could not be read and the package is serving live for now.
+3. **The query names the table.** A query's full result (the REST query response without `compactJson`) carries the SQL it ran. Served from the table, its `FROM` names the physical table; computed live, it carries the source's own SQL instead. This is the per-query proof.
+4. **A reload unbinds them.** Reloading the package - including the automatic reload when a watched file is saved - drops the binding, and queries compute live until the next materialization run, which reuses unchanged tables and binds them again. After editing a model, run a build before you trust a timing.
+
+A query response's `servedFrom` field does not answer this question for a table built in the source's own connection: it reports only the `storage=` tier's outcome (`storage` when that tier answered, `live_fallback` when it degraded to a live recompute) and is empty otherwise, served from a colocated table or not. Do not read `live_fallback` as a signal about a colocated table.
 
 ## Debugging a no-op build
 
 Symptom: no table was built and the source still recomputes on every query. Check, in order:
 
 0. **Did a build actually run?** On a standalone Publisher, publish/load does **not** build - run `malloy-pub materialize` (or enable the scheduler). "Publishes fine, no table" is the *expected* standalone state, not a model bug. On a hosted deployment the build is automatic but best-effort, so a failure is silent - look for a `FAILED` run.
-1. **A `.malloy` file missing the persistence flag** (the most common real bug). Every model file's `##!` line needs `persistence`, including pure helper/import files with no persist source - one unflagged file aborts the whole package's build plan.
-2. **An unquoted persist name** - a bare `name=foo` **always** hard-stops the build/publish with `persist annotation name must be quoted`; use `name="foo"`. (If you got *no* error at all, it isn't this.)
-3. **A `#@ persist` on a non-persistable source** - a bare `extend` over `conn.table(...)` is silently ignored, so *that* source won't materialize (the rest of the package is unaffected). Tag a `query_source` / `sql_select` instead.
-4. **A persisted raw `sql_select` that builds but is never read** - if the table exists yet queries are no faster, it's the serve-routing gap above; wrap the `sql_select` in a `query_source`.
+1. **Did the run fail?** Read its error before anything else. The package's details flag some of these before any run: an unbuildable persist source appears in its warnings, and its build plan lists the sources a run will build. A `#@ persist` on a non-persistable source (a plain `extend` over `conn.table(...)`) fails every run that covers it, naming the source - so one bad annotation stops the whole package from building. Tag a `query_source` / `sql_select` instead, or remove the annotation.
+2. **The declaring file is missing the persistence flag.** A file with no `persistence` flag, of its own or from a file it imports, is skipped without any warning: the run succeeds and its persist sources are simply absent from what was built. Add the flag to every file that declares a `#@ persist`.
+3. **An unquoted persist name** - a bare `name=foo` **always** hard-stops the build/publish with `persist annotation name must be quoted`; use `name="foo"`. (If you got *no* error at all, it isn't this.)
 
 **Isolation test** - add a trivial, self-contained persist source in its own file and rebuild:
 ```malloy
@@ -91,8 +87,8 @@ source: smoke_raw is my_conn.table('some_dataset.some_table')
 #@ persist name="scratch_dataset.persist_smoke_test"
 source: persist_smoke is smoke_raw -> { aggregate: n is count() }
 ```
-- If **even this** doesn't build (after a real materialization run), the whole package's plan is aborting - a sibling `.malloy` file is missing the flag. Fix rule 1 across the package.
-- If the smoke source **does** build but your real one doesn't, your real source is the problem - a non-persistable type (a bare `extend`), or its own file's flag.
+- If **even this** doesn't build (after a real materialization run), the problem is package-wide: read the run's error. A `#@ persist` on a non-persistable source anywhere in the package fails the whole run and names it; otherwise check that the connection can write the target dataset.
+- If the smoke source **does** build but your real one doesn't, your real source is the problem - its own file's flag, or the source itself (read the run's error for it).
 
 Delete the smoke file and drop its table afterward.
 
@@ -170,9 +166,9 @@ bound on how long a revoked row keeps being served.
 
 ## Gotchas
 
-- **Every `.malloy` file needs the persistence flag** - one unflagged file aborts the whole package's build plan. (A `#@ persist` on a *non*-persistable source, by contrast, is silently ignored and does not affect other sources.)
+- **Flag every file that declares a persist source** - a file with no `##! experimental.persistence`, of its own or from a file it imports, is skipped without a warning, so its persist sources are silently never built.
+- **A `#@ persist` on a non-persistable source fails the run** - a plain `extend` over `conn.table(...)` is refused, and every run that covers it fails naming the source, so a whole-package run builds nothing until you fix it.
 - **A tag doesn't build** - a standalone Publisher materializes only on an explicit run or its scheduler; only a hosted control plane builds on publish.
-- **Serve-time routing is `query_source`-only** - a raw `sql_select` builds a table the query path doesn't read; wrap it in a `query_source`.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
