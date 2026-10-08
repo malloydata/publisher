@@ -31,7 +31,7 @@ A tile naming a view that does not exist, a `# drill` pointing at no dashboard, 
 - **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
 - **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
 
-## [Unreleased] - Server: per-connection sslmode and statement timeout for Postgres
+## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.
 
@@ -42,7 +42,7 @@ A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgre
 
 A DuckLake catalog connection is unchanged and applies neither setting.
 
-## [Unreleased] - Server: plain Postgres connections cap their open sessions
+## [0.9.6] - Server: plain Postgres connections cap their open sessions
 
 A plain (non-proxied) Postgres connection used to open a new database session for every query with no limit, so concurrent queries across a fleet could exhaust a role's `CONNECTION LIMIT`. It now runs through a pool that holds at most 5 open sessions per connection per process. Each query still gets a fresh session that is closed when it finishes, so session state (`SET`, `SET ROLE`, an open `BEGIN`) never carries over to another caller.
 
