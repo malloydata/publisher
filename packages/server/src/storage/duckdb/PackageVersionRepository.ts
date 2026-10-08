@@ -7,7 +7,7 @@ import {
    PackageVersionArchiveStatus,
    PackageVersionUpdate,
 } from "../DatabaseInterface";
-import { DuckDBConnection } from "./DuckDBConnection";
+import { DuckDBConnection, isUniqueViolation } from "./DuckDBConnection";
 
 /**
  * DuckDB-backed repository for published package versions (`package_versions`).
@@ -166,15 +166,4 @@ function mapRow(row: Record<string, unknown>): PackageVersion {
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
    };
-}
-
-/**
- * DuckDB reports a UNIQUE / PRIMARY KEY violation as a constraint error whose
- * message names the duplicate key. The only unique key on this table besides
- * the generated id is (environment_id, package_name, version), so any such
- * violation on insert is a duplicate version.
- */
-function isUniqueViolation(err: unknown): boolean {
-   if (!(err instanceof Error)) return false;
-   return /duplicate key|unique constraint/i.test(err.message);
 }

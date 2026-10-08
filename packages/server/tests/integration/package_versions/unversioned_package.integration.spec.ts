@@ -154,4 +154,27 @@ describe("an unversioned package and versionId", () => {
          200,
       );
    });
+
+   // Credible's router sends `versionId=` (empty) on its worker calls. It names
+   // no version, so it must be served as if absent, never refused.
+   it("reads an empty versionId as no version", async () => {
+      for (const sub of [
+         "/data-apps",
+         "/connections/duckdb/schemas",
+         "/materializations",
+      ]) {
+         expect((await fetch(pkgUrl(`${sub}?versionId=`))).status).toBe(200);
+      }
+      const compiled = await fetch(
+         pkgUrl("/models/report.malloy/compile?versionId="),
+         {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               source: "query: q is report -> { select: n }",
+            }),
+         },
+      );
+      expect(compiled.status).toBe(200);
+   });
 });
