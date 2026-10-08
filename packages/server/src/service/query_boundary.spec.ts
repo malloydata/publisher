@@ -41,6 +41,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   BadRequestError,
    NotQueryableError,
    OffSurfaceError,
    QueryCompileError,
@@ -917,14 +918,56 @@ source: track_analysis is tracks extend {
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
-         // All-curated multi-statement is legitimate and admitted (no false
-         // denial from the old fail-closed-on-shape heuristic).
-         const { result } = await model.getQueryResults(
+         // Several `run:` statements must not change a denial: a hidden source
+         // and a missing one each give, with two statements, the same answer
+         // they give with one. So the count never reveals which it was.
+         const answerFor = async (text: string) => {
+            try {
+               await model.getQueryResults(undefined, undefined, text);
+            } catch (error) {
+               return error as Error;
+            }
+            throw new Error("expected the query to be refused");
+         };
+         // A direct name is denied before compile. An alias (`source: a is
+         // helper extend {}`) is denied only after compile, by the backstop,
+         // so it is the case that fails if the count check moves ahead of it.
+         for (const target of ["helper", "no_such_source"]) {
+            for (const last of [
+               `run: ${target} -> { aggregate: c }`,
+               `source: a is ${target} extend {}\nrun: a -> { aggregate: c }`,
+            ]) {
+               const once = await answerFor(last);
+               const twice = await answerFor(
+                  `run: customers -> { aggregate: total }\n${last}`,
+               );
+               expect(once).not.toBeInstanceOf(BadRequestError);
+               expect(twice).not.toBeInstanceOf(BadRequestError);
+               expect(twice.constructor).toBe(once.constructor);
+               expect(twice.message).toBe(once.message);
+            }
+         }
+         expect(
+            await answerFor("run: helper -> { aggregate: c }"),
+         ).toBeInstanceOf(NotQueryableError);
+         expect(
+            await answerFor(
+               "source: a is helper extend {}\nrun: a -> { aggregate: c }",
+            ),
+         ).toBeInstanceOf(OffSurfaceError);
+
+         // All-curated multi-statement passes the boundary, then is refused as
+         // more than one `run:`. The two denials above stay 404s rather than
+         // that 400: the count is checked only after every gate.
+         const allCurated = model.getQueryResults(
             undefined,
             undefined,
             "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
          );
-         expect(result.data).toBeDefined();
+         await expect(allCurated).rejects.toBeInstanceOf(BadRequestError);
+         await expect(allCurated).rejects.toThrow(
+            "The query has 2 run: statements",
+         );
       } finally {
          await duckdb.close();
       }

@@ -779,6 +779,23 @@ raising it is an option, while `unserializable` means the response could not be 
 at all and no cap raise fixes it. `unserializable` is never emitted for `source: connection_sql`,
 which has no such guard on its own path.
 
+## MCP settings (`mcp`)
+
+The `mcp` block of `publisher.config.json` holds settings for the MCP server. It has one key:
+
+```json
+{ "mcp": { "includeHiddenFilesAndSources": true } }
+```
+
+- `includeHiddenFilesAndSources` (boolean, default `false`): offer the `includeHiddenFilesAndSources`
+  parameter on MCP `execute_query`. With it, a query can run the files and sources a package's
+  `index.malloy` hides, so an author can test them before publishing them. It never bypasses
+  `#(authorize)` or `#(access_filter)`. Leave it off on a server that answers questions: off removes
+  the parameter from the tool's schema, so an agent is never offered it. The REST parameter of the
+  same name does not depend on this setting.
+- The value is read once, at startup. Restart the server after changing it.
+- A value that is not a boolean, or an `mcp` that is not an object, is warned about and ignored.
+
 ## Theming
 
 Publisher renders charts, tables, and dashboard tiles with a configurable light/dark theme. See

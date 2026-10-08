@@ -18,6 +18,7 @@ import {
    getPublisherConfigDir,
    getUnresolvedPublisherConfigPath,
    getVersionPromotionMode,
+   isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -481,6 +482,12 @@ export class EnvironmentStore {
    private initError: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
+   /**
+    * `mcp.includeHiddenFilesAndSources` from publisher.config.json, read once
+    * here. The MCP server registers its tools on every request, so reading the
+    * config at registration would re-read and re-parse the file on every call.
+    */
+   public readonly mcpIncludeHiddenFilesAndSources: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
    public storageManager: StorageManager;
@@ -525,6 +532,8 @@ export class EnvironmentStore {
 
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
+      this.mcpIncludeHiddenFilesAndSources =
+         isMcpIncludeHiddenFilesAndSources(serverRootPath);
       this.gcsClient = new Storage();
 
       const watchEnvList = (process.env.PUBLISHER_WATCH || "")
@@ -1905,6 +1914,13 @@ export class EnvironmentStore {
          if (!environmentPath) {
             throw new EnvironmentNotFoundError(
                `Environment "${environmentName}" could not be resolved to a path.`,
+               {
+                  environmentName,
+                  // The loaded set, which is what list_packages shows.
+                  availableEnvironments: Array.from(
+                     this.environments.keys(),
+                  ).sort(),
+               },
             );
          }
          return await this.addEnvironment({

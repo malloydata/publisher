@@ -17,7 +17,7 @@ import {
 import { isDashboardModelPath } from "./dashboard";
 import { compareSemver, isSemver, versionDirName } from "./semver";
 import { hashPackageTree } from "./package_content_hash";
-import { notebookLintProblems } from "./notebook_lint";
+import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -1302,6 +1302,22 @@ export class Environment {
                   problems.push(tagged);
                }
             };
+            // The findings a reload would add on the main thread after this
+            // same worker compile: render tags and the dashboard, given and
+            // drill lints. Read before the notebook lint below, which drops its
+            // copy of a finding only when the dashboard lint reported it too.
+            const { renderTagWarnings, dashboardWarnings } =
+               await Package.lintWorkerOutcome(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  pkg.getMalloyConfig(),
+                  outcome,
+                  boundManifestEntries,
+                  source === undefined
+                     ? undefined
+                     : { modelPath: modelName, source },
+               );
             for (const compiled of outcome.models) {
                if (compiled.problems) {
                   collect(
@@ -1364,10 +1380,38 @@ export class Environment {
                         pathToFileURL(
                            path.join(packagePath, compiled.modelPath),
                         ).toString(),
+                     ).filter(
+                        (problem) =>
+                           !reportedByDashboardLint(
+                              problem,
+                              compiled.modelPath,
+                              dashboardWarnings,
+                           ),
                      ),
                      compiled.modelPath,
                   );
                }
+            }
+            // Each keeps its own severity, so a broken dashboard makes the
+            // compile an error, as it should. They carry no position, so the
+            // subject (the view, field or given) leads the message: without
+            // it, two views with the same finding would collapse into one.
+            const asProblem = (
+               warning: (typeof renderTagWarnings)[number],
+               code: string,
+            ): LogMessage =>
+               ({
+                  severity: warning.severity ?? "warn",
+                  message: warning.subject
+                     ? `${warning.subject}: ${warning.message}`
+                     : warning.message,
+                  code,
+               }) as LogMessage;
+            for (const warning of renderTagWarnings) {
+               collect([asProblem(warning, "render-tag")], warning.model);
+            }
+            for (const warning of dashboardWarnings) {
+               collect([asProblem(warning, "dashboard-lint")], warning.model);
             }
             if (
                source !== undefined &&

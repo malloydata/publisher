@@ -431,8 +431,22 @@ export class UnparseableTextError extends CompileRefusedError {
    }
 }
 
+/**
+ * `lookup` is set where a name was looked up and missed. It carries the names
+ * that do exist, so an MCP tool can tell the agent what to use instead. The
+ * names stay out of the message because the message is also the REST 404 body,
+ * and a REST caller may be scoped to one environment by the router in front.
+ * The MCP tools do put the names in their message, to any caller. That adds no
+ * disclosure: `list_packages` already names every loaded environment over MCP.
+ */
 export class EnvironmentNotFoundError extends Error {
-   constructor(message: string) {
+   constructor(
+      message: string,
+      readonly lookup?: {
+         environmentName: string;
+         availableEnvironments: string[];
+      },
+   ) {
       super(message);
    }
 }
