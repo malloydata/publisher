@@ -22,20 +22,26 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 ## Structure the app as modules, not one inline script
 
-Past a single tile, an inline `<script>` becomes unmaintainable and untestable. Split the work, and load it without a build step: put your shared libraries first as plain globals, then one ES-module entry point that `import`s your own files.
+Past a single tile, an inline `<script>` becomes unmaintainable and untestable. Split the work, and load it without a build step: the runtime first as a plain global, then one ES-module entry point that `import`s your own files.
 
 ```html
-<!-- Globals first: the runtime, then any vendored chart library. -->
+<head>
+  <!-- Start the chart library's download now, without making anything wait for it.
+       Only on pages that draw a chart. -->
+  <link rel="preload" as="script" href="./vendor/chart.umd.js">
+</head>
+...
 <script src="/sdk/publisher.js"></script>
-<script src="./vendor/chart.umd.js"></script>
 <!-- One module entry; it imports the rest. ES modules resolve with no bundler. -->
 <script type="module" src="./app.js"></script>
 ```
 
+**Do not load the chart library with a plain `<script>` ahead of your code.** It is usually most of the page's weight, and loaded that way it holds every query until it has downloaded and parsed. `charts.js` injects it the first time it draws, so the queries start at once. `reference/performance.md` has the loader, and the stand-in that lets callers wire chart clicks before the library has arrived.
+
 A separation that keeps each piece testable and changeable on its own:
 
 - **`format.js`**. Pure functions only: number/date formatting, a series-align-by-month helper, status thresholds. No DOM, no globals. This is the file `node --test` can cover directly.
-- **`charts.js`**. Turns a prepared data object into a drawn chart; the only file that touches the chart library.
+- **`charts.js`**. Turns a prepared data object into a drawn chart; the only file that touches the chart library, and the one that loads it.
 - **`tiles.js`**. Your tiles as *data*: for each, its model/source/view (and target source, if any), plus a pure `build(rows)` that shapes query rows for the chart. This is the single source of truth for what each tile queries.
 - **`app.js`**. The thin entry point: reads `tiles.js`, runs the queries, wires results to the DOM. Adding a tile means adding a `tiles.js` entry, not editing `app.js`.
 
@@ -87,6 +93,10 @@ const [planMix, byIndustry, kpisRows] = await Promise.all([
 ```
 
 Prefer defining the views in the model (one per tile, pre-aggregated and sorted) over building long query strings in JS.
+
+**Same question, same query text.** A results cache, and any prefetch, is keyed on the exact string. Two pages reading the same view with different text (one adds an `order_by`) pay for two round trips for one answer, and a prefetch that warms different text from what the destination page sends warms nothing. Build each tile's query in one place and reuse that string wherever the same rows are needed.
+
+**Set ARIA and data attributes as attributes.** A small element helper that does `Object.assign(document.createElement(tag), props)` silently drops `aria-modal`, `aria-label`, `aria-busy` and `data-*`: they are not properties, so assigning them does nothing and no error says so. Route any `aria-*`, `data-*` and `role` key through `setAttribute`. And a clickable row is a control: give it `tabIndex = 0` and Enter/Space handling, or keyboard users cannot open what a mouse user can.
 
 Get the numbers right. The fastest way to ship a wrong-but-convincing dashboard is to paper over missing data:
 
