@@ -93,7 +93,7 @@
       "extract-zip": "^2.0.1",
       "globals": "^15.9.0",
       "google-auth-library": "^9.15.1",
-      "handlebars": "^4.7.9",
+      "handlebars": "^4.7.10",
       "http-proxy-middleware": "^3.0.7",
       "lunr": "^2.3.6",
       "morgan": "^1.10.0",
