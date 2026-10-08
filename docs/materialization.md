@@ -143,10 +143,10 @@ would not, the predicate is read-time and is re-applied per caller.**
 query — `raw -> { select: * }` — and then refine it. That is not stylistic: a source
 written as a plain extension of a table, `source: orders is raw extend { where: org_id =
 $ORG_ID }`, stays type `table`, and only a query-shaped source is treated as a build
-root. `#@ persist` on one is a **silent no-op** — nothing is built, no error is raised,
-and the source is served live exactly as if the annotation were absent. Publisher warns
-on the package when it sees an annotated source missing from the build plan, which is
-the only signal you get, so reach for the `-> { select: * }` form first.
+root. `#@ persist` on one is refused rather than ignored: the package loads with a
+warning naming the source, and a materialization run that covers it (a whole-package
+run, or one that names it) fails with an error naming it, so nothing is built until the
+annotation moves or goes. Reach for the `-> { select: * }` form first.
 
 ```malloy
 given:
