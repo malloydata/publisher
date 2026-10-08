@@ -155,6 +155,7 @@ export type ErrorReason =
  * Why a request about a package version was refused. Emitted as `reason`
  * because several share a status, and the difference is what a caller acts on:
  * "bump the version" and "this package's versions are immutable" are both 409.
+
  */
 export type PackageVersionReason =
    | "MANIFEST_VERSION_MISSING"

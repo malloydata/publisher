@@ -710,6 +710,58 @@ describe("Environment versions under concurrency and failure", () => {
       expect(sweptSurvives).toBe(true);
    });
 
+   it("keeps a version's manifest binding when a re-publish sends null, as an orchestrator's re-load does", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      const bound = "gs://bucket/sales/manifest.json";
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            manifestLocation: bound,
+         },
+      );
+      expect(registry.rows[0].manifestLocation).toBe(bound);
+
+      // The same content again, with no manifest to give.
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            manifestLocation: null,
+         },
+      );
+
+      expect(registry.rows[0].manifestLocation).toBe(bound);
+   });
+
+   it("does not run the publish checks again on a re-publish of the same content", async () => {
+      // The content was checked when it was first published and cannot have
+      // changed (same hash), so an orchestrator's re-load must not be refused
+      // by a check that has since been tightened.
+      env.setVersionRegistry(memoryRegistry());
+      await publish("1.0.0", 1);
+      let checked = 0;
+      const pkg = await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            validate: () => {
+               checked++;
+               return "refused by a newer check";
+            },
+         },
+      );
+      expect(checked).toBe(0);
+      expect(pkg.getVersionId()).toBe("1.0.0");
+   });
+
    it("re-places a version whose tree is missing from the tree it was just sent, without fetching it again", async () => {
       const registry = memoryRegistry();
       let fetched = 0;
@@ -899,6 +951,33 @@ describe("Environment versions under concurrency and failure", () => {
             "VERSION_ID_INVALID",
          );
       }
+   });
+
+   it("never leaves latest on an archived version when an archive races a move of latest", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      await publish("1.0.0", 1);
+      await publish("1.1.0", 2);
+
+      // Both at once: whichever takes the package lock first decides, and the
+      // other is refused, so the two can never both land.
+      const [moved, archived] = await Promise.allSettled([
+         env.setLatestVersion("sales", "1.0.0"),
+         env.setVersionArchiveStatus("sales", "1.0.0", "archive"),
+      ]);
+
+      const latest = registry.latest.get("sales");
+      const row = registry.rows.find((r) => r.version === latest);
+      expect(row?.archiveStatus).toBe("unarchive");
+      expect(
+         [moved.status, archived.status].filter((s) => s === "fulfilled"),
+      ).toHaveLength(1);
+      const refusal = (moved.status === "rejected" ? moved : archived) as {
+         reason: unknown;
+      };
+      expect((refusal.reason as PackageVersionError).reason).toBe(
+         moved.status === "rejected" ? "VERSION_ARCHIVED" : "VERSION_IS_LATEST",
+      );
    });
 
    it("refuses to publish a version into a package watch mode mounts in place", async () => {

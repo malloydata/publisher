@@ -3769,8 +3769,11 @@ export class Environment {
             `Version ${staged.version} of package ${packageName} is archived. Unarchive it to serve it again.`,
          );
       }
+      // A publish binds a manifest it names and never unbinds: an
+      // orchestrator re-loading a version sends no manifest (or null) when it
+      // has none to give. PUT .../versions/{v}/manifest unbinds.
       const rebind =
-         options.manifestLocation !== undefined &&
+         !!options.manifestLocation &&
          options.manifestLocation !== existing.manifestLocation;
       if (rebind) {
          await options.registry.updateVersion(existing.id, {
@@ -4077,10 +4080,15 @@ export class Environment {
             versionId,
          );
          if (version.archiveStatus === archiveStatus) return version;
+         // Checked against the registry under this process's package lock,
+         // which every writer of latest and of archive state holds. That is
+         // enough because a publisher.db has one process: each worker keeps
+         // its own. Two processes sharing a registry could interleave an
+         // archive with a move of latest, and nothing in the SQL stops it.
          if (archiveStatus === "archive" && index.latest === versionId) {
             throw new PackageVersionError(
                "VERSION_IS_LATEST",
-               `Version ${versionId} is the latest version of package ${packageName}, so it cannot be archived. Point latest at another version first.`,
+               `Version ${versionId} is the latest version of package ${packageName}, so it cannot be archived. Point latest at another version first, or delete the package to take its last version out of service.`,
             );
          }
          if (archiveStatus === "archive" && (await options.isBuilding?.())) {

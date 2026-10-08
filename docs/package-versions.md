@@ -101,7 +101,7 @@ This replaces `PATCH …/packages/{pkg}` for a versioned package. That route is 
 
 `PATCH …/versions/{versionId}` with `{"archiveStatus": "archive"}` takes a version out of service. Reads that name it answer 410 `VERSION_ARCHIVED`, and it is unloaded. `"unarchive"` puts it back; it loads on its next read.
 
-- The package's `latest` cannot be archived (409 `VERSION_IS_LATEST`). Move `latest` first.
+- The package's `latest` cannot be archived (409 `VERSION_IS_LATEST`). Move `latest` first. `latest` cannot be cleared, so a package's last version in service cannot be archived: to take a package out of service entirely, delete the package. An orchestrator that auto-archives on a timer should skip the version `latest` points at, or delete the package once nothing is meant to serve it.
 - An archive is refused with 409 `VERSION_BUILDING` while a materialization of that version is running. A run that starts just after the archive fails, and what it built is reclaimed once it ends.
 - Sending the state a version is already in changes nothing.
 - **The version's files stay on disk.** See [Disk growth](#disk-growth).
@@ -121,7 +121,7 @@ The tables of an orchestrated run (`buildInstructions`) are never reclaimed by t
 
 ## Disk growth
 
-A published version's tree is never deleted while the package exists. Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. The only thing that removes version trees is deleting the package, which removes all of them.
+A published version's tree is never deleted while the package exists. Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. The only thing that removes version trees is deleting the package, which removes all of them, with the package's version rows and materialization records. It does not drop the tables those versions built (their `scope: version` tables included), as deleting an unversioned package never has: once the records are gone nothing names them, so reclaim a package's tables by archiving its versions, or with `DELETE …/materializations/{id}?dropTables=true`, before deleting it.
 
 So a package's disk use grows by one tree per version published, and nothing shrinks it:
 

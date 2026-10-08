@@ -579,6 +579,81 @@ describe("MaterializationService", () => {
       });
    });
 
+   describe("a run of a version archived while it built", () => {
+      /** Version 1.0.0, latest and in service, whose build is held open. */
+      function heldBuild() {
+         const versions = [
+            { version: "1.0.0", archiveStatus: "unarchive" as string },
+         ];
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves(
+            unversionedEnvironment({
+               resolveSlot: (name: string) => ({
+                  name,
+                  key: `${name}@1.0.0`,
+                  path: `/test/${name}/1.0.0`,
+                  version: { version: "1.0.0" },
+               }),
+               listPackageVersions: () => ({ latest: "1.0.0", versions }),
+               getPackage: sinon.stub().resolves({
+                  getBuildPlan: () => null,
+                  getVersionId: () => "1.0.0",
+                  getPackageMetadata: () => ({ scope: "version" }),
+               }),
+            }),
+         );
+         let finish: () => void = () => {};
+         const svc = ctx.service as unknown as {
+            runBuild: sinon.SinonStub;
+            reclaimVersionTables: sinon.SinonStub;
+         };
+         svc.runBuild = sinon
+            .stub()
+            .callsFake(
+               () => new Promise<void>((resolve) => (finish = resolve)),
+            );
+         svc.reclaimVersionTables = sinon.stub().resolves();
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({
+               id: "mat-1",
+               status: "PENDING",
+               version: "1.0.0",
+            }),
+         );
+         return {
+            versions,
+            finish: () => finish(),
+            reclaim: svc.reclaimVersionTables,
+         };
+      }
+
+      const settled = () => new Promise((r) => setTimeout(r, 50));
+
+      it("reclaims the version's tables once the run settles", async () => {
+         const { versions, finish, reclaim } = heldBuild();
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            versionId: "1.0.0",
+         });
+         // The archive lands while the build runs; its own reclaim deferred.
+         versions[0].archiveStatus = "archive";
+         finish();
+         await settled();
+
+         expect(reclaim.calledOnce).toBe(true);
+         expect(reclaim.firstCall.args).toEqual(["my-env", "pkg", "1.0.0"]);
+      });
+
+      it("leaves a version that is still in service alone when its run settles", async () => {
+         const { finish, reclaim } = heldBuild();
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            versionId: "1.0.0",
+         });
+         finish();
+         await settled();
+
+         expect(reclaim.called).toBe(false);
+      });
+   });
+
    describe("versionedTableName", () => {
       it("appends the version to a short name, and to a qualified name's table", () => {
          expect(versionedTableName("summary", "__v1_2_0")).toBe(
