@@ -12,10 +12,13 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionNotFoundError,
+   databaseAccessFailure,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
+   UnconfiguredConnectionError,
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
@@ -233,7 +236,38 @@ function classifyDriverFailure(error: unknown): Error {
          : typeof error === "string"
            ? error
            : JSON.stringify(error);
-   return driverErrorToPublisherError(message);
+   return databaseAccessFailure(error) ?? driverErrorToPublisherError(message);
+}
+
+/**
+ * A failure running SQL the caller sent: a 502 with the driver's text logged
+ * and generalized, unless the database was unreachable (502 with
+ * `reason: CONNECTION_FAILED`) or rejected the credentials (424 with
+ * `reason: CONNECTION_AUTH_FAILED`).
+ */
+function sqlRunFailure(error: unknown): Error {
+   // Already classified (an exhausted pool), with a message written for the
+   // caller.
+   if (error instanceof ConnectionError) return error;
+   return (
+      databaseAccessFailure(error) ??
+      new ConnectionError((error as Error).message)
+   );
+}
+
+/**
+ * Schema listing lets most driver failures through as they are (a 500), but
+ * an unreachable database or rejected credentials answer the same as on every
+ * other route that reaches the database.
+ */
+async function withDatabaseAccessClassified<T>(
+   list: () => Promise<T>,
+): Promise<T> {
+   try {
+      return await list();
+   } catch (error) {
+      throw databaseAccessFailure(error) ?? error;
+   }
 }
 
 export class ConnectionController {
@@ -299,12 +333,44 @@ export class ConnectionController {
       }
    }
 
+   /**
+    * The Malloy connection a route runs against. Failures are classified here,
+    * before any route's own catch, because resolving a connection can already
+    * reach the database (a Postgres SSH tunnel opens on first lookup).
+    *
+    * A name the environment does not configure is a 404, as on the listing
+    * routes: the caller typed it. The 424 `CONNECTION_NOT_FOUND` is for a
+    * model naming a deleted connection, which the caller did not choose.
+    */
    private async getMalloyConnection(
       environmentName: string,
       connectionName: string,
       packageName?: string,
       // The published version whose files the per-package sandbox reads; the
       // package's `latest` when omitted. Meaningful only with packageName.
+      versionId?: string,
+   ): Promise<Connection> {
+      try {
+         return await this.lookupMalloyConnection(
+            environmentName,
+            connectionName,
+            packageName,
+            versionId,
+         );
+      } catch (error) {
+         if (error instanceof UnconfiguredConnectionError) {
+            throw new ConnectionNotFoundError(
+               `Connection ${connectionName} not found`,
+            );
+         }
+         throw databaseAccessFailure(error) ?? error;
+      }
+   }
+
+   private async lookupMalloyConnection(
+      environmentName: string,
+      connectionName: string,
+      packageName?: string,
       versionId?: string,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
@@ -391,7 +457,16 @@ export class ConnectionController {
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
-            throw driverErrorToPublisherError(source);
+            // Malloy's Postgres and Databricks drivers return a failed lookup
+            // as `Error fetching schema for <path>: <driver message>`, which
+            // drops the error's code. The driver message is still matched
+            // like any other code-less one, so a dead database answers 502
+            // CONNECTION_FAILED here as on every other route.
+            const prefix = `Error fetching schema for ${tablePath}: `;
+            const accessFailure = source.startsWith(prefix)
+               ? databaseAccessFailure(new Error(source.slice(prefix.length)))
+               : undefined;
+            throw accessFailure ?? driverErrorToPublisherError(source);
          }
 
          return {
@@ -408,7 +483,10 @@ export class ConnectionController {
          // above never see them and the blanket rewrap this replaces turned them
          // all into 502s.
          const classified = classifyDriverFailure(error);
-         if (!(classified instanceof ConnectionError)) {
+         if (
+            classified instanceof TableNotFoundError ||
+            classified instanceof InvalidArgumentError
+         ) {
             // A caller's bad reference, not a fault: warn, so a mistyped path
             // cannot fill the error log while it is being typed.
             logger.warn("table not resolvable", {
@@ -418,6 +496,8 @@ export class ConnectionController {
             });
             throw classified;
          }
+         // A connection problem is logged once, at warn, where it is mapped.
+         if (databaseAccessFailure(classified)) throw classified;
          logger.error("fetchTableSchema error", {
             error,
             tableKey,
@@ -478,7 +558,9 @@ export class ConnectionController {
          versionId,
       );
 
-      return getSchemasForConnection(connection, malloyConnection);
+      return withDatabaseAccessClassified(() =>
+         getSchemasForConnection(connection, malloyConnection),
+      );
    }
 
    // Lists tables available in a schema. For postgres the schema is usually "public".
@@ -506,11 +588,13 @@ export class ConnectionController {
          versionId,
       );
 
-      return listTablesForSchema(
-         connection,
-         schemaName,
-         malloyConnection,
-         tableNames,
+      return withDatabaseAccessClassified(() =>
+         listTablesForSchema(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         ),
       );
    }
 
@@ -824,7 +908,7 @@ export class ConnectionController {
                // ConnectionError we'd throw here is discarded — the
                // timeout verdict wins. So this branch only matters
                // for genuine driver failures.
-               throw new ConnectionError((error as Error).message);
+               throw sqlRunFailure(error);
             }
          }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed), queryCorrelationId };
@@ -841,9 +925,7 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
-            // Already classified, with a message written for the caller.
-            if (error instanceof ConnectionError) throw error;
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
 
@@ -935,8 +1017,7 @@ export class ConnectionController {
             // will convert this to QueryTimeoutError on its own
             // — don't bury the reason in ConnectionError.
             if (signal.aborted) throw error;
-            if (error instanceof ConnectionError) throw error;
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
    }

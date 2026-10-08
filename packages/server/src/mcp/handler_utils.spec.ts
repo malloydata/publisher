@@ -7,6 +7,8 @@ import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
+   ConnectionFailedError,
    EnvironmentNotFoundError,
    InvalidArgumentError,
    ModelCompilationError,
@@ -16,6 +18,7 @@ import {
    ResponseUnserializableError,
    ServiceUnavailableError,
    ConnectionPoolExhaustedError,
+   UnconfiguredConnectionError,
 } from "../errors";
 
 /**
@@ -40,6 +43,59 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Resource not found");
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("tells the agent an unreachable database is not its query to fix", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
+      );
+      expect(details).toEqual({
+         message:
+            "The database connection for env/pkg is down: the database could not be reached, so the query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      });
+      // The driver's text names an internal host; it is logged, not returned.
+      expect(JSON.stringify(details)).not.toContain("10.0.0.5");
+   });
+
+   it("tells the agent rejected credentials are the connection's to fix, not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionAuthError(
+            'password authentication failed for user "analytics"',
+         ),
+      );
+      expect(details).toEqual({
+         message:
+            "The database rejected the connection's credentials for env/pkg. The query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+      });
+      expect(JSON.stringify(details)).not.toContain("analytics");
+   });
+
+   it("tells the agent a model naming a missing connection is not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new UnconfiguredConnectionError("bq_demo"),
+      );
+      expect(details).toEqual({
+         message:
+            'No connection named "bq_demo" found in config. The model for env/pkg uses a connection this environment does not have, so the query never ran.',
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      });
    });
 
    it("names an unknown environment and the environments that exist", () => {

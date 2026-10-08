@@ -47,6 +47,38 @@ The contract for native, immutable package versions lands in `api-doc.yaml` ahea
 - **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value, in either place, fails the server's initialization (`PUBLISHER_INIT_FAILED` on stderr, `initError` on `/status`), naming the setting.
 - **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
 
+## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
+
+When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.
+
+Now a connection that cannot be used answers with a `reason`, on the query route, notebook cells, `sqlQuery`, `sqlTemporaryTable`, `sqlSource`, the table lookup, and schema and table listing. A 5xx means something is down and a retry can succeed; a 4xx means something is misconfigured and a retry fails the same way:
+
+| Status | `reason`                 | Meaning                                                                                                      | Body                                           |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| 502    | `CONNECTION_FAILED`      | the database connection is down: refused, reset, timed out, or closed by the server                          | fixed message                                  |
+| 424    | `CONNECTION_AUTH_FAILED` | the database rejected the connection's credentials                                                           | fixed message                                  |
+| 424    | `CONNECTION_NOT_FOUND`   | the model names a connection the environment does not have, usually one deleted after the package was loaded | `No connection named "<name>" found in config` |
+
+`CONNECTION_FAILED` is what marks a 502 as the customer's database being down rather than Publisher failing. The driver's text for the first two goes to the server log at `warn`. Publisher's MCP `execute_query` tells the agent the query is fine and not to rewrite it.
+
+A query the database ran and rejected (a type mismatch, a division by zero, a permission on a table) is still a 400 with the database's text and no `reason`.
+
+A connection route (`sqlQuery`, `sqlSource` and the others) given a connection name the environment does not have answers 404, as the listing routes already did. `CONNECTION_NOT_FOUND` is only for a model naming a connection that is gone.
+
+**If you branch on the old 400 or 500**, branch on `reason` instead. `sqlQuery`, `sqlTemporaryTable` and `sqlSource` still answer 502 with no reason for a driver failure that is none of these.
+
+How each is recognized, from the driver's own fields on the error and its `cause`:
+
+- **Unreachable:** Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others), a Postgres SQLSTATE in class `08` or `57P01`-`57P03`, or MySQL's `fatal` flag, unless its code names a config fault: a wrong database name, an unsupported auth mode or plugin, or a `HANDSHAKE_` TLS failure. mysql2 marks all of those `fatal` too. `ENOTFOUND`, a host name that does not resolve, is left out: it is almost always a wrong host in the config, which a retry will not fix. Some failures arrive with no code and are matched from the start of the message: node-pg's `Connection terminated unexpectedly`, and on MySQL `Can't add new command when connection is in closed state`, `Connection lost: The server closed the connection.` and a Node socket error such as `read ECONNRESET`, because Malloy's MySQL driver keeps only the text of a query error.
+- **Credentials:** a Postgres SQLSTATE in class `28`, MySQL `ER_ACCESS_DENIED_ERROR`, Snowflake login codes `390100`, `390144`, `390195` and `390318`, and the `BigQueryAuthenticationError` Malloy's BigQuery driver raises.
+- **Missing connection:** Publisher's connection lookup, when Malloy's lookup fails for a name the environment does not configure.
+
+A failure that matches none of these keeps its old status. Not covered yet:
+
+- **Rejected Postgres credentials on the table lookup.** Malloy's Postgres driver returns that failure as text without its SQLSTATE, so it answers a plain 502. A database that is down is still recognized there, from the socket error in the text.
+- **BigQuery** on schema and table listing, the table lookup and `sqlSource`. Its SDK reports rejected credentials as a plain 401 error, and Malloy's driver returns table-lookup failures as text.
+- **Databricks**, and the **DuckDB family** (DuckLake, MotherDuck), whose errors carry no code. A catalog that is down still answers 400 on the query route.
+
 ## [Unreleased] — `compile_model` at package scope reports dashboard and render-tag findings before you save
 
 A tile naming a view that does not exist, a `# drill` pointing at no dashboard, a `suggest` naming a missing query, a tile reading a source the package's surface does not export, and an unknown render tag all compile cleanly. Until now only a package load reported them, so `compile_model` returned `success` and the problem showed up after saving and reloading.
