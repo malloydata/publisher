@@ -1275,19 +1275,12 @@ const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
  * so a typo can't silently leave the fleet in a surprising mode. Case-insensitive,
  * like the sibling `PERSIST_COLLISION_ENFORCE`.
  */
-export const getPersistStorageMode = (): PersistStorageMode => {
-   const raw = process.env.PERSIST_STORAGE_MODE;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
-      return value as PersistStorageMode;
-   }
-   throw new Error(
-      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
-         " | ",
-      )} (got ${JSON.stringify(raw)})`,
-   );
-};
+export const getPersistStorageMode = (): PersistStorageMode =>
+   parseModeSetting(
+      process.env.PERSIST_STORAGE_MODE,
+      "PERSIST_STORAGE_MODE",
+      PERSIST_STORAGE_MODES,
+   ) ?? "off";
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist
@@ -1615,10 +1608,11 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 };
 
 /**
- * One of a closed set of modes, or undefined when unset. A value outside the
- * set throws, naming where it came from and what is allowed: a typo must not
- * leave a server in a mode nobody chose, the same rule the PERSIST_* knobs
- * follow.
+ * One of a closed set of modes, or undefined when unset (absent, null, or
+ * blank). Matched case-insensitively. A value outside the set throws, naming
+ * where it came from and what is allowed: a typo must not leave a server in a
+ * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
+ * `packageVersioning` and `versionPromotion`.
  */
 function parseModeSetting<T extends string>(
    raw: unknown,

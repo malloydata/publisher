@@ -1992,7 +1992,9 @@ app.put(
    async (req, res) => {
       try {
          if (versionIdParam(req) !== undefined) {
-            // A published version is immutable, so a write cannot name one.
+            // The spec declares no versionId here: a published version is
+            // immutable, so a write cannot name one. Refused rather than
+            // ignored, so a write naming a version never lands on another.
             throw new BadRequestError(
                "A write cannot name a versionId: a published version is immutable.",
             );

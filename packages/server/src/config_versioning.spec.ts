@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import {
    getPackageVersioningMode,
+   getPersistStorageMode,
    getPublisherConfig,
    getVersionPromotionMode,
 } from "./config";
@@ -102,5 +103,36 @@ describe("package versioning settings", () => {
       fs.writeFileSync(path.join(root, "publisher.config.json"), "{ not json");
       expect(getPackageVersioningMode(root)).toBe("off");
       expect(getVersionPromotionMode(root)).toBe("on-publish");
+   });
+});
+
+// PERSIST_STORAGE_MODE goes through the same closed-set parser, so it keeps the
+// behaviour it had before sharing it: blank is off, case is ignored, and a typo
+// throws with the same message.
+describe("PERSIST_STORAGE_MODE", () => {
+   const saved = process.env.PERSIST_STORAGE_MODE;
+
+   afterEach(() => {
+      if (saved === undefined) delete process.env.PERSIST_STORAGE_MODE;
+      else process.env.PERSIST_STORAGE_MODE = saved;
+   });
+
+   it("defaults to off when unset or blank", () => {
+      delete process.env.PERSIST_STORAGE_MODE;
+      expect(getPersistStorageMode()).toBe("off");
+      process.env.PERSIST_STORAGE_MODE = "  ";
+      expect(getPersistStorageMode()).toBe("off");
+   });
+
+   it("ignores case and surrounding space", () => {
+      process.env.PERSIST_STORAGE_MODE = " Write-Only ";
+      expect(getPersistStorageMode()).toBe("write-only");
+   });
+
+   it("refuses a value outside the set", () => {
+      process.env.PERSIST_STORAGE_MODE = "read-only";
+      expect(() => getPersistStorageMode()).toThrow(
+         'PERSIST_STORAGE_MODE must be one of off | write-only | on (got "read-only")',
+      );
    });
 });

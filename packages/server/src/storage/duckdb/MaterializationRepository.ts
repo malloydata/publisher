@@ -8,7 +8,7 @@ import {
    MaterializationStatus,
    MaterializationUpdate,
 } from "../DatabaseInterface";
-import { DuckDBConnection } from "./DuckDBConnection";
+import { DuckDBConnection, isUniqueViolation } from "./DuckDBConnection";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -305,17 +305,4 @@ function parseJsonColumn<T>(value: unknown): T | null {
    } catch {
       return null;
    }
-}
-
-/**
- * DuckDB surfaces unique-constraint violations as plain Errors whose message
- * mentions the violated index. We match on the index name rather than a
- * generic substring so we don't misclassify unrelated constraint errors.
- */
-function isUniqueViolation(err: unknown, indexName: string): boolean {
-   if (!(err instanceof Error)) return false;
-   const msg = err.message;
-   return (
-      msg.includes(indexName) || /duplicate key|unique constraint/i.test(msg)
-   );
 }

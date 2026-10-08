@@ -4,7 +4,6 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { parse } from "yaml";
 import {
    compareSemver,
    isSemver,
@@ -47,15 +46,18 @@ describe("isSemver", () => {
    }
 
    it("is the same pattern the spec declares as VersionIdPattern", () => {
-      const spec = parse(
-         fs.readFileSync(
-            path.join(__dirname, "..", "..", "..", "..", "api-doc.yaml"),
-            "utf8",
-         ),
+      // Read as text, as the other api-doc.yaml parity specs do, so the server
+      // needs no YAML parser. The pattern is single-quoted in the spec, where
+      // a backslash is literal and only a doubled quote is an escape.
+      const spec = fs.readFileSync(
+         path.join(__dirname, "..", "..", "..", "..", "api-doc.yaml"),
+         "utf8",
       );
-      expect(spec.components.schemas.VersionIdPattern.pattern).toBe(
-         SEMVER_PATTERN.source,
+      const declared = spec.match(
+         /^ {4}VersionIdPattern:\r?\n(?: {6}.*\r?\n)*? {6}pattern: '((?:[^']|'')*)'\r?$/m,
       );
+      expect(declared).not.toBeNull();
+      expect(declared![1].replace(/''/g, "'")).toBe(SEMVER_PATTERN.source);
    });
 });
 
