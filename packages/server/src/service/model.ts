@@ -56,6 +56,7 @@ import {
    BadRequestError,
    databaseAccessFailure,
    ConnectionError,
+   InvalidArgumentError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -617,6 +618,37 @@ async function compileErrorOf(runnable: {
       if (error instanceof MalloyError) return error;
       return translatorMalloyError(error);
    }
+}
+
+/**
+ * How many `run:` statements the compiled text holds, or undefined when it does
+ * not compile (the run path then answers that failure itself). Malloy counts
+ * only the text's own `run:` statements here: `source:` and `query:`
+ * definitions add none, and the base model's statements are not carried into
+ * an extension. Reads the memoized compile, so it costs nothing extra.
+ */
+async function runStatementCount(runnable: {
+   getPreparedQuery(): Promise<unknown>;
+}): Promise<number | undefined> {
+   let prepared: { model?: { queries?(): { unnamed: number } } } | undefined;
+   try {
+      prepared = (await runnable.getPreparedQuery()) as typeof prepared;
+   } catch {
+      return undefined;
+   }
+   return prepared?.model?.queries?.().unnamed;
+}
+
+/**
+ * Malloy runs only the LAST `run:` of a text and drops the rest without a word,
+ * so a caller that sends several would silently lose every answer but one.
+ */
+function multipleRunStatementsError(count: number): InvalidArgumentError {
+   return new InvalidArgumentError(
+      `The query has ${count} run: statements; only one runs per call, so the ` +
+         "others would be ignored. Send each as its own request. (source: and " +
+         "query: definitions before a single run: are fine.)",
+   );
 }
 
 /**
@@ -2034,6 +2066,53 @@ export class Model {
             skipOwnSourceGate: true,
             checkOnly: true,
          },
+      );
+   }
+
+   /**
+    * The opaque 403 a row-level gate gives when a given it reads went
+    * unsupplied, or undefined when none did or no gate was grafted. Opaque on
+    * purpose: Malloy's own failure names the missing given, and
+    * `docs/authorize.md` promises a denied caller is never told which one.
+    * `fallbackLabel` names the source when no caller join's graft owns the
+    * missing given.
+    *
+    * One definition for the two places that must agree: the prepare-time
+    * failure handler, and the run-statement count, which has to give way to
+    * this denial rather than answer 400 ahead of it.
+    *
+    * `gateGivenNames` is the set of names checked for a missing value. The
+    * prepare handler passes every name any gate in the model reads, since a
+    * binding failure has already confirmed one of them is missing. The count
+    * has no failure to confirm it, so it passes only the names this query's
+    * own grafts read: another source's gate must not turn its 400 into a 403.
+    */
+   private unboundGateDenial(
+      runnable: QueryMaterializer,
+      givens: Record<string, unknown> | undefined,
+      fallbackLabel: string,
+      gateGivenNames: Iterable<string>,
+   ): AccessDeniedError | undefined {
+      if (
+         !this.queryHadRowLevelFilterAttached(runnable) ||
+         ![...gateGivenNames].some((name) => !(name in (givens ?? {})))
+      ) {
+         return undefined;
+      }
+      // A caller join's graft answers under the caller's own alias.
+      const unbound = this.rowLevelFilteredRunnables
+         .get(runnable)
+         ?.find(
+            (graft) =>
+               graft.callerJoinPath &&
+               graft.givenNames.some((name) => !(name in (givens ?? {}))),
+         );
+      recordRowLevelGateDecision(
+         "denied_by_gate",
+         unbound ? "caller_join" : "entry_point",
+      );
+      return new AccessDeniedError(
+         `Access denied for source "${unbound?.label ?? fallbackLabel}".`,
       );
    }
 
@@ -4652,7 +4731,12 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         // A package compile hydrates every model on every call, for a package
+         // that already logged these warnings when it loaded.
+         skipAuthorizeWarningLog?: boolean;
+      },
    ): Model {
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
@@ -4669,7 +4753,9 @@ export class Model {
       // `SerializedModel.authorizeWarnings`'s doc) — the worker has no
       // logger, so they ride over the wire as strings for this thread, which
       // does, to log once per model hydration.
-      for (const warning of data.authorizeWarnings ?? []) {
+      for (const warning of options?.skipAuthorizeWarningLog
+         ? []
+         : (data.authorizeWarnings ?? [])) {
          logger.warn(warning, { packageName, modelPath: data.modelPath });
       }
 
@@ -4753,8 +4839,12 @@ export class Model {
       modelPath: string,
       modelType: ModelType,
       error: Error,
+      // The text that failed, when it is not the file on disk: a package
+      // compile's what-if replacement. Without it, a reader of this model's
+      // text judges the saved file instead of the edit.
+      sourceText?: string,
    ): Model {
-      return new Model(
+      const model = new Model(
          packageName,
          modelPath,
          {} as DataStyles,
@@ -4767,6 +4857,8 @@ export class Model {
          undefined,
          error,
       );
+      model.compiledSourceText = sourceText;
+      return model;
    }
 
    /** Look up the deserialized error helper for callers (e.g. Package.create). */
@@ -4996,7 +5088,9 @@ export class Model {
 
    /**
     * The model file's text as this model's compile read it, or undefined when there is
-    * none (a `.malloynb`, a compile failure, or an unreadable file).
+    * none (a `.malloynb`, a compile failure, or an unreadable file). A compile
+    * failure does carry text when it is a package compile's what-if
+    * replacement, because that text is not on disk to fall back to.
     *
     * The only safe input for slicing a `DocumentLocation` out of: the ranges in
     * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
@@ -5954,7 +6048,8 @@ export class Model {
     *     ignores it (`# colspan` outside `# dashboard { columns=N }`, or a
     *     colspan wider than the grid, which is clamped). Nothing looks broken at
     *     query time -- the layout just is not what the author wrote -- which is
-    *     why load time is the only place this becomes visible.
+    *     why a load, a reload or a package-scope compile is the only place this
+    *     becomes visible.
     *
     * `warn` and `error` are the only severities the renderer emits, so no
     * finding is dropped here.
@@ -7805,6 +7900,16 @@ export class Model {
          }
       }
 
+      // Counted here, off a compile already in hand (the gate below may swap
+      // `runnable` for a recompile of the same text), but refused only after
+      // every gate: a request any gate denies keeps exactly the denial it got
+      // before this check existed, so the count cannot tell a caller whether a
+      // hidden or locked source exists.
+      const runCount =
+         !sourceName && !queryName && query
+            ? await runStatementCount(runnable)
+            : undefined;
+
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
 
@@ -7863,6 +7968,31 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      if (runCount !== undefined && runCount > 1) {
+         this.queryExecutionHistogram.record(
+            performance.now() - startTime,
+            this.queryMetricAttributes({
+               environment: queryMetadataInput?.environment,
+               queryName,
+               sourceName,
+               status: "error",
+               servedFrom,
+            }),
+         );
+         // A row-level gate whose given went unsupplied denies at prepare, below,
+         // so the count must not answer first: that denial is what this request
+         // got before the count existed.
+         throw (
+            this.unboundGateDenial(
+               runnable,
+               givens,
+               compiledSource ?? sourceName ?? "unknown",
+               (this.rowLevelFilteredRunnables.get(runnable) ?? []).flatMap(
+                  (graft) => graft.givenNames,
+               ),
+            ) ?? multipleRunStatementsError(runCount)
+         );
+      }
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
@@ -8051,35 +8181,21 @@ export class Model {
             // whole-source gate returned before the graft existed. Checked
             // ahead of the `MalloyError` rethrow below, which is where a
             // PREPARE-time binding failure would otherwise escape.
-            if (
-               isGivenBindingFailure(err) &&
-               this.queryHadRowLevelFilterAttached(runnable) &&
-               [...this.authorizeReferencedGivenNames].some(
-                  (name) => !(name in (givens ?? {})),
-               )
-            ) {
+            const gateDenial = isGivenBindingFailure(err)
+               ? this.unboundGateDenial(
+                    runnable,
+                    givens,
+                    compiledSource ?? sourceName ?? "unknown",
+                    this.authorizeReferencedGivenNames,
+                 )
+               : undefined;
+            if (gateDenial) {
                logger.debug("Gate given unbound; denying opaquely", {
                   environmentName: this.packageName,
                   modelPath: this.modelPath,
                   error: err instanceof Error ? err.message : String(err),
                });
-               // A caller join's graft answers under the caller's own alias.
-               const unbound = this.rowLevelFilteredRunnables
-                  .get(runnable)
-                  ?.find(
-                     (graft) =>
-                        graft.callerJoinPath &&
-                        graft.givenNames.some(
-                           (name) => !(name in (givens ?? {})),
-                        ),
-                  );
-               recordRowLevelGateDecision(
-                  "denied_by_gate",
-                  unbound ? "caller_join" : "entry_point",
-               );
-               throw new AccessDeniedError(
-                  `Access denied for source "${unbound?.label ?? compiledSource ?? sourceName ?? "unknown"}".`,
-               );
+               throw gateDenial;
             }
 
             const givenCode = (err as { code?: string })?.code;

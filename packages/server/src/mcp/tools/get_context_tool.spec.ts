@@ -24,7 +24,7 @@ import {
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { PackageNotFoundError } from "../../errors";
+import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import {
@@ -537,6 +537,28 @@ describe("get_context discovery tiers", () => {
       expect(parsed.error).toContain("Resource not found");
       expect(parsed.error).toContain("nope");
       expect(textBlock(result)).toContain("Resource not found");
+   });
+
+   it("names an unknown environment and the ones that exist", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const result = await handler({
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "analytics", package: "p" }],
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 
    it("tier 3: package without a query lists only its sources", async () => {

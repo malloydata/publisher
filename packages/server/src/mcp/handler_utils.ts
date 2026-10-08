@@ -26,6 +26,7 @@ import {
    logInternalFailure,
 } from "../errors";
 import {
+   getEnvironmentNotFoundError,
    getNotFoundError,
    getInternalError,
    getMalloyErrorDetails,
@@ -94,6 +95,9 @@ export function classifyToolError(
             "Fix the field the message names in publisher.json, then call reload_package.",
          ],
       } satisfies ErrorDetails;
+   }
+   if (error instanceof EnvironmentNotFoundError && error.lookup) {
+      return getEnvironmentNotFoundError(error.lookup);
    }
    if (
       error instanceof EnvironmentNotFoundError ||
@@ -295,7 +299,11 @@ export async function getModelForQuery(
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
       if (error instanceof EnvironmentNotFoundError) {
-         errorDetails = getNotFoundError(`environment '${environmentName}'`);
+         errorDetails = classifyToolError(
+            "executeQuery (load model)",
+            `environment '${environmentName}'`,
+            error,
+         );
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
             `package '${packageName}' in environment '${environmentName}'`,
