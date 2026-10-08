@@ -10,11 +10,10 @@
 // "wrote the version" from "the version was already that" without diffing. Both
 // are success; only a file it could not set is a failure.
 //
-// This exists because `release.yml` needs it in two jobs now — `prepare`, which
-// stamps the release branch, and `gh-release`, which resets `main` on the
-// post-release stamp branch — and a shell function cannot be shared between
-// jobs, let alone tested. It was lifted verbatim from `prepare`, and the reason
-// it is hand-rolled comes with it:
+// `release.yml`'s `prepare` calls it on the release branch, which later merges
+// back into `main`. It is a script rather than a shell function in that job so
+// it can be tested. It was lifted verbatim from `prepare`, and the reason it is
+// hand-rolled comes with it:
 //
 //   We can't use `npm version --workspaces` here: this repo uses Bun's
 //   `workspace:*` dependency protocol, which npm rejects with
