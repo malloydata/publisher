@@ -443,7 +443,7 @@ This is the modeling-time consequence of ignoring `skill:malloy-define`'s scope 
 
 ## Thresholds Are Decisions, Not Syntax
 
-Before writing a `pick` expression or filtered measure with a numeric cutoff, see `skill:malloy-model` § Key Rules: every boundary must be user-supplied, distribution-derived (query the percentiles first), or explicitly flagged as an assumption in its `#(doc)`. Never invent one silently.
+Before writing a `pick` expression or filtered measure with a numeric cutoff, see `skill:malloy-model` § Key Rules: every boundary must be user-supplied, distribution-derived (query the percentiles first: Malloy has no percentile function, so use the **Tier boundaries** query in `skill:malloy-discover`), or explicitly flagged as an assumption in its `#(doc)`. Never invent one silently.
 
 ## `except:` Removes Fields From Namespace Entirely
 

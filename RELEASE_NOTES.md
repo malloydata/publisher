@@ -47,6 +47,16 @@ The contract for native, immutable package versions lands in `api-doc.yaml` ahea
 - **Two settings, both dormant by default:** `packageVersioning` (`off` | `on`, env `PUBLISHER_PACKAGE_VERSIONING`) and `versionPromotion` (`on-publish` | `explicit`, env `PUBLISHER_VERSION_PROMOTION`) in `publisher.config.json`. An unknown value, in either place, fails the server's initialization (`PUBLISHER_INIT_FAILED` on stderr, `initError` on `/status`), naming the setting.
 - **`publisher.db`** gains a `package_versions` table and two nullable columns (`packages.latest_version`, `materializations.version`). An existing store is upgraded in place at boot, with no `--init` and no data loss.
 
+## [Unreleased] — `compile_model` at package scope reports dashboard and render-tag findings before you save
+
+A tile naming a view that does not exist, a `# drill` pointing at no dashboard, a `suggest` naming a missing query, a tile reading a source the package's surface does not export, and an unknown render tag all compile cleanly. Until now only a package load reported them, so `compile_model` returned `success` and the problem showed up after saving and reloading.
+
+`compile_model` and `POST …/compile` at `scope: "package"` now run the render-tag and dashboard checks a reload runs, over the compiled result, what-if replacement included. Findings come back with code `render-tag` or `dashboard-lint`, no position, and the subject (the view, field or given) leading the message. Each keeps the severity a load gives it, so a finding the load reports as an error makes the compile `status: "error"`. `scope: "file"` is unchanged and does not run these checks. `publisher_notebook_discovery_total` still counts served packages only.
+
+- **A what-if dashboard that does not compile is still a dashboard.** It is judged by the replacement text you sent, so a `# drill` to it is no longer reported as pointing at nothing.
+- **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
+- **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
+
 ## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.

@@ -5394,7 +5394,9 @@ components:
           type: string
           description:
             Query string to execute on the model. If the query parameter is
-            set, the queryName parameter must be empty.
+            set, the queryName parameter must be empty. It may hold one run
+            statement, after any source or query definitions; text with more
+            than one run statement is a 400, since only the last would run.
         sourceName:
           type: string
           description: |
@@ -6843,10 +6845,16 @@ components:
             "package" runs the same worker compiler and file selection as
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
-            against the replacement. Package diagnostics can name files hidden
-            from discovery. No rows or SQL are returned, and caller-provided
-            source remains subject to authorize gates. includeSql is not
-            available at "package".
+            against the replacement. It also reports the render-tag findings
+            (code "render-tag") and the dashboard, given and drill findings
+            (code "dashboard-lint") a reload would put on the package's
+            warnings, at their own severity and with no position. The
+            package's other warnings (storage, persist, materialization,
+            explores, surface and discovery warnings, among others) are not
+            reported. Package diagnostics can name
+            files hidden from discovery. No rows or SQL are returned, and
+            caller-provided source remains subject to authorize gates.
+            includeSql is not available at "package".
 
             "append" text is checked against the model's PUBLISHED surface, so
             it may not declare its own data roots: import, connection.table(…),
@@ -8321,14 +8329,22 @@ components:
         file does not publish. That text can include `#(authorize)`
         expressions, `given:` defaults, connection names and raw SQL.
 
-        Only the models list, the model GET and the query route read it. The
-        notebook-cell route, the dashboards route, the MCP tools, and the legacy
-        `/projects/...` aliases of these routes ignore it.
+        Only the models list, the model GET and the query route read it, plus
+        the MCP `execute_query` tool's argument of the same name, which runs a
+        query the way this route does. MCP offers that argument only when
+        `publisher.config.json` sets `"mcp": { "includeHiddenFilesAndSources":
+        true }`, which is for authoring servers. Without it the argument is not
+        in the tool's schema and is ignored if sent, so an agent answering
+        questions stays on the curated surface.
+        This route is not affected by that setting. The notebook-cell route, the dashboards
+        route, the other MCP tools, and the legacy `/projects/...` aliases of
+        these routes ignore it.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and
         should pass it only for callers allowed to work with a package's hidden
-        files, such as its authors.
+        files, such as its authors. A deployment that exposes the MCP port has
+        to make the same decision for the `execute_query` argument.
 
         Only `true` and `false` are accepted. Any other value is refused with
         400.

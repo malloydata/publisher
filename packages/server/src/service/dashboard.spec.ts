@@ -18,6 +18,7 @@ import {
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
+   isUnparsedDashboardTagFinding,
    lintUndiscoveredDashboard,
    motlyAnnotations,
    quoteFilterLiterals,
@@ -1584,6 +1585,23 @@ describe("service/dashboard lint", () => {
                message: expect.stringContaining("treated as a shared include"),
             },
          ]);
+         // Package reload and compile drop the notebook lint's copy of this
+         // finding by recognizing it, so the recognizer must match what the
+         // lint actually says, whatever the wording.
+         expect(isUnparsedDashboardTagFinding(findings[0].message)).toBe(true);
+      });
+
+      it("recognizes only the unparsed-tag finding as one", () => {
+         // A tag that parses but declares no tiles is a different finding,
+         // and the notebook lint has no copy of it to drop.
+         const findings = lintUndiscoveredDashboard(
+            facts({
+               modelPath: "dashboards/empty.malloy",
+               modelAnnotations: ['## artifact { title="x" }\n'],
+            }),
+         );
+         expect(findings).toHaveLength(1);
+         expect(isUnparsedDashboardTagFinding(findings[0].message)).toBe(false);
       });
    });
 
