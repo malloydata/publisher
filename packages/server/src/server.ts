@@ -1757,10 +1757,18 @@ app.delete(
 );
 
 // Package versions (api-doc.yaml, the `versions` tag). The contract lands ahead
-// of the implementation, so until a route's handler ships it answers 501, the
-// same answer a `versionId` gets on the routes that declare one.
-const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
-   setVersionIdError(res);
+// of the implementation, so until a route's handler ships it answers 501, as a
+// `versionId` does on the routes that declare one. Its own message, because a
+// request to these routes need not carry a `versionId` at all.
+const versionsNotImplemented = (
+   _req: express.Request,
+   res: express.Response,
+) => {
+   const { json, status } = internalErrorToHttpError(
+      new NotImplementedError("Package versions are not implemented yet."),
+   );
+   res.status(status).json(json);
+};
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions`,
    versionsNotImplemented,
@@ -1857,6 +1865,10 @@ app.put(
    // behind it.
    queryConcurrency(),
    async (req, res) => {
+      // The spec no longer declares a versionId here: a write cannot target a
+      // published version, which is immutable. One is still refused rather than
+      // ignored, so a write naming a version never lands on another; the
+      // publish PR turns this into a 400.
       if (req.query.versionId) {
          setVersionIdError(res);
          return;

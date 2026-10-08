@@ -31,6 +31,22 @@ function duckDBInstanceResourceOptions(): Record<string, string> {
 }
 
 /**
+ * Whether `err` is a UNIQUE / PRIMARY KEY violation. DuckDB reports one as a
+ * plain Error whose message names the duplicate key ("Duplicate key ...
+ * violates unique constraint"), so this matches that text. `indexName` also
+ * counts a message that names the index, for a caller that knows which one it
+ * hit.
+ */
+export function isUniqueViolation(err: unknown, indexName?: string): boolean {
+   if (!(err instanceof Error)) return false;
+   const msg = err.message;
+   return (
+      (indexName !== undefined && msg.includes(indexName)) ||
+      /duplicate key|unique constraint/i.test(msg)
+   );
+}
+
+/**
  * Embedded persistence layer for the publisher's own metadata (environments,
  * packages, connections, materializations, build manifests) in `publisher.db`.
  *
