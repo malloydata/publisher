@@ -953,6 +953,33 @@ describe("Environment versions under concurrency and failure", () => {
       }
    });
 
+   it("never leaves latest on an archived version when an archive races a move of latest", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      await publish("1.0.0", 1);
+      await publish("1.1.0", 2);
+
+      // Both at once: whichever takes the package lock first decides, and the
+      // other is refused, so the two can never both land.
+      const [moved, archived] = await Promise.allSettled([
+         env.setLatestVersion("sales", "1.0.0"),
+         env.setVersionArchiveStatus("sales", "1.0.0", "archive"),
+      ]);
+
+      const latest = registry.latest.get("sales");
+      const row = registry.rows.find((r) => r.version === latest);
+      expect(row?.archiveStatus).toBe("unarchive");
+      expect(
+         [moved.status, archived.status].filter((s) => s === "fulfilled"),
+      ).toHaveLength(1);
+      const refusal = (moved.status === "rejected" ? moved : archived) as {
+         reason: unknown;
+      };
+      expect((refusal.reason as PackageVersionError).reason).toBe(
+         moved.status === "rejected" ? "VERSION_ARCHIVED" : "VERSION_IS_LATEST",
+      );
+   });
+
    it("refuses to publish a version into a package watch mode mounts in place", async () => {
       const source = path.join(rootDir, "watched-source");
       await writePackage(source, "0.0.1", 1);
