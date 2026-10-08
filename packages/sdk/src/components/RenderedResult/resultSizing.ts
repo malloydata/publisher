@@ -286,15 +286,24 @@ export function initialResultHeight(maxHeight: number | undefined): number {
  * `maxHeight` is a CAP and `undefined` means uncapped — it is not a height
  * request, which is why "no cap" is expressed by leaving it out rather than by
  * passing a number big enough to mean the same thing.
+ *
+ * `fillHeight` is the room the surface has to give, for a cell that stretches
+ * its result (a dashboard tile). It is a FLOOR on a measured content-sized
+ * result and wins over the cap, so a short table reaches the bottom of its cell
+ * and a long one still scrolls inside it. A container-sized result ignores it,
+ * and so does one not measured yet, which would otherwise paint at a made-up
+ * height.
  */
 export function resolveResultHeight({
    sizing,
    contentHeight,
    maxHeight,
+   fillHeight,
 }: {
    sizing: ResultSizing | undefined;
    contentHeight: number | undefined;
    maxHeight: number | undefined;
+   fillHeight?: number | undefined;
 }): number {
    if (sizing === "container") {
       return maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
@@ -302,7 +311,9 @@ export function resolveResultHeight({
    if (contentHeight === undefined || contentHeight <= 0) {
       return initialResultHeight(maxHeight);
    }
-   return maxHeight === undefined
-      ? contentHeight
-      : Math.min(maxHeight, contentHeight);
+   const own =
+      maxHeight === undefined
+         ? contentHeight
+         : Math.min(maxHeight, contentHeight);
+   return fillHeight === undefined ? own : Math.max(own, fillHeight);
 }

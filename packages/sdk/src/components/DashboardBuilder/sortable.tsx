@@ -28,9 +28,9 @@ const TILE_TYPE = "tile";
 export const GAP_TYPE = "gap";
 
 /**
- * The sensors: the library's own, with one addition and one exception.
+ * The sensors: the library's own, with one addition.
  *
- * The ADDITION is `activatorElements`: the whole tile starts a pointer drag,
+ * `activatorElements`: the whole tile starts a pointer drag,
  * not only the grip. A 22px corner that appears on hover is not a target a
  * reader finds; the whole card is. The grip stays the `handle`, which is what
  * gives it keyboard focus and the screen-reader instructions — and, by the
@@ -40,23 +40,24 @@ export const GAP_TYPE = "gap";
  * a press on a button or a link is never a drag, are the defaults: they are
  * what every surface built on this library feels like, and the hand-tuned
  * versions this replaced were most of why the gesture felt unfamiliar.
- *
- * The EXCEPTION is the resize handle. Its own pointer handling stops the press
- * in React, but React's listener sits at the root and runs after the sensor's
- * own listener on the tile has already seen it; so the sensor is told directly
- * that a press there is not the start of a move.
  */
-const RESIZE_HANDLE = '[role="separator"]';
 export const builderSensors = [
    PointerSensor.configure({
       activatorElements: (source) => [source.element],
+      // A press on a control of the tile's own that is not a button — the
+      // resize edge — is that control's gesture, never a move. The library's
+      // own check only knows buttons, links and inputs, and it listens on the
+      // tile natively, before any React handler on the control could stop it.
       preventActivation: (event, source) =>
-         (PointerSensor.defaults.preventActivation?.(event, source) ?? false) ||
          (event.target instanceof Element &&
-            event.target.closest(RESIZE_HANDLE) !== null),
+            event.target.closest(`[${NO_DRAG}]`) !== null) ||
+         (PointerSensor.defaults.preventActivation?.(event, source) ?? false),
    }),
    KeyboardSensor,
 ];
+
+/** Marks an element inside a tile whose presses must never start a move. */
+export const NO_DRAG = "data-no-drag";
 
 /**
  * What a tile looks like while it is dragged: a COPY follows the pointer, and

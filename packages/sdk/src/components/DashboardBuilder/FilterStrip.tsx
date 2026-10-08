@@ -2,17 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import AddIcon from "@mui/icons-material/Add";
+import CancelIcon from "@mui/icons-material/Cancel";
 import FilterListIcon from "@mui/icons-material/FilterList";
-import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
+import { Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
-import { SecondaryButton } from "../buttons";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { STICKY_CONTROLS_Z } from "../Dashboard/DashboardView";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
 
 /**
- * The strip under the header where the dashboard's controls are configured —
- * the ONE place: a chip per control opens its window, and "Add filter"
- * declares a new one. The live control row the host renders sits under it.
+ * The strip where the dashboard's controls are configured — the ONE place: a
+ * chip per control opens its window, and "Add filter" beside them declares a
+ * new one. The live control row the host renders sits under it.
  */
 export function FilterStrip({
    controls: controlList,
@@ -20,6 +22,8 @@ export function FilterStrip({
    unknownFieldsOf,
    onEdit,
    onAdd,
+   addDisabledReason,
+   onRemove,
    children,
 }: {
    controls: BuilderControl[];
@@ -28,6 +32,10 @@ export function FilterStrip({
    unknownFieldsOf: (name: string, type: string | undefined) => string[];
    onEdit: (control: BuilderControl) => void;
    onAdd: () => void;
+   /** Why adding is off; set, the chip is disabled and its tooltip says why. */
+   addDisabledReason?: string;
+   /** Take a control off the dashboard, as its window's Remove does. */
+   onRemove: (name: string) => void;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -36,87 +44,139 @@ export function FilterStrip({
       <>
          {/* The filter band, as every dashboard builder has one. The header is the
        dashboard's controls as this FILE has them: a chip per control,
-       which opens its window — the one place a control is edited, bound
-       or removed, so the consequences are in view when it happens. A ×
-       on the chip was a second place, with none of them. The live control row the caller
+       which opens its window; the × on a chip removes it, as the window's
+       Remove does. The live control row the caller
        passes in sits directly under, showing the same controls as a
        reader gets them — from the saved file. */}
-         <Stack sx={{ gap: 1 }}>
+         <Stack
+            sx={{
+               gap: 1,
+               position: "sticky",
+               // Pinned at the top of the scroller, so the controls stay in
+               // reach on a long page.
+               top: 0,
+               // The page's ground, as the reader's sticky control row uses:
+               // this bar is page chrome, not the chart canvas.
+               zIndex: STICKY_CONTROLS_Z,
+               bgcolor: "background.default",
+               pb: 1,
+            }}
+         >
             <Stack
                direction="row"
-               aria-label="Filters"
-               sx={{
-                  gap: 1,
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                  minHeight: 32,
-               }}
+               sx={{ gap: 2, alignItems: "center", minHeight: 32 }}
             >
-               <FilterListIcon
-                  sx={{ fontSize: 18, color: theme.tileTitle, opacity: 0.7 }}
-               />
-               <Typography
-                  variant="subtitle2"
-                  sx={{ color: theme.tileTitle, mr: 0.5 }}
+               <Stack
+                  direction="row"
+                  // A named group, so the label is announced.
+                  role="group"
+                  aria-label="Filters"
+                  sx={{
+                     gap: 1,
+                     alignItems: "center",
+                     flexWrap: "wrap",
+                     flex: 1,
+                     minWidth: 0,
+                  }}
                >
-                  Filters
-               </Typography>
-               {controlList.length === 0 && (
+                  <FilterListIcon
+                     sx={{ fontSize: 18, color: theme.tileTitle, opacity: 0.7 }}
+                  />
                   <Typography
-                     variant="body2"
-                     sx={{ color: theme.tileTitle, opacity: 0.8 }}
+                     variant="subtitle2"
+                     sx={{ color: theme.tileTitle, mr: 0.5 }}
                   >
-                     None yet.
+                     Filters
                   </Typography>
-               )}
-               {controlList.map((control) => {
-                  const unknown = unknownFieldsOf(control.name, control.type);
-                  return (
-                     <Tooltip
-                        key={control.name}
-                        title={
-                           unknown.length > 0
-                              ? `$${control.name} · cannot filter on: ${unknown.join(", ")}`
-                              : `$${control.name} · ${
-                                   control.origin === "dashboard"
-                                      ? "declared here"
-                                      : "from the model"
-                                } · ${control.boundTiles} of ${tileCount} tiles`
-                        }
+                  {controlList.length === 0 && (
+                     <Typography
+                        variant="body2"
+                        sx={{ color: theme.tileTitle, opacity: 0.8 }}
                      >
-                        <Chip
-                           size="small"
-                           label={control.label ?? control.name}
-                           aria-label={`Edit filter ${control.name}`}
-                           // Warning where a binding names a field the source
-                           // does not have: the package would refuse the file.
-                           color={unknown.length > 0 ? "warning" : "default"}
-                           variant={
-                              control.origin === "dashboard"
-                                 ? "filled"
-                                 : "outlined"
+                        None yet.
+                     </Typography>
+                  )}
+                  {controlList.map((control) => {
+                     const unknown = unknownFieldsOf(
+                        control.name,
+                        control.type,
+                     );
+                     return (
+                        <Tooltip
+                           key={control.name}
+                           title={
+                              unknown.length > 0
+                                 ? `$${control.name} · cannot filter on: ${unknown.join(", ")}`
+                                 : `$${control.name} · ${
+                                      control.origin === "dashboard"
+                                         ? "declared here"
+                                         : "from the model"
+                                   } · ${control.boundTiles} of ${tileCount} tiles`
                            }
-                           onClick={() => onEdit(control)}
+                        >
+                           <Chip
+                              size="small"
+                              // Unused says so in words, not only by fading:
+                              // the state survives colour and touch.
+                              label={`${control.label ?? control.name}${control.boundTiles === 0 ? " · unused" : ""}`}
+                              aria-label={`Edit filter ${control.name}`}
+                              // Warning where a binding names a field the source
+                              // does not have: the package would refuse the file.
+                              color={unknown.length > 0 ? "warning" : "default"}
+                              variant={
+                                 control.origin === "dashboard"
+                                    ? "filled"
+                                    : "outlined"
+                              }
+                              onClick={() => onEdit(control)}
+                              onDelete={() => onRemove(control.name)}
+                              deleteIcon={
+                                 <CancelIcon
+                                    aria-label={`Remove filter ${control.name}`}
+                                 />
+                              }
+                              sx={{
+                                 // Faint when nothing binds it: declared, but not yet a
+                                 // control a reader would see.
+                                 opacity: control.boundTiles === 0 ? 0.6 : 1,
+                                 cursor: "pointer",
+                                 transition: `opacity ${MOTION_FAST}`,
+                                 ...reducedMotionSx,
+                              }}
+                           />
+                        </Tooltip>
+                     );
+                  })}
+                  {/* Beside the chips and shaped like one, as the next filter
+                   would be: outlined where they are filled, so it reads as the
+                   empty slot rather than another filter. */}
+                  {/* A disabled button takes no pointer events, so the tooltip
+                      saying why sits on a wrapper. */}
+                  <Tooltip title={addDisabledReason ?? ""}>
+                     <span>
+                        <Chip
+                           component="button"
+                           size="small"
+                           variant="outlined"
+                           icon={<AddIcon />}
+                           label="Filter"
+                           aria-label="Add filter"
+                           aria-haspopup="dialog"
+                           disabled={addDisabledReason !== undefined}
+                           onClick={() => onAdd()}
                            sx={{
-                              // Faint when nothing binds it: declared, but not yet a
-                              // control a reader would see.
-                              opacity: control.boundTiles === 0 ? 0.6 : 1,
                               cursor: "pointer",
-                              transition: "opacity 120ms",
+                              color: theme.tileTitle,
+                              borderStyle: "dashed",
+                              "& .MuiChip-icon": {
+                                 color: "inherit",
+                                 fontSize: 16,
+                              },
                            }}
                         />
-                     </Tooltip>
-                  );
-               })}
-               <Box sx={{ ml: "auto" }}>
-                  <SecondaryButton
-                     label="Filter"
-                     icon={<AddIcon />}
-                     onClick={() => onAdd()}
-                     ariaLabel="Add filter"
-                     ariaHasPopup="dialog"
-                  />
-               </Box>
+                     </span>
+                  </Tooltip>
+               </Stack>
             </Stack>
 
             {children}

@@ -91,6 +91,21 @@ class Gate(unittest.TestCase):
         # make the gate unusable rather than safe.
         self.assertEqual(ft.retrieval_gate({}, {}, "a", "b", False), 0)
 
+    def test_an_arm_with_unavailable_searches_is_refused(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "semantic"},
+                                           {"retrievalMode": "unavailable"},
+                                           "a", "b", False), 2)
+
+    def test_two_unavailable_arms_are_refused_not_called_equal(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "unavailable"},
+                                           {"retrievalMode": "unavailable"},
+                                           "a", "b", False), 2)
+
+    def test_unavailable_can_be_reported_anyway_when_asked(self):
+        self.assertEqual(ft.retrieval_gate({"retrievalMode": "unavailable"},
+                                           {"retrievalMode": "semantic"},
+                                           "a", "b", True), 0)
+
 
 class Main(unittest.TestCase):
     def setUp(self):
@@ -291,6 +306,15 @@ class DisagreementSet(unittest.TestCase):
         self.assertIn("SAME query", out)
         self.assertIn("downstream", out)
 
+    def test_the_same_text_under_other_givens_is_not_the_same_query(self):
+        q = "run: same -> { x }"
+        out = ft.query_diff({"final_query": q, "final_givens": {"r": "West"}},
+                            {"final_query": q, "final_givens": {"r": "East"}},
+                            "a", "b")
+        self.assertNotIn("SAME query", out)
+        self.assertIn('givens: {"r": "West"}', out)
+        self.assertIn('givens: {"r": "East"}', out)
+
     def test_a_missing_query_says_so_rather_than_printing_nothing(self):
         out = ft.query_diff({}, {}, "a", "b")
         self.assertIn("neither arm recorded", out)
@@ -304,10 +328,12 @@ class DisagreementSet(unittest.TestCase):
         run.mkdir()
         (run / "events.jsonl").write_text(
             json.dumps({"kind": "attempt", "qid": "q1",
-                        "final_query": "run: flights -> { x }"}) + "\n" +
+                        "final_query": "run: flights -> { x }",
+                        "final_givens": {"r": "West"}}) + "\n" +
             json.dumps({"kind": "score", "qid": "q1", "verdict": "match"}) + "\n")
         v = ft.verdicts(run)
         self.assertEqual(v["q1"]["final_query"], "run: flights -> { x }")
+        self.assertEqual(v["q1"]["final_givens"], {"r": "West"})
 
     def test_a_run_with_no_attempt_event_still_scores(self):
         # Older runs, and a --rebuild that wrote scores only.

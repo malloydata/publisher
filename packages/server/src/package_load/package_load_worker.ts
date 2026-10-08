@@ -55,10 +55,8 @@ import {
    type FetchSchemaOptions,
    type LookupConnection,
    MalloyConfig,
-   MalloyError,
    type ModelDef,
    type ModelMaterializer,
-   modelDefToModelInfo,
    type NamedQueryDef,
    type Query,
    Runtime,
@@ -80,6 +78,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
+   installRecordPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import {
@@ -87,7 +86,9 @@ import {
    recordRowLevelGateRejected,
 } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { ModelCompilationError, PackageManifestError } from "../errors";
+import { PackageManifestError } from "../errors";
+import { deserializeError, serializeError } from "./error_wire";
+import { translatorMalloyError } from "../service/translator_error";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -107,6 +108,7 @@ import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
 } from "../service/gate_dimension";
+import { modelInfoOf } from "../service/model_info";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -118,6 +120,10 @@ import {
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
+import {
+   type PackageRetrievalSettings,
+   readPackageRetrieval,
+} from "../service/package_retrieval";
 import {
    collectSourceInfos,
    extractQueriesFromModelDef,
@@ -147,7 +153,6 @@ import type {
    SchemaForSqlResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
-   SerializedError,
    SerializedModel,
    SerializedNotebookCell,
 } from "./protocol";
@@ -451,30 +456,59 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
  * root holds an `index.malloy` and declares no `explores` takes its surface
  * from that file. See {@link resolveExplores}.
  */
+/** The install location the server recorded for the package, if any. */
+async function readInstallRecord(
+   packagePath: string,
+): Promise<string | undefined> {
+   try {
+      const raw = await fs.promises.readFile(
+         installRecordPath(
+            path.dirname(packagePath),
+            path.basename(packagePath),
+         ),
+         "utf8",
+      );
+      const record: unknown = JSON.parse(raw);
+      const location =
+         typeof record === "object" && record !== null
+            ? (record as { location?: unknown }).location
+            : undefined;
+      return typeof location === "string" && location !== ""
+         ? location
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
 ): Promise<{
    name?: string;
    description?: string;
+   location?: string;
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
    let parsed: {
       name?: string;
       description?: string;
+      location?: unknown;
       explores?: string[];
       queryableSources?: unknown;
       manifestLocation?: unknown;
       materialization?: unknown;
       scope?: unknown;
       queryMetadata?: unknown;
+      retrieval?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -530,6 +564,12 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
+      // Where the package was installed from, from the server's own record
+      // outside the package directory (see Environment.writePackageManifest).
+      // Nothing inside the tree is read as one, neither a `location` in
+      // publisher.json nor a record file shipped with the content: a reload
+      // re-fetches from this value, so only the server may set it.
+      location: await readInstallRecord(packagePath),
       explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
@@ -551,6 +591,10 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      // How this package is searched and indexed. Validated here so a bad key
+      // or an unreadable prompt file stops the load with a message naming it,
+      // and read here so a prompt edit takes effect on reload.
+      retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
    };
 }
 
@@ -867,7 +911,7 @@ async function compileMalloyModel(
       modelPath,
       modelType: "model",
       modelDef,
-      modelInfo: modelDefToModelInfo(modelDef),
+      modelInfo: modelInfoOf(modelDef),
       sourceInfos,
       // `sources`/`queries` ship complete (authorize + filter enforcement and
       // join resolution read the full set); the Model's discovery accessors
@@ -947,7 +991,7 @@ async function compileNotebookModel(
       // what earlier cells already surfaced. `collectSourceInfos` reads the
       // accumulated `contents`, so an `import { … }` contributes exactly the
       // names it selected and re-loading the imported file is unnecessary.
-      const currentInfo = modelDefToModelInfo(currentModelDef);
+      const currentInfo = modelInfoOf(currentModelDef);
       const newSources = collectSourceInfos(currentModelDef).filter(
          (s) => !(s.name in oldSources),
       );
@@ -1090,7 +1134,7 @@ async function compileNotebookModel(
       modelPath,
       modelType: "notebook",
       modelDef: finalModelDef,
-      modelInfo: finalModelDef ? modelDefToModelInfo(finalModelDef) : undefined,
+      modelInfo: finalModelDef ? modelInfoOf(finalModelDef) : undefined,
       sourceInfos: finalSourceInfos,
       sources: finalSources,
       queries: finalQueries,
@@ -1138,7 +1182,13 @@ async function compileOneModel(
       return {
          modelPath,
          modelType,
-         compilationError: serializeError(error),
+         // Classified here, before serializing: the check reads the stack, and
+         // a plain Error crosses as a bare Error that the main thread answers
+         // as an outage. As a MalloyError it crosses as a compile problem,
+         // the same as Model.create's in-process path.
+         compilationError: serializeError(
+            translatorMalloyError(error) ?? error,
+         ),
       };
    }
 }
@@ -1219,54 +1269,7 @@ async function loadPackage(
 // Error serialization
 // ──────────────────────────────────────────────────────────────────────
 
-function serializeError(error: unknown): SerializedError {
-   if (error instanceof MalloyError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         malloyProblems: error.problems as unknown[],
-         isCompilationError: true,
-      };
-   }
-   // ModelCompilationError (e.g. an invalid #(authorize) annotation caught by
-   // validateAuthorizeProbes) carries no Malloy `problems`, but it must keep its
-   // compilation-error classification across the worker boundary so the main
-   // thread re-wraps it as a 424, not a generic 500.
-   if (error instanceof ModelCompilationError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         isCompilationError: true,
-      };
-   }
-   // An unusable publisher.json keeps its class across the boundary the same
-   // way, so the main thread answers 424 rather than a worker outage.
-   if (error instanceof PackageManifestError) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-         isManifestError: true,
-      };
-   }
-   if (error instanceof Error) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-      };
-   }
-   return { name: "Error", message: String(error) };
-}
-
-function deserializeError(serialized: SerializedError): Error {
-   const err = new Error(serialized.message);
-   err.name = serialized.name;
-   if (serialized.stack) err.stack = serialized.stack;
-   return err;
-}
+// serializeError/deserializeError: ./error_wire
 
 // ──────────────────────────────────────────────────────────────────────
 // Message dispatcher

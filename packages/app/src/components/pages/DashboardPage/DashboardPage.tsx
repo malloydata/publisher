@@ -2,17 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
    Dashboard,
-   DashboardBar,
    encodeResourceUri,
-   SecondaryButton,
    useGivenUrlParams,
+   useNarrowScreen,
 } from "@malloy-publisher/sdk";
-import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 import { logDashboardEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
@@ -40,21 +36,21 @@ export default function DashboardPage({
    // a drill pushes a route. Both are shared with NotebookPage.
    const { params: givens, onGivensChange } = useGivenUrlParams();
    const onNavigate = useDrillNavigate(environmentName, packageName);
-   // Into the builder, one segment down; the builder's Done comes back here.
-   const navigate = useNavigate();
-   const { pathname } = useLocation();
    const onEvent = useMemo(
       () => logDashboardEvent({ environmentName, packageName, dashboardName }),
       [environmentName, packageName, dashboardName],
    );
 
    // The builder is a lazy chunk carrying the Malloy parser, so the first Edit
-   // used to sit on a spinner while it downloaded. Fetch it as soon as a
+   // (in the header) used to sit on a spinner while it downloaded. Fetch it as soon as a
    // dashboard is on screen: by the time anyone reaches for Edit it is usually
    // already here, and the switch is then a re-render rather than a page that
    // empties and refills. Idle time, and the browser caches the module, so a
    // reader who never edits pays one background request.
+   // Below 600px the editor steps aside, so there is nothing to warm.
+   const narrow = useNarrowScreen();
    useEffect(() => {
+      if (narrow) return;
       const warm = () => void import("@malloy-publisher/sdk/builder");
       const idle = window.requestIdleCallback;
       if (idle) {
@@ -63,24 +59,10 @@ export default function DashboardPage({
       }
       const timer = setTimeout(warm, 1500);
       return () => clearTimeout(timer);
-   }, []);
+   }, [narrow]);
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <BackLink
-            label={packageName}
-            href={`/${environmentName}/${packageName}`}
-            onClick={() => navigate(`/${environmentName}/${packageName}`)}
-         />
-         {/* The same bar the builder has, with the same button in the same
-             place: Edit becomes Done and nothing else on the page moves. */}
-         <DashboardBar>
-            <SecondaryButton
-               label="Edit"
-               icon={<EditOutlinedIcon />}
-               onClick={() => navigate(`${pathname.replace(/\/$/, "")}/edit`)}
-            />
-         </DashboardBar>
          <Dashboard
             resourceUri={encodeResourceUri({ environmentName, packageName })}
             dashboard={dashboardName}

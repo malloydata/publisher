@@ -1,6 +1,6 @@
 ---
 name: malloy-analysis-report
-description: Combine validated Malloy queries into a notebook report or dashboard. Use when the user asks to "create a report", "build a dashboard", "combine these into a report", or wants a persistent multi-query artifact.
+description: Combine validated Malloy queries into a notebook report. Use when the user asks to "create a report", "combine these into a report", or wants a persistent multi-query artifact.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Creating Reports
 
-An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
+An ad-hoc report is a `.malloy` notebook, `notebooks/<slug>.malloy`, that combines markdown narrative with live Malloy queries. An ad-hoc report is written as `run:` cells, which Publisher still reads and which convert to the one-column tile layout when saved in the Console; when the queries are views on a source, `skill:malloy-notebooks` describes the layout form (`tiles=[…]`) to author instead. Load `skill:malloy-notebooks` for the full format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure). Never write a new `.malloynb`.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
@@ -32,6 +32,8 @@ Do NOT add an H1 heading in any markdown (use H2 and below for sections); the `t
 Markdown cells own narrative; query cells own a single Malloy query whose chart annotation tells the renderer how to display the result. Markdown supports H2 headings, lists, bold, and inline code. Keep narrative cells short, one idea per cell, so the rendered output reads as a story instead of a wall of text.
 
 The file starts with `## artifact { kind=notebook title="..." }`, then the `import` for the model file. Definitions (`import`, `source:`, `query:`, `given:`) come before the first markdown or `run:`. Prose is `##|(markdown)` ... `|##` for a block (body on the lines between) or `##(markdown) text` for one line. Each `run:` is a query cell, and its tags sit directly above it with nothing between. A `#"` directly above the `run:` is its caption. Trailing prose is `##(markdown)`, never `#(markdown)` or `#"`.
+
+This is the cell format, the quick form for an ad-hoc report; for a notebook that will be kept and edited, write the layout form in `skill:malloy-notebooks` (`## artifact { kind=notebook tiles=[…] }`) instead.
 
 Each `run:` must be a standalone query (for example `run: source -> { ... }`). The `import` is file-wide: query cells never repeat it. Compile the file with `/compile` (`"scope": "file"`, at the path `notebooks/<slug>.malloy`) before saving; a `.malloy` notebook compiles as a model, so its errors come back there. A complete report:
 
@@ -157,7 +159,7 @@ Key rendering rules to keep in mind when shaping a cell:
 
 ## Editing an existing report
 
-For small targeted changes (fix one cell, insert one new cell), edit the cell's statement or markdown in place rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file. An existing `.malloynb` is read-only in a Credible draft (it can be deleted): to edit its story, write a `.malloy` notebook.
+For small targeted changes (fix one cell, insert one new cell), edit the cell's statement or markdown in place rather than recreating the whole notebook. For structural rewrites (reordering many cells, changing the narrative arc), rewrite the notebook file. An existing `.malloynb` is read, not edited: to change its story, write a `.malloy` notebook.
 
 ## IMPORTANT
 

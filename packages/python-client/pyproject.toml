@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "malloy-publisher-sdk"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.9"
 description = "Auto-generated Python client for the Malloy Publisher REST API"
 authors = [

@@ -17,6 +17,8 @@ import {
    Stack,
    TextField,
    Typography,
+   type SxProps,
+   type Theme,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -44,6 +46,7 @@ import {
    isPlainFilterList,
    TIME_PRESETS,
 } from "./filterValue";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
@@ -146,6 +149,7 @@ export function GivenInput({
    optionsFailed,
 }: GivenInputProps) {
    const label = given.label ?? given.name ?? "";
+   const { theme: publisherTheme } = usePublisherTheme();
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
@@ -484,27 +488,43 @@ export function GivenInput({
       // to show when it does not.
       return (
          <FormControl fullWidth>
-            {/* A slider is the one control with no box around it, so it has to
-                borrow the outlined inputs' metrics to sit in a row with them:
-                their content is inset 14px and their field is 42px tall, and
-                a control that matches both puts its helper text on the same
-                line as its neighbours'. Left to itself the label started at
-                the column edge and the helper sat 10px lower than the rest,
-                which is most of what made a mixed control row look crooked. */}
+            {/* Drawn as an outlined field, label notched into its edge, so it
+                sits in a row of selects and date pickers as one of them. A
+                fieldset and legend rather than an OutlinedInput: a real input
+                would add a textbox role beside the handles' own, and the legend
+                names the group without painting a patch over the border. The
+                box is taller than a text field (readout, track and min/max
+                captions), so a neighbour's helper line sits under its own box,
+                not level. */}
             <Box
-               sx={{
-                  height: SLIDER_FIELD_HEIGHT,
+               component="fieldset"
+               sx={(theme) => ({
+                  m: 0,
+                  minWidth: 0,
+                  border: publisherTheme.cardBorder,
+                  borderRadius: 2,
                   px: `${INPUT_CONTENT_INSET}px`,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-               }}
+                  pt: 0,
+                  pb: 0.75,
+                  minHeight: SLIDER_FIELD_HEIGHT,
+                  transition: "border-color 120ms ease-in",
+                  "&:hover": { borderColor: theme.palette.text.secondary },
+                  "&:focus-within": { borderColor: theme.palette.text.primary },
+               })}
             >
+               <Typography
+                  component="legend"
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 0.5, lineHeight: 1 }}
+               >
+                  {label}
+               </Typography>
                <Stack direction="row" alignItems="center" spacing={1}>
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                     {label}
-                  </Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  <Typography
+                     variant="body2"
+                     sx={{ fontWeight: "fontWeightMedium" }}
+                  >
                      {/* `≥ N` only for a FILTER, whose value IS a lower
                          bound. A plain `number` given is an ordinary value, and
                          the onChange below says so by committing `picked`
@@ -521,20 +541,16 @@ export function GivenInput({
                             : String(position)}
                   </Typography>
                   {isOverridden && (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
+                     <ClearButton
                         // `null`, like every other × in this file: revert the
                         // override. It used to send `""` for a filter, which
                         // `decodeAtLeast` reads back as undefined, so the
                         // control redrew as "Any" and hid this button while the
                         // given was still explicitly set to the empty filter.
                         // The reader could neither see the override nor undo it.
-                        onClick={() => onChange(null)}
+                        onClear={() => onChange(null)}
                         sx={{ p: 0 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   )}
                </Stack>
                <Slider
@@ -588,6 +604,14 @@ export function GivenInput({
                      onChange(Array.isArray(next) ? next[0] : next);
                   }}
                />
+               <Stack direction="row" justifyContent="space-between">
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMin}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                     {rangeMax}
+                  </Typography>
+               </Stack>
             </Box>
             {helperNode && (
                <FormHelperText sx={{ mx: `${INPUT_CONTENT_INSET}px` }}>
@@ -735,14 +759,7 @@ export function GivenInput({
                   label={label}
                />
                {isOverridden && (
-                  <IconButton
-                     size="small"
-                     aria-label="clear value"
-                     onClick={() => onChange(null)}
-                     edge="end"
-                  >
-                     <ClearIcon fontSize="small" />
-                  </IconButton>
+                  <ClearButton onClear={() => onChange(null)} edge="end" />
                )}
             </Stack>
             {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
@@ -889,17 +906,39 @@ export function GivenInput({
    );
 }
 
+/**
+ * The × that reverts a control to its default: one button, so every control
+ * says the same thing to a screen reader and offers the same 24px target.
+ */
+function ClearButton({
+   onClear,
+   edge,
+   sx,
+}: {
+   onClear: () => void;
+   edge?: "start" | "end";
+   sx?: SxProps<Theme>;
+}) {
+   return (
+      <IconButton
+         size="small"
+         aria-label="Clear value"
+         onClick={onClear}
+         edge={edge}
+         sx={[
+            { minWidth: 24, minHeight: 24 },
+            ...(Array.isArray(sx) ? sx : [sx]),
+         ]}
+      >
+         <ClearIcon fontSize="small" />
+      </IconButton>
+   );
+}
+
 function ClearAdornment({ onClear }: { onClear: () => void }) {
    return (
       <InputAdornment position="end">
-         <IconButton
-            size="small"
-            aria-label="clear value"
-            onClick={onClear}
-            edge="end"
-         >
-            <ClearIcon fontSize="small" />
-         </IconButton>
+         <ClearButton onClear={onClear} edge="end" />
       </InputAdornment>
    );
 }
@@ -953,14 +992,10 @@ function BooleanFilterControl({
                },
                input: {
                   endAdornment: isOverridden ? (
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => onChange(null)}
+                     <ClearButton
+                        onClear={() => onChange(null)}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}
@@ -1103,18 +1138,14 @@ function TimeRangeControl({
                   endAdornment: isOverridden ? (
                      // Before the dropdown arrow, which MUI positions on its
                      // own; the × reverts, like every × in this file.
-                     <IconButton
-                        size="small"
-                        aria-label="clear value"
-                        onClick={() => {
+                     <ClearButton
+                        onClear={() => {
                            setCustom(false);
                            setDraft({});
                            onChange(null);
                         }}
                         sx={{ mr: 2 }}
-                     >
-                        <ClearIcon fontSize="small" />
-                     </IconButton>
+                     />
                   ) : undefined,
                },
             }}

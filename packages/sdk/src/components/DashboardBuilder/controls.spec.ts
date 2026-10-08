@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { isStrictName } from "../../utils/malloyText";
 import {
    acceptsField,
    kindForFieldType,
@@ -17,6 +18,7 @@ import {
    removeControl,
 } from "./controls";
 import type { DashboardDocument } from "./document";
+import { queryTile } from "./testing/fixtures";
 
 const doc = (): DashboardDocument => ({
    title: "T",
@@ -92,10 +94,19 @@ describe("givenNameFor", () => {
       expect(givenNameFor("category", ["CATEGORY"])).toBe("CATEGORY_2");
       expect(givenNameFor("2nd-tier", [])).toBe("F_2ND_TIER");
    });
+
+   it("never generates a reserved word, which Malloy refuses in any case", () => {
+      for (const field of ["date", "type", "source", "year", "orders.filter"]) {
+         const name = givenNameFor(field, []);
+         expect(isStrictName(name)).toBe(true);
+         expect(name).toBe(`${field.split(".").at(-1)!.toUpperCase()}_FILTER`);
+      }
+      expect(givenNameFor("date", ["DATE_FILTER"])).toBe("DATE_FILTER_2");
+   });
 });
 
 describe("newLocalGiven", () => {
-   it("declares a picker that suggests over the field's own source", () => {
+   it("declares a picker that suggests over the field's own source, keeping a joined path whole", () => {
       expect(
          newLocalGiven({
             name: "REGION",
@@ -110,7 +121,7 @@ describe("newLocalGiven", () => {
          default: "f''",
          label: "Region",
          control: "select",
-         suggest: { source: "order_items", dimension: "region" },
+         suggest: { source: "order_items", dimension: "regions.region" },
       });
    });
 
@@ -157,14 +168,14 @@ describe("mappings", () => {
          // reference tile's refinement as far as applyMapping is concerned.
          { include: true, field: "created_at", op: ">=" },
       ]);
-      expect(d.tiles[0].filters).toEqual([
+      expect(queryTile(d, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
-      expect(d.tiles[1].filters).toEqual([
+      expect(queryTile(d, 1).filters).toEqual([
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
-      expect(d.tiles[2].filters).toEqual([
+      expect(queryTile(d, 2).filters).toEqual([
          { field: "created_at", given: "SINCE", op: ">=" },
       ]);
 
@@ -174,13 +185,13 @@ describe("mappings", () => {
          { include: true, field: "created_at", op: "~" },
          { include: false, field: "created_at" },
       ]);
-      expect(d.tiles[0].filters).toEqual([
+      expect(queryTile(d, 0).filters).toEqual([
          { field: "category", given: "CATEGORY" },
       ]);
-      expect(d.tiles[1].filters).toEqual([
+      expect(queryTile(d, 1).filters).toEqual([
          { field: "created_at", given: "SINCE" },
       ]);
-      expect(d.tiles[2].filters).toBeUndefined();
+      expect(queryTile(d, 2).filters).toBeUndefined();
    });
 
    it("still skips a tile the writer cannot locate at all: inherited", () => {
@@ -196,7 +207,7 @@ describe("mappings", () => {
          { include: false, field: "created_at" },
          { include: true, field: "created_at", op: ">=" },
       ]);
-      expect(d.tiles[3].filters).toBeUndefined();
+      expect(queryTile(d, 3).filters).toBeUndefined();
    });
 });
 
@@ -247,7 +258,7 @@ describe("declareControl and removeControl", () => {
       expect(d.localGivens?.map((g) => g.name)).toEqual(["CATEGORY", "SINCE"]);
 
       removeControl(d, "CATEGORY");
-      expect(d.tiles[0].filters).toBeUndefined();
+      expect(queryTile(d, 0).filters).toBeUndefined();
       expect(d.localGivens?.map((g) => g.name)).toEqual(["SINCE"]);
       removeControl(d, "SINCE");
       expect(d.localGivens).toBeUndefined();

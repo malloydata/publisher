@@ -3,6 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import path from "path";
+import type { EmbeddingModel } from "../../providers/types";
 import { fileURLToPath } from "url";
 import { z } from "zod/v3";
 import lunr from "lunr";
@@ -11,7 +12,6 @@ import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
-   EmbeddingProvider,
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
@@ -21,13 +21,45 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
+   enqueuePackageSync,
    entityRowKey,
    KEY_SEPARATOR,
    getEmbeddingIndexStatus,
-   trySemanticSearch,
    type EmbeddingIndexStatus,
    type SemanticUnavailableReason,
 } from "./embedding_index";
+import { assembleCards, foldRelevance } from "./get_context_assembly";
+import {
+   runCardStages,
+   runQueryStages,
+   runRankStages,
+   type CardState,
+   type CardStage,
+   type PipelineContext,
+   type PipelineSettings,
+   type QueryStage,
+   type RankStage,
+   type RankedState,
+   type Retriever,
+   type Unavailable,
+} from "./get_context_pipeline";
+import { activeLlmSettings } from "../../providers/active";
+import { HttpRequestError } from "../../service/http_retry";
+import { LlmMeter, StageError } from "./get_context_llm";
+import { refineStage } from "./get_context_refine";
+import { rerankStage } from "./get_context_rerank";
+import {
+   sourceMatchActive,
+   sourceMatchStage,
+} from "./get_context_source_match";
+import { resolveLlmStages } from "./get_context_stage_settings";
+import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
+import { indexSettingsOf } from "./index_settings";
+import {
+   currentSummaryHashes,
+   loadSourceSummaries,
+   type StoredSourceSummary,
+} from "./source_summaries";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -35,7 +67,7 @@ import {
  * views, fields, and joins come from the compiled SourceInfo
  * (Model.getSourceInfos()); named queries from Model.getQueries().
  */
-interface Entity {
+export interface Entity {
    id: string;
    kind: "source" | "view" | "query" | "dimension" | "measure" | "join";
    name: string;
@@ -49,6 +81,15 @@ interface Entity {
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
    relationship?: Relationship;
+   // On `kind: "join"` entities: the source the join leads to, when the
+   // compiled model names one (the topology below has it; a model with no
+   // compiled IR does not). Read by the source summary to nest a joined
+   // source's fields; never serialized.
+   joinTarget?: string;
+   // On `kind: "join"` entities: the package-relative path of the file that
+   // defines `joinTarget`. Together they identify the source; the name alone
+   // cannot when two files define a source of the same name.
+   joinTargetModelPath?: string;
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
@@ -125,7 +166,7 @@ function encodeIdSegment(segment: string): string {
  * semantic results. This never reaches the wire: toSourceResults converts a
  * list of these into the response shape, which is where identity is assigned.
  */
-interface ResultEntity {
+export interface ResultEntity {
    kind: string;
    name: string;
    source: string | undefined;
@@ -133,6 +174,12 @@ interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   /**
+    * The `#(doc)` text alone, with no annotation fallback (see Entity.embedDoc).
+    * The LLM stages read this, never `doc`, which can carry raw annotation
+    * lines. Never serialized.
+    */
+   embedDoc?: string;
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
@@ -143,6 +190,12 @@ interface ResultEntity {
     */
    code?: string;
    score?: number;
+   /**
+    * The score before it was rounded to the four places the response publishes.
+    * Ordering uses it, so two rows whose scores differ in the fifth place are
+    * not treated as tied. Never serialized.
+    */
+   rawScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -161,6 +214,27 @@ interface ResultEntity {
     * target found a row even though it withholds how well.
     */
    bestTarget?: number;
+   /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
+   level?: number;
+   /**
+    * Set by refine only: the unpublished score, `level + cosine`, 1 to 4. When
+    * it is set, `score` is this value through the knots (see
+    * get_context_scoring). Assembly damps joined copies on this number, and
+    * rerank sorts cards by the best of it.
+    */
+   raw?: number;
+   /** The per-target version of `raw`, behind `targetScores` as `score` is behind `raw`. */
+   targetRaw?: Map<number, number>;
+   /**
+    * Set by refine: the model's one-sentence reason for each target that
+    * rated this row, behind `matched_targets[].match_reason`. Absent when
+    * refine did not run or the model gave no reason.
+    */
+   targetReasons?: Map<number, string>;
+   /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
+   joinHops?: number;
+   /** Unused until value attach runs. Nested dimension values. */
+   values?: Array<{ value: string; score: number }>;
 }
 
 /**
@@ -271,7 +345,7 @@ interface SourceContextAuthorize {
  * window, and this bounds the scan it can ask for. Defined once because the
  * parameter schema, the truncation warning and that scan must agree.
  */
-const MAX_LIMIT = 150;
+export const MAX_LIMIT = 150;
 
 /**
  * Sources a ranked search returns when the caller sets no limit. A listing
@@ -282,12 +356,12 @@ const MAX_LIMIT = 150;
 const DEFAULT_RANKED_LIMIT = 20;
 
 /**
- * Why a server that HAS an embedding provider answered lexically. Reported
- * so an agent can act on it: "indexing" is a cold index that clears on its
- * own within seconds and is worth one retry, while the rest are conditions
- * an immediate retry cannot fix.
+ * Why a server that HAS an embedding provider could not rank a search. Reported
+ * so an agent can act on it: "indexing" is an index still building, answered
+ * with an empty result (retrieval: "indexing") that is worth asking again, while the rest are errors
+ * (retrieval_reason) an immediate retry cannot fix.
  */
-type RetrievalReason =
+export type RetrievalReason =
    | "indexing"
    | "cooldown"
    | "too-many-entities"
@@ -299,7 +373,7 @@ type RetrievalReason =
  * widened to "provider-error" because from the caller's side that is what it
  * is: the embedding endpoint failed, not this tool.
  */
-const REASON_BY_UNAVAILABLE: Record<
+export const REASON_BY_UNAVAILABLE: Record<
    SemanticUnavailableReason,
    RetrievalReason
 > = {
@@ -331,7 +405,8 @@ const REASON_BY_UNAVAILABLE: Record<
  *    `include_code`), and the response-level `retrieval`
  *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
  * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
- *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
+ *    `summary`, `prominence`, `values`, `values_indexed`. (`match_reason`
+ *    rides on `matched_targets` only when refine ran and gave one.)
  *    That spec omits null fields, so absence is in-contract on both sides.
  */
 interface ResourceId {
@@ -343,7 +418,16 @@ interface ResourceId {
 
 interface SourceCardInfo {
    resource_id: ResourceId;
+   /**
+    * The LLM's one-line summary of the source when one is stored; otherwise the
+    * first line of its doc (absent when undocumented).
+    */
    one_line_summary?: string;
+   /**
+    * The LLM's full summary of the source. Only when one is stored AND the
+    * request pins the source or a source search matched at most one source.
+    */
+   summary?: string;
    docs?: string;
    givens?: SourceContextGiven[];
    accessFilter?: SourceContextAuthorize[];
@@ -352,6 +436,13 @@ interface SourceCardInfo {
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
+}
+
+interface MatchedTarget {
+   search_text: string;
+   relevance: number;
+   /** Refine's one-sentence reason. Present only when refine ran and gave one. */
+   match_reason?: string;
 }
 
 interface SourceCardEntity {
@@ -375,7 +466,7 @@ interface SourceCardEntity {
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
-   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   matched_targets?: MatchedTarget[];
    aliases?: string[];
 }
 
@@ -408,6 +499,8 @@ function toSourceResults(
    includeCode = false,
    /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
    droppedSources: Set<string> = new Set(),
+   /** Stored LLM source summaries, when the package has any. */
+   summaries?: SummaryView,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -429,6 +522,8 @@ function toSourceResults(
       let entry = bySource.get(key);
       if (!entry) {
          const ctx = sourceContext.get(key);
+         const stored = summaries?.stored.get(key);
+         const oneLine = stored?.oneLineSummary ?? ctx?.oneLineSummary;
          entry = {
             source_info: {
                resource_id: {
@@ -437,8 +532,9 @@ function toSourceResults(
                   model_path: modelPathFallback,
                   source: name,
                },
-               ...(ctx?.oneLineSummary
-                  ? { one_line_summary: ctx.oneLineSummary }
+               ...(oneLine ? { one_line_summary: oneLine } : {}),
+               ...(stored && summaries?.full.has(key)
+                  ? { summary: stored.summary }
                   : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
@@ -459,7 +555,8 @@ function toSourceResults(
       if (r.kind === "source") {
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
-         if (r.score !== undefined) entry.relevance = r.score;
+         const relevance = foldRelevance(entry.relevance, r);
+         if (relevance !== undefined) entry.relevance = relevance;
          if (r.doc) entry.source_info.docs = r.doc;
          continue;
       }
@@ -477,16 +574,59 @@ function toSourceResults(
          ...(r.aliases ? { aliases: r.aliases } : {}),
       };
       (entry.entities ??= []).push(entity);
-      // A source with no hit of its own still ranks by its best entity, so a
-      // caller reading source relevance never sees a matched source at null.
-      if (
-         r.score !== undefined &&
-         (entry.relevance === undefined || r.score > entry.relevance)
-      ) {
-         entry.relevance = r.score;
-      }
+      const relevance = foldRelevance(entry.relevance, r);
+      if (relevance !== undefined) entry.relevance = relevance;
    }
    return Array.from(bySource.values());
+}
+
+/**
+ * The stored LLM summaries a response may use, and for which sources it may
+ * carry the full text. Built by {@link summaryViewFor}; absent when the package
+ * has no stored summary, which leaves every card as it always was.
+ */
+interface SummaryView {
+   /** Every current stored summary of the package, by sourceContextKey. */
+   stored: ReadonlyMap<string, StoredSourceSummary>;
+   /** Keys of the cards that carry `summary`, not just `one_line_summary`. */
+   full: ReadonlySet<string>;
+}
+
+/**
+ * The full summary rides only on a card the caller has narrowed to: the scope
+ * pins the source, or a source search matched at most one source. A broader
+ * answer carries the one-liner alone, so the response stays a list of sources
+ * to choose from instead of a page of prose.
+ */
+export function summaryViewFor(
+   stored: ReadonlyMap<string, StoredSourceSummary> | undefined,
+   request: Pick<ResolvedRequest, "sourceName">,
+   cards: ReadonlyArray<{
+      key: string;
+      source: string;
+      rows: readonly ResultEntity[];
+   }>,
+): SummaryView | undefined {
+   if (!stored || stored.size === 0) return undefined;
+   const full = new Set<string>();
+   if (request.sourceName) {
+      for (const card of cards) {
+         if (card.source === request.sourceName) full.add(card.key);
+      }
+   }
+   // A source row is there only because a source target matched it. Counted by
+   // source name: the same source resolved from two files is one answer.
+   const matched = new Set(
+      cards
+         .filter((card) => card.rows.some((r) => r.kind === "source"))
+         .map((card) => card.source),
+   );
+   if (matched.size <= 1) {
+      for (const card of cards) {
+         if (matched.has(card.source)) full.add(card.key);
+      }
+   }
+   return { stored, full };
 }
 
 /**
@@ -501,15 +641,20 @@ function toSourceResults(
 function matchedTargetsFor(
    r: ResultEntity,
    searchTexts: Map<number, string>,
-): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+): { matched_targets?: MatchedTarget[] } {
    if (!r.targetScores || r.targetScores.size === 0) return {};
    const matched = [...r.targetScores.entries()]
       .sort((a, b) => a[0] - b[0])
       .flatMap(([index, relevance]) => {
          const search_text = searchTexts.get(index);
          if (search_text === undefined) return [];
+         const match_reason = r.targetReasons?.get(index);
          return [
-            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+            {
+               search_text,
+               relevance: Math.round(relevance * 10_000) / 10_000,
+               ...(match_reason ? { match_reason } : {}),
+            },
          ];
       });
    return matched.length > 0 ? { matched_targets: matched } : {};
@@ -523,87 +668,20 @@ function matchedTargetsFor(
  * card and hide a narrow one inside it -- the same failure the source window
  * below prevents between cards.
  */
-const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
+export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
 /**
- * Window a ranked list into `limit` SOURCE cards, capping the entities each
- * one carries per target.
- *
- * `limit` counts sources because that is what the published contract says it
- * counts, and because counting entities makes targets compete for one pool:
- * with a shared budget of 4, asking for a measure alone returned 3 hits while
- * asking for it alongside a dimension and a view returned 2. The caller had
- * added questions, not removed any, so the answer to the first one should not
- * have shrunk. Bucketing by source removes the competition rather than
- * refereeing it -- targets no longer spend from the same pool, so a target's
- * answer inside a set is the answer it gives alone.
- *
- * Source order is the order sources first appear in the ranked list, which is
- * already best-first; re-sorting here could disagree with the ranking that
- * produced it.
- *
- * A bucket is one (model path, source) pairing, not one source name: that is
- * what `toSourceResults` turns into a card, so it is the unit `limit` has to
- * count and the unit `returned`/`total_available` have to report. Keying on
- * the name alone let one bucket fan out into several cards downstream, which
- * both overran `limit` and made the two counters disagree — `returned`
- * counting cards while `total_available` counted names.
+ * The most dotted index rows (joined fields assembly cannot rebuild) one source
+ * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
+ * own fields. On a benchmark package whose joins are all inline tables,
+ * sharing one window let 625 such rows push the labelled fields from rank 4 to
+ * 10 down to rank 13 to 33; an own window of 3 (or 1) recovered the loss and
+ * left a joined field findable.
  */
-function windowBySource(
-   rows: ResultEntity[],
-   sourceLimit: number,
-): {
-   rows: ResultEntity[];
-   totalSources: number;
-   returnedSources: number;
-   entitiesDropped: number;
-} {
-   const order: string[] = [];
-   const bySource = new Map<string, ResultEntity[]>();
-   for (const r of rows) {
-      const key = sourceContextKey(r.modelPath, r.source ?? "");
-      let bucket = bySource.get(key);
-      if (!bucket) {
-         bucket = [];
-         bySource.set(key, bucket);
-         order.push(key);
-      }
-      bucket.push(r);
-   }
-   const keptSources = order.slice(0, sourceLimit);
-   const kept: ResultEntity[] = [];
-   let entitiesDropped = 0;
-   for (const key of keptSources) {
-      const perTarget = new Map<number, number>();
-      for (const r of bySource.get(key) ?? []) {
-         // A source row becomes the card itself, so it never spends a slot.
-         if (r.kind === "source") {
-            kept.push(r);
-            continue;
-         }
-         // -1 buckets a row no target claims, so it shares one cap rather
-         // than none. Both ranked paths set bestTarget, so on them this is
-         // only a guard.
-         const target = r.bestTarget ?? -1;
-         const taken = perTarget.get(target) ?? 0;
-         if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
-            entitiesDropped += 1;
-            continue;
-         }
-         perTarget.set(target, taken + 1);
-         kept.push(r);
-      }
-   }
-   return {
-      rows: kept,
-      totalSources: order.length,
-      returnedSources: keptSources.length,
-      entitiesDropped,
-   };
-}
+export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
 
 /** The target index with the highest score, or undefined when there is none. */
-function bestTargetOf(scores: Map<number, number>): number | undefined {
+export function bestTargetOf(scores: Map<number, number>): number | undefined {
    let best: [number, number] | undefined;
    for (const entry of scores) {
       if (!best || entry[1] > best[1]) best = entry;
@@ -626,7 +704,7 @@ function bestTargetOf(scores: Map<number, number>): number | undefined {
  * them in here would invite exactly the mistake of publishing a lexical score
  * as a relevance.
  */
-function projectEntity(
+export function projectEntity(
    e: Entity,
    environmentName: string,
    packageName: string,
@@ -639,6 +717,7 @@ function projectEntity(
       packageName,
       modelPath: e.modelPath,
       doc: e.doc,
+      ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
@@ -648,47 +727,107 @@ function projectEntity(
 }
 
 /**
- * The tail both ranked paths share: window by source, then serialize.
- * Semantic and lexical retrieval differ in how they SCORE, not in what happens
- * to the rows afterwards, so the ordering lives here once instead of being
- * restated at two call sites.
+ * The largest whole-card prefix of `cards` whose JSON fits in
+ * `maxChars - reserveChars`. Keeps at least one card, so a budget smaller
+ * than the first card still answers. A null budget returns the input as is.
+ * Only ranked responses are fitted; a listing pages by `offset` instead.
+ */
+export function fitBudget(
+   cards: SourceCard[],
+   maxChars: number | null,
+   reserveChars: number,
+): { cards: SourceCard[]; dropped: number } {
+   if (maxChars === null) return { cards, dropped: 0 };
+   const room = maxChars - reserveChars;
+   // A JSON array costs 2 for the brackets plus one comma between cards.
+   let used = 2;
+   let keep = 0;
+   for (const card of cards) {
+      used += JSON.stringify(card).length + (keep > 0 ? 1 : 0);
+      if (used > room && keep > 0) break;
+      keep += 1;
+   }
+   return { cards: cards.slice(0, keep), dropped: cards.length - keep };
+}
+
+/**
+ * The tail both ranked paths share: page the cards, serialize them, then fit
+ * the byte budget. Semantic and lexical retrieval differ in how they SCORE,
+ * not in what happens to the rows afterwards, so the ordering lives here once
+ * instead of being restated at two call sites.
  *
- * Nothing is folded across sources. Two sources exposing a same-named measure
- * are two different numbers -- `in_store_sales.sales` and `online_sales.sales`,
- * or a source and a filtered extension of it -- and the response nests each
- * under its own card with its own `source_info.docs`, which is what tells a
- * caller which to use. An earlier version merged them into one row naming the
- * others; it was written when this returned a flat `results[]` with no source
- * cards to separate them, and it dropped the losing row's doc, data_type and
- * entity_id to do it.
+ * `limit` counts SOURCE cards, because that is what the published contract
+ * says it counts. Counting entities made targets compete for one pool: with
+ * a budget of 4, asking for a measure alone returned 3 hits while asking for
+ * it alongside a dimension and a view returned 2. Cards are paged in the
+ * order sources first appear in the ranked rows, which is already best-first;
+ * re-sorting here could disagree with the ranking that produced it.
+ * `totalSources` counts the same unit, so `returned` and `total_available`
+ * cannot disagree.
  *
  * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
- * `retrieval_reason` are each meaningful on one path only.
+ * `retrieval_reason` are each meaningful on one path only. Assembly
+ * (get_context_assembly.ts) has already grouped rows by source and capped
+ * each card per target; nothing is folded across sources.
  */
-function finishRanked(args: {
-   rows: ResultEntity[];
-   max: number;
-   sourceContext: Map<string, SourceContextEntry>;
-   environmentName: string;
-   packageName: string;
-   searchTexts: Map<number, string>;
-   includeCode: boolean;
-   droppedSources: Set<string>;
-}): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
-   const windowed = windowBySource(args.rows, args.max);
-   const sources = toSourceResults(
-      windowed.rows,
-      args.sourceContext,
-      args.environmentName,
-      args.packageName,
-      args.searchTexts,
-      args.includeCode,
-      args.droppedSources,
+function shapeCards(
+   state: CardState,
+   ctx: PipelineContext,
+): {
+   sources: SourceCard[];
+   totalSources: number;
+   entitiesDropped: number;
+   budgetDropped: number;
+} {
+   const { request, pkgIndex, settings } = ctx;
+   const paged = state.cards.slice(0, request.limit);
+   // Over ALL the matched cards, not the page: whether a source search matched
+   // one source or many does not depend on how many the caller asked to see.
+   const summaries = summaryViewFor(ctx.sourceSummaries, request, state.cards);
+   const built = toSourceResults(
+      paged.flatMap((card) => card.rows),
+      pkgIndex.sourceContext,
+      request.environmentName,
+      request.packageName,
+      // One lookup from target index back to the text the caller wrote, so
+      // matched_targets can name a target without re-walking the request.
+      new Map(
+         request.searches.map((search) => [search.targetIndex, search.text]),
+      ),
+      request.includeCode,
+      pkgIndex.droppedSources,
+      summaries,
    );
+   // toSourceResults folds a card's relevance from its rows. After rerank the
+   // card's relevance is the reranker's score, which no row carries, so it is
+   // put back from the draft.
+   const sources = state.reranked
+      ? built.map((card) => {
+           const id = card.source_info.resource_id;
+           const draft = paged.find(
+              (d) => d.key === sourceContextKey(id.model_path, id.source),
+           );
+           return draft?.relevance === undefined
+              ? card
+              : { ...card, relevance: draft.relevance };
+        })
+      : built;
+   const fitted = fitBudget(sources, settings.maxChars, settings.reserveChars);
+   // Entities cut inside a card the budget then removed are not reported: the
+   // card is not in the answer, and its own cut warning is the budget's.
+   const kept =
+      fitted.dropped > 0
+         ? paged.slice(0, paged.length - fitted.dropped)
+         : paged;
    return {
-      sources,
-      totalSources: windowed.totalSources,
-      entitiesDropped: windowed.entitiesDropped,
+      sources: fitted.cards,
+      // Cards the reranker kept out of its top N still matched, so they count.
+      totalSources: state.cards.length + (state.discarded ?? 0),
+      entitiesDropped: kept.reduce(
+         (sum, card) => sum + card.entitiesDropped,
+         0,
+      ),
+      budgetDropped: fitted.dropped,
    };
 }
 
@@ -849,7 +988,7 @@ interface ResolvedSearch {
  * per tier, so the listing and ranked paths cannot disagree about what the
  * caller asked for.
  */
-interface ResolvedRequest {
+export interface ResolvedRequest {
    /**
     * Only `source` targets, none with text: the catalog browse. It is the one
     * request with a deterministic order that can be resumed, so it is the only
@@ -940,7 +1079,7 @@ export function comparePaths(a: string, b: string): number {
 }
 
 /** Does this entity survive the scope's model/source/entity refinements? */
-function matchesScope(
+export function matchesScope(
    e: { source?: string; name: string; modelPath: string; kind: string },
    request: ResolvedRequest,
 ): boolean {
@@ -967,7 +1106,7 @@ function matchesScope(
  * keeps the row and the fan-out then keeps only that path's entity — dropping
  * the row here would take the pinned card with it.
  */
-function scopeKeysFor(
+export function scopeKeysFor(
    entities: Iterable<Entity>,
    request: ResolvedRequest,
 ): Array<{ kind: string; source: string; name: string }> {
@@ -1032,7 +1171,8 @@ export function sanitize(query: string): string {
  * `orders.amount`; depth 2 reaches `order_items.inventory_items.cost`, the
  * depth the published shape's own `join_path` example uses. Deeper paths
  * exist and stay unindexed: each level multiplies the entity count by the
- * joined source's field count, against a hard cap of MAX_EMBEDDED_ENTITIES.
+ * joined source's field count, against the entity cap
+ * (`retrieval.indexing.maxEntities`).
  */
 const MAX_JOIN_PATH_DEPTH = 2;
 
@@ -1274,6 +1414,147 @@ interface JoinSchemaField {
 }
 
 /**
+ * Step into a nested join: the dotted path so far and the widest relationship
+ * on it. `collectJoinedFields` (index-time copies) and `buildJoinReaches` (the
+ * topology) both walk joins with this, so a path or fan-out is computed one
+ * way. A `one` hop keeps the parent's fan-out; any other relationship
+ * replaces it.
+ */
+export function enterJoin(
+   join: { name: string; relationship?: Relationship },
+   from: { joinPath: string; fanout: Relationship },
+): { joinPath: string; fanout: Relationship } {
+   return {
+      joinPath: `${from.joinPath}.${join.name}`,
+      fanout:
+         join.relationship === "one"
+            ? from.fanout
+            : (join.relationship ?? from.fanout),
+   };
+}
+
+/**
+ * The deepest join chain the topology records. Assembly reads it through
+ * `settings.joinMaxDepth`, which may be lower. It is separate from
+ * MAX_JOIN_PATH_DEPTH because the topology holds paths, not one entity per
+ * path, so a deep chain costs nothing against the embedded entity cap.
+ */
+export const JOIN_TOPOLOGY_MAX_DEPTH = 10;
+
+/** The part of a compiled join entry the topology reads. */
+interface CompiledJoin {
+   name?: string;
+   as?: string;
+   join?: string;
+   sourceID?: string;
+   referenceID?: string;
+   fields?: unknown[];
+}
+
+/**
+ * The name of the source a compiled join points at, and the URL of the file
+ * that defines it. The IR join entry's own `name` is the underlying table or
+ * SQL, not the source; the source is in `sourceID`, written
+ * "sourceName@modelURL". Undefined for a join with no such id (an inline
+ * table), which has no source to reach.
+ */
+function joinTargetSource(
+   join: CompiledJoin,
+): { source: string; url: string } | undefined {
+   const id = join.sourceID ?? join.referenceID;
+   if (typeof id !== "string") return undefined;
+   // Greedy, so a name containing "@" still splits at the URL's own "@".
+   const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
+   return match ? { source: match[1], url: match[2] } : undefined;
+}
+
+/**
+ * The package-relative path of the model file a URL names: the longest model
+ * path the URL ends with, at a directory boundary. Undefined when the URL is
+ * not one of the package's models (an import from outside the package).
+ */
+export function modelPathOfUrl(
+   url: string,
+   modelPaths: readonly string[],
+): string | undefined {
+   let pathname: string;
+   try {
+      pathname = decodeURIComponent(new URL(url).pathname);
+   } catch {
+      return undefined;
+   }
+   let best: string | undefined;
+   for (const modelPath of modelPaths) {
+      if (pathname !== modelPath && !pathname.endsWith(`/${modelPath}`)) {
+         continue;
+      }
+      if (best === undefined || modelPath.length > best.length) {
+         best = modelPath;
+      }
+   }
+   return best;
+}
+
+/**
+ * Every source reachable from one source by joins, up to
+ * JOIN_TOPOLOGY_MAX_DEPTH deep. Aliases, relationships and nesting come from
+ * the same SourceInfo join tree `collectJoinedFields` walks; the target
+ * source's name is not in that tree (#1100), so it is read from the compiled
+ * join entry with the same alias (`compiled`). A join with no readable target
+ * records nothing, and its nested joins are still followed. A target is
+ * recorded with the package-relative path of the file that defines it, so two
+ * files that each define a source of the same name stay two targets; a target
+ * whose file is not one of the package's models records nothing.
+ */
+function buildJoinReaches(args: {
+   fields: JoinSchemaField[];
+   compiled: unknown[] | undefined;
+   from?: { joinPath: string; fanout: Relationship };
+   path?: string[];
+   modelPaths: readonly string[];
+   out: JoinReach[];
+}): void {
+   const { fields, compiled, from, path = [], modelPaths, out } = args;
+   for (const field of fields) {
+      if (field.kind !== "join") continue;
+      const entry = (compiled as CompiledJoin[] | undefined)?.find(
+         (candidate) =>
+            candidate.join !== undefined &&
+            activeName(candidate as { name?: string; as?: string }) ===
+               field.name,
+      );
+      const here = from
+         ? enterJoin(field, from)
+         : {
+              joinPath: field.name,
+              fanout: field.relationship as Relationship,
+           };
+      const hopPath = [...path, field.name];
+      const target = entry ? joinTargetSource(entry) : undefined;
+      const targetModelPath = target
+         ? modelPathOfUrl(target.url, modelPaths)
+         : undefined;
+      if (target && targetModelPath !== undefined) {
+         out.push({
+            targetSource: target.source,
+            targetModelPath,
+            path: hopPath,
+            fanout: here.fanout,
+         });
+      }
+      if (hopPath.length >= JOIN_TOPOLOGY_MAX_DEPTH) continue;
+      buildJoinReaches({
+         fields: field.schema?.fields ?? [],
+         compiled: entry?.fields,
+         from: here,
+         path: hopPath,
+         modelPaths,
+         out,
+      });
+   }
+}
+
+/**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
  * Indexing the join alone is not enough, even though the target source is
@@ -1317,11 +1598,7 @@ function collectJoinedFields(args: {
          collectJoinedFields({
             ...args,
             fields: field.schema?.fields ?? [],
-            joinPath: `${joinPath}.${field.name}`,
-            fanout:
-               field.relationship === "one"
-                  ? fanout
-                  : (field.relationship ?? fanout),
+            ...enterJoin(field, { joinPath, fanout }),
             depth: depth + 1,
          });
          continue;
@@ -1390,6 +1667,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       comparePaths(a.path ?? "", b.path ?? ""),
    );
 
+   const modelPaths = models.flatMap((m) => (m.path ? [m.path] : []));
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
    // Names of every source dropped for an unconditional deny-all gate, package-
@@ -1397,6 +1675,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // runs, so both can skip the same names and neither can resurrect a card for
    // one the other dropped (see the query loop and cardFor below).
    const droppedSources = new Set<string>();
+   // Which sources each source reaches by joins; see buildJoinReaches.
+   const topology = new Map<string, JoinReach[]>();
    // One reader for the whole walk: several sources share a model file.
    const sourceTextFor = makeSourceTextReader(pkg);
    let n = 0;
@@ -1513,6 +1793,16 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             doc: docText(sourceAnnotations),
             embedDoc: docOnlyText(sourceAnnotations),
          });
+         if (!topology.has(governanceKey)) {
+            const reaches: JoinReach[] = [];
+            buildJoinReaches({
+               fields: (sourceInfo.schema.fields ?? []) as JoinSchemaField[],
+               compiled: findSourceDef(modelDef, sourceName)?.fields,
+               modelPaths,
+               out: reaches,
+            });
+            if (reaches.length > 0) topology.set(governanceKey, reaches);
+         }
          for (const field of sourceInfo.schema.fields ?? []) {
             // Joins are indexed as entities in their own right: an agent that
             // cannot see a declared join concludes the model has none and
@@ -1534,6 +1824,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   doc: docText(field.annotations),
                   embedDoc: docOnlyText(field.annotations),
                   relationship: field.relationship,
+                  ...joinTargetOf(topology.get(governanceKey), field.name),
                });
                // The join's own entity above says a relationship exists; the
                // fields below say what it reaches and under what path. Both
@@ -1621,7 +1912,74 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   return { entities: collapseAliases(deduped), governance, droppedSources };
+   // A join to a source that is not in the index (dropped for a deny-all gate,
+   // or never listed because the package does not export it) keeps its alias,
+   // which is a field of the visible source, but not the target's real name:
+   // that name would reach the LLM in the source summary prompt and the source
+   // match prompt. Done once every model has been walked, because a join can
+   // name a source from a later model file.
+   const indexedSources = new Set(
+      deduped
+         .filter((e) => e.kind === "source")
+         .map((e) => sourceContextKey(e.modelPath, e.name)),
+   );
+   for (const e of deduped) {
+      if (
+         e.kind === "join" &&
+         e.joinTarget &&
+         !indexedSources.has(
+            sourceContextKey(e.joinTargetModelPath ?? "", e.joinTarget),
+         )
+      ) {
+         delete e.joinTarget;
+         delete e.joinTargetModelPath;
+      }
+   }
+   // A join is only a route to a source's fields when that source is itself
+   // indexed: a target that was dropped (a deny-all gate) or never listed has
+   // no direct fields to copy, so the join reaches nothing.
+   for (const [root, reaches] of topology) {
+      const kept = reaches.filter((reach) =>
+         indexedSources.has(
+            sourceContextKey(reach.targetModelPath, reach.targetSource),
+         ),
+      );
+      if (kept.length > 0) topology.set(root, kept);
+      else topology.delete(root);
+   }
+   const collapsed = collapseAliases(deduped);
+   const kept = new Set(collapsed);
+   return {
+      entities: collapsed,
+      governance,
+      droppedSources,
+      topology,
+      aliasedAway: new Set(
+         deduped
+            .filter((e) => !kept.has(e))
+            .map((e) =>
+               [e.modelPath, e.source ?? "", e.kind, e.name].join(
+                  KEY_SEPARATOR,
+               ),
+            ),
+      ),
+   };
+}
+
+/** `{ joinTarget }` for the join `alias` declared by a source, or nothing when its target is unknown. */
+function joinTargetOf(
+   reaches: readonly JoinReach[] | undefined,
+   alias: string,
+): { joinTarget?: string; joinTargetModelPath?: string } {
+   const reach = reaches?.find(
+      (r) => r.path.length === 1 && r.path[0] === alias,
+   );
+   return reach
+      ? {
+           joinTarget: reach.targetSource,
+           joinTargetModelPath: reach.targetModelPath,
+        }
+      : {};
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -1638,6 +1996,15 @@ interface CollectedModel {
    governance: Map<string, SourceGovernance>;
    /** Sources dropped for an unconditional deny-all gate; see isUnconditionalDenyAuthorize. */
    droppedSources: Set<string>;
+   /** Joins each source reaches, keyed by sourceContextKey. */
+   topology: Map<string, JoinReach[]>;
+   /**
+    * Fields the index folded into another spelling of the same column (see
+    * collapseAliases), as modelPath, source, kind and name joined on
+    * KEY_SEPARATOR. A joined copy of one is a copy of a spelling nobody
+    * searches for.
+    */
+   aliasedAway: Set<string>;
 }
 
 /**
@@ -1788,7 +2155,26 @@ function collapseAliases(entities: Entity[]): Entity[] {
    return entities.filter((e) => !dropped.has(droppedKey(e)));
 }
 
-interface PackageIndex {
+/** One source reachable from a root source by joins. */
+export interface JoinReach {
+   /** Name of the source the fields live on. */
+   targetSource: string;
+   /**
+    * The package-relative path of the file that defines that source. Together
+    * with `targetSource` it is the source's identity: two files can each
+    * define a source of the same name, and a join reaches only one of them.
+    */
+   targetModelPath: string;
+   /** Join names from the root, root not included. Aliases, not source names. */
+   path: string[];
+   /** Widest relationship on the path; "many" anywhere means fan-out. */
+   fanout: Relationship;
+}
+
+/** For each root source (sourceContextKey), every source reachable by joins. */
+export type JoinTopology = ReadonlyMap<string, readonly JoinReach[]>;
+
+export interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
    /**
@@ -1799,6 +2185,17 @@ interface PackageIndex {
     * in embedding_index).
     */
    retrievalEntities: readonly Entity[];
+   /**
+    * `retrievalEntities` without the joined copies (those with a joinPath),
+    * frozen once so it can be fingerprinted and cached the same way.
+    */
+   directEntities: readonly Entity[];
+   /**
+    * Which sources each source reaches by joins, up to
+    * JOIN_TOPOLOGY_MAX_DEPTH deep, read from the compiled model. A source
+    * whose model has no compiled IR reaches nothing here.
+    */
+   topology: JoinTopology;
    index: lunr.Index;
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
@@ -1819,7 +2216,7 @@ interface PackageIndex {
  * joining on it is not injective — ("a|b", "c") and ("a", "b|c") produce one
  * key. A control character cannot appear in an identifier, nor in a path.
  */
-function sourceContextKey(modelPath: string, source: string): string {
+export function sourceContextKey(modelPath: string, source: string): string {
    return [modelPath, source].join(KEY_SEPARATOR);
 }
 
@@ -1829,7 +2226,7 @@ function sourceContextKey(modelPath: string, source: string): string {
  * cards for one entity distinct. Same separator, same injectivity argument as
  * {@link sourceContextKey}.
  */
-function entityCardKey(e: {
+export function entityCardKey(e: {
    modelPath: string;
    kind: string;
    source?: string;
@@ -1911,8 +2308,67 @@ function buildSourceContext(
 // is dropped automatically (WeakMap) and the next call rebuilds.
 const indexCache = new WeakMap<Package, PackageIndex>();
 
+/**
+ * The entities the semantic index embeds and searches. With joins made at
+ * assembly that is the direct fields only: a joined copy would be embedded
+ * again under a longer name, take a window slot from the field it copies and
+ * never be damped. The lexical path is not affected; it ranks
+ * `retrievalEntities`.
+ */
+export function embeddedEntitiesOf(
+   pkgIndex: PackageIndex,
+   settings: PipelineSettings,
+): readonly Entity[] {
+   return settings.joins === "assembly"
+      ? pkgIndex.directEntities
+      : pkgIndex.retrievalEntities;
+}
+
+/**
+ * What the semantic index embeds when joined copies are made at assembly: every
+ * entity except a joined copy that assembly will rebuild from the topology.
+ *
+ * Assembly rebuilds a joined copy from a direct field of the join's target
+ * source, so a copy is left out only when the topology reaches a target source
+ * of that file and the target has a direct field of that name, or folded that
+ * name into another spelling of the same column (`aliasedAway`). A joined
+ * field assembly cannot rebuild stays in, so it stays searchable. Two cases:
+ *  - the join has no source to copy from (an inline table or SQL), or its
+ *    target is not indexed;
+ *  - the join adds the field to its target (`join_one: c is cust extend {...}`),
+ *    so the target has no such field of its own.
+ */
+function directEntitiesOf(
+   retrievalEntities: readonly Entity[],
+   topology: JoinTopology,
+   aliasedAway: ReadonlySet<string>,
+): readonly Entity[] {
+   const directFields = new Set([
+      ...retrievalEntities
+         .filter((e) => !e.joinPath)
+         .map((e) =>
+            [e.modelPath, e.source ?? "", e.kind, e.name].join(KEY_SEPARATOR),
+         ),
+      ...aliasedAway,
+   ]);
+   const rebuilt = (e: Entity): boolean => {
+      if (!e.joinPath) return false;
+      const reach = topology
+         .get(sourceContextKey(e.modelPath, e.source ?? ""))
+         ?.find((r) => r.path.join(".") === e.joinPath);
+      if (!reach) return false;
+      const field = e.name.slice(e.joinPath.length + 1);
+      return directFields.has(
+         [reach.targetModelPath, reach.targetSource, e.kind, field].join(
+            KEY_SEPARATOR,
+         ),
+      );
+   };
+   return Object.freeze(retrievalEntities.filter((e) => !rebuilt(e)));
+}
+
 /** Get, or lazily build and cache, the lunr entity index for a package. */
-async function getPackageIndex(
+export async function getPackageIndex(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
@@ -1922,6 +2378,14 @@ async function getPackageIndex(
       false,
    );
    const pkg = await environment.getPackage(packageName, false);
+   return packageIndexOf(pkg, packageName);
+}
+
+/** The entity index for `pkg` itself, built once per Package instance. */
+async function packageIndexOf(
+   pkg: Package,
+   packageName: string,
+): Promise<PackageIndex> {
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
@@ -1942,10 +2406,17 @@ async function getPackageIndex(
          });
       }
    });
+   const retrievalEntities = Object.freeze(Array.from(byId.values()));
    const built: PackageIndex = {
       pkg,
       byId,
-      retrievalEntities: Object.freeze(Array.from(byId.values())),
+      retrievalEntities,
+      directEntities: directEntitiesOf(
+         retrievalEntities,
+         collected.topology,
+         collected.aliasedAway,
+      ),
+      topology: collected.topology,
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
@@ -1970,21 +2441,19 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
 - scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
-- Read warnings and any error/stale field before trusting a number.
-- A source's joins list is complete: empty means it declares none, so write that relationship inline.
+- Read warnings and any error/stale field before trusting a number or calling data absent.
+- A source's joins are all listed: empty means none. In an answer, never write a join; tell the user.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - accessFilter/authorize mean gated; a deny-all source never appears here.
+- Empty sources: nothing cleared the floor, or the LLM steps pruned every candidate.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
-ranking, returned of total_available sources, next_offset on a listing, warnings[].
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
-
-## Example
-{"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, accessFilter/authorize, filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id, matched_targets[].match_reason (why the model kept it).
+ranking, returned of total_available sources, next_offset on a listing, warnings[]. Over 35,000 characters, whole sources are dropped and warnings say so.
+below_cutoff_count of total_entities rejected. retrieval "indexing" = still building, ask again soon. Errors carry retrieval_reason; "llm-stage-failed" names the failed step in retrieval_stage.`;
 
 /**
  * An error keeps the empty collection the tool would have answered with, so a
@@ -2019,69 +2488,90 @@ function listPackagesError(uri: string, error: unknown) {
 }
 
 /**
- * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
- * resolved request, so a ranking decision and a request-parsing decision stay
- * separately reviewable. Retrieval runs over the package's model entities
- * (sources, views, dimension/measure fields, joins, named queries), semantic
- * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
- * The entity index is built once per Package and cached (see getPackageIndex),
- * rebuilding automatically when the package reloads.
- *
- * There is no progressive-discovery tier here any more: the catalog is
- * `list_packages`, and every request that reaches this names one package,
- * because `scopes` requires it.
+ * The warnings that open every payload, in order: staleness, then the caller's
+ * extras, then whatever the path itself adds.
  */
-async function runContextQuery(
-   request: ResolvedRequest,
+function makeWarningsFor(ctx: PipelineContext) {
+   /**
+    * Spread into a payload to attach `warnings`. Returns {} when there is
+    * nothing to say, so a healthy package's payload carries no key at all
+    * rather than an empty array a caller has to test.
+    *
+    * A list rather than one joined string: staleness and truncation are
+    * separate facts with separate remedies, and joining them made the
+    * second read as a continuation of the first.
+    */
+   return (...extra: (string | undefined)[]) => {
+      const warnings = [...ctx.warnings, ...extra].filter(
+         (warning): warning is string => Boolean(warning),
+      );
+      return warnings.length > 0 ? { warnings } : {};
+   };
+}
+
+/**
+ * The warning for a capped result set, or undefined when nothing was
+ * cut. It names the remedy that works here: raising the limit, or
+ * narrowing the question. Telling an agent to "search more
+ * specifically" when the cut was a flat cap sends it to re-query at
+ * the one stage that cannot change the outcome.
+ */
+const truncationWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
+      : undefined;
+
+/**
+ * The two cuts a ranked response can make, each named in its own unit. They
+ * have different remedies -- one is the page size, the other is per source
+ * -- and the old single warning reported both as "entities" while the
+ * envelope beside it counted sources.
+ */
+const sourceCutWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
+      : undefined;
+/**
+ * Cards the reranker left out because only its top N are ranked. They matched,
+ * and `total_available` counts them, but no page size reaches them: the remedy
+ * is a narrower question.
+ */
+const rerankCutWarning = (dropped: number, top: number | undefined) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
+      : undefined;
+/**
+ * A browse that stopped early. Its remedy is NOT the ranked one: a listing
+ * has a resumable order, so the rest is one `offset` away and raising the
+ * limit is the wrong advice -- it caps at 150 either way, and paging is
+ * what actually reaches source 151.
+ */
+const listingPageWarning = (returned: number, matched: number) =>
+   matched > returned
+      ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
+      : undefined;
+/**
+ * Whole cards left out because the response would pass the size budget. Its
+ * remedy is not the page size: raising `limit` makes the answer bigger, and
+ * the budget cuts it back.
+ */
+const budgetCutWarning = (dropped: number, maxChars: number | null) =>
+   dropped > 0 && maxChars !== null
+      ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} left out to keep the response under ${maxChars.toLocaleString("en-US")} characters. Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
+      : undefined;
+const entityCutWarning = (dropped: number) =>
+   dropped > 0
+      ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
+      : undefined;
+
+/**
+ * Whether the package's most recent reload failed, as a warning to attach.
+ */
+async function staleNoteFor(
    environmentStore: EnvironmentStore,
-   extraWarnings: string[] = [],
-): Promise<ReturnType<typeof jsonResource>> {
-   const { environmentName, packageName, sourceName } = request;
-   const max = request.limit;
-   // One lookup from target index back to the text the caller wrote, so
-   // matched_targets can name a target without re-walking the request.
-   const searchTextsByIndex = new Map(
-      request.searches.map((search) => [search.targetIndex, search.text]),
-   );
-   logger.info("[MCP Tool getContext] Retrieving context", {
-      environmentName,
-      packageName,
-      sourceName,
-      searches: request.searches.length,
-      listingOnly: request.listingOnly,
-   });
-
-   // Tiers 3 and 4 need the package's entity index.
-   let pkgIndex: PackageIndex;
-   try {
-      pkgIndex = await getPackageIndex(
-         environmentStore,
-         environmentName,
-         packageName,
-      );
-   } catch (error) {
-      logger.warn("[MCP Tool getContext] index build failed", {
-         environmentName,
-         packageName,
-         sourceName,
-         error: error instanceof Error ? error.message : String(error),
-      });
-      return contextError(
-         buildMalloyUri(
-            { environment: environmentName, package: packageName },
-            "get-context",
-         ),
-         `${environmentName}/${packageName}`,
-         error,
-      );
-   }
-
-   const { byId, index, sourceContext, droppedSources } = pkgIndex;
-   const uri = buildMalloyUri(
-      { environment: environmentName, package: packageName },
-      "get-context",
-   );
-
+   environmentName: string,
+   packageName: string,
+): Promise<string | undefined> {
    // A stale package answers every tier below exactly like a current one:
    // the index is the last model that compiled, so the names are real and
    // the queries succeed, and the numbers are from before the last save.
@@ -2110,414 +2600,403 @@ async function runContextQuery(
          error: error instanceof Error ? error.message : String(error),
       });
    }
+   return staleNote;
+}
+
+/** Tier 3: nothing to rank, so enumerate what the targets name. */
+function runListing(
+   ctx: PipelineContext,
+   uri: string,
+): ReturnType<typeof jsonResource> {
+   const { request, pkgIndex } = ctx;
+   const { environmentName, packageName, sourceName } = request;
+   const { byId, sourceContext, droppedSources } = pkgIndex;
+   const warningsFor = makeWarningsFor(ctx);
+   // With sourceName set this is the drill-down, so it lists every
+   // entity the named source offers: the source row itself, then its
+   // views, dimensions, measures, and any named query built on it.
+   // Filtering to kind === "source" here as well returned exactly one
+   // row — the source — which the caller already had from the tier-3
+   // listing, and never the fields the tool description promises.
+   // collectEntities pushes a source ahead of its own fields, and
+   // Array.from preserves that insertion order, so the source's doc
+   // still leads the drill-down.
+   //
+   // Enumeration: return everything unless the caller sets an explicit
+   // limit. slice(0, undefined) keeps the whole list, so discovery is
+   // not silently capped the way ranked retrieval (tier 4) is.
+   // A drill-down (sourceName, no query) lists every entity the
+   // named source offers, so the card carries its views, dimensions,
+   // measures, joins and named queries. Listing only the source row
+   // there returned what the caller already had from the package
+   // listing and never the fields the tool description promises.
+   // collectEntities pushes a source ahead of its own fields, and
+   // Array.from preserves that insertion order, so toSourceResults
+   // sees the source before the entities that nest under it.
+   //
+   // Enumeration: return everything unless the caller sets an explicit
+   // limit. slice(0, undefined) keeps the whole list, so discovery is
+   // not silently capped the way ranked retrieval (tier 4) is.
+   const inScope = Array.from(byId.values()).filter(
+      (e) =>
+         // A scoped source's own row always survives: it becomes the
+         // card rather than competing for an entity slot.
+         ((sourceName && e.kind === "source" && e.source === sourceName) ||
+            request.kinds.has(e.kind)) &&
+         matchesScope(e, request),
+   );
+   // The limit caps entities. A drill-down's source row becomes the
+   // card rather than an entity, so it does not spend a slot; a
+   // package listing has only source rows, so there the cap is on
+   // cards, which is what the listing is made of.
+   // A browse is the one listing with a stable order, so it is the one
+   // that can be resumed. Skipping into any other shape would silently
+   // drop rows whose position is not reproducible between two calls.
+   const paged = request.pureSourceListing
+      ? inScope.slice(request.offset)
+      : inScope;
+   let entityBudget = request.limit;
+   const capped = paged.filter((e) => {
+      if (sourceName && e.kind === "source") return true;
+      if (entityBudget <= 0) return false;
+      entityBudget -= 1;
+      return true;
+   });
    /**
-    * Spread into a payload to attach `warnings`. Returns {} when there is
-    * nothing to say, so a healthy package's payload carries no key at all
-    * rather than an empty array a caller has to test.
+    * Rows the cap actually spends from, which is the unit both sides of the
+    * truncation warning have to be counted in.
     *
-    * A list rather than one joined string: staleness and truncation are
-    * separate facts with separate remedies, and joining them made the
-    * second read as a continuation of the first.
+    * A scoped source's own row never spends a slot, so it is EXCLUDED from
+    * both counts rather than subtracted from one. Subtracting assumed the
+    * row was there: scope to a source that does not exist and `capped` is
+    * empty, so `capped.length - 1` was -1, and the warning fired claiming
+    * "Returned -1 of 0 matching entities" on a result that lost nothing.
     */
-   const warningsFor = (...extra: (string | undefined)[]) => {
-      const warnings = [staleNote, ...extraWarnings, ...extra].filter(
-         (warning): warning is string => Boolean(warning),
-      );
-      return warnings.length > 0 ? { warnings } : {};
+   const spendable = (rows: typeof inScope) =>
+      sourceName ? rows.filter((e) => e.kind !== "source").length : rows.length;
+   const cappable = spendable(inScope);
+   // The overview is where an agent decides how to combine sources,
+   // so each one states its relationships here rather than making
+   // that a second call. toSourceResults carries the complete joins
+   // list onto every entry, so empty means none declared.
+   const sources = toSourceResults(
+      capped.map((e) => projectEntity(e, environmentName, packageName)),
+      sourceContext,
+      environmentName,
+      packageName,
+      new Map(),
+      request.includeCode,
+      droppedSources,
+   );
+   // A listing is deterministic catalog order, not a ranking, and
+   // Publisher has no query-usage signal to fill the hosted API's
+   // `prominence` with, so it names the ordering and omits the
+   // score rather than inventing a number nobody should rank on.
+   // Both counts are in CARDS, the unit the payload is made of, so the
+   // drill-down counts its source ROWS rather than the whole scope (which
+   // also holds the entities nesting inside them; the entity cap is
+   // reported separately). One row per model path resolving the source, so
+   // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
+   // report one path.
+   // next_offset is present only while sources remain past this page, and
+   // only on the browse, matching where `offset` is honoured.
+   const consumed = request.offset + sources.length;
+   // Counted as distinct pairings rather than as source rows, so it stays
+   // right if a drill-down ever reaches an entity whose own source row was
+   // filtered out: toSourceResults would still raise a card for it.
+   const cardsInScope = sourceName
+      ? new Set(
+           inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
+        ).size
+      : inScope.length;
+   const listingEnvelope = {
+      ranking: "prominence" as const,
+      total_available: cardsInScope,
+      returned: sources.length,
+      ...(request.pureSourceListing && consumed < inScope.length
+         ? { next_offset: consumed }
+         : {}),
    };
-
-   /**
-    * The warning for a capped result set, or undefined when nothing was
-    * cut. It names the remedy that works here: raising the limit, or
-    * narrowing the question. Telling an agent to "search more
-    * specifically" when the cut was a flat cap sends it to re-query at
-    * the one stage that cannot change the outcome.
-    */
-   const truncationWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
-         : undefined;
-
-   /**
-    * The two cuts a ranked response can make, each named in its own unit. They
-    * have different remedies -- one is the page size, the other is per source
-    * -- and the old single warning reported both as "entities" while the
-    * envelope beside it counted sources.
-    */
-   const sourceCutWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
-         : undefined;
-   /**
-    * A browse that stopped early. Its remedy is NOT the ranked one: a listing
-    * has a resumable order, so the rest is one `offset` away and raising the
-    * limit is the wrong advice -- it caps at 150 either way, and paging is
-    * what actually reaches source 151.
-    */
-   const listingPageWarning = (returned: number, matched: number) =>
-      matched > returned
-         ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
-         : undefined;
-   const entityCutWarning = (dropped: number) =>
-      dropped > 0
-         ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
-         : undefined;
-
-   // Tier 3: nothing to rank -> enumerate what the targets name.
-   if (request.listingOnly) {
-      // With sourceName set this is the drill-down, so it lists every
-      // entity the named source offers: the source row itself, then its
-      // views, dimensions, measures, and any named query built on it.
-      // Filtering to kind === "source" here as well returned exactly one
-      // row — the source — which the caller already had from the tier-3
-      // listing, and never the fields the tool description promises.
-      // collectEntities pushes a source ahead of its own fields, and
-      // Array.from preserves that insertion order, so the source's doc
-      // still leads the drill-down.
-      //
-      // Enumeration: return everything unless the caller sets an explicit
-      // limit. slice(0, undefined) keeps the whole list, so discovery is
-      // not silently capped the way ranked retrieval (tier 4) is.
-      // A drill-down (sourceName, no query) lists every entity the
-      // named source offers, so the card carries its views, dimensions,
-      // measures, joins and named queries. Listing only the source row
-      // there returned what the caller already had from the package
-      // listing and never the fields the tool description promises.
-      // collectEntities pushes a source ahead of its own fields, and
-      // Array.from preserves that insertion order, so toSourceResults
-      // sees the source before the entities that nest under it.
-      //
-      // Enumeration: return everything unless the caller sets an explicit
-      // limit. slice(0, undefined) keeps the whole list, so discovery is
-      // not silently capped the way ranked retrieval (tier 4) is.
-      const inScope = Array.from(byId.values()).filter(
-         (e) =>
-            // A scoped source's own row always survives: it becomes the
-            // card rather than competing for an entity slot.
-            ((sourceName && e.kind === "source" && e.source === sourceName) ||
-               request.kinds.has(e.kind)) &&
-            matchesScope(e, request),
-      );
-      // The limit caps entities. A drill-down's source row becomes the
-      // card rather than an entity, so it does not spend a slot; a
-      // package listing has only source rows, so there the cap is on
-      // cards, which is what the listing is made of.
-      // A browse is the one listing with a stable order, so it is the one
-      // that can be resumed. Skipping into any other shape would silently
-      // drop rows whose position is not reproducible between two calls.
-      const paged = request.pureSourceListing
-         ? inScope.slice(request.offset)
-         : inScope;
-      let entityBudget = request.limit;
-      const capped = paged.filter((e) => {
-         if (sourceName && e.kind === "source") return true;
-         if (entityBudget <= 0) return false;
-         entityBudget -= 1;
-         return true;
-      });
-      /**
-       * Rows the cap actually spends from, which is the unit both sides of the
-       * truncation warning have to be counted in.
-       *
-       * A scoped source's own row never spends a slot, so it is EXCLUDED from
-       * both counts rather than subtracted from one. Subtracting assumed the
-       * row was there: scope to a source that does not exist and `capped` is
-       * empty, so `capped.length - 1` was -1, and the warning fired claiming
-       * "Returned -1 of 0 matching entities" on a result that lost nothing.
-       */
-      const spendable = (rows: typeof inScope) =>
-         sourceName
-            ? rows.filter((e) => e.kind !== "source").length
-            : rows.length;
-      const cappable = spendable(inScope);
-      // The overview is where an agent decides how to combine sources,
-      // so each one states its relationships here rather than making
-      // that a second call. toSourceResults carries the complete joins
-      // list onto every entry, so empty means none declared.
-      const sources = toSourceResults(
-         capped.map((e) => projectEntity(e, environmentName, packageName)),
-         sourceContext,
-         environmentName,
-         packageName,
-         new Map(),
-         request.includeCode,
-         droppedSources,
-      );
-      // A listing is deterministic catalog order, not a ranking, and
-      // Publisher has no query-usage signal to fill the hosted API's
-      // `prominence` with, so it names the ordering and omits the
-      // score rather than inventing a number nobody should rank on.
-      // Both counts are in CARDS, the unit the payload is made of, so the
-      // drill-down counts its source ROWS rather than the whole scope (which
-      // also holds the entities nesting inside them; the entity cap is
-      // reported separately). One row per model path resolving the source, so
-      // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
-      // report one path.
-      // next_offset is present only while sources remain past this page, and
-      // only on the browse, matching where `offset` is honoured.
-      const consumed = request.offset + sources.length;
-      // Counted as distinct pairings rather than as source rows, so it stays
-      // right if a drill-down ever reaches an entity whose own source row was
-      // filtered out: toSourceResults would still raise a card for it.
-      const cardsInScope = sourceName
-         ? new Set(
-              inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
-           ).size
-         : inScope.length;
-      const listingEnvelope = {
-         ranking: "prominence" as const,
-         total_available: cardsInScope,
-         returned: sources.length,
-         ...(request.pureSourceListing && consumed < inScope.length
-            ? { next_offset: consumed }
-            : {}),
-      };
-      // An empty enumeration is ambiguous to an agent: "no data here" and
-      // "the package exposes nothing" look identical. The package DID
-      // load (a failed load throws out of getPackageIndex above), so an
-      // empty result means its models expose no sources: a curation gap
-      // (index.malloy's export {}), not an empty database. Say so, only in the
-      // empty case, so the populated payload stays byte-identical.
-      // `kinds` is empty only when EVERY target named a type this server does
-      // not index, and unsupportedTargetWarnings has already said so exactly.
-      // Adding the curation line there contradicts it and misdiagnoses a
-      // healthy package: a `dimensional_value` search against storefront
-      // reported that its seven sources were a curation gap.
-      if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
-         return jsonResource(uri, {
-            sources,
-            ...listingEnvelope,
-            ...warningsFor(
-               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
-            ),
-         });
-      }
+   // An empty enumeration is ambiguous to an agent: "no data here" and
+   // "the package exposes nothing" look identical. The package DID
+   // load (a failed load throws out of getPackageIndex above), so an
+   // empty result means its models expose no sources: a curation gap
+   // (index.malloy's export {}), not an empty database. Say so, only in the
+   // empty case, so the populated payload stays byte-identical.
+   // `kinds` is empty only when EVERY target named a type this server does
+   // not index, and unsupportedTargetWarnings has already said so exactly.
+   // Adding the curation line there contradicts it and misdiagnoses a
+   // healthy package: a `dimensional_value` search against storefront
+   // reported that its seven sources were a curation gap.
+   if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
          ...warningsFor(
-            // A pure browse pages; every other listing shape is capped in
-            // entities and says so.
-            request.pureSourceListing
-               ? listingPageWarning(sources.length, inScope.length)
-               : truncationWarning(spendable(capped), cappable),
+            "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
          ),
       });
    }
+   return jsonResource(uri, {
+      sources,
+      ...listingEnvelope,
+      ...warningsFor(
+         // A pure browse pages; every other listing shape is capped in
+         // entities and says so.
+         request.pureSourceListing
+            ? listingPageWarning(sources.length, inScope.length)
+            : truncationWarning(spendable(capped), cappable),
+      ),
+   });
+}
+
+// The stages and retrievers runContextQuery runs; a new stage is one file and
+// one line here. The stage lists are functions, read when a request runs,
+// because the stage files import this one and a list built at load would read
+// their exports before they exist whenever one of them is loaded first.
+const QUERY_STAGES: QueryStage[] = [];
+// A function like the stage lists: get_context_retrievers imports this file, so
+// a constant here would read both retrievers while this module is still being
+// evaluated, and importing the retrievers first threw "Cannot access
+// 'semanticRetriever' before initialization".
+const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
+// Source match is listed only for a request it applies to, so a trace shows
+// no row for it otherwise (refine and rerank report "skipped" when off; this
+// one has nothing to say unless it has work).
+const rankStages = (ctx: PipelineContext): RankStage[] =>
+   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
+const cardStages = (): CardStage[] => [rerankStage];
+
+/**
+ * The values the server runs with; changing one changes responses. Joins are
+ * made at assembly on the semantic path only: the lexical path always ranks
+ * the index's own joined copies.
+ */
+const PIPELINE_SETTINGS: PipelineSettings = {
+   joins: "assembly",
+   entityWindow: {
+      perSourcePerTarget: MAX_ENTITIES_PER_SOURCE_TARGET,
+      joinedPerSourcePerTarget: MAX_JOINED_ROWS_PER_SOURCE_TARGET,
+   },
+   joinMaxDepth: JOIN_TOPOLOGY_MAX_DEPTH,
+   joinDamping: 0.9,
+   scoring: "cosine",
+   maxChars: 35_000,
+   reserveChars: 1_000,
+};
+
+/**
+ * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
+ * resolved request, so a ranking decision and a request-parsing decision stay
+ * separately reviewable. Retrieval runs over the package's model entities
+ * (sources, views, dimension/measure fields, joins, named queries), semantic
+ * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
+ * The entity index is built once per Package and cached (see getPackageIndex),
+ * rebuilding automatically when the package reloads.
+ *
+ * There is no progressive-discovery tier here any more: the catalog is
+ * `list_packages`, and every request that reaches this names one package,
+ * because `scopes` requires it.
+ */
+async function runContextQuery(
+   resolved: ResolvedRequest,
+   environmentStore: EnvironmentStore,
+   extraWarnings: string[] = [],
+   traceSummary = false,
+): Promise<ReturnType<typeof jsonResource>> {
+   const { environmentName, packageName, sourceName } = resolved;
+   logger.info("[MCP Tool getContext] Retrieving context", {
+      environmentName,
+      packageName,
+      sourceName,
+      searches: resolved.searches.length,
+      listingOnly: resolved.listingOnly,
+   });
+
+   // Tiers 3 and 4 need the package's entity index.
+   let pkgIndex: PackageIndex;
+   try {
+      pkgIndex = await getPackageIndex(
+         environmentStore,
+         environmentName,
+         packageName,
+      );
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] index build failed", {
+         environmentName,
+         packageName,
+         sourceName,
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return contextError(
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "get-context",
+         ),
+         `${environmentName}/${packageName}`,
+         error,
+      );
+   }
+
+   const uri = buildMalloyUri(
+      { environment: environmentName, package: packageName },
+      "get-context",
+   );
+
+   const staleNote = await staleNoteFor(
+      environmentStore,
+      environmentName,
+      packageName,
+   );
+   const ctx: PipelineContext = {
+      request: resolved,
+      environmentStore,
+      pkgIndex,
+      warnings: [staleNote, ...extraWarnings].filter(
+         (warning): warning is string => Boolean(warning),
+      ),
+      embeddingConfigured: embeddingConfigured(),
+      settings: PIPELINE_SETTINGS,
+      trace: [],
+      meter: new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null),
+   };
+   const warningsFor = makeWarningsFor(ctx);
+   // Spread into a ranked payload. Without the request header it is {}, so
+   // the payload is the one every caller already gets. With
+   // PUBLISHER_MCP_TRACE=retrieval the same summary is also written to the
+   // server log, which no caller sees.
+   const traceFields = () => {
+      const logTrace = traceToLog();
+      if (!traceSummary && !logTrace) return {};
+      const retrieval_trace = {
+         stages: (ctx.trace ?? []).map((t) => ({
+            name: t.name,
+            status: t.status,
+            ms: t.ms,
+            in: t.in,
+            out: t.out,
+            llm_calls: t.llmCalls,
+            tokens: t.tokens,
+         })),
+      };
+      if (logTrace) {
+         logger.info("[MCP Tool getContext] Retrieval trace", {
+            environmentName,
+            packageName,
+            retrieval_trace,
+         });
+      }
+      return traceSummary ? { retrieval_trace } : {};
+   };
+
+   // Query stages may rewrite what is searched for; none is registered yet.
+   ctx.request = await runQueryStages(QUERY_STAGES, ctx.request, ctx);
+   const request = ctx.request;
+
+   // Tier 3: nothing to rank -> enumerate what the targets name.
+   if (request.listingOnly) return runListing(ctx, uri);
 
    // Tier 4: retrieval over the package's entities. With an
    // embedding provider configured, ranking is semantic (DuckDB
-   // cosine over cached entity embeddings); otherwise, or whenever
-   // the semantic path is unavailable (index still building,
-   // provider down, oversized package), it is lexical lunr. The
-   // `retrieval` marker and per-entity `score` appear ONLY when a
-   // provider is configured, so the unconfigured payload stays
-   // byte-identical to the lexical-only releases.
-   const configured = embeddingConfigured();
-   // A drill-down is confined to one source, so the scan needs no over-fetch
-   // to reach a spread of source cards.
-   const scoped = Boolean(sourceName);
-   /** Ranked but NOT yet collapsed or windowed; finishRanked does both. */
-   let semanticRanked: ResultEntity[] | undefined;
-   let belowCutoffCount = 0;
-   // The denominator belowCutoffCount is read against; see
-   // SemanticSearchResult. Undefined on the lexical path, where there
-   // is no floor and so no count to anchor.
-   let totalEntities: number | undefined;
-   // Why a configured server answered lexically. Without it "lexical"
-   // is a dead end: an agent cannot tell a cold index, which clears in
-   // seconds and is worth retrying, from a down provider, which is not.
-   let retrievalReason: RetrievalReason | undefined;
-   if (configured) {
-      let provider: EmbeddingProvider | null = null;
-      try {
-         provider = getEmbeddingProvider();
-      } catch (error) {
-         retrievalReason = "unavailable";
-         logger.warn(
-            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-            {
-               error: error instanceof Error ? error.message : String(error),
-            },
-         );
+   // cosine over cached entity embeddings) and ONLY semantic: when the
+   // index is still building the answer says so (`retrieval:
+   // "indexing"`, no results), and when it cannot serve the answer is
+   // an error that names the reason. A configured server never answers
+   // a search lexically, because a ranking that quietly differs from
+   // the one the finished index gives makes results hard to trust.
+   // Lexical lunr is the mode only when no provider is configured, and
+   // then the payload carries no `retrieval` marker and no per-entity
+   // `score`, byte-identical to the lexical-only releases.
+   // The LLM stage settings are read before retrieval because source match
+   // takes the source targets away from the retrievers.
+   try {
+      ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
       }
-      if (provider) {
-         try {
-            // One pass per target, merged on score. A max ACROSS passes is
-            // meaningful here and only here: cosine is an absolute scale,
-            // so 0.7 from the measure target and 0.7 from the dimension
-            // target mean the same thing. (The lexical path below has to
-            // normalize first, because lunr scores are relative to their
-            // own query.) The next commit collapses these passes into one
-            // batched embed and one scan; the merge rule does not change.
-            const merged = new Map<string, ResultEntity>();
-            let searchFailure: RetrievalReason | undefined;
-            let unionTotalEntities: number | undefined;
-            let unionBelowCutoff: number | undefined;
-            {
-               // ONE call for every target: it batches the embeddings into a
-               // single provider request and scores them in a single pass
-               // over the vector cache, returning each hit's per-target
-               // scores. The raw text embeds better than the lunr-sanitized
-               // form; sanitize() only exists to strip lunr operators.
-               const semantic = await trySemanticSearch({
-                  db: environmentStore.storageManager.getDuckDbConnection(),
-                  provider,
-                  pkg: pkgIndex.pkg,
-                  environmentName,
-                  packageName,
-                  entities: pkgIndex.retrievalEntities,
-                  // Each target carries the kinds it may claim, and the scan
-                  // applies that BEFORE cutting the target's window. Applied
-                  // here afterwards, a `measure` target whose nearest rows were
-                  // dimensions came back empty with below_cutoff_count 0.
-                  queries: request.searches.map((search) => ({
-                     targetIndex: search.targetIndex,
-                     text: search.text,
-                     kinds: search.kinds,
-                  })),
-                  // Over-fetch, because `max` counts SOURCE CARDS while
-                  // this limit counts entity ROWS, and windowBySource admits
-                  // up to MAX_ENTITIES_PER_SOURCE_TARGET rows per source per
-                  // target. Fetching exactly `max` rows lets them all land in
-                  // one source and return a single card where `max` were
-                  // asked for. A drill-down is confined to one source, so
-                  // there the extra rows are waste.
-                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
-                  // "" means no drill-down, matching the lexical
-                  // path's truthiness filter.
-                  sourceName: sourceName || undefined,
-                  // The rest of the scope, as rows the scan can join on. The
-                  // cache has no model_path column and an entity_name scope
-                  // exempts source rows, so neither is expressible as a
-                  // predicate -- but both have to be applied INSIDE the scan
-                  // anyway, because that is where belowCutoffCount and
-                  // totalEntities are counted. Filtering only the returned
-                  // rows left those two describing the unpinned set: an
-                  // entity_name that matched nothing answered with no sources
-                  // beside a belowCutoffCount of 0, which the tool
-                  // description tells the agent means "nothing cleared the
-                  // floor", so it had no reason to retry with another name.
-                  scopeKeys:
-                     request.modelPath || request.entityName
-                        ? scopeKeysFor(byId.values(), request)
-                        : undefined,
-               });
-               if ("hits" in semantic) {
-                  // One row per (kind, source, name) is EMBEDDED — the
-                  // text is identical for every model path that reaches
-                  // the entity, so the vector is stored once — but
-                  // several live entities can share that key, one per
-                  // path. Fan the hit out to all of them; a 1:1 map
-                  // silently kept only whichever was seen last.
-                  const byKey = new Map<string, Entity[]>();
-                  for (const e of byId.values()) {
-                     const k = entityRowKey(e.kind, e.source ?? "", e.name);
-                     const at = byKey.get(k);
-                     if (at) at.push(e);
-                     else byKey.set(k, [e]);
-                  }
-                  // Rows are only a vector cache: modelPath and doc
-                  // come from the live entity, and a hit with no live
-                  // entity (deleted since the last sync) is dropped.
-                  const ranked = semantic.hits.flatMap((hit) => {
-                     const matches = (
-                        byKey.get(
-                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                        ) ?? []
-                     )
-                        // The scan filters on sourceName only, so the scope's
-                        // model_path and entity_name have to be applied to
-                        // what it returns -- the same place the lexical path
-                        // applies them (see matchesScope's other call site).
-                        // Without this, pinning an entity narrowed nothing
-                        // wherever an embedding provider is configured, and
-                        // a caller who pinned one entity got the whole ranked
-                        // set back, definitions included, because a pinned
-                        // entity_name also turns include_code on.
-                        .filter((e) => matchesScope(e, request));
-                     return matches.map((e) => ({
-                        ...projectEntity(e, environmentName, packageName),
-                        score: Math.round(hit.score * 10_000) / 10_000,
-                        targetScores: hit.targetScores,
-                     }));
-                  });
-                  for (const row of ranked) {
-                     // The scan scored this row only against targets that may
-                     // claim its kind, so every score it carries is from a
-                     // target that can return it, and its `score` is already
-                     // the best of those.
-                     // Keyed per CARD, like the fan-out just above produced:
-                     // one embedded row legitimately becomes several live
-                     // entities, one per model path. Keying this on the bare
-                     // (kind, source, name) collapsed them straight back into
-                     // one and kept whichever landed last -- undoing the
-                     // fan-out, and making the semantic path answer with one
-                     // model_path where the lexical path answers with every
-                     // resolving one. lunr has no such problem because its
-                     // ref IS the per-path entity id.
-                     const key = entityCardKey(row);
-                     merged.set(key, {
-                        ...row,
-                        bestTarget: bestTargetOf(row.targetScores ?? new Map()),
-                     });
-                  }
-                  // The denominator counts the package's entities, not the
-                  // query's hits, so it is the same whichever target asked.
-                  unionTotalEntities = semantic.totalEntities;
-                  unionBelowCutoff = semantic.belowCutoffCount;
-               } else {
-                  searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
-               }
-            }
-            if (merged.size > 0 || searchFailure === undefined) {
-               const ranked = [...merged.values()].sort(
-                  (a, b) => (b.score ?? 0) - (a.score ?? 0),
-               );
-               // Collapse, windowing and serialization are finishRanked's,
-               // shared with the lexical path so the two cannot drift.
-               semanticRanked = ranked;
-               totalEntities = unionTotalEntities;
-               // Straight from the scan, which counts entities whose BEST
-               // score across the targets that may claim them fell under the
-               // floor. Deriving it from the returned rows would fold the page
-               // limit into it and report a crowded-out entity -- one that
-               // cleared the floor and simply did not fit -- as rejected,
-               // which is the opposite of what this number tells a caller.
-               // The whole scope goes into the scan (sourceName as a column
-               // predicate, the rest as scopeKeys), so the count and the rows
-               // still describe the same set.
-               belowCutoffCount = unionBelowCutoff ?? 0;
-            } else {
-               retrievalReason = searchFailure;
-            }
-         } catch (error) {
-            // Defensive: trySemanticSearch does not throw, but the
-            // storage handle lookup can (e.g. before initialization
-            // or under a partial test double). Semantic retrieval
-            // must never take tier 4 down with it.
-            retrievalReason = "unavailable";
-            logger.warn(
-               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-               {
-                  error: error instanceof Error ? error.message : String(error),
-               },
-            );
-         }
-      }
+      throw error;
    }
-
-   if (semanticRanked !== undefined) {
-      const { sources, totalSources, entitiesDropped } = finishRanked({
-         rows: semanticRanked,
-         max,
-         sourceContext,
-         environmentName,
-         packageName,
-         searchTexts: searchTextsByIndex,
-         includeCode: request.includeCode,
-         droppedSources,
-      });
+   // Stored source summaries, read once for the response and the source match
+   // prompt. Only when the package has them on; none stored means no change.
+   ctx.sourceSummaries = await loadStoredSummaries(
+      environmentStore,
+      pkgIndex,
+      environmentName,
+      packageName,
+   );
+   // With source match on, source targets are answered by the model, so the
+   // retrievers rank only the other targets. With none left there is nothing
+   // to retrieve; the response keeps the shape of the mode the server is in.
+   const matchingSources = sourceMatchActive(ctx);
+   const retrievalCtx: PipelineContext = matchingSources
+      ? {
+           ...ctx,
+           request: {
+              ...request,
+              searches: request.searches.filter(
+                 (s) => s.targetType !== "source",
+              ),
+           },
+        }
+      : ctx;
+   let ranked: RankedState | undefined;
+   if (matchingSources && retrievalCtx.request.searches.length === 0) {
+      ranked = {
+         rows: [],
+         belowCutoffCount: 0,
+         retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
+      };
+   }
+   for (const retriever of ranked ? [] : retrievers()) {
+      const result = await retriever.retrieve(retrievalCtx);
+      if ("unavailable" in result) {
+         // "unconfigured" means no provider: the next retriever is the mode.
+         if (result.unavailable === "unconfigured") continue;
+         return result.unavailable === "indexing"
+            ? indexingResponse(uri, ctx, result)
+            : semanticUnavailableError(uri, result);
+      }
+      ranked = { ...result, retrieval: retriever.name };
+      break;
+   }
+   if (!ranked) throw new Error("No retriever produced a result");
+   // The LLM stages run only on a ranked search (a listing returned above).
+   // A failure in one is the answer: an error result naming the stage, never
+   // an unrefined ranking.
+   let cards: CardState;
+   try {
+      ranked = await runRankStages(rankStages(ctx), ranked, ctx);
+      // Grouping into cards, paging and serialization are shared by both
+      // retrievers so the two cannot drift.
+      cards = await runCardStages(
+         cardStages(),
+         assembleCards(ranked, ctx),
+         ctx,
+      );
+   } catch (error) {
+      if (error instanceof StageError) {
+         return stageFailureError(uri, error, traceFields());
+      }
+      throw error;
+   }
+   const { sources, totalSources, entitiesDropped, budgetDropped } = shapeCards(
+      cards,
+      ctx,
+   );
+   // Sources the size budget removed were returned by the page, so the page
+   // warning counts them as returned and only the budget warning speaks of them.
+   const pageReturned = sources.length + budgetDropped;
+   const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
+   // Cards rerank kept out of its top N are in total_available but not in the
+   // page's reach, so raising `limit` would not show them: they get their own
+   // warning and are left out of the page-cut one.
+   const rerankDropped = cards.discarded ?? 0;
+   const rerankWarning = rerankCutWarning(
+      rerankDropped,
+      ctx.llmStages?.rerank?.topSources,
+   );
+   if (ranked.retrieval === "semantic") {
       return jsonResource(uri, {
          sources,
          ranking: "relevance" as const,
@@ -2529,117 +3008,238 @@ async function runContextQuery(
          // with total_entities, without which the count is a bare number
          // an agent cannot scale -- see SemanticSearchResult for why
          // the ratio, not the count, carries the signal.
-         below_cutoff_count: belowCutoffCount,
-         ...(totalEntities !== undefined
-            ? { total_entities: totalEntities }
+         below_cutoff_count: ranked.belowCutoffCount,
+         ...(ranked.totalEntities !== undefined
+            ? { total_entities: ranked.totalEntities }
             : {}),
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
             // Counted in CARDS, the same unit `returned` reports, so the
             // two cannot disagree.
-            sourceCutWarning(sources.length, totalSources),
+            sourceCutWarning(pageReturned, totalSources - rerankDropped),
+            rerankWarning,
+            budgetWarning,
             entityCutWarning(entitiesDropped),
          ),
+         ...traceFields(),
       });
    }
-
-   // One lunr pass per target, merged. Each target's hits are normalized
-   // against ITS OWN top hit before merging, which is what makes two
-   // targets' scores comparable at all: raw lunr scores are relative to
-   // the query that produced them. All targets share one index, so the
-   // IDF corpus is the same and the normalization is the only correction
-   // needed.
-   const bestByRef = new Map<string, Map<number, number>>();
-   for (const search of request.searches) {
-      const sanitized = sanitize(search.text);
-      if (!sanitized) continue;
-      let targetHits: lunr.Index.Result[] = [];
-      try {
-         targetHits = index.search(sanitized);
-      } catch (error) {
-         logger.warn("[MCP Tool getContext] lunr search failed", {
-            query: search.text,
-            error: error instanceof Error ? error.message : String(error),
-         });
-         continue;
-      }
-      const top = targetHits[0]?.score ?? 0;
-      for (const hit of targetHits) {
-         const entity = byId.get(hit.ref);
-         // A target only claims the kinds it selects, so a `measure`
-         // target never surfaces a dimension that happened to match.
-         if (!entity || !search.kinds.includes(entity.kind)) continue;
-         const score = top > 0 ? hit.score / top : 0;
-         const scores = bestByRef.get(hit.ref) ?? new Map<number, number>();
-         scores.set(
-            search.targetIndex,
-            Math.max(scores.get(search.targetIndex) ?? 0, score),
-         );
-         bestByRef.set(hit.ref, scores);
-      }
-   }
-   // Already normalized per target and merged, so this is the ranked list
-   // rather than raw lunr output -- no fake lunr Result needs constructing
-   // to carry it.
-   const ranking = [...bestByRef.entries()]
-      .flatMap(([ref, targetScores]) => {
-         const e = byId.get(ref);
-         // Defensive: skip a ref missing from the entity map.
-         if (!e) return [];
-         // Drill-down: narrow to one source when sourceName is set.
-         if (sourceName && e.source !== sourceName) return [];
-         if (!matchesScope(e, request)) return [];
-         // The row ranks on its best target, the same MAX-over-facets rule
-         // the semantic path uses one level down.
-         const score = Math.max(...targetScores.values());
-         return [{ e, score, targetScores }];
-      })
-      .sort((a, b) => b.score - a.score);
-
-   const scored: ResultEntity[] = ranking.map(({ e, targetScores }) => ({
-      ...projectEntity(e, environmentName, packageName),
-      // WHICH target found the row is carried, for the per-target window;
-      // HOW WELL is not. targetScores would reach the wire as
-      // matched_targets[].relevance, whose relevance is required and would
-      // therefore publish a lexical score -- the exact number this path
-      // withholds from the entity's own `relevance`, because a lunr score is
-      // relative to its own query and comparing two of them means nothing.
-      // Budgeting needs only the index, so the two concerns separate cleanly.
-      bestTarget: bestTargetOf(targetScores),
-   }));
-   // The tail is the semantic path's, which is why it is the same function:
-   // each target gets its own share of every source here too.
-   const { sources, totalSources, entitiesDropped } = finishRanked({
-      rows: scored,
-      max,
-      sourceContext,
-      environmentName,
-      packageName,
-      searchTexts: searchTextsByIndex,
-      includeCode: request.includeCode,
-      droppedSources,
-   });
-   const envelope = {
+   // Lexical, which is only reached with no embedding provider: no
+   // `retrieval` marker, so the payload is what it has always been.
+   return jsonResource(uri, {
       sources,
       ranking: "relevance" as const,
       total_available: totalSources,
       returned: sources.length,
-   };
-   const lexicalWarnings = warningsFor(
-      sourceCutWarning(sources.length, totalSources),
-      entityCutWarning(entitiesDropped),
-   );
-   return jsonResource(
+      ...warningsFor(
+         sourceCutWarning(pageReturned, totalSources),
+         budgetWarning,
+         entityCutWarning(entitiesDropped),
+      ),
+      ...traceFields(),
+   });
+}
+
+/**
+ * The package's stored source summaries that still describe its sources, or
+ * undefined when summaries are off for it (the package turned them off, or no
+ * LLM is configured) or none is current. A summary is served only if its input
+ * hash is the hash of the source as it is now: a reload that changed a source
+ * leaves the old summary in the table until the next sync rewrites it, and a
+ * request with only source targets does not wait for that sync. A read failure
+ * is logged and answered without them: a summary only adds to a card, and the
+ * sync, not this read, is where a failure is loud.
+ */
+async function loadStoredSummaries(
+   environmentStore: EnvironmentStore,
+   pkgIndex: PackageIndex,
+   environmentName: string,
+   packageName: string,
+): Promise<ReadonlyMap<string, StoredSourceSummary> | undefined> {
+   const settings = indexSettingsOf(pkgIndex.pkg).sourceSummary;
+   if (!settings) return undefined;
+   try {
+      const stored = await loadSourceSummaries(
+         environmentStore.storageManager.getDuckDbConnection(),
+         environmentName,
+         packageName,
+         currentSummaryHashes(pkgIndex.directEntities, settings),
+      );
+      return stored.size > 0 ? stored : undefined;
+   } catch (error) {
+      logger.warn(
+         "[MCP Tool getContext] Stored source summaries could not be read; answering without them",
+         {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return undefined;
+   }
+}
+
+/**
+ * The answer while a package's semantic index is still building: a normal
+ * result with no sources, `retrieval: "indexing"` and how far the build has
+ * got. It is not an error, because the condition clears by itself and the
+ * right response is to ask again shortly. It is not a lexical answer either:
+ * with an embedding provider configured, a keyword ranking would differ from
+ * what the finished index returns, and an agent cannot tell the two apart.
+ */
+function indexingResponse(
+   uri: string,
+   ctx: PipelineContext,
+   result: Unavailable,
+) {
+   const status = result.status;
+   const progress = status
+      ? { embedded: status.embeddedRows, total: status.totalRows }
+      : undefined;
+   const built = progress
+      ? ` (${progress.embedded} of ${progress.total} vectors built)`
+      : "";
+   return jsonResource(uri, {
+      sources: [],
+      ranking: "relevance" as const,
+      total_available: 0,
+      returned: 0,
+      retrieval: "indexing",
+      ...(progress ? { retrieval_progress: progress } : {}),
+      ...makeWarningsFor(ctx)(
+         `This package's semantic index is still being built${built}, so there are no results yet. ` +
+            `Nothing is wrong: ask the same question again in a few seconds. ` +
+            `It was not answered by keyword search because an embedding provider is configured, ` +
+            `and a keyword ranking would differ from what the finished index returns. ` +
+            `A request with no search_text (a listing) works now.`,
+      ),
+   });
+}
+
+/**
+ * The answer when an LLM stage (refine, rerank or source_match, or building
+ * the LLM client for them) failed after the provider layer's retries. An error
+ * result that names the stage and the reason, with `sources: []` like every
+ * get_context error. It is never replaced by an unrefined or lexical answer: a
+ * ranking that quietly differs from the one the working stages give is harder
+ * to trust than an error.
+ *
+ * The advice names the package setting that turns the failing step off, and
+ * the three that turn every request-time LLM step off. The index-time steps
+ * (keyphrases, source summaries) fail a sync, not a request, and are reported
+ * through the index status instead.
+ */
+const STAGE_SETTING: Readonly<Record<string, string>> = {
+   refine: "retrieval.refine",
+   rerank: "retrieval.rerank",
+   source_match: "retrieval.sourceMatch",
+};
+/**
+ * The stage's reason as the MCP caller sees it. A vendor failure is worded
+ * without the endpoint (host, project path) and without the rest of the
+ * vendor's body: the caller gets the status and the vendor's own message, and
+ * the server log keeps the full text.
+ */
+function callerReason(error: StageError): string {
+   let cause: unknown = error.cause;
+   for (let depth = 0; cause instanceof Error && depth < 5; depth++) {
+      if (cause instanceof HttpRequestError && cause.publicMessage) {
+         return cause.publicMessage;
+      }
+      cause = cause.cause;
+   }
+   return error.reason;
+}
+
+function stageFailureError(
+   uri: string,
+   error: StageError,
+   extra: Record<string, unknown> = {},
+) {
+   return jsonToolError(
       uri,
-      configured
-         ? {
-              ...envelope,
-              retrieval: "lexical",
-              ...(retrievalReason ? { retrieval_reason: retrievalReason } : {}),
-              ...lexicalWarnings,
-           }
-         : { ...envelope, ...lexicalWarnings },
+      {
+         message: `get_context failed in the ${error.stage} step: ${callerReason(error)}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json, LLM_API_KEY) and the server log. " +
+               (STAGE_SETTING[error.stage]
+                  ? `To skip just this step, set the package's ${STAGE_SETTING[error.stage]} to enabled: false in publisher.json. `
+                  : "") +
+               "To search without any LLM step, set the package's retrieval.refine, retrieval.rerank and retrieval.sourceMatch to enabled: false.",
+            "A request with no search_text (a listing) runs no LLM step and still works.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: error.stage,
+         ...extra,
+      },
+   );
+}
+
+/**
+ * The answer when a configured server cannot rank a search at all: an error
+ * result that names the reason and says what to do. Still carries
+ * `sources: []` like every get_context error, so a caller can read the
+ * payload without branching on success first.
+ */
+function semanticUnavailableError(uri: string, result: Unavailable) {
+   const reason = result.unavailable;
+   const status = result.status;
+   const lastError = status?.lastError;
+   const retryAt = lastError?.retryAt;
+   const listing =
+      "A request with no search_text (a listing) still works; it needs no embeddings.";
+   let message: string;
+   let suggestions: string[];
+   switch (reason) {
+      case "too-many-entities":
+         // The status text already says the count, the cap and the key to raise.
+         message =
+            lastError?.message ??
+            "This package has more entities than the semantic index cap (retrieval.indexing.maxEntities in publisher.config.json).";
+         suggestions = [
+            "Ask the operator to raise retrieval.indexing.maxEntities in publisher.config.json and restart the server.",
+            listing,
+         ];
+         break;
+      case "cooldown":
+      case "provider-error": {
+         const cause = lastError?.message ?? "the embedding provider failed";
+         message =
+            reason === "provider-error"
+               ? `The embedding provider failed to embed the search text: ${cause}`
+               : `Semantic search for this package is paused after an embedding failure: ${cause}`;
+         suggestions = [
+            retryAt
+               ? // No timer fires at retryAt: the retry starts when a question
+                 // arrives after it (see kickSync in embedding_index.ts).
+                 `The next question after ${retryAt} tries again; nothing retries on its own before then.`
+               : reason === "cooldown"
+                 ? // A cool-down always has a retryAt, so none means the vendor
+                   // refused the request itself and nothing will retry it.
+                   "Asking again will not help: this failure is not retried until the package or its retrieval settings change, or the server restarts. The operator should read the server log."
+                 : "Try again in a minute.",
+            "If it keeps failing, the operator should check EMBEDDING_API_BASE, EMBEDDING_API_KEY and EMBEDDING_MODEL and that the endpoint is reachable. The server log has the full error.",
+            listing,
+         ];
+         break;
+      }
+      default:
+         message = `Semantic search is unavailable: ${result.detail ?? lastError?.message ?? "the embedding configuration or index storage could not be used"}`;
+         suggestions = [
+            "The operator should check the server log. For an invalid embedding configuration, fix the named variable (EMBEDDING_API_BASE, EMBEDDING_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS) and restart the server.",
+            listing,
+         ];
+   }
+   return jsonToolError(
+      uri,
+      { message, suggestions },
+      { sources: [], retrieval: "error", retrieval_reason: reason },
    );
 }
 
@@ -2760,6 +3360,37 @@ export function registerListPackagesTool(
    );
 }
 
+/** The part of the MCP request context this tool reads: the HTTP headers. */
+interface RequestExtra {
+   requestInfo?: { headers?: Record<string, string | string[] | undefined> };
+}
+
+/**
+ * Diagnostic only: `X-Publisher-Retrieval-Trace: summary` adds a
+ * `retrieval_trace` block to a ranked response and changes no result. It is a
+ * header and not a tool argument so an agent never sees it and a tuning run
+ * can set it from the client.
+ */
+export const TRACE_HEADER = "x-publisher-retrieval-trace";
+
+function wantsTrace(extra: RequestExtra | undefined): boolean {
+   const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
+   const value = Array.isArray(raw) ? raw[0] : raw;
+   return value?.trim().toLowerCase() === "summary";
+}
+
+/**
+ * `PUBLISHER_MCP_TRACE=retrieval` in the server's environment writes the same
+ * summary to the server log, one line per ranked call, and adds nothing to any
+ * response. The eval loop's `serve.py --trace-retrieval` sets it. It is read on
+ * each call so a test can change it.
+ */
+export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
+
+function traceToLog(): boolean {
+   return process.env[TRACE_ENV]?.trim().toLowerCase() === "retrieval";
+}
+
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
@@ -2768,7 +3399,7 @@ export function registerGetContextTool(
       "get_context",
       GET_CONTEXT_DESCRIPTION,
       convergedContextShape,
-      async (params: GetContextParams) => {
+      async (params: GetContextParams, extra?: RequestExtra) => {
          const request = resolveRequest(params);
          if (request.offset > 0 && !request.pureSourceListing) {
             // Refused rather than ignored. A ranked response has no
@@ -2800,14 +3431,16 @@ export function registerGetContextTool(
             request,
             environmentStore,
             unsupportedTargetWarnings(request),
+            wantsTrace(extra),
          );
       },
    );
 }
 
 /**
- * The semantic index state for one package, or undefined when this server has
- * no embedding provider and therefore no index to describe.
+ * The semantic index state for one package. With no embedding provider the
+ * status is `lexical`: the server ranks by words only, by design, and there is
+ * no index to describe.
  *
  * Composed here rather than in the controller because `totalEntities` means
  * "entities this package exposes to retrieval", which is exactly what
@@ -2820,10 +3453,27 @@ export async function getPackageEmbeddingStatus(
    environmentStore: EnvironmentStore,
    environmentName: string,
    packageName: string,
-): Promise<EmbeddingIndexStatus | undefined> {
-   if (!embeddingConfigured()) return undefined;
-   const provider = getEmbeddingProvider();
-   if (!provider) return undefined;
+): Promise<EmbeddingIndexStatus> {
+   const empty = {
+      embeddedRows: 0,
+      totalRows: 0,
+      totalEntities: 0,
+      embeddedEntities: 0,
+   };
+   if (!embeddingConfigured()) return { status: "lexical", ...empty };
+   let provider: EmbeddingModel | null;
+   try {
+      provider = getEmbeddingProvider();
+   } catch (error) {
+      return {
+         status: "error",
+         lastError: {
+            message: error instanceof Error ? error.message : String(error),
+         },
+         ...empty,
+      };
+   }
+   if (!provider) return { status: "lexical", ...empty };
    const pkgIndex = await getPackageIndex(
       environmentStore,
       environmentName,
@@ -2834,6 +3484,45 @@ export async function getPackageEmbeddingStatus(
       provider,
       environmentName,
       packageName,
-      pkgIndex.retrievalEntities,
+      embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
+      pkgIndex.pkg,
    );
+}
+
+/**
+ * Queue the semantic index for a package that has just loaded, so the vectors
+ * build before the first question. Only enqueues; see {@link enqueuePackageSync}.
+ * Wired to the environment store's package-loaded hook at server start.
+ */
+export function startPackageEmbeddingSync(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   pkg: Package,
+): void {
+   const packageName = pkg.getPackageName();
+   enqueuePackageSync({
+      pkg,
+      environmentName,
+      packageName,
+      prepare: async () => {
+         if (!embeddingConfigured()) return undefined;
+         // Throws on a malformed embedding configuration; the queue logs it,
+         // and the status endpoint reports it.
+         const provider = getEmbeddingProvider();
+         if (!provider) return undefined;
+         // Ask whether this instance is still the one being served, without
+         // loading anything. A package unloaded or deleted while this waited
+         // must stay gone, and a reload queued its own sync.
+         const served = environmentStore
+            .peekEnvironment(environmentName)
+            ?.peekPackage(packageName);
+         if (served !== pkg) return undefined;
+         const pkgIndex = await packageIndexOf(pkg, packageName);
+         return {
+            db: environmentStore.storageManager.getDuckDbConnection(),
+            provider,
+            entities: embeddedEntitiesOf(pkgIndex, PIPELINE_SETTINGS),
+         };
+      },
+   });
 }

@@ -93,7 +93,7 @@ jq -r '.Results[]? | .Target as $t | (.Vulnerabilities // [])[]
   ```bash
   docker buildx build --platform <platform> --load \
     --build-arg DUCKDB_VERSION=$(node scripts/duckdb-version.js) \
-    --build-arg APT_REFRESH=$(date -u +%G-W%V) -t publisher:scan .
+    --build-arg APT_REFRESH=$(date -u +%F) -t publisher:scan .
   trivy image publisher:scan --scanners vuln --severity CRITICAL --ignorefile .trivyignore.yaml
   ```
 - **Run once more with `--include-dev-deps`.** Trivy skips devDependencies in Node lockfiles by

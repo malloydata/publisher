@@ -27,6 +27,8 @@ const ENV_NAME = "malloyyo-notebooks-env";
 const PLAIN = "notebooks-malloyyo";
 const SURFACE = "notebooks-malloyyo-surface";
 const REFUSED = "notebooks/refused.malloy";
+/** Written as a tile layout, so it has no cells to expect kinds for. */
+const LAYOUT = "notebooks/layout.malloy";
 const CELLS = "notebooks/cells.malloy";
 
 const fixture = (name: string) =>
@@ -199,7 +201,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          const onDisk = fs
             .readdirSync(path.join(fixture(PLAIN), "notebooks"))
             .map((file) => `notebooks/${file}`)
-            .filter((p) => p !== REFUSED);
+            .filter((p) => p !== REFUSED && p !== LAYOUT);
          expect(onDisk.sort()).toEqual(Object.keys(KINDS).sort());
       });
 

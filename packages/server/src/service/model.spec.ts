@@ -8,6 +8,9 @@ import sinon from "sinon";
 
 import {
    BadRequestError,
+   ConnectionAuthError,
+   ConnectionFailedError,
+   ConnectionPoolExhaustedError,
    ModelNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
@@ -503,6 +506,43 @@ describe("service/model", () => {
             sinon.restore();
          });
 
+         it("passes an exhausted connection pool through as its own 502 error, not a 400", async () => {
+            const exhausted = new ConnectionPoolExhaustedError(
+               "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+            );
+            const runnableStub = {
+               getPreparedResult: sinon.stub().rejects(exhausted),
+               run: sinon.stub(),
+            };
+            const modelMaterializer = {
+               loadQuery: sinon.stub().returns(runnableStub),
+               loadRestrictedQuery: sinon.stub().returns(runnableStub),
+            };
+
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               modelMaterializer as any,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               { contents: {}, exports: [], queryList: [] } as any,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            const thrown = await model
+               .getQueryResults(undefined, undefined, "run: orders -> summary")
+               .catch((e: unknown) => e);
+            expect(thrown).toBe(exhausted);
+
+            sinon.restore();
+         });
+
          /**
           * The row/byte caps live in `model_limits.ts` (unit-tested in
           * `model_limits.spec.ts`); these tests just confirm the wiring —
@@ -971,6 +1011,57 @@ describe("service/model", () => {
             sinon.restore();
          });
 
+         it.each([
+            [
+               "an unreachable database as a connection failure",
+               Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:5432"), {
+                  code: "ECONNREFUSED",
+               }),
+               ConnectionFailedError,
+            ],
+            [
+               "rejected credentials as a credential failure",
+               Object.assign(
+                  new Error('password authentication failed for user "x"'),
+                  { code: "28P01" },
+               ),
+               ConnectionAuthError,
+            ],
+         ])("answers %s, not a 400", async (_case, driverError, expected) => {
+            const cellRunnable = {
+               getPreparedResult: sinon
+                  .stub()
+                  .resolves({ resultExplore: { limit: 10 } }),
+               run: sinon.stub().rejects(driverError),
+            };
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               [
+                  {
+                     type: "code" as const,
+                     text: "run: orders -> by_code",
+                     runnable: cellRunnable,
+                  },
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               ] as any,
+               undefined,
+            );
+
+            await expect(model.executeNotebookCell(0)).rejects.toThrow(
+               expected,
+            );
+
+            sinon.restore();
+         });
+
          it("embeds model-level givens in executed cell newSources", async () => {
             const sourceInfo = { name: "carriers", schema: { fields: [] } };
             const givens = [
@@ -1182,6 +1273,8 @@ describe("service/model", () => {
          packageBindings?: unknown[];
          storageFailsAt: "prepare" | "run";
          liveRunFails?: boolean;
+         /** What the failing run rejects with, in place of the defaults. */
+         failWith?: Error;
          livePreparedLimit?: number;
          /**
           * Raw `##` note texts for the model file, and `#@` note texts per
@@ -1213,7 +1306,7 @@ describe("service/model", () => {
          /** Named queries, for the `queryName` request shape. */
          queries?: { name: string; sourceName: string }[];
       }) {
-         const storageErr = new Error("store table missing");
+         const storageErr = opts.failWith ?? new Error("store table missing");
          // Both runnables stub `getPreparedQuery` even though nothing in these
          // tests reads the compiled query: the authorize entry-point walk and
          // the storage-routing row-level pre-check both call it, and a mock
@@ -1246,7 +1339,7 @@ describe("service/model", () => {
             connectionName: "live_pg",
          };
          const liveRun = opts.liveRunFails
-            ? sinon.stub().rejects(new Error("warehouse down"))
+            ? sinon.stub().rejects(opts.failWith ?? new Error("warehouse down"))
             : sinon.stub().resolves(fakeResult);
          const preparedQuery = opts.compiledRunTarget
             ? {
@@ -1450,9 +1543,10 @@ describe("service/model", () => {
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
-         // Malloy executes the LAST `run:`, and `extractRunTargetSourceName`
-         // does too. Metadata still reads the compiled target, which is the
-         // source that actually ran.
+         // The text names `cheap` first, in a definition, and runs `expensive`.
+         // Metadata reads the compiled target, which is the source that
+         // actually ran. (Two `run:` statements are refused outright now, so a
+         // definition is how one text still names two sources.)
          process.env.PUBLISHER_QUERY_METADATA = "on";
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
@@ -1467,7 +1561,7 @@ describe("service/model", () => {
          await model.getQueryResults(
             undefined,
             undefined,
-            "run: cheap -> x\nrun: expensive -> x",
+            "source: c is cheap extend {}\nrun: expensive -> x",
          );
 
          expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("platinum");
@@ -1986,6 +2080,38 @@ describe("service/model", () => {
          await model.getQueryResults(undefined, undefined, "run: daily -> x");
 
          expect(liveRun.calledOnce).toBe(true);
+      });
+
+      it("answers an unreachable database on the live retry as a connection failure", async () => {
+         // The broad outage above, where the warehouse refuses connections
+         // outright: the query never ran, so it is not the caller's to fix.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            liveRunFails: true,
+            failWith: Object.assign(
+               new Error("connect ECONNREFUSED 10.0.0.5:5432"),
+               { code: "ECONNREFUSED" },
+            ),
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(ConnectionFailedError);
+      });
+
+      it("answers an unreachable database without a retry as a connection failure too", async () => {
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "stale_ok")],
+            storageFailsAt: "run",
+            failWith: Object.assign(new Error("read ECONNRESET"), {
+               code: "ECONNRESET",
+            }),
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(ConnectionFailedError);
       });
 
       it("keeps surfacing the error when the shape carries a non-live binding", async () => {

@@ -1,6 +1,6 @@
 ---
 name: malloy-queries
-description: Malloy query patterns and syntax, for writing or debugging a query - dates, aggregates vs dimensions, join paths, filters, string matching, chart annotations, and the errors a SQL habit produces.
+description: Read before writing or debugging a Malloy query. Dates, aggregates vs dimensions, joins, filters, strings, window functions, chart annotations, and the compile errors a SQL habit produces.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -95,7 +95,7 @@ run: source -> {
 
 ## Field Paths and Joins
 
-**Joins are defined in the model.** Never write `join_one` / `join_many` inside a query. Every query is rooted on one source, and you reach joined sources via dot notation within the query body.
+**Use the joins the model declares.** When you answer a question over a published model, every query is rooted on one source, and you reach a joined source's fields by a dotted path within the query body (for example `stores.region`). Do not write `join_one` or `join_many` in an answer query, and never invent a join key. (A join written in a query does compile, and model files and notebooks use them; the rule is that an answer uses the joins the model declares.) If the field you need is on a source the model does not join, say so and ask the user to add the join to the model.
 
 The `->` operator separates a **source** from a **view** (query transformation). It does NOT navigate between joined sources.
 
@@ -156,6 +156,8 @@ where: order_date ? @2025-06-01 for 3 months -- same range, duration form
 where: order_date ? now - 1 year for 1 year  -- the last full year
 ```
 
+`~` is for strings, not dates: `where: order_date ~ @2025` does not compile (Malloy reports `mysterious error in range computation`). Use `?`, or `=` for a whole year, month or day.
+
 Bounded `>=`/`<` with two literals also works and is sometimes clearer:
 
 ```malloy
@@ -213,6 +215,8 @@ Right: `group_by: full_name is concat(first_name, ' ', last_name)`
 
 Wrong: `count(distinct customer_id)`, `count(*)`
 Right: `count(customer_id)`, `count()`
+
+There is no method form of `count` on a joined field either: `shipments.shipment_id.count()` fails with `'shipments.shipment_id' is not a source or join`. Write `count(shipments.shipment_id)`.
 
 **Aliases from `group_by:` aren't visible in `where:`.** `where:` is evaluated before `group_by:`, so it can't see aliases defined there. Reference the source field directly.
 
@@ -276,6 +280,48 @@ Charts render only the **first** aggregate. For multiple measures on one chart, 
 
 Read the `malloy-charts` skill for chart types, properties, data shape requirements, and selection guidance.
 
+## More Compile Mistakes
+
+**Aggregating a joined field takes method syntax.** `sum`, `avg`, `min` and `max` over a dotted path through a `join_many` fail with `Join path is required for this calculation; use 'inventory_items.item_cost.sum()'`. The message gives the fix. Over a `join_one` path both forms compile and mean different things: `sum(o.total)` adds each order's total once per base row (once per line item), `o.total.sum()` once per order. For the joined source's own total (order value, customers) you almost always want the second; the first is right only when the question is weighted per base row. `min` and `max` are unaffected.
+
+Wrong: `measure: cogs is sum(inventory_items.item_cost)`
+Right: `measure: cogs is inventory_items.item_cost.sum()`
+
+`count(joined.field)` is the exception: it is the correct distinct count through a join, so keep it as written (see Counting above). Do not rewrite it as `joined.count(field)`: that form does not compile (`Expression illegal inside path.count()`). `joined.count()` does compile, but it counts rows of the joined source, which is a different number from `count(joined.field)` when the field repeats.
+
+**Scalar functions never take method form, and nothing chains onto a function call.** `round`, `floor` and `ceil` are always `round(x, 2)`. The errors (`something is missing before 'round'`, `Cannot call function round(number, number) with source`) name `round` without saying so, and read like a typo somewhere else.
+
+Wrong: `avg(price).round(2)`, `price.avg().round(2)`, `avg_price.round(2)`
+Right: `round(avg(price), 2)`, `round(price, 2)`
+
+**`sum` and `avg` need a numeric field.** `avg(status)` fails with `Can't use type string`. A name that reads numeric (`order_number`, `zip`, `account_id`) is often typed string, so check the type in the `get_context` result. Count a string field instead of averaging it.
+
+**A measure is already an aggregate.** `aggregate: busiest is max(flight_count)` fails with `Aggregate expression cannot be aggregate` and does not name the field. Aggregate per group, then take the maximum in a second stage:
+```malloy
+run: flights -> { group_by: carrier, aggregate: n is flight_count } -> { aggregate: busiest is max(n) }
+```
+For only the top row, use `order_by: n desc` with `limit: 1`.
+
+**A window's braces bind to the function.** Put `{ partition_by: ..., order_by: ... }` directly after the window call, not after the division: `sum_cumulative(n) { partition_by: region, order_by: n desc } / region_total`. For a share within a group, compute the denominator in `aggregate:` (`region_total is all(count(), region)`); a window's `partition_by` does not apply to `all()`.
+
+**A dotted path must name a join the source declares.** If the source declares the join as `carrier`, `carriers.name` fails with `'carriers.name' is not a source or join`. Confirm the join name and the field under it in a `get_context` result; do not infer either from a table name or a plural/singular guess.
+
+**`order_by:` can only name an output column.** `order_by: total` fails with `Unknown field total in output space` when the query never emits `total`. `group_by` or `aggregate` it first, and alias it if it comes through a join.
+
+**Charts: one aggregate per view.** A `# bar_chart` or `# line_chart` view renders only its first aggregate. For several metrics, nest separate chart views in a `# dashboard`, or use `y=['revenue','cost']`.
+
+**Define measures and dimensions in the source, and reference them in the view.** `aggregate: revenue` in a view, not a fresh `sum(total)` there.
+
+**Truncate for charts, extract for comparisons.** `ts.month` is the first day of the month (right for a time-series chart, which then orders correctly); `month(ts)` is the number 1 to 12 (right for comparing across years). `year(ts)` renders as `2,018`; tag it `# number=id`, as for zip codes and IDs.
+
+**Combine an alternation with other filters using a comma.** `where: is_us = true, party ? 'Democrat' | 'Republican'`. The `?` alternation means "any of these values". With `and` it works only when the alternation comes second.
+
+**Strings.** An apostrophe inside single quotes ends the literal (`no viable alternative at input 's'`), so use double quotes: `"Mac's Diner"`. There is no concatenation operator (`unexpected '+'`, `no viable alternative at input '||'`): write `concat(origin, '-', destination)`.
+
+**A `;` inside a clause ends it.** Between clauses a newline, comma or `;` all work. Within one clause, separate fields with commas or newlines, or the next field is orphaned (`no viable alternative at input 'charters'`). The same message appears for an unnamed aggregate after the first: `aggregate: n, max(x)` fails at `max`, so name every entry.
+
+**`Query execution failed: ...` means Malloy compiled and the warehouse refused the SQL**, often over a type. The position it quotes is in the generated SQL, not in your query. BigQuery, for example, will not partition a window function on a FLOAT64 column; `partition_by:` takes only a field name, so cast in `group_by:` (`season_key is season::string`) and partition on `season_key`, or fix the type in the model.
+
 ## When a Query Fails
 
 Read the error against the tables above and below. Most failures match a known pattern and can be fixed directly. If the cause is not obvious after that, remove pieces (filters, joins, nested views) until the query compiles; whatever you removed last is the bug.
@@ -285,7 +331,7 @@ Read the error against the tables above and below. Most failures match a known p
 | `Cannot compare a timestamp to a number` | Comparing `date.year` to an integer. Use `date >= @2020-01-01` instead. |
 | `no viable alternative at input '<word>'` | Often a `;` between fields within one clause - fields under one `aggregate:`/`group_by:` are comma- or newline-separated (the error points at the field right after the `;`). |
 | `unexpected '<field>', expected 'not' or 'null'` | A **reserved word used as a name**, in a multi-line `aggregate:` / `group_by:` list. `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` are reserved. On its own line the compiler says so plainly (`'second' is a reserved word, so to use it as a name you must quote it`), but as a later entry in a multi-line list the parser has already committed, and the error points at the NEXT field instead - so you read it as a problem with the line below. Rename the field or backtick it. Verified against the compiler both ways. |
-| `'logical operator' Can't use type <string\|date\|...>` | **Any `?` apply combined with `and` needs parentheses**, not just the alternation form. `where: t ? 'a' | 'b' and flag` swallows `and flag` into the alternation list, and `where: d ? @2015 and x = 'y'` fails the same way with `Can't use type date`. Wrap the apply: `where: (d ? @2015) and x = 'y'`. The error names the *type on the left of the apply*, so it points at a clause that is perfectly fine and tells you nothing about the missing parentheses; on a date column it can also surface a spurious second error about `!= null` on an unrelated line. |
+| `'logical operator' Can't use type <string\|date\|...>` | **A `?` apply that comes before `and` needs parentheses**, not just the alternation form. `where: t ? 'a' | 'b' and flag` swallows `and flag` into the alternation list, and `where: d ? @2015 and x = 'y'` fails the same way with `Can't use type date`. Wrap the apply: `where: (d ? @2015) and x = 'y'`. An apply that comes after `and` (`where: flag and t ? 'a' | 'b'`) compiles as written. The error names the *type on the left of the apply*, so it points at a clause that is perfectly fine and tells you nothing about the missing parentheses; on a date column it can also surface a spurious second error about `!= null` on an unrelated line. |
 | `Circular reference to '<name>' in definition` | A **measure aliased to its own name** (`aggregate: games is games`), which compiles fine until a `having:` references it. Alias to a different name, or drop the alias entirely. |
 | `Unknown function '<name>'. Use '<name>!(...)' to call a SQL function directly.` | The function does not exist in Malloy (`substring` is `substr`; there is no `median`, and no `percentile`, either as `percentile(x, 0.5)` or as `x.percentile(50)`). If `get_context` lists a percentile or median measure, use that. **In an ad-hoc query the suggested fix is a dead end**: a query sent to a server is compiled in restricted mode, so `median!(...)` then fails with "direct SQL function calls are not permitted" and following the error message costs two round trips. A saved model file is not compiled that way, so the same call is allowed there and fails only on its own merits. Use the Malloy spelling, or express it another way (an ordered `limit` for a median-like value); reach for `!(...)` only in a model file, and only knowing it pins you to one dialect. |
 | `Required filter "<name>" (dimension: <dim>) was not provided` | The source declares a required `#(filter)`. `get_context` lists it under `source_info.filter_params` with its `name`, `type` and `required`; pass a value through `execute_query`'s filter-parameters argument, keyed by the filter's `name` (not the dimension). A `where:` on the dimension does not satisfy it. |

@@ -47,6 +47,20 @@ docker run -d \
 
 See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`) lives in the [deployment guide](../../docs/deployment.md).
 
+### Verifying the image
+
+Released images are signed with [Sigstore cosign](https://docs.sigstore.dev/cosign/verifying/verify/) using GitHub Actions keyless signing, so there is no public key to distribute: the signing certificate names the workflow that built the image, and the signature is recorded in the public Rekor transparency log. To check that an image was published by this repository's release workflow:
+
+```bash
+cosign verify ms2data/malloy-publisher:X.Y.Z \
+  --certificate-identity https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Use cosign v3 or later. The image is signed in the Sigstore bundle format and the signature is stored as an OCI referrer of the image, not as a `sha256-<digest>.sig` tag, so an older cosign or a policy engine that only looks for the `.sig` tag reports no signatures on a signed image.
+
+The signature covers the multi-platform manifest list, which references each platform image and its SBOM and SLSA provenance attestations by digest. Those attestations can be read with `docker buildx imagetools inspect ms2data/malloy-publisher:X.Y.Z --format '{{ json .SBOM }}'` (or `.Provenance`). Images released before signing was introduced carry no signature.
+
 ## Runtime layout
 
 | Path inside container | What's there |
@@ -80,12 +94,26 @@ Every application file is root-owned, so the server cannot modify one in place. 
 
 - `/publisher/`, the server root, where it creates `publisher.db`. Because it owns this directory, the server can also rename aside and replace any of its top-level entries: `package.json`, `bun.lock`, and the `packages/` and `node_modules/` directories. Such a change lasts as long as the container. Some storage drivers, Docker's default overlayfs among them, refuse to rename a directory that comes from an image layer, but that is the driver's limit, not the image's.
 - `/publisher/publisher_data/`.
+- `/publisher/ducklake_data/`, when a DuckLake storage destination's `bucketUrl` points there.
 - `/home/bun/.duckdb/extensions/`, for an extension the image did not bake.
 
-What you mount has to be writable by uid 1000 too:
+What you mount has to be writable by uid 1000 too. Per kind of mount:
 
-- **A new named volume on `/publisher/publisher_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and that is the only writable mount point the image prepares.
-- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. That includes a DuckLake storage destination whose `bucketUrl` is a local path. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0`, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`. The one-time chown names the mount path twice, as the mount target and as chown's argument:
+| Mount | The server | What to do |
+| --- | --- | --- |
+| A new named volume on `/publisher/publisher_data` or `/publisher/ducklake_data` | writes | Nothing: Docker seeds it from the image, owned by uid 1000. |
+| A new named volume anywhere else | writes | `docker run --rm --user 0 --entrypoint chown -v <volume>:/path ms2data/malloy-publisher -R 1000:1000 /path`, once. |
+| A volume an older, root-run image wrote to | writes | The same `chown`, once, before starting the new image. With Compose, `docker compose run --rm --no-deps --user 0 --entrypoint chown publisher -R 1000:1000 /publisher/publisher_data`. |
+| A bind of a host directory the server writes | writes | `sudo chown -R 1000:1000 <dir>`, or keep your ownership and add an ACL, which needs no `sudo` on a directory you own: `setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>`. |
+| A bind of a host directory the server only reads (a package `location`, a directory of zips) | reads | Readable by others, `chmod -R o+rX <dir>`, or group-readable with `sudo chgrp -R 1000 <dir> && chmod -R g+rX <dir>`. Mount it `:ro`. |
+| A single bound file (the config, a key file) | reads | Readable by others or by gid 1000; a `0600` file is not. See the key-file recipes below. Mount it `:ro`. |
+| A Kubernetes PersistentVolume | writes | `fsGroup: 1000` and `fsGroupChangePolicy: OnRootMismatch` in the pod's `securityContext`. |
+| A Kubernetes Secret or projected token | reads | `fsGroup: 1000` makes a `0600`-mounted file readable by the group. |
+
+Before starting the server, the probe at the end of this section confirms a mount is usable as uid 1000. The detail behind each row:
+
+- **A new named volume on `/publisher/publisher_data` or `/publisher/ducklake_data`** works as-is. Docker seeds an empty named volume from the image's directory, ownership included, and those are the two writable mount points the image prepares: `publisher_data` for packages and per-package sandboxes, `ducklake_data` for a DuckLake storage destination whose `bucketUrl` is a local path.
+- **A new named volume anywhere else** starts owned by root, because the image has no directory there to copy ownership from. Prepare it yourself: build a derived image with `RUN mkdir -p /path && chown 1000:1000 /path` (new named volumes there are then seeded correctly), chown the volume once with `--user 0`, or bind-mount a host directory owned by uid 1000. DuckDB reports the unprepared case as `No such file or directory` (for example `Failed to create directory "/data/lake/main/daily_orders"`), not as `EACCES`. The one-time chown names the mount path twice, as the mount target and as chown's argument:
 
   ```bash
   docker run --rm --user 0 --entrypoint chown \
@@ -110,8 +138,35 @@ What you mount has to be writable by uid 1000 too:
 
   `docker volume ls` shows the volume's full name if you would rather use the `docker run` form.
 
-- **A bind mount** keeps the host directory's ownership. On Linux, `chown -R 1000:1000` the host directory. Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
-- **A read-only mount**, such as the config file, only needs to be readable.
+- **A bind mount** keeps the host directory's ownership. On Linux, `sudo chown -R 1000:1000` the host directory, or keep it yours and grant uid 1000 through a POSIX ACL, which also covers files created later and, unlike `chown`, needs no `sudo` on a directory you own:
+
+  ```bash
+  setfacl -R -m u:1000:rwX -m d:u:1000:rwX <dir>
+  ```
+
+  Docker Desktop on macOS and Windows maps ownership for you. Running the container as some other uid to match the host is not a substitute: `/home/bun` is private to uid 1000, so that uid cannot read the baked DuckDB extensions.
+- **A Kubernetes PersistentVolume** is not seeded from the image, so even a new one on `/publisher/publisher_data` starts owned by root (an `emptyDir` is world-writable and needs nothing). Set `fsGroup: 1000` in the pod's `securityContext`, which makes the volume group-writable by gid 1000, and `fsGroupChangePolicy: OnRootMismatch` so the kubelet does not re-chown a large volume on every start. `fsGroup` is also what makes a mounted Secret key file, or a projected service-account token, readable by uid 1000 where the platform mounts them `0600`.
+- **A read-only mount** only needs to be readable by uid 1000. That covers the config file, a package `location`, a directory of package zips (a `.zip` location is extracted into `publisher_data/`, never beside the archive), and the key file `GOOGLE_APPLICATION_CREDENTIALS` names. A key file bound from a host path that does not exist arrives as a directory, and the server says so. The usual trap is the key file itself: a `gcloud` application-default credentials file is `0600` and owned by you, so uid 1000 cannot read it through a bind on Linux, unless your own uid is 1000 (the first user on most Ubuntu installs), in which case nothing is needed. Otherwise bind a copy it can read, or grant the group. Both need root, because only root can hand a file to another uid or to a group you are not in:
+
+  ```bash
+  sudo install -o 1000 -g 1000 -m 0400 ~/.config/gcloud/application_default_credentials.json ./secrets/key.json
+  # or, keeping the original in place:
+  sudo chgrp 1000 key.json && chmod 0640 key.json
+  ```
+
+  For a directory you own, `chmod -R o+rX <dir>` needs no root; the `chgrp 1000` / `g+rX` equivalent does.
+- **Ownership is right and the server still reports `EACCES`:** on SELinux hosts (Fedora, RHEL) a bind mount needs the `:z` (shared) or `:Z` (private) option, or every access is refused whatever the owner. Under rootless Docker, Podman, or `userns-remap`, uid 1000 in the container is a subordinate uid on the host, so a host `chown 1000` names the wrong owner; use `podman unshare chown -R 1000:1000 <dir>`, or the remapped uid.
+
+To check a mount before starting the server, run the probe as the image's user:
+
+```bash
+docker run --rm --entrypoint sh -v <mount> ms2data/malloy-publisher \
+  -c 'id; touch <path>/.probe && rm <path>/.probe && echo writable'
+```
+
+For a read-only mount, the same with `cat <file> >/dev/null && echo readable`.
+
+When the server cannot make a write it needs, the response names the errno (`EACCES: permission denied, mkdir '…'`) rather than answering a bare `Internal server error.`. A package that cannot be mounted at boot, or added at runtime, is listed under `loadErrors` in `GET /api/v0/status` with that message, until it is added successfully or deleted. If the server cannot start at all, for example on a read-only root filesystem or with a config file it cannot read, `/api/v0/status` stays `initializing` and `initError` says why.
 
 If you cannot change the ownership yet, `--user 0` runs the server as root, as earlier images did. The image sets `HOME=/home/bun`, so a root run still finds the baked DuckDB extensions.
 

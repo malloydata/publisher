@@ -126,6 +126,9 @@ include {
   #(doc) (the last call the server answered) or last. `last` means a trailing
   #(doc) sanity probe may be standing in for the answer's own query.
   public: final_query_source
+  #(doc) The givens (runtime parameters) final_query was sent with, as JSON. Empty when it
+  #(doc) passed none. The same text under other givens is a different query.
+  public: final_givens
   #(doc) The answer text the judge scored. Readable without opening the transcript.
   public: answer_text
   #(doc) Answerer input tokens AFTER the last cache breakpoint only. Not the context volume: one

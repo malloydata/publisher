@@ -28,6 +28,7 @@ import {
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { loadMalloyRenderer } from "./loadRenderer";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -37,6 +38,7 @@ import {
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
 import type { DrillClickPayload } from "../drill/resolveDrill";
+import { loadMalloyTag } from "../DashboardBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -106,7 +108,11 @@ interface RenderedResultProps {
     * nothing can act on one, and then the result renders inert.
     */
    drill?: DrillBinding;
+   /** The box is a cell to fill: a table's root stretches to it. See `ResultContainer`. */
+   fill?: boolean;
 }
+
+const FILL_ATTR = "data-publisher-fill";
 
 const createRenderer = async (
    theme: ResolvedTheme,
@@ -116,7 +122,7 @@ const createRenderer = async (
       throw new Error("MalloyRenderer can only be used in browser environment");
    }
 
-   const { MalloyRenderer } = await import("@malloydata/render");
+   const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
@@ -133,12 +139,9 @@ const createRenderer = async (
    return renderer.createViz() as MalloyVizHandle;
 };
 
-// Warm the renderer chunk as soon as this module loads so the first chart
-// paint doesn't have to wait on the dynamic import resolving (the async
-// import is what widened the clear-then-repaint gap into a visible flicker).
-if (typeof window !== "undefined") {
-   void import("@malloydata/render");
-}
+// No module-level warm-up here: evaluating this module must not download the
+// renderer. `ResultPanel` and `ResultContainer` warm it when a result is on its
+// way; see `loadRenderer.ts`.
 
 /**
  * Pull a per-chart Theme override out of a parsed Malloy result by reading
@@ -173,7 +176,7 @@ async function extractChartThemeOverride(parsed: unknown) {
 
    let parseAnnotation: typeof import("@malloydata/malloy-tag").parseAnnotation;
    try {
-      ({ parseAnnotation } = await import("@malloydata/malloy-tag"));
+      ({ parseAnnotation } = await loadMalloyTag());
    } catch {
       // Missing peer dep is an acceptable fallback. Charts render with the
       // shell theme only.
@@ -298,8 +301,26 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
       the border's job, and the border is already doing it. */
    box-shadow: none !important;
 }
+/* The strip of big-value cards as a grid, so cards share a width and the last one does not wrap
+   alone. The renderer's wrapping flex row sizes each card to its own text. The 250px floor is the
+   widest realistic value: it is nowrap at 32px in an overflow:visible card, so a narrower track
+   would spill it onto its neighbour. Embedded (a nested big_value) is left as the renderer draws it. */
+.malloy-render .malloy-big-value:not(.malloy-big-value--embedded) {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+.malloy-render .malloy-big-value-card:not(.malloy-big-value-card--embedded) {
+   width: auto;
+   max-width: none;
+}
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
+}
+/* !important because the malloy-explorer stylesheet pins these same properties with it. */
+[${FILL_ATTR}] .malloy-table.root {
+   height: 100% !important;
+   align-content: start !important;
+   grid-template-columns: repeat(var(--total-header-size), minmax(max-content, 1fr)) !important;
 }
 .malloy-render .malloy-table .th.column-cell {
    /* Non-pinned tables have no header background in the renderer's
@@ -379,6 +400,7 @@ function RenderedResultInner({
    drill,
    onSizeChange,
    onSizing,
+   fill,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
    // The renderer binds its click handler at construction, so a changing
@@ -507,10 +529,14 @@ function RenderedResultInner({
          const remeasures = remeasuresAfterReady(renderAs, strategy);
          if (hasMeasuredRef.current && !remeasures) return;
 
+         // A filled table root is as tall as its box, which would read back as its content.
+         const stretched = element.hasAttribute(FILL_ATTR);
+         if (stretched) element.removeAttribute(FILL_ATTR);
          const renderedHeight = measureContentHeight(
             root,
             contentNodeDepth(renderAs),
          );
+         if (stretched) element.setAttribute(FILL_ATTR, "");
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
@@ -930,6 +956,7 @@ function RenderedResultInner({
    return (
       <div
          ref={ref}
+         {...(fill ? { [FILL_ATTR]: "" } : {})}
          style={{
             width: "100%",
             height: inputHeight ? `${inputHeight}px` : "400px",

@@ -151,6 +151,7 @@ from typing import Any
 import config
 from check_must_not_use import candidate as must_not_use_candidate
 from json_scan import json_objects  # noqa: E402
+import golden_rows
 from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
@@ -191,6 +192,12 @@ def close_enough(want: Any, got: Any, places: int | None) -> bool:
         # Compare at the precision the golden is stated to, not float exactness.
         tol = 10 ** -places / 2 if places is not None else max(abs(w) * 1e-9, 1e-9)
         return abs(w - g) <= max(tol, 0.011)
+    # A boolean against text, by the same spelling on both sides. A CSV-held
+    # golden has no types, so its `True` is the string 'True' while Publisher
+    # returns the boolean, and a plain `==` reported drift on rows that agree.
+    if isinstance(want, bool) != isinstance(got, bool) \
+            and isinstance(want, (bool, str)) and isinstance(got, (bool, str)):
+        return str(want).strip().lower() == str(got).strip().lower()
     return want == got
 
 
@@ -206,6 +213,13 @@ def needs_value_check(case: dict[str, Any]) -> bool:
     """
     return (case.get("golden") or {}).get("kind") not in (
         "unanswerable", "criteria")
+
+
+def g_in_file(case: dict[str, Any]) -> bool:
+    """True for a rows golden whose rows live in `golden.path`, not `value`."""
+    g = case.get("golden") or {}
+    return (g.get("kind") == "rows" and g.get("value") is None
+            and bool(g.get("path")))
 
 
 def check_value(case: dict[str, Any], a: argparse.Namespace
@@ -273,6 +287,13 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         return "error", err[:160], None
 
     want = g.get("value")
+    if g.get("kind") == "rows" and want is None and g.get("path"):
+        # Rows kept in a file beside the set, as the judge reads them.
+        try:
+            want = golden_rows.load_rows(g, getattr(a, "set_dir", None),
+                                         case.get("qid", "?"))
+        except golden_rows.GoldenRowsError as exc:
+            return "error", str(exc)[:240], rows
     places = want.get("round") if isinstance(want, dict) else None
 
     if g.get("kind") == "rows":
@@ -385,7 +406,8 @@ def accepting_clause(rubric: str) -> str:
     return prior[:end]
 
 
-def rubric_number_findings(case: dict[str, Any]) -> list[str]:
+def rubric_number_findings(case: dict[str, Any],
+                           set_dir: pathlib.Path | None = None) -> list[str]:
     """Figures the rubric asserts as RIGHT that appear nowhere in the golden.
 
     Only the rubric's accepting clause is read -- the text before its first
@@ -435,8 +457,14 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     if not rubric or g.get("kind") == "unanswerable":
         return []
     accepting = accepting_clause(rubric)
-    have = golden_numbers(g.get("value"))
-    val = g.get("value")
+    # Rows kept in `golden.path` are the key too. Read as `value` alone, a
+    # file-held golden had no figures, and every figure its rubric quoted was
+    # reported as missing from it.
+    try:
+        val = golden_rows.key_value(g, set_dir, case.get("qid", "?"))
+    except golden_rows.GoldenRowsError as exc:
+        return [f"review {case['qid']}: rubric figures not checked: {exc}"]
+    have = golden_numbers(val)
     if isinstance(val, list):
         cols: dict[str, float] = {}
         for row in val:
@@ -1151,7 +1179,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         truth_package=meta.get("truthPackage"),
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)),
-        verify_figures=verify_figures_flag, figure_model=figure_model)
+        verify_figures=verify_figures_flag, figure_model=figure_model,
+        set_dir=set_dir)
     # Only the value check needs a truth server. Without one it does not happen,
     # and `skipped` carries that all the way out to the exit code -- but every
     # audit below still runs. Returning here skipped four checks that need no
@@ -1228,7 +1257,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # Everything down to the value loop reads the cases, the gold artifacts and
     # the model text. No server is involved, so none of it is gated.
     for c in chosen:
-        findings += rubric_number_findings(c)
+        findings += rubric_number_findings(c, set_dir)
         findings += axis_findings(c, set_dir)
         # Without --verify-figures this only REPORTS that a figure cannot be
         # checked. With it, each one is queried and the query printed, so a
@@ -1355,6 +1384,11 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                     f"rather than a new value -- check that the truth package "
                     f"loaded (a package serving nothing answers every query "
                     f"this way) before refreshing")
+            elif refresh and g_in_file(c):
+                findings.append(
+                    f"{c['qid']}: not refreshed: its rows live in "
+                    f"{c['golden']['path']}, which --refresh does not rewrite. "
+                    f"Replace that file with the fresh rows")
             elif refresh and rows is not None:
                 g = c["golden"]
                 if g.get("kind") == "rows":

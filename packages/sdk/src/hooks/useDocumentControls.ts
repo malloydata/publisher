@@ -3,6 +3,7 @@
 
 import { useCallback, useMemo } from "react";
 import type { Given } from "../client";
+import type { HostGivenValue } from "./givenValue";
 import { useDrillSelf } from "../components/drill/useDrillSelf";
 import type { GivensPanelProps } from "../components/given/GivensPanel";
 import { useGivensState, type UseGivensStateResult } from "./useGivensState";
@@ -63,6 +64,10 @@ export interface UseDocumentControlsOptions {
    versionId?: string;
    /** How the document names itself in a refused-drill warning. */
    documentName: string;
+   /** Text-source mode: the document's definitions, which a suggest runs after as the viewer's own text. */
+   preamble?: string;
+   /** Givens the host sets with no control, so a suggest over a source they gate still carries them. */
+   hostGivens?: Readonly<Record<string, HostGivenValue>>;
 }
 
 export interface DocumentControls extends UseGivensStateResult {
@@ -92,6 +97,8 @@ export function useDocumentControls({
    modelPath,
    versionId,
    documentName,
+   preamble,
+   hostGivens,
 }: UseDocumentControlsOptions): DocumentControls {
    const declaredTypes = useMemo(
       () =>
@@ -136,7 +143,12 @@ export function useDocumentControls({
       specs,
       versionId,
       // So a suggest over a gated or scoped source carries the givens it needs.
-      { values: state.applied, declaredTypes },
+      {
+         values: state.applied,
+         declaredTypes,
+         ...(hostGivens ? { host: hostGivens } : {}),
+      },
+      preamble,
    );
 
    const { canSelf, onSelf } = useDrillSelf({

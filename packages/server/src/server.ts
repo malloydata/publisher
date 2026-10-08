@@ -49,8 +49,10 @@ import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
-   getEmbeddingConfig,
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   getEmbeddingSettings,
    getExtensionFetchPolicy,
+   getLlmSettings,
    getMaterializationSchedulerConfig,
    getMcpCorsOrigins,
    getMemoryGovernorConfig,
@@ -58,7 +60,10 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   embeddingStartupNotices,
+   getRetrievalConfig,
 } from "./config";
+import { setRetrievalConfig } from "./retrieval_config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -66,6 +71,8 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
+import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
    ensureMcpConfig,
@@ -344,10 +351,59 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // matching the sibling getters above, rather than surfacing as a warn on the
 // first getContext call that reaches tier 4 — or never. Logs the posture the
 // server booted with; the host only, never the key.
-const embeddingConfig = getEmbeddingConfig();
+//
+// The `retrieval` block of publisher.config.json is read here, once, so an
+// invalid value is reported with its fix rather than surfacing on the first
+// question. The provider getters read it back from module state.
+//
+// A config the server cannot read or parse must not kill the process: the
+// environment store reads the same file when it initializes, records the cause
+// as `initError`, prints PUBLISHER_INIT_FAILED and keeps the server up so
+// /status can name it. This read therefore logs and carries on with no
+// retrieval settings; the store reports the same failure right after.
+let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
+try {
+   retrievalConfig = getRetrievalConfig(SERVER_ROOT);
+} catch (error) {
+   retrievalConfig = undefined;
+   logger.error(
+      `Could not read the retrieval settings from publisher.config.json; retrieval runs with its defaults until this is fixed and the server restarted. ${
+         error instanceof Error ? error.message : String(error)
+      }`,
+   );
+}
+setRetrievalConfig(retrievalConfig);
+const embeddingConfig = getEmbeddingSettings(retrievalConfig?.embedding);
 if (embeddingConfig) {
    logger.info(
-      `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+      `Semantic get_context enabled: ${embeddingConfig.provider} model ${embeddingConfig.model}` +
+         (embeddingConfig.baseUrl
+            ? ` at ${new URL(embeddingConfig.baseUrl).host}`
+            : ""),
+   );
+}
+for (const notice of embeddingStartupNotices(retrievalConfig?.embedding)) {
+   logger[notice.level](notice.message);
+}
+const llmSettings = getLlmSettings(retrievalConfig?.llm);
+if (llmSettings) {
+   logger.info(
+      `Retrieval LLM enabled: ${llmSettings.provider} model ${llmSettings.model}`,
+   );
+} else if (retrievalConfig?.llm) {
+   logger.warn(
+      `retrieval.llm names provider "${retrievalConfig.llm.provider}" but LLM_API_KEY is not set, so every LLM feature is off. ` +
+         `Fix: set LLM_API_KEY in the server's environment.`,
+   );
+}
+// The entity cap for the semantic index.
+const semanticIndexMaxEntities =
+   retrievalConfig?.indexing?.maxEntities ??
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+setMaxEmbeddedEntities(semanticIndexMaxEntities);
+if (embeddingConfig) {
+   logger.info(
+      `Semantic index entity cap: ${semanticIndexMaxEntities} (retrieval.indexing.maxEntities)`,
    );
 }
 const memoryGovernorConfig = getMemoryGovernorConfig();
@@ -356,6 +412,12 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+// Start the semantic index building as each package loads, rather than on the
+// first question. This only queues work (see startPackageEmbeddingSync); with
+// no embedding provider the queued job returns at once.
+environmentStore.setPackageLoadedHook((environmentName, pkg) =>
+   startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+);
 const packageController = new PackageController(environmentStore);
 const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
@@ -949,9 +1011,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/status`, async (_req, res) => {
+app.get(`${API_PREFIX}/status`, async (req, res) => {
    try {
-      const status = await environmentStore.getStatus();
+      // Packages still loading for the first time are listed only on request:
+      // a listed package has always meant one that can serve here, and only a
+      // caller that reads `Package.status` can tell the two apart.
+      const status = await environmentStore.getStatus({
+         includeLoading: req.query.includeLoading === "true",
+      });
       // Compose theme onto the status response so the SDK can read both
       // in one round trip on app boot. ThemeStore is the source of truth;
       // publisher.config.json is only a boot seed (see ThemeStore). The
@@ -1956,6 +2023,15 @@ app.post(
       );
       if (includeHiddenFilesAndSources === undefined) return;
 
+      // A client that goes away (a superseded dashboard tile, a closed tab)
+      // cancels its query: the concurrency slot is released on `close`, so the
+      // query must not keep running past it.
+      const disconnected = new AbortController();
+      res.on("close", () => {
+         if (!res.writableFinished)
+            disconnected.abort(new Error("client disconnected"));
+      });
+
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
@@ -1983,6 +2059,7 @@ app.post(
             // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
             includeHiddenFilesAndSources,
+            disconnected.signal,
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
@@ -1990,6 +2067,8 @@ app.post(
          });
          res.status(200).json(result);
       } catch (error) {
+         // Nobody is waiting for the answer: not an error worth a log line.
+         if (disconnected.signal.aborted) return;
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);

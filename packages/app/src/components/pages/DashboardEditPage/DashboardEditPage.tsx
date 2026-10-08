@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   BackLink,
-   DashboardBar,
    encodeResourceUri,
+   type DashboardEvent,
    Loading,
+   LOADING_COPY,
+   NarrowEditGate,
 } from "@malloy-publisher/sdk";
-import { Box, Stack } from "@mui/material";
+import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { logDashboardEvent } from "../../../utils/consoleTelemetry";
+import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
+import {
+   logDashboardEvent,
+   logNotebookEvent,
+} from "../../../utils/consoleTelemetry";
+import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
@@ -27,54 +32,64 @@ const DashboardEditor = React.lazy(() =>
 export interface DashboardEditPageProps {
    environmentName: string;
    packageName: string;
-   /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
+   /** The document's slug: `overview`, not `dashboards/overview.malloy`. */
    dashboardName: string;
+   /** A notebook is the same editor with one column; default `dashboard`. */
+   kind?: "dashboard" | "notebook";
+   /** The file within the package, when the route's folder is not the whole story. */
+   path?: string;
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`.
- * Done returns to the dashboard itself, one segment up.
+ * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`,
+ * and `/<env>/<pkg>/notebooks/<slug>/edit` with `kind="notebook"`.
+ * Close returns to the document itself, one segment up.
  */
 export default function DashboardEditPage({
    environmentName,
    packageName,
    dashboardName,
+   kind = "dashboard",
+   path,
 }: DashboardEditPageProps) {
-   const navigate = useNavigate();
-   const { pathname } = useLocation();
-   const dashboardPath = pathname.replace(/\/edit\/?$/, "");
-   const onEvent = useMemo(
-      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
-      [environmentName, packageName, dashboardName],
-   );
+   const guard = useLeaveGuard();
+   const onEvent = useMemo(() => {
+      if (kind === "dashboard")
+         return logDashboardEvent({
+            environmentName,
+            packageName,
+            dashboardName,
+         }) as (event: DashboardEvent | NotebookEvent) => void;
+      return logNotebookEvent({
+         environmentName,
+         packageName,
+         notebookName: dashboardName,
+      }) as (event: DashboardEvent | NotebookEvent) => void;
+   }, [kind, environmentName, packageName, dashboardName]);
    return (
+      // The reader's page width and edges, the same for a dashboard and a
+      // notebook, so the margins do not move between modes or kinds.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         {/* The same way up the reader's view has, in the same place, so the
-             bar below it sits at the same height in both modes. Leaving by it
-             is leaving without saving, exactly as the browser's own Back is;
-             Done is the way out that keeps the page you were on. */}
-         <BackLink
-            label={packageName}
-            href={`/${environmentName}/${packageName}`}
-            onClick={() => navigate(`/${environmentName}/${packageName}`)}
-         />
-         {/* The bar, at the height the reader's view had it, so the page does
-             not collapse and refill while the builder's chunk arrives. */}
-         <Suspense
-            fallback={
-               <Stack sx={{ gap: 2 }}>
-                  <DashboardBar />
-                  <Loading text="Opening the builder…" />
-               </Stack>
-            }
-         >
-            <DashboardEditor
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
-               dashboard={dashboardName}
-               onExit={() => navigate(dashboardPath)}
-               onEvent={onEvent}
-            />
-         </Suspense>
+         <NarrowEditGate>
+            <Suspense
+               fallback={<Loading text={LOADING_COPY.opening("builder")} />}
+            >
+               <DashboardEditor
+                  // Remounts on a route change so another dashboard starts from a fresh read.
+                  key={`${environmentName}/${packageName}/${kind}/${dashboardName}`}
+                  resourceUri={encodeResourceUri({
+                     environmentName,
+                     packageName,
+                  })}
+                  dashboard={dashboardName}
+                  kind={kind}
+                  path={path}
+                  onDirtyChange={guard.onDirtyChange}
+                  onEvent={onEvent}
+               />
+            </Suspense>
+         </NarrowEditGate>
+         {guard.dialog}
       </Box>
    );
 }

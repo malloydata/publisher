@@ -10,14 +10,22 @@ import {
    mock,
    spyOn,
 } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+   chmodSync,
+   existsSync,
+   mkdirSync,
+   readdirSync,
+   readFileSync,
+   rmSync,
+   writeFileSync,
+} from "fs";
 import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { BadRequestError } from "../errors";
+import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -666,6 +674,55 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors?.[0]?.message).not.toContain("publisher_data");
    });
 
+   it.skipIf(
+      process.platform === "win32" ||
+         Bun.spawnSync(["which", "zip"]).exitCode !== 0,
+   )("serves a package whose configured location is a local zip", async () => {
+      // The package is the archive's contents, extracted at mount time, not
+      // the .zip file itself.
+      const source = path.join(serverRootPath, "zip-src");
+      mkdirSync(source, { recursive: true });
+      writeFileSync(
+         path.join(source, "publisher.json"),
+         JSON.stringify({ name: "zipped" }),
+      );
+      const mount = path.join(serverRootPath, "mount");
+      mkdirSync(mount, { recursive: true });
+      const zipped = Bun.spawnSync(
+         ["zip", "-q", "-r", path.join(mount, "zipped.zip"), "."],
+         { cwd: source },
+      );
+      expect(zipped.exitCode).toBe(0);
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: "zipped",
+                        location: path.join(mount, "zipped.zip"),
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.loadErrors).toBeUndefined();
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const packages = await environment.listPackages();
+      expect(packages.map((p) => p.name)).toEqual(["zipped"]);
+      // Nothing was written beside the archive.
+      expect(readdirSync(mount)).toEqual(["zipped.zip"]);
+   });
+
    it("reports a stale loadErrors entry when a reload fails, and clears it on recovery", async () => {
       // A failed RELOAD keeps the last good compiled model serving (the
       // package must not vanish), but the served model is now older than the
@@ -735,6 +792,61 @@ describe("EnvironmentStore Service", () => {
       await environment.getPackage(projectName, true);
       const healthy = await store.getStatus();
       expect(healthy.loadErrors).toBeUndefined();
+   });
+
+   it("calls the package-loaded hook for each package loaded at boot, and again on reload", async () => {
+      // The hook is how the semantic index starts building before anyone asks
+      // a question. It is set in the same synchronous turn as the store is
+      // constructed, exactly as server.ts does, so it is in place before
+      // initialization creates the first Environment.
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(projectPath, "model.malloy"),
+         'source: s1 is duckdb.sql("SELECT 1 as n")\n',
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const loaded: Array<{ environmentName: string; packageName: string }> =
+         [];
+      const instances: unknown[] = [];
+      const store = new EnvironmentStore(serverRootPath);
+      store.setPackageLoadedHook((environmentName, pkg) => {
+         loaded.push({ environmentName, packageName: pkg.getPackageName() });
+         instances.push(pkg);
+      });
+      await store.finishedInitialization;
+
+      expect(loaded).toEqual([
+         { environmentName: projectName, packageName: projectName },
+      ]);
+
+      // Looking the package up again is not a load.
+      const environment = await store.getEnvironment(projectName);
+      await environment.getPackage(projectName, false);
+      expect(loaded.length).toBe(1);
+
+      // A reload is a new Package instance, and so a new notification.
+      const reloaded = await environment.getPackage(projectName, true);
+      expect(loaded.length).toBe(2);
+      expect(instances[1]).toBe(reloaded);
+      expect(instances[1]).not.toBe(instances[0]);
    });
 
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
@@ -1620,6 +1732,36 @@ describe("EnvironmentStore Service", () => {
       await newEnvironmentStore.finishedInitialization;
       const projects = await newEnvironmentStore.listEnvironments();
       expect(projects).toEqual([]);
+      // Init failed, so the server never becomes ready, and /status says why
+      // rather than reading as a server still starting.
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.initError).toContain("publisher.config.json");
+   });
+
+   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+      "names the errno in /status when the config cannot be read",
+      async () => {
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(publisherConfigPath, '{"environments":[]}');
+         chmodSync(publisherConfigPath, 0o000);
+         try {
+            const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+            await newEnvironmentStore.finishedInitialization;
+            const status = await newEnvironmentStore.getStatus();
+            expect(status.initError).toContain("EACCES");
+         } finally {
+            chmodSync(publisherConfigPath, 0o644);
+         }
+      },
+   );
+
+   it("omits initError when initialization succeeds", async () => {
+      await environmentStore.finishedInitialization;
+      const status = await environmentStore.getStatus();
+      expect(status.initError).toBeUndefined();
    });
 
    it("should handle invalid field names in publisher config without crashing", async () => {
@@ -1987,10 +2129,16 @@ describe("Project Service Error Recovery", () => {
             const project = await environmentStore.getEnvironment(projectName);
             expect(project).toBeInstanceOf(Environment);
 
-            // Try to get a non-existent project
-            await expect(
-               environmentStore.getEnvironment("non-existent"),
-            ).rejects.toThrow();
+            // Try to get a non-existent project. The error carries the loaded
+            // names, which is what the MCP tools show an agent that guessed.
+            const missing = await environmentStore
+               .getEnvironment("non-existent")
+               .catch((e: unknown) => e);
+            expect(missing).toBeInstanceOf(EnvironmentNotFoundError);
+            expect((missing as EnvironmentNotFoundError).lookup).toEqual({
+               environmentName: "non-existent",
+               availableEnvironments: [projectName],
+            });
 
             // Verify the original project is still accessible
             const projectAgain =

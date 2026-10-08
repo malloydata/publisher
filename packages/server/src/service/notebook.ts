@@ -11,7 +11,7 @@ import {
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
 import { closesBlock } from "./query_text";
-import { docCommentText } from "./motly";
+import { docCommentText, motlyTag, tagText } from "./motly";
 
 /** The package-relative directory a served notebook must live in. */
 export const NOTEBOOKS_DIR = "notebooks";
@@ -28,7 +28,103 @@ export function isNotebookModelPath(modelPath: string): boolean {
    return segments.length === 2 && segments[0] === NOTEBOOKS_DIR;
 }
 
-const ARTIFACT_NOTE = /^##[ \t]*artifact\b/;
+/** The package-relative directory a dashboard is created in. */
+export const DASHBOARDS_DIR = "dashboards";
+
+/** True for a `.malloy` directly inside `dashboards/` or `notebooks/`: where a document may live. */
+export function isDocumentModelPath(modelPath: string): boolean {
+   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+   const segments = modelPath.split("/");
+   return (
+      segments.length === 2 &&
+      (segments[0] === NOTEBOOKS_DIR || segments[0] === DASHBOARDS_DIR)
+   );
+}
+
+export type DocumentKind = "dashboard" | "notebook";
+
+/** The kind an artifact tag declares; the folder decides only when the tag names none. */
+export function documentKind(
+   modelPath: string,
+   tagKind: string | undefined,
+): DocumentKind {
+   if (tagKind === "notebook" || tagKind === "dashboard") return tagKind;
+   return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
+}
+
+/** A text test, which a `RegExp` is too. */
+export interface LineTest {
+   test(text: string): boolean;
+}
+
+/**
+ * A `##` note or `##|` block that sets `artifact` as a top-level property,
+ * anywhere among its properties, as the tag parser reads it: not inside a
+ * string, a nested `{…}` or `[…]`, or a `#` comment, and not as a value
+ * (`title=artifact`) or a dotted path's tail. The SDK's `artifactTag` reads the
+ * same rule; `artifact_tag_parity.spec.ts` holds the two to the tag parser.
+ */
+const ARTIFACT_NOTE: LineTest = {
+   test(note: string): boolean {
+      // Malloy's route rule: a routed note (`##(markdown)`, `##"`, `##artifact`) or a flag (`##!`) is never a tag.
+      const prefix = /^##\|?(?:[ \t\r\n]|$)/.exec(note);
+      if (!prefix) return false;
+      // The tag parser's bare-name characters: digits, ASCII and Latin-extended letters, `_`.
+      const bare = /[0-9A-Za-z_\u00C0-\u024F\u1E00-\u1EFF]+/y;
+      let depth = 0;
+      let before = "";
+      for (let i = prefix[0].length; i < note.length; i++) {
+         const c = note[i];
+         if (/\s/.test(c)) continue;
+         // `-...` clears every property; its dots are no path for a name after it.
+         if (note.startsWith("-...", i)) {
+            i += 3;
+            before = "";
+            continue;
+         }
+         bare.lastIndex = i;
+         const word = bare.exec(note)?.[0];
+         if (c === '"' || c === "'") {
+            const fence = note.startsWith(c.repeat(3), i) ? c.repeat(3) : c;
+            i += fence.length;
+            while (i < note.length && !note.startsWith(fence, i))
+               i += note[i] === "\\" ? 2 : 1;
+            i += fence.length - 1;
+         } else if (c === "`") {
+            // A backtick string is a name, so `` `artifact` `` sets the property.
+            let end = i + 1;
+            while (end < note.length && note[end] !== "`" && note[end] !== "\n")
+               end += note[end] === "\\" ? 2 : 1;
+            const name = note.slice(i + 1, end);
+            if (depth === 0 && name === "artifact" && !/[=.-]/.test(before))
+               return true;
+            i = end;
+         } else if (c === "#") {
+            const eol = note.indexOf("\n", i);
+            if (eol < 0) return false;
+            i = eol;
+            continue;
+         } else if (c === "{" || c === "[") depth++;
+         else if (c === "}" || c === "]") depth--;
+         else if (word) {
+            if (depth === 0 && word === "artifact" && !/[=.-]/.test(before))
+               return true;
+            i += word.length - 1;
+         }
+         before = c;
+      }
+      return false;
+   },
+};
+
+/**
+ * A `#` or `##` tag line, or a `##|` block, with an `artifact` property anywhere
+ * outside a quoted string. Loose on purpose: a query can carry a dashboard's
+ * tag, the write path's post-reload verify still rolls back a file that turns
+ * out untagged, and a false negative hides a real dashboard.
+ */
+export const ANY_ARTIFACT_NOTE =
+   /^#{1,2}\|?(?=[ \t\r\n])(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*?(?<![\w\u00C0-\u024F\u1E00-\u1EFF.$-])artifact(?![\w\u00C0-\u024F\u1E00-\u1EFF])/;
 
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
@@ -103,35 +199,138 @@ export function dashboardDescriptionNotes(
  */
 export function hasArtifactLineOutsideBlocks(
    source: string,
-   artifactLine: RegExp,
+   artifactLine: LineTest,
 ): boolean {
+   return findArtifactLineOutsideBlocks(source, artifactLine) !== undefined;
+}
+
+/**
+ * Finds the first line after `after` that closes a block opened at `column`
+ * with `closer`, or -1. Asked in rising `after` order, it reads each line once,
+ * so a file of unclosed openers is not rescanned to its end per opener.
+ */
+function blockCloserFinder(
+   lines: readonly string[],
+): (column: number, closer: string, after: number) => number {
+   const byKey = new Map<string, number[]>();
+   lines.forEach((line, at) => {
+      const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+      for (const closer of ["|##", "|#"])
+         if (closesBlock(line, 0, indent, closer)) {
+            const key = `${indent}${closer}`;
+            const ats = byKey.get(key);
+            if (ats) ats.push(at);
+            else byKey.set(key, [at]);
+            break;
+         }
+   });
+   const cursor = new Map<string, number>();
+   return (column, closer, after) => {
+      const key = `${column}${closer}`;
+      const ats = byKey.get(key) ?? [];
+      let k = cursor.get(key) ?? 0;
+      while (k < ats.length && ats[k] <= after) k++;
+      cursor.set(key, k);
+      return ats[k] ?? -1;
+   };
+}
+
+function findArtifactLineOutsideBlocks(
+   source: string,
+   artifactLine: LineTest,
+): string | undefined {
    const lines = source.split(/\r\n|\r|\n/);
+   const closerAfter = blockCloserFinder(lines);
    for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trimStart();
       const opener = /^(#{1,2})\|/.exec(trimmed);
       if (opener) {
-         const wanted = `|${opener[1]}`;
-         if (trimmed.includes(wanted, opener[0].length)) continue;
+         // The lexer takes the opener's whole line, so a `|##` on it closes nothing.
          const column = lines[i].length - trimmed.length;
-         let end = -1;
-         for (let at = i + 1; at < lines.length; at++)
-            if (closesBlock(lines[at], 0, column, wanted)) {
-               end = at;
-               break;
-            }
+         const end = closerAfter(column, `|${opener[1]}`, i);
          // An unclosed opener holds no block, so it must not hide the rest of the file.
          if (end !== -1) {
+            const block = [trimmed, ...lines.slice(i + 1, end)].join("\n");
+            // An artifact tag may itself be written as a block, so the opener decides, not the body.
+            if (artifactLine.test(block)) return block;
             i = end;
             continue;
          }
       }
-      if (artifactLine.test(trimmed)) return true;
+      if (artifactLine.test(trimmed)) return trimmed;
    }
-   return false;
+   return lexedArtifactNote(source, lines, artifactLine);
+}
+
+/**
+ * The tag when it follows code on its line (`run: x -> v ## artifact { … }`),
+ * which the lexer reads as a note and a line test cannot see: this is what
+ * keeps "is this a document" the same here as where the file is compiled. Only
+ * text with a `##` that is not at a line's start is lexed.
+ */
+function lexedArtifactNote(
+   source: string,
+   lines: readonly string[],
+   artifactLine: LineTest,
+): string | undefined {
+   if (!lines.some((line) => /\S.*##/.test(line) && !/^\s*##/.test(line))) {
+      return undefined;
+   }
+   const translator = new MalloyTranslator(NOTEBOOK_PARSE_URL, null, {
+      urls: { [NOTEBOOK_PARSE_URL]: source },
+   });
+   const parse = translator.parseStep.step(translator).parse;
+   const stream = parse?.tokenStream as unknown as TokenStreamShape | undefined;
+   const tokens = stream?.getTokens?.() ?? [];
+   const name = (type: number) =>
+      stream?.tokenSource?.vocabulary?.getSymbolicName(type);
+   const text = (i: number) =>
+      source.slice(tokens[i].startIndex, tokens[i].stopIndex + 1);
+   for (let i = 0; i < tokens.length; i++) {
+      const kind = name(tokens[i].type);
+      if (kind === "DOC_ANNOTATION" && artifactLine.test(text(i))) {
+         return text(i).trim();
+      }
+      if (kind !== "DOC_BLOCK_ANNOTATION_BEGIN") continue;
+      let body = "";
+      let j = i;
+      while (name(tokens[j].type) !== "BLOCK_ANNOTATION_END") {
+         body += text(j);
+         if (++j >= tokens.length || name(tokens[j].type) === "EOF") {
+            return undefined;
+         }
+      }
+      if (artifactLine.test(body)) return body;
+      i = j;
+   }
+   return undefined;
+}
+
+/** The `kind` of the artifact tag among a file's own notes. */
+export function artifactKindOfNotes(
+   notes: readonly AnnotationNote[],
+): string | undefined {
+   const tag = motlyTag(
+      notes.map((note) => note.text).filter(isArtifactNoteText),
+   );
+   return tagText(tag?.tag("artifact"), "kind");
 }
 
 export function claimsToBeANotebook(source: string): boolean {
    return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+}
+
+/** A file's artifact tag as written, a `## artifact` line or a `##|` block, read off its text. */
+export function artifactTagText(source: string): string | undefined {
+   return findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
+}
+
+/** The `kind` of a file's `## artifact` line, read off its text for a file that did not compile. */
+export function artifactKindInText(source: string): string | undefined {
+   const line = artifactTagText(source);
+   return line === undefined
+      ? undefined
+      : tagText(motlyTag([line])?.tag("artifact"), "kind");
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,6 +359,14 @@ export interface NotebookCellSpan {
    /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
    queryIndex?: number;
 }
+
+/**
+ * The 0-based `[start, end)` character offsets of a code cell's `text` in the
+ * file it was read from. Kept beside the cell rather than on it so a cell stays
+ * exactly what it is served as; for blanking a cell without touching a
+ * neighbor on its line.
+ */
+export const cellOffsets = new WeakMap<NotebookCellSpan, [number, number]>();
 
 /** Why the reader refused a notebook: the 1-based line, and a message that names the fix. */
 export interface NotebookReaderError {
@@ -340,6 +547,8 @@ type ReaderItem =
         caption?: string;
         startLine: number;
         endLine: number;
+        start: number;
+        end: number;
      }
    | { kind: "note"; note: ReaderNote };
 
@@ -379,7 +588,7 @@ function markdownLineBody(noteText: string): string {
  */
 export function readNotebookCells(
    parse: NotebookParse,
-   modelDef: Pick<ModelDef, "queryList">,
+   modelDef: Pick<ModelDef, "queryList"> | undefined,
    text: string,
 ): NotebookReadResult {
    const refuse = (error: NotebookReaderError): NotebookReadResult => ({
@@ -616,6 +825,8 @@ export function readNotebookCells(
             ...(caption !== undefined && { caption }),
             startLine: span.startLine,
             endLine: span.endLine,
+            start: span.start,
+            end: span.end,
          });
          continue;
       }
@@ -699,7 +910,8 @@ export function readNotebookCells(
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
-   if (runCount !== modelDef.queryList.length) {
+   // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
+   if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
          message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
@@ -717,7 +929,7 @@ export function readNotebookCells(
          lineRun = undefined;
          const queryIndex = item.run ? runsSeen++ : undefined;
          // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
-         cells.push(
+         const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
                     kind: "query",
@@ -749,8 +961,9 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                 },
-         );
+                 };
+         cellOffsets.set(pushed, [item.start, item.end]);
+         cells.push(pushed);
          return;
       }
       const { note } = item;
@@ -878,8 +1091,10 @@ export function notebookReaderProblem(
    modelDef: ModelDef,
    url: string,
 ): LogMessage | undefined {
-   if (!isNotebookModelPath(modelPath)) return undefined;
-   if (artifactNoteLine(ownModelNoteObjects(modelDef)) === undefined)
+   if (!isDocumentModelPath(modelPath)) return undefined;
+   const notes = ownModelNoteObjects(modelDef);
+   if (artifactNoteLine(notes) === undefined) return undefined;
+   if (documentKind(modelPath, artifactKindOfNotes(notes)) !== "notebook")
       return undefined;
    const parse = parseNotebookText(text);
    const error = isNotebookReaderError(parse)

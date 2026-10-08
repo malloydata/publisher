@@ -122,7 +122,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-All model `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet). Notebooks are the exception: they live under `notebooks/`.
+A flat layout at the package root is the simplest default. Subfolders work too: an `import` path resolves relative to the file that contains it, so `import "../storefront.malloy"` works from a file under `dashboards/`. Notebooks live under `notebooks/` and dashboards under `dashboards/`.
 
 ```
 <package-name>/
@@ -138,7 +138,7 @@ All model `.malloy` files must be in the package root (flat layout: the publishe
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `notebooks/*.malloy` files with an `## artifact { kind=notebook }` tag - Notebooks for exploration/documentation (see `skill:malloy-notebooks`). An existing `.malloynb` is still served; never write a new one.
+- `notebooks/*.malloy` files with an `## artifact { kind=notebook … }` tag - Notebooks for exploration/documentation, written as a one-column layout of tiles or as older `run:` cells (see `skill:malloy-notebooks`). The tag's `kind=` decides whether a file is a notebook or a dashboard, not its folder. An existing `.malloynb` is still served; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management
@@ -151,15 +151,15 @@ Publishable contents:
 ## Workflow
 
 1. Verify `publisher.json` exists; if not, create it (suggest name from model content, default `0.0.1`).
-2. Confirm the flat package layout: all `.malloy` files in the package root.
+2. Confirm the package layout: model files in the package root (or imported by relative path from wherever they sit), notebooks under `notebooks/`, dashboards under `dashboards/`.
 3. Hand the package to the host's publish path (commit to git, then run the deploy step for your Publisher instance). If a version-already-exists conflict occurs, bump the patch version in `publisher.json` and retry.
 4. Confirm with the user how their package is served so they can verify it is reachable.
 
 ## Common Issues
 
-- **Cross-directory imports fail**: Move all `.malloy` files into the package root; the publisher uses a flat layout.
+- **An import does not resolve** (`Can't find source X`, or the file is not found): the path is read relative to the importing file, not the package root. Fix the path; do not move files.
 - **Version already exists**: Bump the patch version in `publisher.json` before re-publishing.
 
 ## Done
 
-Step complete. Output: package is in publishable shape (valid `publisher.json`, flat layout), ready for the host's publish path.
+Step complete. Output: package is in publishable shape (valid `publisher.json`, imports that resolve), ready for the host's publish path.

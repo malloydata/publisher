@@ -4,7 +4,14 @@
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import { chartLineText, isChartPick } from "./chartLine";
+import {
+   isQueryTile,
+   type DashboardDocument,
+   type LocalGiven,
+   type QueryTile,
+} from "./document";
+import { malloyPath } from "../../utils/malloyText";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
@@ -37,7 +44,8 @@ export function previewGivens(
 ): Given[] {
    const bound = new Set<string>();
    for (const tile of document.tiles)
-      for (const filter of tile.filters ?? []) bound.add(filter.given);
+      for (const filter of isQueryTile(tile) ? (tile.filters ?? []) : [])
+         bound.add(filter.given);
 
    const out: Given[] = [];
    const seen = new Set<string>();
@@ -61,10 +69,11 @@ export function previewGivens(
 
 /** A `given:` this file declares, as the `Given` the control row renders. */
 function givenFromLocal(local: LocalGiven): Given {
+   const shown = displayDefault(local);
    return {
       name: local.name,
       type: local.type,
-      default: local.default,
+      ...(shown === undefined ? {} : { default: shown }),
       ...(local.label === undefined ? {} : { label: local.label }),
       ...(local.description === undefined
          ? {}
@@ -90,16 +99,64 @@ function givenFromLocal(local: LocalGiven): Given {
    };
 }
 
+/** The default the server would publish: it unwraps a filter's `f'…'`, so an empty one shows no caption. */
+function displayDefault(local: LocalGiven): string | undefined {
+   if (!local.type?.startsWith("filter<")) return local.default;
+   const body = local.default?.match(/^f(['"])([\s\S]*)\1$/)?.[2];
+   if (body === undefined) return local.default;
+   return body === "" ? undefined : body;
+}
+
+/**
+ * Whether dropping the wrapper's chart line leaves a view with no chart of its own: an inline
+ * body, a `{ … } + { … }` compound or a `->` pipeline. Any other opaque body starts from a
+ * named view and inherits that view's chart, which a preview must not hide.
+ */
+function dropsBaseChart(declaration: QueryTile["declaration"]): boolean {
+   if (declaration.kind === "inline") return true;
+   return (
+      declaration.kind === "opaque" &&
+      (declaration.why.includes("compound") ||
+         declaration.why.includes("pipeline"))
+   );
+}
+
+/** A tile expression as the server keys it, so `a->b` and `a -> b` match. */
+export function tileExpressionKey(expression: string): string {
+   // Split rather than `/\s*->\s*/g`, which backtracks quadratically on long whitespace.
+   return expression
+      .split("->")
+      .map((part) => part.trim().replace(/\s+/g, " "))
+      .join(" -> ")
+      .replace(/\s+/g, " ");
+}
+
 /** A tile's query as the document has it, and the givens it sends. */
 export interface PreviewTileQuery {
    /** A run expression, without `run:` — what `DashboardTile.tile` takes. */
    expression: string;
    /**
-    * The givens this tile binds and the server can take, for narrowing the
-    * request. Undefined for a tile whose bindings live in the model, where the
+    * The chart line the tile's wrapper carries, to sit above the `run:`. A
+    * reference tile runs its base view, which has never seen the wrapper, so
+    * without it the tile would draw the view's own chart whatever the picker
+    * says. An inline or opaque tile runs the SAVED view, wrapper line and all,
+    * so Default there carries the all-negating line: the saved line is what
+    * Default removes. Absent when a reference tile's wrapper adds none.
+    */
+   annotation?: string;
+   /**
+    * The givens this tile binds, its extension reads, or its served tile
+    * reads that the server can take, for narrowing the request. Undefined for a tile whose bindings live in the model, where the
     * document cannot know them: send the whole row, as the reader does.
     */
    givenNames: string[] | undefined;
+   /**
+    * Every given this tile's preview answers to, runnable or not, for saying
+    * which controls it ignores. Undefined when nothing can say: a tile the
+    * served file did not resolve (inherited, or not saved yet) whose document
+    * side reads no given either.
+    */
+   reads: string[] | undefined;
 }
 
 /**
@@ -141,9 +198,11 @@ export interface PreviewTileQuery {
  */
 export function previewTileQuery(
    document: DashboardDocument,
-   tile: DashboardTile,
+   tile: QueryTile,
    runnable: ReadonlySet<string>,
    values: ReadonlyMap<string, GivenValue> = new Map(),
+   /** What the served file's compiled tile reads (`DashboardTile.givenNames`), when it has this tile. */
+   served?: readonly string[],
 ): PreviewTileQuery {
    if (tile.declaration.kind === "inherited") {
       // Declared in the model; bindings live there too, out of this
@@ -151,6 +210,7 @@ export function previewTileQuery(
       return {
          expression: `${tile.source} -> ${tile.name}`,
          givenNames: undefined,
+         reads: served && [...served],
       };
    }
    // Run on the dashboard's OWN extension, not the model source it extends.
@@ -165,16 +225,27 @@ export function previewTileQuery(
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
-   const sent: string[] = [];
+   // The extension's own `where:` filters every tile on it, as the served manifest counts.
+   const scopedBy =
+      document.sources.find((source) => source.name === on)?.scopedBy ?? [];
+   // What the served tile reads moves it in the reader, so the preview sends it too.
+   const sent = new Set(
+      [...scopedBy, ...(served ?? [])].filter((name) => runnable.has(name)),
+   );
+   // A binding removed but not yet saved still counts here until the save.
+   const reads = new Set<string>([...scopedBy, ...(served ?? [])]);
    const clauses: string[] = [];
    for (const filter of tile.filters ?? []) {
-      const comparison = `where: ${filter.field} ${filter.op ?? "~"}`;
+      const comparison = `where: ${malloyPath(filter.field)} ${filter.op ?? "~"}`;
       if (runnable.has(filter.given)) {
-         sent.push(filter.given);
+         sent.add(filter.given);
+         reads.add(filter.given);
          clauses.push(`${comparison} $${filter.given}`);
          continue;
       }
       if (!localTypes.has(filter.given)) continue;
+      // Applied as a literal, so the control still changes this tile.
+      reads.add(filter.given);
       const literal = malloyLiteral(
          values.get(filter.given),
          localTypes.get(filter.given),
@@ -182,9 +253,21 @@ export function previewTileQuery(
       if (literal !== undefined) clauses.push(`${comparison} ${literal}`);
    }
    const refinement = clauses.join(", ");
+   const chart = tile.chart;
+   const annotation =
+      chart === "none" || isChartPick(chart)
+         ? chartLineText(chart, tile.chartCarried)
+         : chart === "custom" && tile.chartLines?.length
+           ? tile.chartLines.join("\n")
+           : chart === "default" && dropsBaseChart(tile.declaration)
+             ? chartLineText("none")
+             : undefined;
    return {
+      ...(annotation ? { annotation } : {}),
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
-      givenNames: sent,
+      givenNames: Array.from(sent),
+      // No served entry and nothing from the document: the model may still scope it, so say nothing.
+      reads: served || reads.size > 0 ? Array.from(reads) : undefined,
    };
 }

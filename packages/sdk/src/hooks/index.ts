@@ -43,6 +43,10 @@ export {
    type UseGivensStateResult,
 } from "./useGivensState";
 export { useSuggestOptions } from "./useSuggestOptions";
+export {
+   useCompiledDocument,
+   type CompiledDocumentSpec,
+} from "./useCompiledDocument";
 
 // One query, and one control row, as every surface asks for them
 export {
@@ -56,3 +60,6 @@ export {
    type DocumentControls,
    type UseDocumentControlsOptions,
 } from "./useDocumentControls";
+
+// Below the 600px breakpoint, where the editors step aside
+export { isNarrowScreen, useNarrowScreen } from "./useNarrowScreen";

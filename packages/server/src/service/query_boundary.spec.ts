@@ -41,6 +41,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   BadRequestError,
    NotQueryableError,
    OffSurfaceError,
    QueryCompileError,
@@ -287,6 +288,264 @@ export { customers }`,
          }
       } finally {
          await duckdb.close();
+      }
+   });
+
+   // Text where Malloy stops at the grammar: the run statement is misspelled,
+   // missing, or not Malloy at all, so no run target can be read off it. These
+   // used to come back as the boundary's 404 because the 400 above needs a
+   // readable target to prove every source the text names is queryable.
+   const unreadableTargetTexts = [
+      // `run` without its colon.
+      "run customers -> { aggregate: total }",
+      // SQL, which is what a model that has not read the docs tries first.
+      "SELECT total FROM customers",
+      // A statement that stops after the keyword.
+      "run:",
+      // Prose in front of a good statement.
+      "Here is my query:\nrun: customers -> { aggregate: total }",
+   ];
+
+   async function problemsOrRefusal(
+      model: Model,
+      query: string,
+   ): Promise<QueryCompileError | NotQueryableError> {
+      try {
+         await model.getQueryResults(undefined, undefined, query);
+      } catch (error) {
+         if (
+            error instanceof QueryCompileError ||
+            error instanceof NotQueryableError
+         ) {
+            return error;
+         }
+         throw error;
+      }
+      throw new Error(`"${query}" ran`);
+   }
+
+   it("declared: a syntax error in text with no readable run target is a 400, as on a package with no surface", async () => {
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const answers = async (file: string): Promise<string[]> => {
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel(file)!;
+            const out: string[] = [];
+            for (const query of unreadableTargetTexts) {
+               const answer = await problemsOrRefusal(model, query);
+               expect(answer).toBeInstanceOf(QueryCompileError);
+               const problems = (answer as QueryCompileError).problems;
+               expect(problems.length).toBeGreaterThan(0);
+               expect(problems.every((p) => p.code === "syntax-error")).toBe(
+                  true,
+               );
+               out.push(answer.message);
+            }
+            return out;
+         } finally {
+            await duckdb.close();
+         }
+      };
+      const armed = await answers("index.malloy");
+
+      fs.rmSync(path.join(tempDir, "index.malloy"));
+      writeManifest();
+      writeLayeredModels("surface.malloy");
+      expect(await answers("surface.malloy")).toEqual(armed);
+   });
+
+   it("declared: a syntax error does not tell a hidden name from a missing one", async () => {
+      // Each text differs only in the name. The grammar failure cannot depend
+      // on what the name is, and nothing before the compile reads it, so the
+      // three answers are the same words.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const texts = (name: string) => [
+            `run ${name} -> { group_by: nope }`,
+            `source: x is ${name} extend {}\nrun x -> { group_by: nope }`,
+            `SELECT * FROM ${name}`,
+         ];
+         const hidden = texts("helper");
+         const missing = texts("no_such_source");
+         const exported = texts("customers");
+         for (let i = 0; i < hidden.length; i++) {
+            const a = await problemsOrRefusal(model, hidden[i]);
+            const b = await problemsOrRefusal(model, missing[i]);
+            const c = await problemsOrRefusal(model, exported[i]);
+            expect(a).toBeInstanceOf(QueryCompileError);
+            expect(b).toBeInstanceOf(QueryCompileError);
+            expect(c).toBeInstanceOf(QueryCompileError);
+            expect(a.message).toBe(b.message);
+            expect(a.message).toBe(c.message);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a semantic error over a hidden source in text with no run target does not tell a real column from a missing one", async () => {
+      // Nothing can be run, so the boundary cannot vouch for the text; only a
+      // pure grammar failure is shown. A field error on a hidden source would
+      // otherwise answer 400 for a missing column and 404 for a real one.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const real = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is id }`,
+         );
+         const fake = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is nosuchfield }`,
+         );
+         expect(real).toBeInstanceOf(NotQueryableError);
+         expect(fake).toBeInstanceOf(NotQueryableError);
+         expect(fake.message).toBe(real.message);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: `~` against a date literal on an exported source returns the compiler's message, and a hidden or missing source still gets the same 404", async () => {
+      // Malloy throws a plain Error for this (not a MalloyError with
+      // problems), so it used to fall through to the boundary's 404.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         fs.readFileSync(index, "utf8").replace(
+            "export { customers }",
+            `source: dated is duckdb.sql("select 1 as id, DATE '2025-03-01' as d") extend {
+  measure: c is count()
+}
+export { customers, dated }`,
+         ),
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const filter = (name: string, col: string) =>
+            `run: ${name} -> { where: ${col} ~ @2025 aggregate: n is count() }`;
+
+         const exported = await problemsOrRefusal(model, filter("dated", "d"));
+         expect(exported).toBeInstanceOf(QueryCompileError);
+         expect(exported.message).toContain(
+            "mysterious error in range computation",
+         );
+         expect((exported as QueryCompileError).problems.length).toBe(1);
+
+         // Decoys: a hidden source, a missing one and an alias of each get a
+         // refusal that does not depend on the filter. (Where nothing is gated
+         // the boundary explains a real hidden source, so hidden and missing
+         // may differ from each other; they must answer a `~` the way they answer any other compile error.)
+         for (const text of [
+            (f: string) =>
+               `run: helper -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `run: no_such_source -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is helper extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is no_such_source extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
+         ]) {
+            const tilde = await problemsOrRefusal(model, text("id ~ @2025"));
+            const plain = await problemsOrRefusal(model, text("nosuch = 1"));
+            expect(tilde).toBeInstanceOf(NotQueryableError);
+            expect(tilde).not.toBeInstanceOf(QueryCompileError);
+            expect(tilde.message).toBe(plain.message);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a syntax error stays the generic 404 where a name could change the answer", async () => {
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         // A caller-written join is read before the compile, and refused when
+         // it reaches a hidden source. A missing name is not, so returning the
+         // grammar error for the missing one would tell the two apart.
+         for (const name of ["helper", "no_such_source"]) {
+            const answer = await problemsOrRefusal(
+               model,
+               `run customers extend { join_one: ${name} on id = ${name}.id } -> { aggregate: total }`,
+            );
+            expect(answer).toBeInstanceOf(NotQueryableError);
+            expect(answer).not.toBeInstanceOf(QueryCompileError);
+         }
+         // A join whose base is curated reads no hidden name, so its typo is
+         // shown like any other grammar failure.
+         const twin = await problemsOrRefusal(
+            model,
+            `run customers extend { join_one: c2 is customers on id = c2.id } -> { aggregate: total }`,
+         );
+         expect(twin).toBeInstanceOf(QueryCompileError);
+         expect(
+            (twin as QueryCompileError).problems.every(
+               (p) => p.code === "syntax-error",
+            ),
+         ).toBe(true);
+      } finally {
+         await duckdb.close();
+      }
+
+      // A model with a gate refuses by name before the compile (a locked name
+      // anywhere in the text), so every such text keeps the 404, whatever the
+      // name is.
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id") extend {
+  view: lv is { aggregate: c is count() }
+}
+` +
+            fs
+               .readFileSync(index, "utf8")
+               .replace("export { customers }", "export { customers, locked }"),
+      );
+      const gated = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            gated.malloyConfig,
+         );
+         const model = pkg.getModel("index.malloy")!;
+         const messages = new Set<string>();
+         for (const name of ["helper", "no_such_source"]) {
+            const answer = await problemsOrRefusal(
+               model,
+               `run ${name} -> { group_by: nope }`,
+            );
+            expect(answer).toBeInstanceOf(NotQueryableError);
+            expect(answer).not.toBeInstanceOf(QueryCompileError);
+            messages.add(answer.message);
+         }
+         expect(messages.size).toBe(1);
+      } finally {
+         await gated.duckdb.close();
       }
    });
 
@@ -659,14 +918,56 @@ source: track_analysis is tracks extend {
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
-         // All-curated multi-statement is legitimate and admitted (no false
-         // denial from the old fail-closed-on-shape heuristic).
-         const { result } = await model.getQueryResults(
+         // Several `run:` statements must not change a denial: a hidden source
+         // and a missing one each give, with two statements, the same answer
+         // they give with one. So the count never reveals which it was.
+         const answerFor = async (text: string) => {
+            try {
+               await model.getQueryResults(undefined, undefined, text);
+            } catch (error) {
+               return error as Error;
+            }
+            throw new Error("expected the query to be refused");
+         };
+         // A direct name is denied before compile. An alias (`source: a is
+         // helper extend {}`) is denied only after compile, by the backstop,
+         // so it is the case that fails if the count check moves ahead of it.
+         for (const target of ["helper", "no_such_source"]) {
+            for (const last of [
+               `run: ${target} -> { aggregate: c }`,
+               `source: a is ${target} extend {}\nrun: a -> { aggregate: c }`,
+            ]) {
+               const once = await answerFor(last);
+               const twice = await answerFor(
+                  `run: customers -> { aggregate: total }\n${last}`,
+               );
+               expect(once).not.toBeInstanceOf(BadRequestError);
+               expect(twice).not.toBeInstanceOf(BadRequestError);
+               expect(twice.constructor).toBe(once.constructor);
+               expect(twice.message).toBe(once.message);
+            }
+         }
+         expect(
+            await answerFor("run: helper -> { aggregate: c }"),
+         ).toBeInstanceOf(NotQueryableError);
+         expect(
+            await answerFor(
+               "source: a is helper extend {}\nrun: a -> { aggregate: c }",
+            ),
+         ).toBeInstanceOf(OffSurfaceError);
+
+         // All-curated multi-statement passes the boundary, then is refused as
+         // more than one `run:`. The two denials above stay 404s rather than
+         // that 400: the count is checked only after every gate.
+         const allCurated = model.getQueryResults(
             undefined,
             undefined,
             "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
          );
-         expect(result.data).toBeDefined();
+         await expect(allCurated).rejects.toBeInstanceOf(BadRequestError);
+         await expect(allCurated).rejects.toThrow(
+            "The query has 2 run: statements",
+         );
       } finally {
          await duckdb.close();
       }
@@ -1328,10 +1629,9 @@ source: locked is duckdb.sql("select 1 as id") extend {
             "source: y is base_locked extend {\n  measure: c is count()\n  view: hv is { aggregate: c }\n}\nrun: y -> hv",
          );
          expect(lockedAlias).not.toBeInstanceOf(OffSurfaceError);
-         // The caller's own word echoed back (`assertQueryBoundaryEarly`'s
-         // explicit-source branch), not the 403 the lock threw: a 404 that
-         // does not confirm which lock, if any, base_locked carries.
-         expect(lockedAlias.message).toBe('No queryable source "base_locked".');
+         // The generic sentence, the one `helper`'s alias gets: a sentence naming
+         // base_locked would tell it apart from an ungated hidden source.
+         expect(lockedAlias.message).toBe("Query target is not queryable.");
       } finally {
          await duckdb.close();
       }

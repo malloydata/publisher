@@ -74,6 +74,26 @@ class RefsWorkOnceServed(unittest.TestCase):
         self.assertEqual(itp.place_ref(self.pkg, src, "u.parquet"),
                          (str(self.pkg / "models" / "u.parquet"), None))
 
+    def test_a_ref_written_from_the_package_root_is_not_resolved_against_its_own_folder(self):
+        # A model in `_shared/` names its data relative to the package root:
+        # `_shared/data/u.parquet`. Resolved against `_shared/` itself that is
+        # `_shared/_shared/data/u.parquet`, which does not exist.
+        (self.pkg / "_shared" / "data").mkdir(parents=True)
+        (self.pkg / "_shared" / "data" / "u.parquet").write_text("")
+        (self.pkg / "_shared" / "x.malloy").write_text("")
+        src = self.pkg / "_shared" / "x.malloy"
+        served, _ = itp.place_ref(self.pkg, src, "_shared/data/u.parquet")
+        self.assertEqual(pathlib.Path(served),
+                         self.pkg / "_shared" / "data" / "u.parquet")
+
+    def test_a_ref_beside_its_model_still_resolves_against_that_folder(self):
+        (self.pkg / "models").mkdir()
+        (self.pkg / "models" / "x.malloy").write_text("")
+        (self.pkg / "models" / "u.parquet").write_text("")
+        served, _ = itp.place_ref(self.pkg, self.pkg / "models" / "x.malloy",
+                                  "u.parquet")
+        self.assertEqual(pathlib.Path(served), self.pkg / "models" / "u.parquet")
+
     def test_a_warehouse_table_is_left_alone(self):
         self.assertEqual(itp.place_ref(self.pkg, self.pkg / "m.malloy",
                                        "analytics.public.orders"),

@@ -84,6 +84,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
     queries: dict[str, str | None] = {}
+    givens: dict[str, Any] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
@@ -95,6 +96,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             # was not read here, so the richest evidence in the run was the one
             # thing the flip table did not print.
             queries[e["qid"]] = e.get("final_query")
+            givens[e["qid"]] = e.get("final_givens")
             continue
         if e.get("kind") != "score":
             continue
@@ -104,6 +106,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "confidence": e.get("confidence"),
             "reason": (e.get("reason") or "")[:200],
             "final_query": queries.get(e["qid"]),
+            "final_givens": givens.get(e["qid"]),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
@@ -127,14 +130,22 @@ def query_diff(a: dict[str, Any], b: dict[str, Any], la: str, lb: str) -> str:
     query, in the judge or in the data, and that is a different search.
     """
     qa, qb = (a.get("final_query") or "").strip(), (b.get("final_query") or "").strip()
+    ga, gb = a.get("final_givens") or None, b.get("final_givens") or None
     if not qa and not qb:
         return "     (neither arm recorded a final query)"
-    if qa == qb:
+    if qa == qb and ga == gb:
         return ("     both arms ran the SAME query, so the flip is downstream "
                 "of it:\n     the judge, the rubric, or non-determinism in the "
                 "data.")
-    return (f"     {la} ran:\n       " + qa.replace("\n", "\n       ") +
-            f"\n     {lb} ran:\n       " + qb.replace("\n", "\n       "))
+
+    def shown(q: str, g: Any) -> str:
+        # Givens are an argument beside the text: the same text under other
+        # givens is a different query, so they are printed with it.
+        out = q.replace("\n", "\n       ")
+        return out + (f"\n       givens: {json.dumps(g, sort_keys=True)}"
+                      if g else "")
+    return (f"     {la} ran:\n       " + shown(qa, ga) +
+            f"\n     {lb} ran:\n       " + shown(qb, gb))
 
 
 def cost(run: Path) -> dict[str, float]:
@@ -214,9 +225,10 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
                    allow: bool) -> int:
     """Refuse a pair whose runs used different retrievers.
 
-    Local retrieval falls back to lexical SILENTLY when no embedding key is
-    set, and partway through a run when the provider fails. Either way the two
-    arms searched differently, and the flips that produces read as a model
+    Local retrieval is lexical when no embedding key is set. With a key, the
+    server never answers lexically: it returns `indexing` or `error` instead,
+    which reads as an empty or failed call. Either way the two arms searched
+    differently, and the flips that produces read as a model
     change. eval-mvp's standing gate: no A/B is scored under an unavailable
     semantic path. A run written before the harness recorded this carries
     nothing, and an unrecorded mode is not evidence that it matched -- so that
@@ -230,6 +242,22 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
               f"checked. Re-run with a harness that records it before quoting "
               f"this pair.")
         return 0
+    if "unavailable" in (ma, mb):
+        # An arm with calls answered `indexing` or `error` scored those calls
+        # as misses, so its numbers say the index was not ready, not how well
+        # the model did. Equal modes do not rescue the pair: two arms that
+        # were both unavailable are two unmeasured arms.
+        bad = la if ma == "unavailable" else lb
+        print(f"\n  ! {bad} had searches answered `indexing` or `error` "
+              f"(modes: {la} {ma}, {lb} {mb}). Those calls returned nothing "
+              f"to score and count as misses, so these flips are not a "
+              f"measurement of the change.")
+        if allow:
+            print("    --allow-retrieval-mismatch given; reporting anyway.")
+            return 0
+        print("    Wait for the index to be ready and re-run the arm, or pass "
+              "--allow-retrieval-mismatch to report anyway.")
+        return 2
     if ma == mb and ma != "mixed":
         if ma != "semantic":
             print(f"\n  ! both arms retrieved {ma}, not semantic. The pair is "

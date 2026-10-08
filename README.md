@@ -13,10 +13,17 @@ One data model, served over MCP and REST to AI agents, applications, and BI tool
 <p align="center">Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</p>
 
 <p align="center"><sub><strong>AI agents:</strong> read <a href="AGENTS.md">AGENTS.md</a> first (raw: <code>https://raw.githubusercontent.com/malloydata/publisher/main/AGENTS.md</code>).<br>
-It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.</sub></p>
+It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.<br>
+To learn the skills with nothing installed, read <code>https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md</code>. With a shell, <code>npx -y @malloy-publisher/skills@latest install</code> copies them all into this project.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js >=20"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/v/@malloy-publisher/server" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/dm/@malloy-publisher/server" alt="npm downloads"></a>
+  <a href="https://hub.docker.com/r/ms2data/malloy-publisher"><img src="https://img.shields.io/docker/pulls/ms2data/malloy-publisher" alt="Docker pulls"></a>
+  <a href="https://github.com/malloydata/publisher/stargazers"><img src="https://img.shields.io/github/stars/malloydata/publisher?style=social" alt="GitHub Stars"></a>
 </p>
 
 <p align="center">

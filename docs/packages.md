@@ -62,8 +62,10 @@ The fields the server reads:
 | `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md). |
 | `materialization` | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md). |
 | `scope` | `"package"` (the default) or `"version"`. Any other value fails the package load. |
+| `retrieval` | How `get_context` searches and indexes this package: `representation` (`single` or `facets`), `keyphrases` (`auto`, `never`, `always`), `refine`, `rerank`, `sourceMatch` and `sourceSummary` (each `{ "enabled": "auto" \| true \| false }`, with `minLevel` on `refine` and `topSources` on `rerank`), and `prompts` (a file path inside the package for each of `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load. See [get-context-pipeline.md](get-context-pipeline.md) and [configuration.md](configuration.md). |
 
-Unknown keys are ignored and preserved. The bundled examples carry a `version` field as a
+Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
+package load with a message naming the valid ones. The bundled examples carry a `version` field as a
 convention, but nothing reads it. (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it.)
 
@@ -111,12 +113,40 @@ Consequences:
   copying them.
 - After editing the served copy, reload the package to recompile it:
   `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST, or the
-  `reload_package` MCP tool. The reload is in place, unless the package's metadata was given
-  a `location` through the API (a PATCH), in which case it re-fetches from that location and
-  overwrites local edits. A reload that fails to compile leaves the files alone and keeps serving
-  the previous model.
+  `reload_package` MCP tool. The reload is in place for a package that came from
+  `publisher.config.json`; a package the server installed from a location (below) is re-fetched
+  from it instead, which overwrites local edits. A reload that fails to compile leaves the files
+  alone and keeps serving the previous model.
 - `--init` deletes `publisher_data/` and re-copies everything from the configured locations. Keep
   your source of truth outside `publisher_data/`.
+
+### Installed packages
+
+A package can also arrive through the API: a `POST` to an environment's `packages` with a
+`location`, or a `PATCH` on a package that names one. The server downloads it, compiles the new
+copy beside the one that is serving (if any), and swaps it in; the previous copy answers queries
+until the swap. Four things follow from how that is recorded:
+
+- The server writes where it fetched the package from into its own file outside the package
+  directory, `publisher_data/<env>/.install-records/<pkg>.json`. It never writes that into
+  `publisher.json`, and nothing inside the package is read as one, neither a `location` an author
+  puts in `publisher.json` nor a record file shipped with the content: a reload re-fetches from
+  the recorded location, so only the server may set it.
+- A `PATCH` whose `location` equals the recorded one is a metadata update. Nothing is fetched or
+  recompiled beyond what a new `manifestLocation` requires. A `PATCH` with a different `location`
+  installs from it. A `PATCH` never changes the recorded location by itself. To fetch the same
+  location again, reload the package.
+- A `PATCH` that arrives while a load of the package is in progress waits for it, and is applied
+  to whichever copy that load leaves resident. So it lands on the copy being installed, or, if the
+  install failed, on the copy that is still serving.
+- A reload of an installed package re-fetches from the recorded location and re-applies the
+  manifest binding it had. Everything else, the description, `explores`, policy, is what the
+  re-fetched `publisher.json` declares.
+
+While a package is loading, reinstalling or recompiling, its `status` reports `loading: true`
+alongside `serving`, which stays true for as long as a previous copy answers queries. A package
+loading for the first time is listed only by `GET /api/v0/status?includeLoading=true`; every other
+listing shows packages that can serve. See [api-overview.md](api-overview.md).
 
 The agent workflow built on this lifecycle is in [AGENTS.md](../AGENTS.md); load failures and how
 to read them are in [deployment.md](deployment.md#serving-does-not-mean-everything-loaded).

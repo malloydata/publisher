@@ -12,7 +12,6 @@ import {
    MalloyError,
    Annotations,
    ModelDef,
-   modelDefToModelInfo,
    ModelMaterializer,
    NamedQueryDef,
    QueryData,
@@ -55,6 +54,9 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import {
    AccessDeniedError,
    BadRequestError,
+   databaseAccessFailure,
+   ConnectionError,
+   InvalidArgumentError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -67,6 +69,7 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
@@ -75,20 +78,19 @@ import {
    liftDerivedSources,
    type ServeShapeGiven,
    buildVirtualMap,
-   extractJoins,
-   extractRefinements,
-   extractSourceFilters,
    buildServeShapeTiers,
-   extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
-   sliceSourceRange,
+   authorModelLiftContext,
    type ServeBinding,
    type DerivedSourceLift,
    type DerivedSourceDef,
    type SourceLocation,
    serveShapeDiagnostics,
    withholdUnreproducibleCallerScopedJoins,
+   documentFlagsForLifts,
+   authorRefinementsFor,
+   reachedPersistedSources,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -108,6 +110,7 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
+   assertNoAuthorizeTagLike,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -122,8 +125,15 @@ import {
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
-import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
+   buildDashboardManifest,
+   compileTileGivens,
+   readDashboardModelFacts,
+   type DashboardManifest,
+   type DashboardModelFacts,
+} from "./dashboard";
+import {
+   artifactKindOfNotes,
    docNotesAboveArtifact,
    isArtifactNoteText,
    isNotebookReaderError,
@@ -173,6 +183,7 @@ import {
    stringifyQueryResponse,
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
+import { onlyParseFailures } from "./compile_restriction";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -255,6 +266,7 @@ import {
 } from "../authorize_metrics";
 import { decideLock } from "./authorize_lock";
 import { safeJoinUnderRoot } from "../path_safety";
+import { translatorMalloyError } from "./translator_error";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -408,6 +420,29 @@ function declaredGivensPerCell(
    });
 }
 
+/** The `queryInfo` a plain cell gets from `anonymous_queries`, for a run compiled on its own on top of the model. */
+async function tileQueryInfo(
+   materializer: ModelMaterializer,
+   text: string,
+): Promise<Malloy.QueryInfo | undefined> {
+   try {
+      const def = (await materializer.extendModel(text).getModel())._modelDef;
+      const anonymous = modelInfoOf(def).anonymous_queries;
+      const last = anonymous?.[anonymous.length - 1];
+      const compiled = def.queryList[def.queryList.length - 1] as
+         | NamedQueryDef
+         | undefined;
+      return last && { ...last, name: compiled?.as || compiled?.name || "" };
+   } catch (error) {
+      // The cell still runs on its own; only its description is missing.
+      logger.warn("Could not describe a layout notebook tile's query", {
+         text,
+         error,
+      });
+      return undefined;
+   }
+}
+
 export interface RunnableNotebookCell {
    type: "code" | "markdown";
    /** Set on a served notebook's cells; a `.malloynb` cell has none. */
@@ -450,6 +485,8 @@ export interface RunnableNotebookCell {
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+   /** A layout tile's `queryInfo`, compiled on first read: its run is a string in the tag, so no `anonymous_queries` entry describes it. */
+   deriveQueryInfo?: () => Promise<Malloy.QueryInfo | undefined>;
 }
 
 /** What running one notebook cell answers; `kind` only on a served notebook's cell. */
@@ -578,8 +615,40 @@ async function compileErrorOf(runnable: {
       await runnable.getPreparedQuery();
       return undefined;
    } catch (error) {
-      return error instanceof MalloyError ? error : undefined;
+      if (error instanceof MalloyError) return error;
+      return translatorMalloyError(error);
    }
+}
+
+/**
+ * How many `run:` statements the compiled text holds, or undefined when it does
+ * not compile (the run path then answers that failure itself). Malloy counts
+ * only the text's own `run:` statements here: `source:` and `query:`
+ * definitions add none, and the base model's statements are not carried into
+ * an extension. Reads the memoized compile, so it costs nothing extra.
+ */
+async function runStatementCount(runnable: {
+   getPreparedQuery(): Promise<unknown>;
+}): Promise<number | undefined> {
+   let prepared: { model?: { queries?(): { unnamed: number } } } | undefined;
+   try {
+      prepared = (await runnable.getPreparedQuery()) as typeof prepared;
+   } catch {
+      return undefined;
+   }
+   return prepared?.model?.queries?.().unnamed;
+}
+
+/**
+ * Malloy runs only the LAST `run:` of a text and drops the rest without a word,
+ * so a caller that sends several would silently lose every answer but one.
+ */
+function multipleRunStatementsError(count: number): InvalidArgumentError {
+   return new InvalidArgumentError(
+      `The query has ${count} run: statements; only one runs per call, so the ` +
+         "others would be ignored. Send each as its own request. (source: and " +
+         "query: definitions before a single run: are fine.)",
+   );
 }
 
 /**
@@ -620,6 +689,9 @@ export function bindingsAllowDegradeToLive(
  *  identity contract holds on the branch that never reaches the memo. */
 const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
    Object.freeze([]);
+
+/** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
+const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
 export class Model {
    private packageName: string;
@@ -703,6 +775,11 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   private compiledDashboardFacts:
+      | Promise<DashboardModelFacts | undefined>
+      | undefined;
+   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
+   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -712,6 +789,8 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
+   /** The tile layout of a served notebook written as one; undefined for one written as cells. */
+   private notebookLayout: DashboardManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -954,7 +1033,7 @@ export class Model {
       filterMap?: Map<string, FilterDefinition[]>,
       givens?: ApiGiven[],
       /**
-       * Precomputed `modelDefToModelInfo(modelDef)`. The package-load
+       * Precomputed `modelInfoOf(modelDef)`. The package-load
        * worker emits it as part of `SerializedModel` so we don't
        * re-derive it on every package load. Callers that build a
        * `Model` from a raw `modelDef` (e.g. test fixtures via
@@ -1034,8 +1113,7 @@ export class Model {
          this.authorizeReferencedGivenNames = new Set();
       }
       this.modelInfo =
-         modelInfo ??
-         (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
+         modelInfo ?? (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
 
       // One-time deprecation notice per Model instance. Surfaces only when
       // the model declares `#(filter)` annotations so operators migrating
@@ -1992,6 +2070,53 @@ export class Model {
    }
 
    /**
+    * The opaque 403 a row-level gate gives when a given it reads went
+    * unsupplied, or undefined when none did or no gate was grafted. Opaque on
+    * purpose: Malloy's own failure names the missing given, and
+    * `docs/authorize.md` promises a denied caller is never told which one.
+    * `fallbackLabel` names the source when no caller join's graft owns the
+    * missing given.
+    *
+    * One definition for the two places that must agree: the prepare-time
+    * failure handler, and the run-statement count, which has to give way to
+    * this denial rather than answer 400 ahead of it.
+    *
+    * `gateGivenNames` is the set of names checked for a missing value. The
+    * prepare handler passes every name any gate in the model reads, since a
+    * binding failure has already confirmed one of them is missing. The count
+    * has no failure to confirm it, so it passes only the names this query's
+    * own grafts read: another source's gate must not turn its 400 into a 403.
+    */
+   private unboundGateDenial(
+      runnable: QueryMaterializer,
+      givens: Record<string, unknown> | undefined,
+      fallbackLabel: string,
+      gateGivenNames: Iterable<string>,
+   ): AccessDeniedError | undefined {
+      if (
+         !this.queryHadRowLevelFilterAttached(runnable) ||
+         ![...gateGivenNames].some((name) => !(name in (givens ?? {})))
+      ) {
+         return undefined;
+      }
+      // A caller join's graft answers under the caller's own alias.
+      const unbound = this.rowLevelFilteredRunnables
+         .get(runnable)
+         ?.find(
+            (graft) =>
+               graft.callerJoinPath &&
+               graft.givenNames.some((name) => !(name in (givens ?? {}))),
+         );
+      recordRowLevelGateDecision(
+         "denied_by_gate",
+         unbound ? "caller_join" : "entry_point",
+      );
+      return new AccessDeniedError(
+         `Access denied for source "${unbound?.label ?? fallbackLabel}".`,
+      );
+   }
+
+   /**
     * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned) has
     * a row-level `#(access_filter)` filter attached. Object-identity keyed
     * ({@link rowLevelFilteredRunnables}) rather than a field on `Model`, which
@@ -2402,7 +2527,7 @@ export class Model {
                // convert HERE, on the base actually gated — a hidden one is a
                // 404, not a 403 naming it.
                if (error instanceof AccessDeniedError) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -2796,6 +2921,72 @@ export class Model {
    }
 
    /**
+    * The query boundary for the joins a document's own text writes, the same
+    * two checks the query route runs on a caller join: `text` read before
+    * compiling, then the compiled `runnable` once it exists. A document that
+    * passes both runs on the query route. A no-op when the boundary is inert.
+    */
+   public async assertDocumentJoinsQueryable(
+      text: string,
+      runnable?: { getPreparedQuery(): Promise<unknown> },
+   ): Promise<void> {
+      if (!runnable) {
+         await this.assertCallerJoinBasesEarly(text, {}, "boundary");
+         return;
+      }
+      await this.assertCallerJoinsQueryable(runnable as QueryMaterializer, {
+         kind: "query",
+         text,
+      });
+   }
+
+   /**
+    * The boundary's refusal for a gated name reached through an alias or a join,
+    * which the caller did not write. In a gated model its words are the generic
+    * sentence, since `No queryable source "<name>".` beside `Query target is not
+    * queryable.` would confirm the name is a real, locked source.
+    */
+   private refuseGatedNameAsBoundary(name: string): void {
+      try {
+         this.assertQueryBoundaryEarly(name, undefined, undefined);
+      } catch (error) {
+         if (
+            error instanceof NotQueryableError &&
+            !(error instanceof OffSurfaceError) &&
+            this.hasAnyAuthorizeNote()
+         ) {
+            throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
+         }
+         throw error;
+      }
+   }
+
+   /**
+    * Throws the generic 404 for `query` (with the document's `definitions`
+    * ahead of it) when a run target, or the base chain of a source the text
+    * declares, is not queryable, in a model where that 404 is the only answer:
+    * a hidden source, a hidden gated one and an absent one then read the same,
+    * so neither a compile problem nor a document that comes back confirms a
+    * name. An ungated model explains a hidden source already, so there the
+    * compile problem is shown. A no-op when the boundary is inert.
+    */
+   public assertTextNameVisible(query: string, definitions: string): void {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!this.hasAnyAuthorizeNote()) return;
+      const text = `${definitions}\n${query}`;
+      const queryable = (name: string): boolean =>
+         this.isCuratedSource(name) || this.derivesFromCurated(name, text);
+      if (
+         extractRunTargetSourceNames(text).every(queryable) &&
+         [...buildDerivationBaseMap(text).keys()].every(queryable)
+      ) {
+         return;
+      }
+      throw new NotQueryableError(GENERIC_NOT_QUERYABLE);
+   }
+
+   /**
     * Decide, before compiling, what a caller-written join's TEXT reaches: the
     * boundary (`phase: "boundary"`) or every lock (`phase: "locks"`), so a
     * refused caller hears 404 or 403 rather than the compiler's opinion of a
@@ -2878,7 +3069,7 @@ export class Model {
                   error instanceof AccessDeniedError &&
                   !includeHiddenFilesAndSources
                ) {
-                  this.assertQueryBoundaryEarly(name, undefined, undefined);
+                  this.refuseGatedNameAsBoundary(name);
                }
                throw error;
             }
@@ -4052,7 +4243,7 @@ export class Model {
                error instanceof AccessDeniedError &&
                !includeHiddenFilesAndSources
             ) {
-               this.assertQueryBoundaryEarly(source, undefined, undefined);
+               this.refuseGatedNameAsBoundary(source);
             }
             throw error;
          }
@@ -4488,11 +4679,14 @@ export class Model {
          model.setGateRuntime(runtime as HydrationRuntime);
          model.compiledSourceText = compiledTextFor(modelURL);
          return model;
-      } catch (error) {
-         let computedError = error;
-         if (error instanceof Error && error.stack) {
-            logger.error("Error stack", error.stack);
+      } catch (thrown) {
+         if (thrown instanceof Error && thrown.stack) {
+            logger.error("Error stack", thrown.stack);
          }
+         // The translator's plain Error is the author's mistake too, as it is
+         // on the worker path (package_load_worker.ts compileOneModel).
+         const error = translatorMalloyError(thrown) ?? thrown;
+         let computedError = error;
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
@@ -4539,7 +4733,12 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         // A package compile hydrates every model on every call, for a package
+         // that already logged these warnings when it loaded.
+         skipAuthorizeWarningLog?: boolean;
+      },
    ): Model {
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
@@ -4556,7 +4755,9 @@ export class Model {
       // `SerializedModel.authorizeWarnings`'s doc) — the worker has no
       // logger, so they ride over the wire as strings for this thread, which
       // does, to log once per model hydration.
-      for (const warning of data.authorizeWarnings ?? []) {
+      for (const warning of options?.skipAuthorizeWarningLog
+         ? []
+         : (data.authorizeWarnings ?? [])) {
          logger.warn(warning, { packageName, modelPath: data.modelPath });
       }
 
@@ -4640,8 +4841,12 @@ export class Model {
       modelPath: string,
       modelType: ModelType,
       error: Error,
+      // The text that failed, when it is not the file on disk: a package
+      // compile's what-if replacement. Without it, a reader of this model's
+      // text judges the saved file instead of the edit.
+      sourceText?: string,
    ): Model {
-      return new Model(
+      const model = new Model(
          packageName,
          modelPath,
          {} as DataStyles,
@@ -4654,6 +4859,8 @@ export class Model {
          undefined,
          error,
       );
+      model.compiledSourceText = sourceText;
+      return model;
    }
 
    /** Look up the deserialized error helper for callers (e.g. Package.create). */
@@ -4883,7 +5090,9 @@ export class Model {
 
    /**
     * The model file's text as this model's compile read it, or undefined when there is
-    * none (a `.malloynb`, a compile failure, or an unreadable file).
+    * none (a `.malloynb`, a compile failure, or an unreadable file). A compile
+    * failure does carry text when it is a package compile's what-if
+    * replacement, because that text is not on disk to fall back to.
     *
     * The only safe input for slicing a `DocumentLocation` out of: the ranges in
     * {@link getModelDef}'s IR index THIS text. Callers must not fall back to
@@ -4934,6 +5143,49 @@ export class Model {
             ),
          ),
       );
+   }
+
+   /**
+    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * reads (`compiledTileGivens`), for the manifest discovery serves.
+    *
+    * The static walk misses a given read through a joined source's `where:`, a
+    * dimension defined with `$X`, or a gate, and cannot resolve a refinement;
+    * Malloy's `givenUsage` has all of those. About a millisecond per tile, and
+    * cached for this Model's life. A tile that fails to compile keeps the
+    * static answer.
+    */
+   public getCompiledDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
+         (facts) => (this.settledCompiledDashboardFacts = facts),
+      );
+      return this.compiledDashboardFacts;
+   }
+
+   private async compileDashboardModelFacts(): Promise<
+      DashboardModelFacts | undefined
+   > {
+      const facts = this.getDashboardModelFacts();
+      const materializer = this.modelMaterializer;
+      if (!facts || !materializer) return facts;
+      let tiles: string[];
+      try {
+         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+            tile.kind === "query" ? [tile.query] : [],
+         );
+      } catch {
+         // Discovery builds it again and reports the throw.
+         return facts;
+      }
+      const compiled = await compileTileGivens(
+         tiles,
+         materializer,
+         this.modelDef?.givens,
+         (source) => gateGivenSource(this.sources ?? [], source),
+      );
+      return { ...facts, compiledTileGivens: compiled };
    }
 
    /**
@@ -5283,6 +5535,44 @@ export class Model {
    }
 
    /**
+    * Whether `compileError` for ad-hoc `query` may be shown although
+    * {@link queryTextSourcesQueryable} cannot vouch for the text, because no
+    * run target can be read off it (`run` with no colon, SQL, a bare `run:`).
+    *
+    * A grammar failure says nothing about the model, so the only way the
+    * answer could depend on a hidden name is a check that reads names before
+    * the compile and refuses on one. Three do, and this is false whenever one
+    * could act, so a hidden name and a missing one still get the same answer:
+    *   - the run-target check, which has no target to read here (zero names);
+    *   - the caller-join check, which refuses a hidden join base before the
+    *     compile and lets a missing one through to it, so every join base
+    *     must be curated or derived from curated sources in the text;
+    *   - the lock checks, which read every name in the text and answer
+    *     differently for a gated one: false when anything is gated, using the
+    *     same test {@link notQueryable} applies before it will explain a
+    *     refusal.
+    * Where nothing is gated, the boundary already says a hidden source is real
+    * (see {@link OffSurfaceError}), so there is no existence to protect.
+    */
+   private parseFailureNamesNothing(
+      query: string,
+      compileError: MalloyError,
+   ): boolean {
+      return (
+         onlyParseFailures(compileError.problems) &&
+         extractRunTargetSourceNames(query).length === 0 &&
+         [...buildJoinBaseMap(query).values()].every((bases) =>
+            [...bases].every(
+               (b) =>
+                  this.isCuratedSource(b) || this.derivesFromCurated(b, query),
+            ),
+         ) &&
+         !this.declaresAnyGate() &&
+         !this.hasAnyAuthorizeNote()
+      );
+   }
+
+   /**
     * Whether the compiler's problems for ad-hoc `query` may be shown (400) or
     * the text keeps the boundary's 404. Every source the text NAMES must pass
     * the compiled boundary's admission test — curated, or derived only from
@@ -5522,6 +5812,14 @@ export class Model {
       );
    }
 
+   /** The `kind` the model's own `## artifact` note declares, if any. */
+   public artifactKind(): string | undefined {
+      return (
+         this.modelDef &&
+         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
+      );
+   }
+
    private isDashboard(): boolean {
       return this.queryBoundary.dashboard === true;
    }
@@ -5752,7 +6050,8 @@ export class Model {
     *     ignores it (`# colspan` outside `# dashboard { columns=N }`, or a
     *     colspan wider than the grid, which is clamped). Nothing looks broken at
     *     query time -- the layout just is not what the author wrote -- which is
-    *     why load time is the only place this becomes visible.
+    *     why a load, a reload or a package-scope compile is the only place this
+    *     becomes visible.
     *
     * `warn` and `error` are the only severities the renderer emits, so no
     * finding is dropped here.
@@ -5970,6 +6269,7 @@ export class Model {
    public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
+      this.notebookLayout = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -5987,8 +6287,14 @@ export class Model {
       if (read.error) return refuse(read.error);
       const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
       this.notebookAnnotations = read.annotations;
-      this.setNotebookCells(
-         read.cells.map((cell): RunnableNotebookCell => {
+      const layout = this.readNotebookLayout();
+      this.notebookLayout = layout;
+      // A layout's prose and queries are its tiles, in tile order; the file's own cells are only its definitions.
+      const fileCells = layout
+         ? read.cells.filter((cell) => cell.kind === "definition")
+         : read.cells;
+      const cells: RunnableNotebookCell[] = fileCells.map(
+         (cell): RunnableNotebookCell => {
             if (cell.kind === "markdown") {
                return { type: "markdown", kind: "markdown", text: cell.text };
             }
@@ -6025,9 +6331,46 @@ export class Model {
                   name: compiled?.as || compiled?.name || "",
                },
             };
-         }),
+         },
       );
+      if (layout) {
+         for (const tile of layout.tiles ?? []) {
+            if (tile.kind === "text") {
+               cells.push({
+                  type: "markdown",
+                  kind: "markdown",
+                  text: tile.markdown,
+               });
+               continue;
+            }
+            const text = `run: ${tile.query}`;
+            let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
+            cells.push({
+               type: "code",
+               kind: "query",
+               text,
+               proseLines: [],
+               runnable: materializer.loadQuery(text),
+               modelMaterializer: materializer,
+               modelDef,
+               deriveQueryInfo: () =>
+                  (queryInfo ??= tileQueryInfo(materializer, text)),
+            });
+         }
+      }
+      this.setNotebookCells(cells);
       return "ok";
+   }
+
+   /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
+   private readNotebookLayout(): DashboardManifest | undefined {
+      // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
+      const facts =
+         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
+      const manifest = facts && buildDashboardManifest(facts);
+      return manifest?.kind === "notebook" && manifest.tiles
+         ? manifest
+         : undefined;
    }
 
    /** Why the reader refused this served notebook's cells, if it did. */
@@ -6580,6 +6923,15 @@ export class Model {
          rollupGroups,
          this.serveShapeGivens(),
          derived,
+         // The flags of every file whose text the shape carries: a lift's
+         // declaration, and a bound source's re-emitted views and joins.
+         documentFlagsForLifts(
+            [
+               ...bindings.map((b) => ({ sourceName: b.sourceName })),
+               ...derived,
+            ],
+            this.authorModelLift(),
+         ),
       );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
@@ -6637,44 +6989,15 @@ export class Model {
       contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
       sourceNameById: Map<string, string>;
       liftText: (location: SourceLocation) => string | undefined;
+      fileText: (url: string) => string | undefined;
    } {
-      const contents =
-         (
-            this.modelDef as
-               | {
-                    contents?: Record<
-                       string,
-                       DerivedSourceDef & { sourceID?: unknown }
-                    >;
-                 }
-               | undefined
-         )?.contents ?? {};
-      // sourceID -> author source name, for the join materialization gate and
-      // for resolving what a derived source extends.
-      const sourceNameById = new Map<string, string>();
-      for (const [name, def] of Object.entries(contents)) {
-         if (typeof def?.sourceID === "string") {
-            sourceNameById.set(def.sourceID, name);
+      return authorModelLiftContext(this.modelDef, (url) => {
+         try {
+            return readFileSync(fileURLToPath(url), "utf8");
+         } catch {
+            return undefined;
          }
-      }
-      // Cache each source file's text (or null when unreadable) across lookups.
-      const fileCache = new Map<string, string | null>();
-      const liftText = (location: SourceLocation): string | undefined => {
-         if (!location?.url?.startsWith("file:")) return undefined;
-         if (!fileCache.has(location.url)) {
-            try {
-               fileCache.set(
-                  location.url,
-                  readFileSync(fileURLToPath(location.url), "utf8"),
-               );
-            } catch {
-               fileCache.set(location.url, null);
-            }
-         }
-         const text = fileCache.get(location.url);
-         return text ? sliceSourceRange(text, location.range) : undefined;
-      };
-      return { contents, sourceNameById, liftText };
+      });
    }
 
    /**
@@ -6688,10 +7011,29 @@ export class Model {
     * fails.
     */
    private liftedDerivedSources(bindings: ServeBinding[]): DerivedSourceLift[] {
-      const { contents, sourceNameById, liftText } = this.authorModelLift();
+      const lift = this.authorModelLift();
+      const { contents, sourceNameById, liftText } = lift;
+      // Only what a query against this model can name — its namespace — and
+      // what those sources derive from. The lift context also holds the
+      // model's hidden dependencies (sources an import brought in without
+      // naming them), so a base reached through an import is still carried
+      // when a namespace source needs it; one nothing in the namespace
+      // reaches is not a candidate, and cannot withhold the shape.
+      const namespace = Object.keys(
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+      const candidateNames = new Set(namespace);
+      for (const name of namespace) {
+         for (const reached of reachedPersistedSources(lift, name, () => false)
+            .visited) {
+            candidateNames.add(reached);
+         }
+      }
       return liftDerivedSources({
          contents,
          sourceNameById,
+         candidateNames,
          // Bases a lift may extend: the FRESH bindings it is handed.
          shapeSourceNames: new Set(bindings.map((b) => b.sourceName)),
          // Candidates are excluded against EVERY binding, including the ones
@@ -6754,23 +7096,16 @@ export class Model {
          );
       }
       const materializedSourceNames = new Set(kept.map((b) => b.sourceName));
-      return kept.map((b) => {
-         const fields = contents?.[b.sourceName]?.fields;
-         const refinements = [
-            ...extractJoins(fields, {
-               sourceNameById,
-               materializedSourceNames,
-               liftText,
-            }),
-            ...extractRefinements(fields),
-            // The source's own `where:` clauses. Not part of the materialized
-            // relation (the build SQL is the persisted relation alone), so
-            // without these the shape serves rows the source excludes.
-            ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
-            ...extractViews(fields, liftText),
-         ];
-         return { ...b, refinements };
-      });
+      // What each source adds to its table, re-declared on the binding — the
+      // same assembly the chained build uses for its parents.
+      return kept.map((b) => ({
+         ...b,
+         refinements: authorRefinementsFor(
+            b.sourceName,
+            { contents, sourceNameById, liftText },
+            materializedSourceNames,
+         ),
+      }));
    }
 
    /**
@@ -7069,7 +7404,10 @@ export class Model {
          ])[]) {
             if (!callerText) continue;
             try {
-               assertNoCallerAuthorizeAnnotation(callerText);
+               // A name is interpolated mid-line, so it is never lexed as text of its own.
+               if (field === "query")
+                  assertNoCallerAuthorizeAnnotation(callerText);
+               else assertNoAuthorizeTagLike(callerText);
             } catch (err) {
                // Recorded here, not at the throw: the parse `catch` below
                // rethrows a BadRequestError untouched and never reaches the
@@ -7513,7 +7851,9 @@ export class Model {
       // that reaches here is in text the caller may run: when every run target
       // is queryable (curated, or derived only from curated sources) the caller
       // gets the compiler's problems as a 400 located in its own text;
-      // otherwise the answer is the backstop's 404. A given that will not bind
+      // otherwise the answer is the backstop's 404. The one exception is text
+      // that fails only at the grammar and names no run target, in a model
+      // where nothing is gated (see parseFailureNamesNothing). A given that will not bind
       // is left to the run path, which answers it opaquely when a gate reads it.
       // Skipped when the query routed: the routed runnable compiled the same
       // text, so checking the live one would cost a second compile.
@@ -7528,7 +7868,8 @@ export class Model {
          if (compileError && !isGivenBindingFailure(compileError)) {
             if (
                boundary === "deferred" &&
-               !this.queryTextSourcesQueryable(query)
+               !this.queryTextSourcesQueryable(query) &&
+               !this.parseFailureNamesNothing(query, compileError)
             ) {
                // Explain the refusal (`OffSurfaceError`, ungated only) when a
                // run target is a real model source off the surface — the same
@@ -7560,6 +7901,16 @@ export class Model {
             throw queryCompileError(compileError, query);
          }
       }
+
+      // Counted here, off a compile already in hand (the gate below may swap
+      // `runnable` for a recompile of the same text), but refused only after
+      // every gate: a request any gate denies keeps exactly the denial it got
+      // before this check existed, so the count cannot tell a caller whether a
+      // hidden or locked source exists.
+      const runCount =
+         !sourceName && !queryName && query
+            ? await runStatementCount(runnable)
+            : undefined;
 
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
@@ -7619,6 +7970,31 @@ export class Model {
                ? { runnable: liveRunnable, region: callerRegion }
                : undefined,
       });
+      if (runCount !== undefined && runCount > 1) {
+         this.queryExecutionHistogram.record(
+            performance.now() - startTime,
+            this.queryMetricAttributes({
+               environment: queryMetadataInput?.environment,
+               queryName,
+               sourceName,
+               status: "error",
+               servedFrom,
+            }),
+         );
+         // A row-level gate whose given went unsupplied denies at prepare, below,
+         // so the count must not answer first: that denial is what this request
+         // got before the count existed.
+         throw (
+            this.unboundGateDenial(
+               runnable,
+               givens,
+               compiledSource ?? sourceName ?? "unknown",
+               (this.rowLevelFilteredRunnables.get(runnable) ?? []).flatMap(
+                  (graft) => graft.givenNames,
+               ),
+            ) ?? multipleRunStatementsError(runCount)
+         );
+      }
       // After the gate, so a denied caller gets its 403 rather than a 400 about
       // a value; before prepare, which is where Malloy would parse it.
       this.assertFilterGivens(givens);
@@ -7807,35 +8183,21 @@ export class Model {
             // whole-source gate returned before the graft existed. Checked
             // ahead of the `MalloyError` rethrow below, which is where a
             // PREPARE-time binding failure would otherwise escape.
-            if (
-               isGivenBindingFailure(err) &&
-               this.queryHadRowLevelFilterAttached(runnable) &&
-               [...this.authorizeReferencedGivenNames].some(
-                  (name) => !(name in (givens ?? {})),
-               )
-            ) {
+            const gateDenial = isGivenBindingFailure(err)
+               ? this.unboundGateDenial(
+                    runnable,
+                    givens,
+                    compiledSource ?? sourceName ?? "unknown",
+                    this.authorizeReferencedGivenNames,
+                 )
+               : undefined;
+            if (gateDenial) {
                logger.debug("Gate given unbound; denying opaquely", {
                   environmentName: this.packageName,
                   modelPath: this.modelPath,
                   error: err instanceof Error ? err.message : String(err),
                });
-               // A caller join's graft answers under the caller's own alias.
-               const unbound = this.rowLevelFilteredRunnables
-                  .get(runnable)
-                  ?.find(
-                     (graft) =>
-                        graft.callerJoinPath &&
-                        graft.givenNames.some(
-                           (name) => !(name in (givens ?? {})),
-                        ),
-                  );
-               recordRowLevelGateDecision(
-                  "denied_by_gate",
-                  unbound ? "caller_join" : "entry_point",
-               );
-               throw new AccessDeniedError(
-                  `Access denied for source "${unbound?.label ?? compiledSource ?? sourceName ?? "unknown"}".`,
-               );
+               throw gateDenial;
             }
 
             const givenCode = (err as { code?: string })?.code;
@@ -7853,14 +8215,28 @@ export class Model {
                );
             }
 
+            // A connection-side failure the connection already classified
+            // (an exhausted pool) keeps its own status rather than becoming a
+            // 400 the caller would read as a problem with the query.
+            if (err instanceof ConnectionError) {
+               throw err;
+            }
+
             // Re-throw Malloy errors as-is (they will be handled by error handler)
             if (err instanceof MalloyError) {
                throw err;
             }
 
-            // For other runtime errors (like divide by zero), throw as BadRequestError
             const errorMessage =
                err instanceof Error ? err.message : String(err);
+            // The database could not be reached (502) or rejected the
+            // connection's credentials (424), so the query never ran. Logged
+            // once at warn by the error mapping. Not the 400 below, which
+            // would tell the caller to fix a query that is fine.
+            const accessFailure = databaseAccessFailure(err);
+            if (accessFailure) throw accessFailure;
+
+            // For other runtime errors (like divide by zero), throw as BadRequestError
             logger.error("Query execution error", {
                error: err,
                errorMessage,
@@ -8399,8 +8775,8 @@ export class Model {
     * Reads identifiers outside comments and string literals, so an import
     * path or a note does not count, and reads a backticked name whole. A
     * dashboard's text is always returned, because its editor saves through
-    * it; a served notebook has no editor, and its cells' text comes from the
-    * notebook GET.
+    * it; the notebook editor fetches a notebook's text with
+    * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
       if (this.isDashboard()) return true;
@@ -8528,9 +8904,13 @@ export class Model {
       const shownCells = new Set<number>();
       for (const [index, cell] of cells.entries()) {
          const shown =
-            cell.queryInfo !== undefined &&
+            (cell.queryInfo !== undefined ||
+               cell.deriveQueryInfo !== undefined) &&
             (await this.showsCellQueryInfo(index, cell));
          if (shown) shownCells.add(index);
+         const queryInfo = shown
+            ? (cell.queryInfo ?? (await cell.deriveQueryInfo?.()))
+            : undefined;
          notebookCells.push({
             type: cell.type,
             kind: cell.kind,
@@ -8540,7 +8920,7 @@ export class Model {
             codeLine: cell.codeLine,
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
-            queryInfo: shown ? JSON.stringify(cell.queryInfo) : undefined,
+            queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
          } as ApiNotebookCell);
       }
 
@@ -8629,6 +9009,21 @@ export class Model {
             (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
          ),
          notebookCells,
+         ...(this.notebookLayout && {
+            dashboard: {
+               packageName: this.packageName,
+               name: this.notebookLayout.name,
+               path: this.modelPath,
+               kind: this.notebookLayout.kind,
+               title: this.notebookLayout.title,
+               description: this.notebookLayout.description,
+               tiles: this.notebookLayout.tiles,
+               dashboardColumns: this.notebookLayout.dashboardColumns,
+               startingGivens: this.notebookLayout.startingGivens,
+               autorun: this.notebookLayout.autorun,
+               givens: this.notebookLayout.givens,
+            },
+         }),
       };
       return notebook;
    }
@@ -9108,6 +9503,10 @@ export class Model {
             }
             const errorMessage =
                error instanceof Error ? error.message : String(error);
+            // Same split as a query's: an unreachable database is a 502, a
+            // rejected login a 424.
+            const accessFailure = databaseAccessFailure(error);
+            if (accessFailure) throw accessFailure;
             if (errorMessage.trim() === "Model has no queries.") {
                return {
                   type: "code",
@@ -9423,8 +9822,7 @@ export class Model {
                                  })
                                  .getModel()
                            )._modelDef;
-                           const importModelInfo =
-                              modelDefToModelInfo(importModel);
+                           const importModelInfo = modelInfoOf(importModel);
                            newSources = importModelInfo.entries
                               .filter((entry) => entry.kind === "source")
                               .filter(
@@ -9434,7 +9832,7 @@ export class Model {
                         }),
                      );
                   }
-                  const currentModelInfo = modelDefToModelInfo(currentModelDef);
+                  const currentModelInfo = modelInfoOf(currentModelDef);
                   newSources = newSources.concat(
                      currentModelInfo.entries
                         .filter((entry) => entry.kind === "source")
@@ -9470,9 +9868,11 @@ export class Model {
                            location: anonymousQuery.location,
                         } as Malloy.QueryInfo;
                      }
-                  } catch (_error) {
-                     // If we can't extract query info (e.g., no query in cell), that's okay
-                     // This can happen for cells that only define sources
+                  } catch (error) {
+                     // A cell that only defines sources has no query to describe, so this is routine.
+                     logger.debug("No query info for a .malloynb cell", {
+                        error,
+                     });
                   }
 
                   return {

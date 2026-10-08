@@ -36,11 +36,10 @@
 // with "Object annotation not connected to any object". The single-query form
 // is the other way round: its `#"` sits on the `query:` and attaches to that.
 //
-// This is the whole prose surface a dashboard has today, and it is per PAGE.
-// Prose next to one tile is a `# subtitle="…"` on that tile's view, one line.
-// A standalone text tile, prose BETWEEN tiles, needs a tile kind the format
-// cannot express yet.
-##" Revenue, margin and volume for the order lines the controls above select.
+// This is the page-level prose, and it is per PAGE. Prose next to one tile is
+// a `# subtitle="…"` on that tile's view, one line. Prose BETWEEN tiles is a
+// text tile: a `kind=text` entry in `tiles=[…]` plus a `##|(markdown) name` block.
+##" Revenue, margin and volume for the order lines the controls select.
 ##"
 ##" **Key figures** is the summary; everything under it explains the summary.
 ##" The monthly trend says which way the numbers are moving, and the state,
@@ -124,13 +123,13 @@ source: overview is order_items extend {
   //
   // Six and six rather than eight and four, and the map is why. A root
   // `# shape_map` is drawn at a size of its own — @malloydata/render builds its
-  // spec from a hardcoded 500x350, 588px wide once its legend is on, and no tag
-  // reads those numbers — so it does not shrink into a narrower tile, it is
-  // clipped by one. At four of twelve the tile was ~401px and the east coast
+  // spec from a hardcoded 500x350 (512px wide with the legend moved below it, as
+  // the SDK's vega override does), and no tag reads those numbers — so it does
+  // not shrink into a narrower tile, it is clipped by one. At four of twelve the tile was ~401px and the east coast
   // and the whole legend were cut off; six is ~631px here and fits.
   //
   // Sized to the constant, not eyeballed: the map fits whenever its tile is at
-  // least 588px, which at six of twelve means a grid of about 1220px. Narrower
+  // least 512px, which at six of twelve means a grid of about 1070px. Narrower
   // than that and it clips again, and no colspan available here avoids it —
   // that is the renderer's fixed size, not this dashboard's layout.
   # colspan=6

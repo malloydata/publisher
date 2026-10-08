@@ -178,6 +178,7 @@ RESOURCE = re.compile(r"\[Resource from publisher at [^\]]+\]\s*(\{.*)", re.S)
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
@@ -228,7 +229,7 @@ REPO_ROOT = SKILLS_ROOT.parent
 # prompt stops having to define everything, and a judge that needs to understand
 # a Malloy query can reach for the skills beside it instead of being handed a
 # transcription of them.
-JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-gotchas-queries")
+JUDGE_SKILLS = ("eval-judge", "malloy-queries")
 
 
 def usage_fields(usage: dict[str, Any] | None) -> dict[str, Any]:
@@ -842,11 +843,37 @@ def wait_alive(a: argparse.Namespace, tries: int = 3, pause: float = 10.0) -> bo
     return False
 
 
-# Only `indexing` is worth a retry. The other lexical reasons are settled
-# states -- a provider cool-down, a package over the entity cap, a hard error
-# -- and waiting on them burns the clock to arrive at the same answer. That
-# rule is the server's own, stated in `get_context`'s tool description.
-RETRY_REASON = "indexing"
+# When an embedding provider is configured, `get_context` never answers
+# lexically. While the index builds it returns a normal result with
+# `retrieval: "indexing"`, empty `sources` and `retrieval_progress`; that is
+# the only state worth waiting on. After a failure it returns
+# `retrieval: "error"` with a `retrieval_reason`, and retrying that burns the
+# clock to arrive at the same answer. With no provider the `retrieval` field is
+# absent. That rule is the server's own, stated in `get_context`'s tool
+# description.
+RETRY_MODE = "indexing"
+
+# What to do about each `retrieval_reason` an error result can carry.
+ERROR_ADVICE = {
+    "too-many-entities": ("the package has more entities than the index will "
+                          "embed. Raise retrieval.indexing.maxEntities in the "
+                          "Publisher config and restart it"),
+    "cooldown": ("the embedding provider failed and the package is waiting "
+                 "out a cool-down (about 60 seconds). Wait, then re-run"),
+    "provider-error": ("the embedding provider rejected the request (often a "
+                       "bad EMBEDDING_API_KEY or EMBEDDING_MODEL). Fix the "
+                       "provider settings and re-run"),
+    "unavailable": ("semantic search cannot serve this package. Read the "
+                    "Publisher log for the cause, fix it and re-run"),
+}
+
+
+def retrieval_error_message(reason: str | None) -> str:
+    """The stop message for a `retrieval: "error"` result."""
+    advice = ERROR_ADVICE.get(reason or "",
+                              "read the Publisher log for the cause")
+    return (f"retrieval_reason {reason or 'not given'!r}: {advice}. "
+            f"Waiting does not change it")
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
@@ -881,13 +908,45 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     envelope = json.loads(raw)
     if "error" in envelope:
         raise ValueError(str(envelope["error"])[:200])
-    for chunk in (envelope.get("result") or {}).get("content") or []:
-        text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
-        if not text:
-            continue
+    result = envelope.get("result") or {}
+    texts = [t for t in ((ch.get("text") or (ch.get("resource") or {}).get("text"))
+                         for ch in result.get("content") or []) if t]
+    if result.get("isError"):
+        # A tool error is an ordinary reply. Its text may be plain prose (an
+        # argument validation failure) or a JSON payload followed by prose
+        # (`jsonToolError`, which is how get_context reports a retrieval
+        # failure). Parsing the prose as JSON reported "Expecting value: line
+        # 1 column 1" and hid what the server said, so raise with the text,
+        # and carry the payload when there is one for a caller that reads it.
+        raise McpToolError(tool, " ".join(texts), _first_json(texts))
+    for text in texts:
         m = RESOURCE.search(text)
         return json.loads(m.group(1) if m else text)
     raise ValueError("tools/call returned no readable content")
+
+
+def _first_json(texts: list[str]) -> Any:
+    """The first text chunk that parses as JSON, else None."""
+    for text in texts:
+        m = RESOURCE.search(text)
+        try:
+            return json.loads(m.group(1) if m else text)
+        except ValueError:
+            continue
+    return None
+
+
+class McpToolError(ValueError):
+    """A `tools/call` reply with `isError: true`.
+
+    `payload` is the reply's JSON payload when it carried one (the
+    `{error, suggestions, ...}` object `jsonToolError` builds), else None.
+    """
+
+    def __init__(self, tool: str, said: str, payload: Any = None):
+        self.payload = payload
+        super().__init__(
+            f"{tool} returned isError: {said[:500] or '(no message)'}")
 
 
 class AuthRequired(Exception):
@@ -923,7 +982,7 @@ def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
-    """One cheap `get_context`, reduced to (mode, reason).
+    """One cheap `get_context`, reduced to (mode, detail).
 
     `retrieval` ABSENT means no embedding provider is configured, which the
     tool pins deliberately: absent, never defaulted, so a caller cannot read a
@@ -937,18 +996,39 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e
         raise
+    except McpToolError as e:
+        # get_context reports a retrieval-provider failure (a bad API key,
+        # say) as an error reply whose payload says `retrieval: "error"`.
+        # That is an answer the gate stops on, not a failed probe to retry.
+        # Any other error reply (an unknown package) stays a failed probe.
+        if isinstance(e.payload, dict) and e.payload.get("retrieval") == "error":
+            return retrieval_of(e.payload)
+        raise
     return retrieval_of(payload)
 
 
 def retrieval_of(payload: Any) -> tuple[str | None, str | None]:
-    """(mode, reason) out of a `get_context` payload, however it was fetched.
+    """(mode, detail) out of a `get_context` payload, however it was fetched.
+
+    Mode is `retrieval` as the server sent it: "semantic", "indexing",
+    "error", or None when the field is absent (no embedding provider).
+    Detail depends on the mode: for "indexing" the progress as
+    "embedded/total"; for "error" the `retrieval_reason`; otherwise None.
 
     Split from `retrieval_probe` so a payload that arrived through the CLI
-    reads the same two fields by the same rule as one fetched over raw HTTP.
+    reads the same fields by the same rule as one fetched over raw HTTP.
     """
     if not isinstance(payload, dict):
         return None, "get_context returned no object"
-    return payload.get("retrieval"), payload.get("retrieval_reason")
+    mode = payload.get("retrieval")
+    if mode == "indexing":
+        prog = payload.get("retrieval_progress")
+        if isinstance(prog, dict):
+            return mode, f"{prog.get('embedded', '?')}/{prog.get('total', '?')}"
+        return mode, None
+    if mode == "error":
+        return mode, payload.get("retrieval_reason")
+    return mode, None
 
 
 def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
@@ -956,33 +1036,33 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                          confirmations: int = 2) -> tuple[bool, str]:
     """Hold the arm until retrieval answers the way it will for the whole run.
 
-    A restart leaves the semantic index COLD even when its rows survived. The
-    sync memo is per-process and in memory, so the first `get_context` after a
-    boot kicks a sync it deliberately never awaits and answers lexically --
-    `embedding_index.ts` says so: "cold starts answer lexically". A call that
-    lands while a sync moves the generation is marked lexical for the same
-    reason. So the first few calls of a run are lexical whatever the database
-    holds, and nothing in the transcript says the arm was measured across the
-    changeover: it reads as a run that mixed two retrievers, with the mixture
-    depending on how fast the answerer got going.
+    A restart leaves the semantic index COLD even when its rows survived.
+    While an embedding provider is configured, the server does not answer
+    lexically in the meantime: a call returns `retrieval: "indexing"` with no
+    sources and a progress count, and works once the sync finishes. A run that
+    starts answering during that window would see empty results for its first
+    cases and real ones after, and nothing in the transcript says the arm was
+    measured across the changeover.
 
     That is a measurement defect rather than a slow start, which is why it is
     a gate and not a warning. Four runs came back inconclusive to it.
 
-    `confirmations` consecutive semantic reads, not one, because a sync
-    completing can bump the generation and the call that straddles it is marked
-    lexical (`embedding_index.ts`, the generation re-check). One semantic read
-    says a call WAS semantic; two in a row say the next one will be. The run is
-    the expensive thing here, so a second probe is cheap insurance.
+    `confirmations` consecutive semantic reads, not one: a sync completing can
+    move the generation under a call that straddles it. One semantic read says
+    a call WAS semantic; two in a row say the next one will be. The run is the
+    expensive thing here, so a second probe is cheap insurance.
+
+    An `error` result stops the gate at once with the `retrieval_reason` and
+    what to do about it; it is never retried.
 
     Returns (ready, what it found). Ready is also TRUE for a server with no
     embedding provider: lexical for every call is a consistent run and a
-    legitimate thing to measure -- what must not happen is half of each.
+    legitimate thing to measure.
     """
     last, seen = "no probe completed", 0
     for i in range(tries):
         try:
-            mode, reason = retrieval_probe(a)
+            mode, detail = retrieval_probe(a)
         except AuthRequired:
             # Not a warming index and not a flaky server: waiting cannot change
             # it, and every remaining try would spend 10s to be refused again.
@@ -1004,10 +1084,14 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
                 last = f"semantic {seen}/{confirmations}"
                 continue          # no pause between confirmations
             seen = 0
-            if reason and reason != RETRY_REASON:
-                return False, (f"retrieval is lexical for {reason!r}, which "
-                               f"waiting does not change")
-            last = f"lexical ({reason or 'no reason given'})"
+            if mode == "error":
+                return False, retrieval_error_message(detail)
+            if mode != RETRY_MODE:
+                return False, (f"unrecognised retrieval value {mode!r} "
+                               f"({detail or 'no detail'}); this runner "
+                               f"expects semantic, indexing or error")
+            last = (f"indexing ({detail} entities embedded)" if detail
+                    else "indexing")
         if i < tries - 1:
             time.sleep(pause)
     return False, f"still not ready after {tries} probes: {last}"
@@ -1098,8 +1182,8 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
     `serve.py --warm-retrieval` does not supersede this, so both stay. That
     reads the SERVER's `embeddingIndex.status`, which says the index is built;
     this probes what the answerer will actually observe, and a call that lands
-    while a sync bumps the generation comes back lexical against a `ready`
-    index.
+    while a sync moves the generation can still come back `indexing` against
+    a `ready` index.
 
     Returns the line for `run.json`. An opt-out reads differently from a gate
     that passed, which is the whole point of recording it -- and so does a gate
@@ -1119,15 +1203,19 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
         return "not run (no answering phase)"
     if a.no_retrieval_gate:
         note = "skipped by --no-retrieval-gate"
-        print(f"  ! {note}: the first calls after a restart answer lexically "
-              f"by design, so this arm may measure two retrievers and report "
-              f"one number")
+        print(f"  ! {note}: the first calls after a restart return "
+              f"`retrieval: indexing` with no sources, so this arm may "
+              f"measure empty results as well as real ones")
         return note
     # The reachability probe already made this exact call through the CLI,
     # which is the only client here that carries credentials. Reading its reply
     # is a real confirmation and costs nothing; making a second one over raw
     # HTTP cannot be authenticated at all.
     probed = getattr(a, "probe_payload", None)
+    if probed is not None and retrieval_of(probed)[0] == "error":
+        raise SystemExit(
+            f"retrieval is in error, so no case could be answered "
+            f"semantically.\n  {retrieval_error_message(retrieval_of(probed)[1])}")
     if probed is not None and retrieval_of(probed)[0] == "semantic":
         note = ("ready: semantic, from the hosted reachability probe "
                 "(1 confirmation, not 2: the second probe cannot be "
@@ -1337,6 +1425,60 @@ def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
     return next((c.get("modelPath") for c in reversed(ok or hits)), None)
 
 
+def as_givens(raw: Any) -> dict[str, Any] | None:
+    """A call's `givens` argument as a non-empty dict, else None.
+
+    A client may send the object as a JSON string; anything that does not
+    decode to an object is treated as absent rather than guessed at.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) and raw else None
+
+
+def _givens_of(query: str, runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The givens of the call `_model_path_of` would pick for this query.
+
+    Same rule, same reason: the givens and the file are facts about ONE call,
+    so a probe's givens never get paired with the answer's query.
+    """
+    hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
+    ok = [c for c in hits if not c.get("error")]
+    return next((c.get("givens") for c in reversed(ok or hits)), None)
+
+
+def queries_for_judge(att: dict[str, Any]) -> str:
+    """Every query the answerer ran, numbered, each with its givens.
+
+    Givens are an argument beside the text, so a query shown without them
+    reads as unfiltered next to rows that were filtered, and the judge can
+    fail a correct answer for it. Each query's givens are the ones recorded
+    with that call (`query_givens`), never looked up by text: the same text
+    run under West and then East is two queries, and a lookup showed East on
+    both. A record without them (a judge fixture, or an attempt parsed before
+    they were kept) has only `final_givens`, shown on the last entry that is
+    the final query.
+    """
+    queries = att.get("queries") or []
+    per_query = att.get("query_givens")
+    if not (isinstance(per_query, list) and len(per_query) == len(queries)):
+        per_query = [None] * len(queries)
+        final_givens = as_givens(att.get("final_givens"))
+        final = att.get("final_query")
+        hits = [i for i, q in enumerate(queries) if q == final]
+        if final_givens and hits:
+            per_query[hits[-1]] = final_givens
+    out = []
+    for i, (q, g) in enumerate(zip(queries, per_query), 1):
+        g = as_givens(g)
+        out.append(f"[{i}] {q}" + (f"\n    givens: {json.dumps(g, sort_keys=True)}"
+                                   if g else ""))
+    return "\n\n".join(out) or "(none)"
+
+
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
                      answer_text: str
                      ) -> tuple[str | None, str | None, str | None]:
@@ -1409,7 +1551,9 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 
     `semantic` or `lexical` when every ranking call agreed, `mixed` when they
     did not (the embedding path fell over partway, which is exactly the case a
-    reader must not average across), and `unreported` when nothing in the run
+    reader must not average across), `unavailable` when ANY call was answered
+    `indexing` or `error` (the server could not rank at all, so that call has
+    no result to score and reads as a miss), and `unreported` when nothing in the run
     ranked at all: usually no embedding provider configured, which is the
     silent degradation eval-mvp's standing gate exists to catch, and which
     `retrieval_probe` settles before the arm starts by always passing a
@@ -1419,13 +1563,17 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
     semantic 100 / lexical 0 / unreported 43 as `mixed`, and told it not to
     report the discoverability findings it had just paid for.
     """
-    tally = {"semantic": 0, "lexical": 0, "unreported": 0}
+    tally = {"semantic": 0, "lexical": 0, "indexing": 0, "error": 0,
+             "unreported": 0}
     for att in attempts:
         for c in att.get("calls") or []:
             if c.get("tool") != "get_context":
                 continue
             mode = c.get("retrieval_mode")
-            tally[mode if mode in ("semantic", "lexical") else "unreported"] += 1
+            tally[mode if mode in ("semantic", "lexical", "indexing", "error")
+                  else "unreported"] += 1
+    if tally["indexing"] or tally["error"]:
+        return "unavailable", tally
     seen = [k for k in ("semantic", "lexical") if tally[k]]
     if not seen:
         return "unreported", tally
@@ -1682,8 +1830,15 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     lines += cascade_lines(cascade)
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
+              f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
               f" unreported {tally['unreported']})"]
-    if retrieval_mode != "semantic":
+    if retrieval_mode == "unavailable":
+        lines += ["                ! some searches were answered `indexing` or "
+                  "`error`, so they returned nothing to score and count as "
+                  "misses. This run does not measure retrieval; wait for the "
+                  "index to be ready and re-run. flip_table.py refuses a pair "
+                  "with an arm like this."]
+    elif retrieval_mode != "semantic":
         lines += ["                ! not a semantic run. Local retrieval "
                   "degrades to lexical without an embedding key, and comparing "
                   "across that reads as a model change; flip_table.py refuses "
@@ -2039,6 +2194,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         shutil.rmtree(work, ignore_errors=True)
 
     calls, answer, queries = [], [], []
+    query_givens: list[dict[str, Any] | None] = []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
     # Skills the answerer actually OPENED. The harness tracked only the breach
@@ -2103,6 +2259,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         q = c["input"].get("query") or named_query(c["input"])
                         if q:
                             queries.append(q)
+                            # Appended in the same step as the text, so entry
+                            # i is always query i's givens. Looked up by text
+                            # instead, one text run under two different givens
+                            # showed the last givens on both.
+                            query_givens.append(
+                                as_givens(c["input"].get("givens")))
                         # The query AND the file it was written against go onto
                         # the call, not into lists beside it: picking the final
                         # query needs to know which of them the server actually
@@ -2116,7 +2278,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                             "query": q,
                                             "modelPath": (
                                                 c["input"].get("modelPath")
-                                                or c["input"].get("model_path"))}
+                                                or c["input"].get("model_path")),
+                                            # Runtime filters the answerer
+                                            # scoped this query with. They are
+                                            # an argument beside the text, so
+                                            # the text alone is a different
+                                            # (unfiltered) query.
+                                            "givens": as_givens(
+                                                c["input"].get("givens"))}
                     else:
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
@@ -2155,6 +2324,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # retrieval score never counts it as a search that
                         # found nothing.
                         calls.append({**info, "error": text[:300],
+                                      "retrieval_mode":
+                                          (payload or {}).get("retrieval"),
                                       "rankedSummary": None})
                         continue
                     # The host may have spilled the body to a file. Read it
@@ -2172,10 +2343,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         continue
                     ids = entity_ids(payload or {})
                     # Which retriever answered, from the response that answered
-                    # it: "semantic", "lexical" when the embedding path is down,
-                    # and absent on a server with no provider at all. Local
-                    # retrieval degrades to lexical SILENTLY without an
-                    # embedding key, which reads as a model regression when two
+                    # it: "semantic", "indexing" or "error" when a provider is
+                    # configured, and absent on a server with no provider (lexical).
+                    # Local retrieval is lexical without an embedding key, which reads as a model regression when two
                     # runs are compared across it, so a run that cannot say
                     # which retriever it used cannot anchor a comparison.
                     calls.append({**info, "error": text[:300] if failed else None,
@@ -2206,6 +2376,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
 
     final_query, final_source, final_path = pick_final_query(
         queries, calls, text)
+    final_givens = _givens_of(final_query, [
+        c for c in calls if c.get("tool") == "execute_query" and c.get("query")
+    ]) if final_query else None
 
     return {
         "qid": qid,
@@ -2215,9 +2388,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # follow-up probe to sanity-check the date range, and the judge -- told
         # the answer must be supported by the final query -- graded the probe.
         "queries": queries,
+        # The givens each entry of `queries` was sent with, index for index.
+        "query_givens": query_givens,
         "final_query": final_query,
         "final_query_source": final_source,
         "final_model_path": final_path,
+        "final_givens": final_givens,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
@@ -2495,12 +2671,17 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
     holds is not a cache of that query.
     """
     q = att.get("final_query")
+    # Records made before givens were captured have none; they re-run as before.
+    givens = as_givens(att.get("final_givens"))
     cache = art / case["qid"] / "prediction.json"
     if cache.exists():
         c = json.loads(cache.read_text())
         # A file written before this key existed has no `query`, so it is not
         # reusable for any query: re-execute rather than trust it.
-        if "query" in c and c.get("query") == q:
+        # `givens` is part of the key for the same reason: rows cached from an
+        # unscoped run are not the rows of the scoped query.
+        if ("query" in c and c.get("query") == q
+                and (c.get("givens") or None) == givens):
             return c.get("rendered") or "(no prediction)"
 
     if not q:
@@ -2516,10 +2697,12 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         # that file. Then the case's, then the run default.
         mp = (att.get("final_model_path") or case.get("modelPath")
               or a.model_path)
-        rows, err = try_query(a.publisher, a.environment, a.package, mp, q)
+        rows, err = try_query(a.publisher, a.environment, a.package, mp, q,
+                              givens=givens)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"query": q, "rendered": rendered}, indent=2))
+    cache.write_text(json.dumps(
+        {"query": q, "givens": givens, "rendered": rendered}, indent=2))
     return rendered
 
 
@@ -2589,7 +2772,40 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
-def golden_for_judge(golden: dict[str, Any] | None) -> str:
+def rows_golden_problems(cases: list[dict[str, Any]],
+                         set_dir: pathlib.Path) -> list[str]:
+    """One line per `rows` golden the judge will be shown whose `path` cannot
+    be read.
+
+    Checked before any model call, so a missing or misplaced file stops the run
+    where it costs nothing instead of surfacing as a judge error per case. A
+    golden `golden_refusal` withholds a verdict for is never rendered, so its
+    file is not this run's problem and does not stop it.
+    """
+    out = []
+    for c in cases:
+        g = c.get("golden") or {}
+        if g.get("kind") != "rows" or golden_refusal(g):
+            continue
+        try:
+            golden_rows.load_rows(g, set_dir, c["qid"])
+        except golden_rows.GoldenRowsError as exc:
+            out.append(str(exc))
+    return out
+
+
+def renders_goldens(a: argparse.Namespace) -> bool:
+    """Whether this run shows any golden to a judge.
+
+    `--no-judge` judges nothing, and a rebuild without `--rejudge` reuses the
+    saved verdicts, so neither reads a golden's file.
+    """
+    return not a.no_judge and (not a.rebuild or bool(a.rejudge))
+
+
+def golden_for_judge(golden: dict[str, Any] | None,
+                     set_dir: pathlib.Path | None = None,
+                     qid: str = "?") -> str:
     """The GOLDEN line of the judge prompt, rendered BY KIND.
 
     A golden holds its key in a different place depending on its kind, and one
@@ -2609,7 +2825,7 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     reason):
 
       scalar        golden.value, a dict
-      rows          golden.value, a list
+      rows          golden.value, a list, or the CSV golden.path names
       criteria      golden.rubric -- no value, ever
       unanswerable  nothing; the pass is a refusal
 
@@ -2633,6 +2849,13 @@ def golden_for_judge(golden: dict[str, Any] | None) -> str:
     value = g.get("value")
     if value is not None:
         return json.dumps(value)
+    if kind == "rows" and g.get("path"):
+        # Rows kept in a file beside the set. Read here, and raised rather than
+        # swallowed: "(unanswerable)" for a key that exists makes the judge
+        # mark a correct answer as one that should have declined.
+        rows = golden_rows.load_rows(g, set_dir, qid)
+        if rows is not None:
+            return golden_rows.render(rows)
     return "(unanswerable: the model cannot answer this)"
 
 
@@ -2768,15 +2991,14 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
-        golden=golden_for_judge(g),
+        golden=golden_for_judge(g, a.set_dir, case["qid"]),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(
             must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
             or "(nothing beyond the rubric)"),
         answer=(att["answer_text"] or "(the answerer returned no prose; judge "
                 "from the queries and the re-executed rows)"),
-        query="\n\n".join(f"[{i}] {q}" for i, q in
-                          enumerate(att.get("queries") or [], 1)) or "(none)",
+        query=queries_for_judge(att),
         prediction=prediction_for(case, att, a, art, reexec),
         model=model_src or "(model source unavailable)")
 
@@ -2860,6 +3082,44 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
             f"package into loadErrors. Fix: pass an --out outside any package, "
             f"or omit it for {cfg.workdir() / 'runs'}")
     return cfg
+
+
+def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
+                  served_identity: dict[str, Any]) -> dict[str, Any]:
+    """The ledger `attempt` event for one case's attempt."""
+    return ledger.event(
+        "attempt", qid=c["qid"], sample=None, phase=phase,
+        question_sha=question_sha(c),
+        submitted=att["submitted"],
+        final_query=att["final_query"],
+        final_query_source=att.get("final_query_source"),
+        # The runtime parameters the final query ran under.
+        # Without them a replay of final_query runs unscoped.
+        final_givens=att.get("final_givens"),
+        # The revision that actually answered. Documented
+        # as "package revision actually queried" and left
+        # None until now, so nothing could tell an attempt
+        # answered before a reload from one answered after.
+        servedRevision=served_identity.get("servedRevision"),
+        n_get_context=att["n_get_context"],
+        n_execute=att["n_execute"],
+        n_execute_errors=att["n_execute_errors"],
+        host_tool_uses=att["host_tool_uses"],
+        mcp_tool_uses=att.get("mcp_tool_uses"),
+        skills_invoked=att.get("skills_invoked") or [],
+        reported_calls=att["n_get_context"] + att["n_execute"],
+        contaminated=bool(att.get("breaches")),
+        contamination_reasons=att.get("breaches") or [],
+        input_tokens=att.get("input_tokens"),
+        output_tokens=att.get("output_tokens"),
+        cache_read_tokens=att.get("cache_read_tokens"),
+        cache_write_tokens=att.get("cache_write_tokens"),
+        cost_usd=att.get("cost_usd"),
+        num_turns=att.get("num_turns"),
+        wall_seconds=att.get("wall_seconds"),
+        answer_text=att.get("answer_text"),
+        run_error=att.get("error"),
+        transcriptPath=att["transcriptPath"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2985,9 +3245,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-retrieval-gate", action="store_true",
                     help="answer cases without waiting for the semantic index "
                          "to warm. The gate exists because a restart leaves it "
-                         "cold and the first calls answer lexically by design, "
-                         "so an arm started immediately measures two "
-                         "retrievers and reports one number. run.json records "
+                         "cold and the first calls return `retrieval: indexing` "
+                         "with no sources, so an arm started immediately "
+                         "measures empty results as well as real ones. run.json records "
                          "that you opted out, which is a different fact from a "
                          "gate that passed")
     ap.add_argument("--definitions", default=None,
@@ -3366,6 +3626,12 @@ def main(argv: list[str] | None = None) -> int:
         cases, a.set_dir.name)
     if refuse:
         raise SystemExit(refuse)
+    unreadable = (rows_golden_problems(cases, a.set_dir)
+                  if renders_goldens(a) else [])
+    if unreadable:
+        raise SystemExit(
+            "a rows golden names a file the run cannot read, so the judge "
+            "would be shown no key for it:\n  " + "\n  ".join(unreadable))
     if unscorable_goldens:
         print(f"  ! {len(unscorable_goldens)} of {len(cases)} cases will take "
               f"no verdict (no established golden): "
@@ -3544,35 +3810,7 @@ def main(argv: list[str] | None = None) -> int:
         qid = c["qid"]
         att = attempts[qid]
         base = {"qid": qid, "sample": None, "phase": a.phase}
-        events.append(ledger.event("attempt", **base,
-                      question_sha=question_sha(c),
-                      submitted=att["submitted"],
-                      final_query=att["final_query"],
-                      final_query_source=att.get("final_query_source"),
-                      # The revision that actually answered. Documented
-                      # as "package revision actually queried" and left
-                      # None until now, so nothing could tell an attempt
-                      # answered before a reload from one answered after.
-                      servedRevision=served_identity.get("servedRevision"),
-                      n_get_context=att["n_get_context"],
-                      n_execute=att["n_execute"],
-                      n_execute_errors=att["n_execute_errors"],
-                      host_tool_uses=att["host_tool_uses"],
-                      mcp_tool_uses=att.get("mcp_tool_uses"),
-                      skills_invoked=att.get("skills_invoked") or [],
-                      reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=bool(att.get("breaches")),
-                      contamination_reasons=att.get("breaches") or [],
-                      input_tokens=att.get("input_tokens"),
-                      output_tokens=att.get("output_tokens"),
-                      cache_read_tokens=att.get("cache_read_tokens"),
-                      cache_write_tokens=att.get("cache_write_tokens"),
-                      cost_usd=att.get("cost_usd"),
-                      num_turns=att.get("num_turns"),
-                      wall_seconds=att.get("wall_seconds"),
-                      answer_text=att.get("answer_text"),
-                      run_error=att.get("error"),
-                      transcriptPath=att["transcriptPath"]))
+        events.append(attempt_event(c, att, a.phase, served_identity))
         for call in att["calls"]:
             events.append(ledger.event("tool_call", **base, **call,
                                        traceId=None))

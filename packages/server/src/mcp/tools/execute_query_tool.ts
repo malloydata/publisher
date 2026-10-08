@@ -52,7 +52,7 @@ const executeQueryShape = {
       .string()
       .optional()
       .describe(
-         `Ad-hoc Malloy query code. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
+         `Ad-hoc Malloy query code with exactly one run: statement; source: and query: definitions may come before it. Text with more than one run: is refused, so send each as its own call. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
       ),
    sourceName: z
       .string()
@@ -78,7 +78,19 @@ const executeQueryShape = {
       .describe(
          "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
       ),
+   includeHiddenFilesAndSources: z
+      .boolean()
+      .optional()
+      .describe(
+         "Set true to also run the files and sources this package's index.malloy hides, so an author can test them without publishing them. It never bypasses #(authorize) or #(access_filter). Default false.",
+      ),
 };
+
+// The shape without includeHiddenFilesAndSources, which is what a server
+// offers unless its config is for authoring. See
+// isMcpIncludeHiddenFilesAndSources.
+const { includeHiddenFilesAndSources: _authoringOnly, ...curatedShape } =
+   executeQueryShape;
 
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
 
@@ -86,7 +98,8 @@ const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return
 - Check _limit_hit before reporting any total, count, or "top N". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
-- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
+- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a definition) in query.
+- One run: per call. query may define sources and queries first, but more than one run: statement is refused rather than run; send each question as its own call.
 - query is RESTRICTED: no raw SQL/import/##! (see its param doc).
 
 ## Response
@@ -111,10 +124,16 @@ export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
+   const offerHidden =
+      environmentStore.mcpIncludeHiddenFilesAndSources === true;
    mcpServer.tool(
       "execute_query",
       EXECUTE_QUERY_DESCRIPTION,
-      executeQueryShape,
+      // Typed as the full shape so the handler can name the parameter; the
+      // offerHidden check below is what holds when it is not offered.
+      (offerHidden
+         ? executeQueryShape
+         : curatedShape) as typeof executeQueryShape,
       /** Handles requests for the execute_query tool */
       async (params) => {
          // Destructure environmentName as well
@@ -128,6 +147,10 @@ export function registerExecuteQueryTool(
             filterParams,
             givens,
          } = params;
+         // A caller can send the key even when the schema leaves it out, so
+         // the setting decides, not the argument alone.
+         const includeHiddenFilesAndSources =
+            offerHidden && params.includeHiddenFilesAndSources === true;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
 
@@ -243,6 +266,9 @@ export function registerExecuteQueryTool(
                           // a wrapped result measuring over the cap was a 413 for
                           // a payload that would have arrived at 90k characters.
                           "compact",
+                          // MCP sends no #(authorize) bypass, ever.
+                          false,
+                          includeHiddenFilesAndSources,
                        )
                      : model.getQueryResults(
                           sourceName,
@@ -254,6 +280,8 @@ export function registerExecuteQueryTool(
                           abortSignal,
                           queryMetadataInput,
                           "compact",
+                          false,
+                          includeHiddenFilesAndSources,
                        ),
                getQueryTimeoutMs(),
             );
