@@ -4,12 +4,13 @@
 /// <reference types="bun-types" />
 
 /**
- * Package versioning across its modes, on 13 kinds of route that read a
- * `versionId`: one of each shape (package, model, query, compile, document
- * lists, data apps, databases, the package-scoped connection, materializations,
- * events and static files). The per-item routes behind them (one dashboard,
- * one notebook or cell, a connection's tables and SQL routes, one
- * materialization) resolve the version the same way and are not probed here.
+ * Package versioning across its modes, on 17 routes that read a `versionId`:
+ * package, models, model, query, compile, dashboards, notebooks, one
+ * notebook, data apps, databases, the package-scoped connection (schemas,
+ * sqlQuery, sqlSource, sqlTemporaryTable), materializations, events and
+ * static files. Each handler reads the version itself, so each is probed.
+ * Not probed: one dashboard, one notebook cell, a connection's tables and
+ * one table, and one materialization by id.
  *
  * The feature ships dormant, so the property that matters most is that the
  * modes do not leak into one another: with `packageVersioning` off a package
@@ -175,6 +176,38 @@ const ROUTES: Route[] = [
          }).then((res) => probe(res, marker(/\\?"n\\?":\s*\\?"?(\d+)/))),
    },
    {
+      // Status only: a statement's source and a temporary table answer the
+      // same for every tree. What they prove is that the version is read.
+      name: "POST connection sqlSource",
+      call: (base, v) =>
+         fetch(`${base}/connections/duckdb/sqlSource${query(v)}`, {
+            method: "POST",
+            headers: json,
+            body: JSON.stringify({
+               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+            }),
+         }).then((res) => probe(res)),
+   },
+   {
+      name: "POST connection sqlTemporaryTable",
+      call: (base, v) =>
+         fetch(`${base}/connections/duckdb/sqlTemporaryTable${query(v)}`, {
+            method: "POST",
+            headers: json,
+            body: JSON.stringify({
+               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+            }),
+         }).then((res) => probe(res)),
+   },
+   {
+      name: "GET notebook",
+      call: (base, v) =>
+         get(
+            `${base}/notebooks/notes.malloynb${query(v)}`,
+            marker(/notebook answers (\d+)/),
+         ),
+   },
+   {
       name: "GET materializations",
       call: (base, v) => get(`${base}/materializations${query(v)}`),
    },
@@ -215,6 +248,7 @@ const ANSWERING = new Set([
    "GET data-apps",
    "GET databases",
    "POST connection sqlQuery",
+   "GET notebook",
    "GET static page",
 ]);
 
@@ -263,6 +297,10 @@ describe("package versioning across its modes", () => {
          `source: marker is duckdb.sql("SELECT ${n} as m")\n`,
       );
       await fs.writeFile(path.join(dir, `data_${n}.csv`), `n\n${n}\n`);
+      await fs.writeFile(
+         path.join(dir, "notes.malloynb"),
+         `>>>markdown\n# notebook answers ${n}\n`,
+      );
       await fs.mkdir(path.join(dir, "public"));
       await fs.writeFile(
          path.join(dir, "public/index.html"),
@@ -496,6 +534,16 @@ describe("package versioning across its modes", () => {
             await probeAll("ver", "1.0.0"),
             servedVersion("1.0.0", 1),
          );
+      });
+
+      it("serves two versions at the same time, each from its own tree", async () => {
+         // Interleaved, so a lock or cache shared across versions would mix
+         // their answers.
+         const asks = ["1.0.0", "1.1.0", "1.0.0", "1.1.0", "1.0.0", "1.1.0"];
+         const answers = await Promise.all(
+            asks.map((v) => route("POST query").call(pkgApi("ver"), v)),
+         );
+         expect(answers.map((a) => a.answer)).toEqual([1, 2, 1, 2, 1, 2]);
       });
 
       it("treats an empty versionId as none on a versioned package too: latest answers", async () => {
