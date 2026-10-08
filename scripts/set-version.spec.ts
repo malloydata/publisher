@@ -5,11 +5,9 @@
 // step.
 //
 // Like release-notes.mjs, this runs on a release path that cannot be exercised
-// in CI: `prepare` calls it on the release branch before npm publishes, and
-// `gh-release` calls it again on the post-release stamp branch. A bug in the
-// first is discovered by finding the OLD version published under the new tag,
-// which npm's immutability makes unfixable; a bug in the second leaves `main`
-// wrong, which is the thing this whole change set exists to fix.
+// in CI: `prepare` calls it on the release branch before npm publishes. A bug
+// there is discovered by finding the OLD version published under the new tag,
+// which npm's immutability makes unfixable.
 //
 // The two cases that are not obvious are the two silent failures the shell
 // function it replaced actually had: a file whose "version" field the regex did
@@ -105,10 +103,9 @@ describe("setting the version", () => {
   });
 
   it("reports 0 when the version is already set, and still succeeds", () => {
-    // This is the case that cannot be an error. `gh-release` runs this over
-    // `main`, where the version is usually ALREADY the one being released —
-    // the previous release's stamp PR merged — and a non-zero exit there
-    // would redden a finished release over nothing.
+    // A no-op is success, not an error: the count, not the exit code, is how a
+    // caller tells "already that version" from "wrote it". `prepare` reads the
+    // diff to refuse that case with its own message.
     const { "package.json": file } = workspace({ "package.json": MANIFEST });
 
     expect(run("0.0.209", file)).toMatchObject({ code: 0, stdout: "0" });
