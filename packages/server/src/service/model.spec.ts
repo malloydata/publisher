@@ -1488,9 +1488,10 @@ describe("service/model", () => {
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
-         // Malloy executes the LAST `run:`, and `extractRunTargetSourceName`
-         // does too. Metadata still reads the compiled target, which is the
-         // source that actually ran.
+         // The text names `cheap` first, in a definition, and runs `expensive`.
+         // Metadata reads the compiled target, which is the source that
+         // actually ran. (Two `run:` statements are refused outright now, so a
+         // definition is how one text still names two sources.)
          process.env.PUBLISHER_QUERY_METADATA = "on";
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],
@@ -1505,7 +1506,7 @@ describe("service/model", () => {
          await model.getQueryResults(
             undefined,
             undefined,
-            "run: cheap -> x\nrun: expensive -> x",
+            "source: c is cheap extend {}\nrun: expensive -> x",
          );
 
          expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("platinum");
