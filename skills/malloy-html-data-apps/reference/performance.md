@@ -118,6 +118,103 @@ function load(host, query, render) {
 }
 ```
 
+## Answer from the last visit
+
+A per-tab cache (`sessionStorage`, or memory) starts every new tab and every next-day visit from nothing: every query is re-sent and every tile waits on it. Measured on a real build: 1.6 to 3.8 s before the first screen filled in a new tab. Most data apps read tables built on a schedule, so the last visit's rows are almost always still right.
+
+Persist query results in IndexedDB, keyed on model + exact query text, and serve them **stale-while-revalidate**:
+
+| Age of the stored answer | What the page does |
+|---|---|
+| younger than a few minutes | use it; send nothing |
+| younger than the build schedule plus a margin (a day and a half for a daily build) | draw it now, re-run the query in the background, repaint only if the rows changed |
+| older | fetch as if never seen |
+
+Measured: the same new-tab load drew its first screen in 87 to 93 ms, with the queries running behind it.
+
+Four rules make it safe:
+
+- **Repaint only the tile that still shows that query.** A tile whose filter changed while its revalidation was in flight must ignore the late answer: register the repaint with the run's sequence number (the guard in "Hold still while loading") and drop it if the tile has moved on.
+- **Repaint only when the rows differ.** Compare the serialized rows; an unchanged answer must not redraw (it would re-animate charts and shift nothing for no reason).
+- **A refused revalidation wipes the store.** On a 401 or 403, clear every stored answer and show the error in place of the tile. Otherwise someone whose access was withdrawn keeps reading cached numbers for as long as they keep the tab. The store is per browser profile; say so where the app's caching is described.
+- **Show how old the number is.** A tile that can draw yesterday's answer for a second should carry the as-of date of its data, so a reader reconciling a figure knows which snapshot they are looking at.
+
+```js
+// cache.js: stale-while-revalidate over IndexedDB.
+const FRESH = 10 * 60e3, STALE = 36 * 3600e3;
+const mem = new Map(), subs = new Map(), revalidated = new Set();
+const db = new Promise((res) => {
+  try { const rq = indexedDB.open("app-cache", 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore("q");
+    rq.onsuccess = () => res(rq.result); rq.onerror = rq.onblocked = () => res(null);
+  } catch { res(null); }                                   // private mode: memory only
+});
+const get = (k) => db.then((d) => d && new Promise((res) => { try { const r = d.transaction("q").objectStore("q").get(k); r.onsuccess = () => res(r.result || null); r.onerror = () => res(null); } catch { res(null); } }));
+const put = (k, rows) => db.then((d) => { try { d && d.transaction("q", "readwrite").objectStore("q").put({ t: Date.now(), r: rows }, k); } catch {} });
+const wipe = () => db.then((d) => { try { d && d.transaction("q", "readwrite").objectStore("q").clear(); } catch {} });
+const fetchRows = (k, model, q) => Publisher.query(model, q).then((rows) => (put(k, rows), rows));
+
+// onFresh(rows, err): called if a background revalidation returns different rows, or is refused.
+export function cachedQuery(model, q, onFresh) {
+  const k = model + "\n" + q;
+  if (onFresh) (subs.get(k) ?? subs.set(k, []).get(k)).push(onFresh);
+  if (mem.has(k)) return mem.get(k);
+  const p = get(k).then((box) => {
+    const age = box ? Date.now() - box.t : Infinity;
+    if (age >= STALE) return fetchRows(k, model, q);
+    if (age >= FRESH && !revalidated.has(k)) {
+      revalidated.add(k);
+      fetchRows(k, model, q).then((rows) => {
+        mem.set(k, Promise.resolve(rows));
+        if (JSON.stringify(rows) !== JSON.stringify(box.r)) subs.get(k)?.forEach((fn) => fn(rows, null));
+      }).catch((e) => {
+        if (e?.status === 401 || e?.status === 403) { wipe(); mem.clear(); subs.get(k)?.forEach((fn) => fn(null, e)); }
+      });
+    }
+    return box.r;
+  }).catch((e) => { mem.delete(k); throw e; });
+  mem.set(k, p);
+  return p;
+}
+```
+
+## Start on intent
+
+Resting the pointer on something that opens a drawer, or focusing it, usually comes a few hundred milliseconds before the click. Start the drawer's queries then, and the click finds them in flight or answered. Two ways to wire it, and the second is the one that does not drift:
+
+- a hand-written list of each drawer's queries, warmed on hover, which is a second copy of every drawer's query text and drifts the first time a panel changes;
+- **running the real click handler in a warm mode**, where the drawer function builds its panels into a detached element instead of opening. Every query the drawer would send is sent, through the same cache, and nothing is shown. Measured: all 7 queries of a market drawer and all 15 of a product drawer (a name lookup included) were in flight before the click, and the click itself sent none.
+
+```js
+let WARM = 0;
+const warming = (fn) => { WARM++; try { return fn(); } finally { WARM--; } };
+
+export function openDrawer(title, build) {
+  if (WARM) { const shadow = document.createElement("div"); shadow.__warm = true; build(shadow); return shadow; }
+  /* ...the real open... */
+}
+
+// Delegated: an 80ms rest filters out a pointer sweeping across a list.
+let timer = 0;
+const warmed = new WeakSet();
+const warm = (row) => { if (warmed.has(row)) return; warmed.add(row);
+  // Non-bubbling, so only the row's own handler runs, never a delegated one.
+  warming(() => row.dispatchEvent(new MouseEvent("click", { bubbles: false }))); };
+document.addEventListener("pointerover", (e) => {
+  const row = e.target.closest?.(".drill-row");
+  clearTimeout(timer);
+  if (row && e.pointerType !== "touch") timer = setTimeout(() => warm(row), 80);
+});
+document.addEventListener("focusin", (e) => { const row = e.target.closest?.(".drill-row"); if (row) warm(row); });
+```
+
+What makes it safe:
+
+- **Only rows whose click opens a drawer carry the warm-up class.** A row that sets a filter, navigates, or writes anything must not: warming runs its handler for real. Check every handler before tagging rows.
+- **Carry the warm flag across async steps.** A drawer that first resolves a name to an id opens later, after the flag has been reset. Mark the detached body (`shadow.__warm`) and, when the lookup returns, continue inside `warming(...)` rather than opening.
+- **Warm what the click will ask for, through the same cache.** A warm-up that builds its own query strings warms nothing (see "Ask once").
+- **Never warm on page load.** Warm-ups wait for intent. Warming every drawer a page could open is a query storm the reader pays for.
+
 ## Respond before the answer arrives
 
 A click that waits on a query before anything visible happens reads as a dead click. The common case is a drill that must first resolve a name to an id: open the drawer immediately, titled with the name and a skeleton, run the lookup inside it, and replace the skeleton in place when the id arrives. Drop the late answer if the reader has closed the drawer or opened another subject meanwhile (`reference/depth-patterns.md`, stale-response guard).
