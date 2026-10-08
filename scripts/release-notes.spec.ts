@@ -258,6 +258,38 @@ body
     expect(after).toContain("mentions the word Unreleased in prose");
   });
 
+  it("stamps only the exact [Unreleased] marker, not other bracketed headings", () => {
+    const { file } = workspace(`${HEADER}
+## [Unreleased] — shipping now
+
+a
+
+## [0.0.1-rc] — a prerelease section
+
+b
+
+## [Warning] — not a release
+
+c
+
+## [unreleased] — lowercase is not the marker
+
+d
+`);
+
+    expect(run(file, "stamp", "0.0.249").stdout).toBe("1\n");
+    const headings = readFileSync(file, "utf8").match(/^## \[.*$/gm);
+    expect(headings).toEqual([
+      "## [0.0.249] — shipping now",
+      "## [0.0.1-rc] — a prerelease section",
+      "## [Warning] — not a release",
+      "## [unreleased] — lowercase is not the marker",
+    ]);
+    expect(run(file, "extract", "0.0.249").stdout).toBe(
+      "## shipping now\n\na\n",
+    );
+  });
+
   it("is a no-op, byte for byte, when there is nothing to stamp", () => {
     const notes = `${HEADER}
 ## [0.0.248] — already shipped
