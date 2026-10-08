@@ -1612,6 +1612,34 @@ function describeParseFailure(message: string): string {
  * through to the include path and never appears in a listing or at a URL. That
  * is the least debuggable outcome in the whole feature, so it gets a finding.
  */
+const TAG_DISCARDED =
+   "so the whole tag is discarded and this file is treated as a shared " +
+   "include rather than a dashboard.";
+
+const TAG_UNPARSED_PREFIX = "Tag ";
+
+/** The one place {@link lintUndiscoveredDashboard}'s unparsed-tag message is
+ *  built, so {@link isUnparsedDashboardTagFinding} reads the same pieces. */
+function unparsedTagMessage(parseError: string): string {
+   return `${TAG_UNPARSED_PREFIX}${describeParseFailure(parseError)}, ${TAG_DISCARDED}`;
+}
+
+/**
+ * Whether a finding is {@link lintUndiscoveredDashboard}'s report of a tag that
+ * does not parse. The notebook lint reports the model-level `## artifact` case
+ * too, so a caller that shows both picks one by this.
+ *
+ * Read from the message because package warnings carry no code. It matches
+ * the constants {@link unparsedTagMessage} builds from, and the spec runs it
+ * against the lint's real output, so a reworded message cannot turn it off
+ * unnoticed.
+ */
+export function isUnparsedDashboardTagFinding(message: string): boolean {
+   return (
+      message.startsWith(TAG_UNPARSED_PREFIX) && message.endsWith(TAG_DISCARDED)
+   );
+}
+
 export function lintUndiscoveredDashboard(
    facts: DashboardModelFacts,
 ): DashboardLintFinding[] {
@@ -1628,11 +1656,7 @@ export function lintUndiscoveredDashboard(
    const messages = [
       ...motlyParseErrors(facts.modelAnnotations),
       ...facts.queries.flatMap((query) => motlyParseErrors(query.annotations)),
-   ].map(
-      (message) =>
-         `Tag ${describeParseFailure(message)}, so the whole tag is discarded ` +
-         `and this file is treated as a shared include rather than a dashboard.`,
-   );
+   ].map(unparsedTagMessage);
    const findings: DashboardLintFinding[] = Array.from(
       new Set(messages),
       (message) => ({ subject, message, severity: "error" as const }),
