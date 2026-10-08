@@ -16,9 +16,11 @@
 # npm rather than the git tags: a release whose npm publish succeeded and whose
 # `gh-release` failed has no tag, but it shipped.
 #
-# `release.yml` does not run this check. It reports; it does not block a
-# dispatch. It is not a required status check either, since requiring it would
-# block every other PR until the release PR merges.
+# It is meant to be a required status check on main. It runs on every PR, so
+# from the moment a release publishes until its release PR merges, every other
+# PR shows it red and, once required, cannot merge. That is deliberate: the
+# release PR is the one thing to merge next. `release.yml` does not consult it,
+# so it gates merges, not a dispatch.
 
 name: Release sync
 

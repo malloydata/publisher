@@ -522,3 +522,8 @@ after the merge (the first command in step 3).
 Any hyphen in the version skips `gh-release` *and* both independently-versioned
 packages, because their own versions carry no hyphen and would take over the
 `latest` tag. Ship those from an ordinary release.
+
+A prerelease is also never stamped and never merged back. `main`'s
+`[Unreleased]` sections stay as they are and ship with the next ordinary
+release, and `extract <prerelease>` finds nothing, because no heading carries a
+prerelease number.

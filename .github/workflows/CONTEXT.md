@@ -265,9 +265,18 @@ release's still-`[Unreleased]` sections a second time under the new number. The 
 `release/v<npm latest>` into `main`, which is also the only thing that clears the check; the
 release PR itself passes because its tree declares the new version. It reads npm rather than the
 git tags because a release whose npm publish succeeded and whose `gh-release` failed has no tag
-but did ship. It is not a required status check, so it reports rather than blocks; making it
-required would block every other PR until the release PR merges. `release.yml` itself does not
-run this check.
+but did ship.
+
+**Expect it red on unrelated PRs.** Because it runs on every PR, contributors see it fail from the
+moment a release publishes until that release's PR merges, on changes that have nothing to do with
+the release. That is deliberate, and it is meant to be a **required status check** on `main`, so
+in that window nothing else merges and the release PR is the next thing to land. It gates merges,
+not dispatches: `release.yml` does not consult it.
+
+**A prerelease is never stamped.** `prepare` skips the stamp for any version with a `-` or `+`, so
+`release-notes.mjs extract <prerelease>` finds nothing (it accepts the version, and there is no
+`[<prerelease>]` heading to match), and `main`'s `[Unreleased]` sections stay unstamped and ship
+with the next ordinary release. A prerelease gets no GitHub release page in any case.
 
 **Merging it back usually needs a conflict resolved.** `main` requires branches to be up to date, and
 a new `[Unreleased]` section merged during or after the release is normally inserted directly above

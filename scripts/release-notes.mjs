@@ -24,6 +24,10 @@
 // `extract` with no version is the authoring-time check build.yml runs on every
 // PR, so a heading it cannot read a title from fails the PR that wrote it.
 //
+// A prerelease version is accepted but `prepare` never stamps one, so
+// `extract <prerelease>` prints nothing; the narrative stays `[Unreleased]` on
+// main for the next ordinary release.
+//
 // Both are no-ops when the file carries no matching section, which is the
 // normal case for a routine patch: the auto-generated PR list is enough, and a
 // release that needs no narrative should not be made to invent one.
