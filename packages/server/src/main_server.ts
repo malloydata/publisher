@@ -218,7 +218,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
             "process sizes its memory_limit from the container independently, so " +
             "their combined budget exceeds it and the process can be OOM-killed " +
             "while each instance believes it is within budget. See " +
-            "docs/configuration.md.",
+            "https://github.com/malloydata/publisher/blob/main/docs/configuration.md#environment-variables--cli-flags",
       );
    } else {
       logger.info(
