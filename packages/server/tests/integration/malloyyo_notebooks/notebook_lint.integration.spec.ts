@@ -208,15 +208,14 @@ describe("notebook lint through the real server (E2E)", () => {
                .filter((p) => p.severity === "error")
                .map((p) => [p.model, p.code]),
          ).toEqual([
-            [
-               "dashboards/artifact_unparsed.malloy",
-               "notebook-artifact-unparsed",
-            ],
             ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
             [
                "notebooks/header_statement.malloy",
                "notebook-statement-above-artifact",
             ],
+            ["notebooks/linty.malloy", "render-tag"],
+            // Once, from the dashboard lint, as a reload reports it.
+            ["dashboards/artifact_unparsed.malloy", "dashboard-lint"],
          ]);
          expect(lintOf(problems, LINTY).map((p) => p.code)).toEqual([
             "notebook-kind-missing",

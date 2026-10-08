@@ -21,7 +21,11 @@ import {
 import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
-import { getPackageLoadPool } from "../package_load/package_load_pool";
+import {
+   getPackageLoadPool,
+   type LoadPackageOutcome,
+} from "../package_load/package_load_pool";
+import type { LoadPackageRequest } from "../package_load/protocol";
 import { llmConfigured } from "../providers/active";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -112,7 +116,7 @@ import {
    isNotebookModelPath,
    type DocumentKind,
 } from "./notebook";
-import { lintNotebookText } from "./notebook_lint";
+import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildDashboardManifest,
    COMPONENT_FILE_SUFFIXES,
@@ -751,6 +755,316 @@ export class Package {
    }
 
    /**
+    * The package's API metadata as the worker read it from publisher.json.
+    */
+   private static packageConfigFromOutcome(
+      environmentName: string,
+      packageName: string,
+      outcome: LoadPackageOutcome,
+   ): ApiPackage {
+      // Override the manifest-derived resource URI — the worker only
+      // returns name/description from publisher.json, but the rest of
+      // the API surface expects a `resource` field too.
+      return {
+         name: outcome.packageMetadata.name,
+         description: outcome.packageMetadata.description,
+         location: outcome.packageMetadata.location,
+         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         explores: outcome.packageMetadata.explores,
+         queryableSources: outcome.packageMetadata.queryableSources,
+         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+         // Always surface a non-null `materialization` object once the package
+         // has loaded (schedule null when the manifest declares no policy). The
+         // control plane treats object-present as the authoritative "this is
+         // what the manifest says" signal and object-absent as "metadata not
+         // available this request" — so it must never be dropped to null on a
+         // successfully loaded package, or the CP can misread a transient
+         // absence as a schedule removal. See `parsePackageMaterialization`.
+         materialization: outcome.packageMetadata.materialization ?? {
+            schedule: null,
+            freshness: null,
+         },
+         // The canonical home for the package's declared tags, mirrored from the
+         // block above — which is where the wire originally carried them. Both
+         // are populated for as long as the deprecated home is supported, so a
+         // client migrates when it chooses rather than when this ships.
+         queryMetadata:
+            outcome.packageMetadata.materialization?.queryMetadata ?? null,
+         // Package-level persist scope mode, applied uniformly to every persist
+         // source/index. Defaults to "package" (cross-version reuse) when the
+         // manifest omits it.
+         scope: outcome.packageMetadata.scope ?? "package",
+      };
+   }
+
+   /**
+    * Turn the worker's compiled models into live `Model`s and validate their
+    * render tags. Render tags are checked here, on the main thread, because the
+    * renderer is too heavy to load inside the pure-CPU package-load worker. A
+    * misconfigured tag never fails the load; its findings are returned to ride
+    * the package response as non-fatal `warnings`.
+    *
+    * One function for the load, the in-place reload and the package-scope
+    * compile ({@link lintWorkerOutcome}), so the render-tag findings a compile
+    * reports cannot drift from the ones a reload reports. It touches no
+    * package state.
+    *
+    * `onCompileError` is the one way the callers differ. A load ("throw")
+    * fails on the first model that did not compile. A reload ("placeholder")
+    * keeps a failed model as `Model.fromCompilationError`, and likewise keeps a
+    * model whose render-tag validation threw unexpectedly, so one bad file does
+    * not cost the package its other models. `afterHydrate` runs once per
+    * compiled model, in order, before it is added (the load path's
+    * persist-name check).
+    *
+    * `ctx.compile` marks the package-scope compile. Its caller reports every
+    * failed model in the response, so the per-model "failed during reload"
+    * line is not logged: a compile is not a reload, and an agent iterating on
+    * a broken file would otherwise fill the operator log. A render-tag check
+    * that throws is a server fault, so it is still logged, as "during compile".
+    */
+   private static async hydrateWorkerModels(
+      outcome: LoadPackageOutcome,
+      ctx: {
+         packageName: string;
+         packagePath: string;
+         malloyConfig: MalloyConfig;
+         buildManifest?: BuildManifest["entries"];
+         compile?: boolean;
+         /**
+          * The what-if text a package-scope compile was given. A model that
+          * fails to compile is kept as a placeholder, and without this the
+          * placeholder carries no text, so a reader of it judges the saved
+          * file instead of the edit.
+          */
+         replacement?: LoadPackageRequest["replacement"];
+      },
+      onCompileError: "throw" | "placeholder",
+      afterHydrate?: (
+         sm: LoadPackageOutcome["models"][number],
+      ) => Promise<void>,
+   ): Promise<{
+      models: Map<string, Model>;
+      renderTagWarnings: ApiPackageWarning[];
+   }> {
+      const { packageName, packagePath, malloyConfig, buildManifest } = ctx;
+      const models = new Map<string, Model>();
+      const renderTagWarnings: ApiPackageWarning[] = [];
+      const placeholder = (
+         sm: LoadPackageOutcome["models"][number],
+         err: Error,
+      ): Model =>
+         Model.fromCompilationError(
+            packageName,
+            sm.modelPath,
+            sm.modelType,
+            err,
+            sm.modelPath === ctx.replacement?.modelPath
+               ? ctx.replacement.source
+               : undefined,
+         );
+      for (const sm of outcome.models) {
+         if (sm.compilationError) {
+            const err = Model.deserializeCompilationError(sm.compilationError);
+            if (onCompileError === "throw") {
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               // The outer catch in Package.create records the total metric +
+               // cleans the package directory.
+               throw err;
+            }
+            if (!ctx.compile) {
+               logger.warn("Model compilation failed during reload", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+            }
+            models.set(sm.modelPath, placeholder(sm, err));
+            continue;
+         }
+         let model: Model;
+         try {
+            model = Model.fromSerialized(
+               packageName,
+               packagePath,
+               malloyConfig,
+               sm,
+               {
+                  buildManifest,
+                  skipAuthorizeWarningLog: ctx.compile,
+               },
+            );
+         } catch (hydrateErr) {
+            // A load and a reload fail on this, as they always have. A compile
+            // keeps going: one model that will not hydrate costs that model's
+            // findings, not every other file's. The finding is an error, since
+            // the reload this compile previews would fail on it.
+            if (!ctx.compile) throw hydrateErr;
+            logger.warn("Model hydration failed during compile", {
+               packageName,
+               modelPath: sm.modelPath,
+               error: errMessage(hydrateErr),
+            });
+            renderTagWarnings.push({
+               model: sm.modelPath,
+               message:
+                  `The load-time checks could not read this model ` +
+                  `(${errMessage(hydrateErr)}), so its render-tag and dashboard findings ` +
+                  `are unknown rather than clean.`,
+               severity: "error",
+            });
+            models.set(
+               sm.modelPath,
+               placeholder(
+                  sm,
+                  hydrateErr instanceof Error
+                     ? hydrateErr
+                     : new Error(String(hydrateErr)),
+               ),
+            );
+            continue;
+         }
+         let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
+         try {
+            warnings = await model.validateRenderTags();
+         } catch (renderErr) {
+            // Defensive: validateRenderTags logs its findings and does not
+            // throw. On reload an unexpected internal failure is recorded as
+            // this model's compilationError rather than aborting the reload.
+            if (onCompileError === "throw") throw renderErr;
+            const err =
+               renderErr instanceof Error
+                  ? renderErr
+                  : new Error(String(renderErr));
+            logger.warn(
+               `Render-tag validation failed during ${ctx.compile ? "compile" : "reload"}`,
+               {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               },
+            );
+            if (ctx.compile) {
+               renderTagWarnings.push({
+                  model: sm.modelPath,
+                  message:
+                     `The render-tag check did not finish for this model, so ` +
+                     `its render-tag findings are unknown rather than clean.`,
+                  severity: "warn",
+               });
+            }
+            models.set(sm.modelPath, placeholder(sm, err));
+            continue;
+         }
+         for (const w of warnings) {
+            renderTagWarnings.push({
+               model: sm.modelPath,
+               // Spelled out rather than spread. A spread is exempt from
+               // excess-property checking exactly like a named interface, so
+               // `...w` would carry a stale field name through a rename in
+               // `api-doc.yaml` without the compiler noticing.
+               subject: w.subject,
+               message: w.message,
+               severity: w.severity,
+            });
+         }
+         await afterHydrate?.(sm);
+         models.set(sm.modelPath, model);
+      }
+      return { models, renderTagWarnings };
+   }
+
+   /**
+    * The render-tag and dashboard findings a reload of this worker outcome
+    * would put on the package's `warnings`, for the package-scope compile.
+    *
+    * Runs the reload's own two steps, {@link hydrateWorkerModels} (keeping
+    * failed models, as a reload does) and {@link discoverDashboards}, on a
+    * throwaway Package built from the outcome. The served package is never
+    * read or written, so a what-if cannot leak into what is served. The
+    * outcome's metadata carries the surface the worker resolved from
+    * publisher.json or a root index.malloy, so the tile lint answers against
+    * the same surface a reload would.
+    *
+    * Not covered: notebook findings (the compile reports those itself), and
+    * every warning that needs the build plan or a bound manifest (storage,
+    * persist, materialization, collision), which only a real load computes.
+    *
+    * With a replacement source, the hydrated models already reflect it. A
+    * replacement that fails to compile carries no text back from the worker, so
+    * its placeholder is handed the replacement text, and discovery decides from
+    * that whether it is a dashboard (and so whether a drill to it resolves)
+    * rather than reading the saved file.
+    */
+   public static async lintWorkerOutcome(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      malloyConfig: MalloyConfig,
+      outcome: LoadPackageOutcome,
+      buildManifest?: BuildManifest["entries"],
+      replacement?: LoadPackageRequest["replacement"],
+   ): Promise<{
+      renderTagWarnings: ApiPackageWarning[];
+      dashboardWarnings: ApiPackageWarning[];
+   }> {
+      const { models, renderTagWarnings } = await Package.hydrateWorkerModels(
+         outcome,
+         {
+            packageName,
+            packagePath,
+            malloyConfig,
+            buildManifest,
+            compile: true,
+            replacement,
+         },
+         "placeholder",
+      );
+      const pkg = new Package(
+         environmentName,
+         packageName,
+         packagePath,
+         Package.packageConfigFromOutcome(
+            environmentName,
+            packageName,
+            outcome,
+         ),
+         [],
+         models,
+         malloyConfig,
+      );
+      try {
+         await pkg.discoverDashboards({ dryRun: true });
+      } catch (err) {
+         // Discovery is meant never to throw, but a fault in it must not
+         // reject the whole compile, and a missing list reads exactly like a
+         // clean package. Say the findings are unknown instead.
+         logger.warn("Dashboard lint failed during compile", {
+            packageName,
+            error: errMessage(err),
+         });
+         return {
+            renderTagWarnings,
+            dashboardWarnings: [
+               {
+                  message:
+                     "The dashboard checks did not run, so their findings " +
+                     "are unknown rather than clean. Reload the package to " +
+                     'see them. The cause is in the server log under "Dashboard ' +
+                     'lint failed during compile".',
+                  severity: "warn",
+               },
+            ],
+         };
+      }
+      return { renderTagWarnings, dashboardWarnings: pkg.dashboardWarnings };
+   }
+
+   /**
     * Load the package via the package-load worker pool. The worker
     * performs the CPU-bound bulk of the load off-thread (manifest
     * read, every `.malloy` / `.malloynb` compile) and ships back a
@@ -845,102 +1159,42 @@ export class Package {
          databaseCount: databases.length,
       });
 
-      // Override the manifest-derived resource URI — the worker only
-      // returns name/description from publisher.json, but the rest of
-      // the API surface expects a `resource` field too.
-      const packageConfig: ApiPackage = {
-         name: outcome.packageMetadata.name,
-         description: outcome.packageMetadata.description,
-         location: outcome.packageMetadata.location,
-         resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
-         explores: outcome.packageMetadata.explores,
-         queryableSources: outcome.packageMetadata.queryableSources,
-         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
-         // Always surface a non-null `materialization` object once the package
-         // has loaded (schedule null when the manifest declares no policy). The
-         // control plane treats object-present as the authoritative "this is
-         // what the manifest says" signal and object-absent as "metadata not
-         // available this request" — so it must never be dropped to null on a
-         // successfully loaded package, or the CP can misread a transient
-         // absence as a schedule removal. See `parsePackageMaterialization`.
-         materialization: outcome.packageMetadata.materialization ?? {
-            schedule: null,
-            freshness: null,
-         },
-         // The canonical home for the package's declared tags, mirrored from the
-         // block above — which is where the wire originally carried them. Both
-         // are populated for as long as the deprecated home is supported, so a
-         // client migrates when it chooses rather than when this ships.
-         queryMetadata:
-            outcome.packageMetadata.materialization?.queryMetadata ?? null,
-         // Package-level persist scope mode, applied uniformly to every persist
-         // source/index. Defaults to "package" (cross-version reuse) when the
-         // manifest omits it.
-         scope: outcome.packageMetadata.scope ?? "package",
-      };
+      const packageConfig = Package.packageConfigFromOutcome(
+         environmentName,
+         packageName,
+         outcome,
+      );
 
       // Build live `Model`s from worker output. Any per-model compile
       // failure aborts the load — matches the historical behaviour of
       // `Package.create` failing the whole package on the first model
       // error. (`Package.reloadAllModels` keeps the failed-model
-      // placeholders instead; that branch goes through a different
-      // hydration path.)
-      const models = new Map<string, Model>();
-      const renderTagWarnings: ApiPackageWarning[] = [];
+      // placeholders instead.)
+      let models: Map<string, Model>;
+      let renderTagWarnings: ApiPackageWarning[];
       try {
-         for (const sm of outcome.models) {
-            if (sm.compilationError) {
-               const err = Model.deserializeCompilationError(
-                  sm.compilationError,
-               );
-               logger.error("Model compilation failed", {
-                  packageName,
-                  modelPath: sm.modelPath,
-                  error: err.message,
-               });
-               // The outer catch in Package.create records the total metric +
-               // cleans the package directory.
-               throw err;
-            }
-            const model = Model.fromSerialized(
-               packageName,
-               packagePath,
-               malloyConfig,
-               sm,
-            );
-            // Validate renderer tags on the main thread (the renderer is too
-            // heavy to load inside the pure-CPU package-load worker). A
-            // misconfigured tag is logged as a warning naming the subject; it
-            // does not fail the load. The findings also ride the package
-            // response as non-fatal `warnings`.
-            for (const w of await model.validateRenderTags()) {
-               renderTagWarnings.push({
-                  model: sm.modelPath,
-                  // Spelled out rather than spread. A spread is exempt from
-                  // excess-property checking exactly like a named interface, so
-                  // `...w` would carry a stale field name through a rename in
-                  // `api-doc.yaml` without the compiler noticing.
-                  subject: w.subject,
-                  message: w.message,
-                  severity: w.severity,
-               });
-            }
-            // Reject unquoted `#@ persist name=` annotations the same way: an
-            // unquoted name is dropped from the build plan, so the source would
-            // publish but never materialize. Scan the raw `.malloy` source (the
-            // ground truth for quoting); throws a ModelCompilationError (424).
-            // `.malloy` only: `#@ persist` is a model-file directive and does not
-            // appear in `.malloynb` notebooks. If that ever changes, widen this
-            // guard so the identifier-injection check still covers notebooks.
-            if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-               const modelSource = await fs.readFile(
-                  path.join(packagePath, sm.modelPath),
-                  "utf-8",
-               );
-               assertPersistNamesQuoted(modelSource, sm.modelPath);
-            }
-            models.set(sm.modelPath, model);
-         }
+         ({ models, renderTagWarnings } = await Package.hydrateWorkerModels(
+            outcome,
+            { packageName, packagePath, malloyConfig },
+            "throw",
+            async (sm) => {
+               // Reject unquoted `#@ persist name=` annotations at load:
+               // an unquoted name is dropped from the build plan, so the source
+               // would publish but never materialize. Scan the raw `.malloy`
+               // source (the ground truth for quoting); throws a
+               // ModelCompilationError (424). `.malloy` only: `#@ persist` is a
+               // model-file directive and does not appear in `.malloynb`
+               // notebooks. If that ever changes, widen this guard so the
+               // identifier-injection check still covers notebooks.
+               if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+                  const modelSource = await fs.readFile(
+                     path.join(packagePath, sm.modelPath),
+                     "utf-8",
+                  );
+                  assertPersistNamesQuoted(modelSource, sm.modelPath);
+               }
+            },
+         ));
       } catch (err) {
          // Record the load's phase cost tagged with the terminal status before
          // the error propagates to the outer catch (which records the total).
@@ -2634,72 +2888,17 @@ export class Package {
          llmConfigured(),
       );
 
-      const nextModels = new Map<string, Model>();
-      const renderTagWarnings: ApiPackageWarning[] = [];
-      for (const sm of outcome.models) {
-         if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
-            logger.warn("Model compilation failed during reload", {
+      const { models: nextModels, renderTagWarnings } =
+         await Package.hydrateWorkerModels(
+            outcome,
+            {
                packageName: this.packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
-            nextModels.set(
-               sm.modelPath,
-               Model.fromCompilationError(
-                  this.packageName,
-                  sm.modelPath,
-                  sm.modelType,
-                  err,
-               ),
-            );
-         } else {
-            const model = Model.fromSerialized(
-               this.packageName,
-               this.packagePath,
-               this.malloyConfig,
-               sm,
-               { buildManifest },
-            );
-            // Validate renderer tags here too (loadViaWorker does it for the
-            // create path). Render-tag findings are logged as warnings inside
-            // validateRenderTags and never throw. The catch is defensive: an
-            // unexpected internal failure is recorded as this model's
-            // compilationError rather than aborting the whole reload.
-            try {
-               for (const w of await model.validateRenderTags()) {
-                  renderTagWarnings.push({
-                     model: sm.modelPath,
-                     // Spelled out rather than spread, for the reason given at
-                     // the sibling call site on the load path.
-                     subject: w.subject,
-                     message: w.message,
-                     severity: w.severity,
-                  });
-               }
-               nextModels.set(sm.modelPath, model);
-            } catch (renderErr) {
-               const err =
-                  renderErr instanceof Error
-                     ? renderErr
-                     : new Error(String(renderErr));
-               logger.warn("Render-tag validation failed during reload", {
-                  packageName: this.packageName,
-                  modelPath: sm.modelPath,
-                  error: err.message,
-               });
-               nextModels.set(
-                  sm.modelPath,
-                  Model.fromCompilationError(
-                     this.packageName,
-                     sm.modelPath,
-                     sm.modelType,
-                     err,
-                  ),
-               );
-            }
-         }
-      }
+               packagePath: this.packagePath,
+               malloyConfig: this.malloyConfig,
+               buildManifest,
+            },
+            "placeholder",
+         );
       this.models = nextModels;
       // The freshly-compiled models start with no serve bindings and no serve
       // connections; re-apply both so a reload preserves serve routing.
@@ -2860,12 +3059,19 @@ export class Package {
     * negative hides a real broken dashboard, which is still worse than either.
     * Never throws: an unreadable file is simply not a dashboard.
     */
-   private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
+   private async claimsToBeADashboard(
+      model: Model,
+      modelPath: string,
+   ): Promise<boolean> {
       try {
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         // The text the compile read first: a package compile's replacement is
+         // not on disk, and the saved file would answer for the old text.
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
       } catch {
          return false;
@@ -2892,10 +3098,13 @@ export class Package {
                : untagged;
          }
          if (!model.getCompilationError()) return untagged;
-         const source = await fs.readFile(
-            safeJoinUnderRoot(this.packagePath, modelPath),
-            "utf8",
-         );
+         // Compiled text first, as in claimsToBeADashboard.
+         const source =
+            model.getCompiledSourceText() ??
+            (await fs.readFile(
+               safeJoinUnderRoot(this.packagePath, modelPath),
+               "utf8",
+            ));
          return claimsToBeANotebook(source)
             ? documentKind(modelPath, artifactKindInText(source))
             : untagged;
@@ -2905,15 +3114,26 @@ export class Package {
    }
 
    /**
-    * Re-read the package's dashboards from its compiled models. Called at load
-    * and after every reload, because a dashboard is defined by an annotation on
-    * a compiled model — it cannot change without the models changing.
+    * Re-read the package's dashboards from its compiled models. Called at load,
+    * after every reload, and as a dry run from a package-scope compile, because
+    * a dashboard is defined by an annotation on a compiled model — it cannot
+    * change without the models changing.
     *
     * Never throws: a package whose dashboards can't be read still serves its
     * models. A file in `dashboards/` with no artifact tag is a shared include
     * and is skipped, exactly as Malloyyo treats it.
+    *
+    * `dryRun` is for the throwaway package {@link lintWorkerOutcome} builds:
+    * it skips the notebook pass (the package-scope compile reports notebook
+    * findings itself, with positions), its discovery metric, and the per-
+    * finding log lines, so a compile neither counts nor logs as a load. A
+    * check that throws is a server fault, not a finding, so it is still
+    * logged, marked `during: "compile"` so it does not read as a load.
     */
-   private async discoverDashboards(): Promise<void> {
+   private async discoverDashboards(
+      options: { dryRun?: boolean } = {},
+   ): Promise<void> {
+      const during = options.dryRun ? { during: "compile" } : {};
       const discovered = new Map<
          string,
          DashboardManifest & { error?: string }
@@ -2956,6 +3176,7 @@ export class Package {
          } catch (err) {
             logger.warn("Reading a model's dashboard facts failed", {
                packageName: this.packageName,
+               ...during,
                modelPath,
                error: errMessage(err),
             });
@@ -2976,6 +3197,7 @@ export class Package {
             } catch (err) {
                logger.warn("Notebook layout discovery failed", {
                   packageName: this.packageName,
+                  ...during,
                   modelPath,
                   error: errMessage(err),
                });
@@ -2996,6 +3218,7 @@ export class Package {
             } catch (err) {
                logger.warn("Dashboard discovery failed", {
                   packageName: this.packageName,
+                  ...during,
                   modelPath,
                   error: errMessage(err),
                });
@@ -3034,7 +3257,10 @@ export class Package {
             // be read from a model that did not compile, so it is read from the
             // source text, a heuristic used ONLY on this already-broken path.
             const error = model.getCompilationError();
-            if (!error || !(await this.claimsToBeADashboard(modelPath))) {
+            if (
+               !error ||
+               !(await this.claimsToBeADashboard(model, modelPath))
+            ) {
                // Reached with no facts AND no compile error to show, so the
                // branch above drops the file. If it claims to be a dashboard,
                // that is one disappearing with nothing said, which is the case
@@ -3059,9 +3285,13 @@ export class Package {
                // short-circuits before calling it again. Do not "simplify" it
                // away; that reinstates a second `readFile` per uncompilable
                // non-dashboard.
-               if (!error && (await this.claimsToBeADashboard(modelPath))) {
+               if (
+                  !error &&
+                  (await this.claimsToBeADashboard(model, modelPath))
+               ) {
                   logger.warn("Dashboard file produced no facts and no error", {
                      packageName: this.packageName,
+                     ...during,
                      modelPath,
                   });
                   droppedByError.push({ modelPath, name });
@@ -3121,9 +3351,14 @@ export class Package {
          const model = this.models.get(manifest.entryFile);
          if (!model) continue;
          try {
+            // The compiled text when the loader recorded it, as for notebooks
+            // below, so the boundary derives from the text the IR came from.
+            // At package-scope compile that is also the caller's replacement,
+            // where the file on disk is the old version.
             dashboardFileText.set(
                manifest.entryFile,
-               await model.getFileText(this.packagePath),
+               model.getCompiledSourceText() ??
+                  (await model.getFileText(this.packagePath)),
             );
          } catch {
             // Unreadable text only costs the file its own derived sources:
@@ -3150,10 +3385,6 @@ export class Package {
       }
       this.notebookFileText = notebookFileText;
       this.applyQueryBoundaryToModels();
-      this.notebookWarnings = [
-         ...this.attachNotebookCells(),
-         ...(await this.lintNotebookFiles()),
-      ];
       this.lintInputs = {
          factsByPath,
          allFacts,
@@ -3162,7 +3393,15 @@ export class Package {
          droppedByError,
          shadowed,
       };
-      await this.relintDashboards();
+      await this.relintDashboards({ log: !options.dryRun });
+      // After the dashboard lint, because the notebook lint drops its copy of
+      // a finding only when the dashboard lint reported the same one.
+      if (!options.dryRun) {
+         this.notebookWarnings = [
+            ...this.attachNotebookCells(),
+            ...(await this.lintNotebookFiles()),
+         ];
+      }
    }
 
    /**
@@ -3223,10 +3462,12 @@ export class Package {
             }
          }
          for (const finding of lintNotebookText(modelPath, text)) {
-            // A dashboard whose tag does not parse is already reported by the dashboard lint.
             if (
-               finding.code === "notebook-artifact-unparsed" &&
-               !this.isServedNotebook(modelPath)
+               reportedByDashboardLint(
+                  finding,
+                  modelPath,
+                  this.dashboardWarnings,
+               )
             )
                continue;
             logger.warn("Notebook lint", {
@@ -3260,7 +3501,9 @@ export class Package {
     * it; so does a metadata PATCH, which can change the surface without
     * changing any file, so the tile findings stay true to what is served.
     */
-   public async relintDashboards(): Promise<void> {
+   public async relintDashboards(
+      options: { log?: boolean } = {},
+   ): Promise<void> {
       const inputs = this.lintInputs;
       if (!inputs) return;
       this.dashboardWarnings = await this.lintDashboards(
@@ -3271,6 +3514,7 @@ export class Package {
          inputs.droppedByError,
          inputs.shadowed,
       );
+      if (options.log === false) return;
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
             packageName: this.packageName,
