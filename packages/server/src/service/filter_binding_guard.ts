@@ -478,11 +478,11 @@ function withCompositeMembersResolved(
    return resolved ? { ...declaring, fields } : declaring;
 }
 
-function memberDeclaringCondition(
+function membersDeclaringCondition(
    composite: SourceDef,
    condition: FilterCondition,
-): SourceDef | undefined {
-   return compositeMembers(composite).find((member) =>
+): SourceDef[] {
+   return compositeMembers(composite).filter((member) =>
       member.filterList?.includes(condition),
    );
 }
@@ -1301,11 +1301,17 @@ export function assertInheritedSourceFiltersBind(
          continue;
       }
       if (isOwnFreshFilter(struct, condition, freshness)) continue;
-      const member = composite
-         ? memberDeclaringCondition(composite, condition)
-         : undefined;
-      if (member) {
-         assertFilterConditionBindsToDeclaringSource(member, struct, condition);
+      const members = composite
+         ? membersDeclaringCondition(composite, condition)
+         : [];
+      if (members.length > 0) {
+         for (const member of members) {
+            assertFilterConditionBindsToDeclaringSource(
+               member,
+               struct,
+               condition,
+            );
+         }
          continue;
       }
       throw new Error(
