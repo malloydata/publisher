@@ -83,6 +83,23 @@ The response's `result` field is a JSON string, so parse it; with `"compactJson"
 plain row objects, without it the full Malloy result envelope with type metadata. `givens` rides on
 either shape to supply model-declared [runtime parameters](givens.md).
 
+A query that fails tells you whose problem it is. Branch on `reason`, not on the message:
+
+- **400:** the request or the query was rejected. When Malloy rejected the query, `problems` lists
+  its diagnostics; when the database ran it and rejected it (a type mismatch, a division by zero),
+  the message carries the database's text. Fix what the message names.
+- **424 with a connection `reason`:** the connection is misconfigured, so the query never ran. The
+  query is fine; do not rewrite it, and do not retry until the connection is fixed.
+  - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.
+  - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
+    one deleted after the package was loaded.
+- **502 with `reason: CONNECTION_FAILED`:** the database connection is down: the database could not
+  be reached, so the query never ran. The query is fine; retry once, then report it. Without that reason, a 502 is some other
+  failure in the database behind the connection.
+
+For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
+driver's text can name a host or a user; it is in the server log.
+
 ## Live API explorer
 
 The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.1 spec:

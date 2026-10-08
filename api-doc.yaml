@@ -653,6 +653,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -710,6 +714,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -762,8 +770,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -812,8 +824,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -890,8 +906,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -940,8 +960,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1008,6 +1032,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1070,6 +1098,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1126,8 +1158,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1182,8 +1218,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1262,8 +1302,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -1318,8 +1362,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1884,6 +1932,10 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2328,6 +2380,10 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2865,6 +2921,31 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ConnectionUnavailable:
+      description: |
+        The connection is misconfigured, so the query never ran. `reason`
+        says how: CONNECTION_AUTH_FAILED (the database rejected the
+        connection's credentials) or CONNECTION_NOT_FOUND (the model names a
+        connection the environment does not have). The query is fine, and a
+        retry fails the same way until the connection is fixed. For
+        CONNECTION_AUTH_FAILED the body carries a fixed message, because the
+        driver's text can name a user; it is logged.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DatabaseUnreachable:
+      description: |
+        The database connection failed. With `reason: CONNECTION_FAILED` the
+        connection is down: the database could not be reached (refused, reset, timed out,
+        or closed by the server), so the query never ran and a retry can
+        succeed. That reason is what marks the customer's database being down
+        rather than this server failing. The body carries a fixed message,
+        because the driver's text can name an internal host; it is logged.
       content:
         application/json:
           schema:
@@ -6201,12 +6282,28 @@ components:
             says nothing about whether the caller reached the right server; the
             latter is a routing problem worth retrying elsewhere.
 
+            CONNECTION_FAILED, on a 502, means the database could not be
+            reached (the connection was refused, reset or timed out, or the
+            server closed it), so the query never ran. The query and the model
+            are fine; retrying elsewhere will not help, and neither will
+            rewriting the query.
+
+            CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
+            connection's credentials (a wrong password, an invalid key, an
+            expired token), so the query never ran. Whoever configures the
+            connection has to fix it; retrying fails the same way.
+
+            CONNECTION_NOT_FOUND, on a 424, means the model names a connection
+            the environment does not have, usually one deleted after the
+            package was loaded.
+
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
             grow. Callers must treat an unrecognized value as absent.
 
-            Known values: TABLE_NOT_FOUND.
+            Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
         problems:
           type: array
           description: |

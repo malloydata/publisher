@@ -12,7 +12,9 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 //
 // Generalizing is decided per branch, not by status class -- 501, 503 and 504
 // are 5xx and still return their messages. Every 4xx returns its message
-// because a client error names what the caller must change. The 5xx branches
+// because a client error names what the caller must change, with one
+// exception: the 424 for rejected credentials returns a fixed message, because
+// its driver text can name a user or an account. The 5xx branches
 // that return theirs do so because the message is one this server composed (a
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
@@ -43,6 +45,10 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // traceparent.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
+const GENERIC_UNREACHABLE_MESSAGE =
+   "The database connection is down: the database could not be reached, so the query did not run.";
+const GENERIC_AUTH_MESSAGE =
+   "The database rejected the connection's credentials. Check the connection's user, password, key or token.";
 
 /**
  * Cap on the logged detail. `error.message` here is unbounded and
@@ -130,7 +136,19 @@ export function logInternalFailure(
  * caller on that connection is using. Only reasons that a caller is expected to
  * branch on are emitted; absence is the norm and means "no special handling".
  */
-export type ErrorReason = "TABLE_NOT_FOUND";
+export type ErrorReason =
+   | "TABLE_NOT_FOUND"
+   // On a 502: the database could not be reached, so the query never ran. The
+   // query and the model are fine, and rewriting either will not help. Marks a
+   // 502 as the customer's database being down, not Credible failing.
+   | "CONNECTION_FAILED"
+   // On a 424: the database rejected the connection's credentials (a wrong
+   // password, an invalid key, an expired token). The query never ran, and
+   // whoever configures the connection has to fix it.
+   | "CONNECTION_AUTH_FAILED"
+   // On a 424: the model names a connection the environment does not have,
+   // usually one deleted after the package was loaded.
+   | "CONNECTION_NOT_FOUND";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -159,6 +177,184 @@ export function filesystemAccessFailure(
       }
       current = errno.cause;
    }
+   return undefined;
+}
+
+/**
+ * Node's codes for a socket that could not connect or was cut. Postgres,
+ * MySQL and Snowflake all surface these, on the error itself or on its `cause`.
+ *
+ * `ENOTFOUND` is left out: a host name that does not resolve is almost always
+ * a wrong host in the connection's config, which a retry will not fix.
+ * `EAI_AGAIN` is the transient DNS failure, and is in.
+ */
+const NODE_CONNECTION_CODES = new Set([
+   "ECONNREFUSED",
+   "ECONNRESET",
+   "ECONNABORTED",
+   "EPIPE",
+   "ETIMEDOUT",
+   "EAI_AGAIN",
+   "EHOSTUNREACH",
+   "ENETUNREACH",
+]);
+
+/**
+ * Postgres SQLSTATEs that mean the session is gone rather than that the
+ * statement was wrong: class 08 (connection exception) and the three
+ * operator-intervention codes for a server shutting down.
+ */
+const POSTGRES_CONNECTION_SQLSTATE = /^(08[0-9A-Z]{3}|57P0[123])$/;
+
+/**
+ * Messages that arrive with no code, matched from the start of the message so
+ * a value quoted later in it cannot match.
+ *
+ * node-pg raises "Connection terminated unexpectedly" with no code.
+ *
+ * `@malloydata/db-mysql` wraps every query error in `new Error(e)`, which keeps
+ * only the text, prefixed "Error: ", and drops mysql2's `code` and `fatal`. So
+ * a MySQL connection lost during or between queries is recognized by mysql2's
+ * own wording: a closed connection reused, a connection the server closed, or
+ * a Node socket error, which Node words as `<syscall> <CODE>`. A connection
+ * refused at connect time keeps its code: the driver connects outside that
+ * wrapper.
+ */
+const CODELESS_CONNECTION_MESSAGES = [
+   /^Connection terminated unexpectedly$/,
+   /^(Error: )?Can't add new command when connection is in closed state$/,
+   /^(Error: )?Connection lost: The server closed the connection\.$/,
+   new RegExp(
+      `^(Error: )?(connect|read|write|getaddrinfo) (${[
+         ...NODE_CONNECTION_CODES,
+      ].join("|")})\\b`,
+   ),
+];
+
+/**
+ * mysql2 codes that come with `fatal` for a fault in the connection's config,
+ * which a retry will not fix. mysql2 marks every handshake and auth-switch
+ * error fatal, so `fatal` alone cannot tell these from a server that is down.
+ * An explicit list rather than an `ER_` prefix, because some fatal `ER_` codes
+ * are transient (`ER_CON_COUNT_ERROR`, too many connections, and
+ * `ER_SERVER_SHUTDOWN`) and some config faults have no `ER_` prefix.
+ * `ER_ACCESS_DENIED_ERROR` is here so it is never read as unreachable; it
+ * answers as rejected credentials.
+ */
+const MYSQL_CONFIG_CODES = new Set([
+   "ER_ACCESS_DENIED_ERROR",
+   "ER_BAD_DB_ERROR",
+   "ER_NOT_SUPPORTED_AUTH_MODE",
+   "AUTH_SWITCH_PLUGIN_ERROR",
+   "MYSQL_CLEAR_PASSWORD_NOT_ENABLED",
+]);
+
+function isMysqlConfigFault(code: unknown): boolean {
+   return (
+      typeof code === "string" &&
+      (MYSQL_CONFIG_CODES.has(code) || code.startsWith("HANDSHAKE_"))
+   );
+}
+
+/**
+ * Whether `error` means the database could not be reached, as opposed to the
+ * database running the statement and rejecting it.
+ *
+ * Read from the driver's structured fields on the error and its `cause` chain:
+ * a Node socket code, a Postgres connection SQLSTATE, or mysql2's `fatal`
+ * flag, which it sets when the connection is unusable, unless the same error
+ * carries a code naming a config fault ({@link MYSQL_CONFIG_CODES}). Message text is the
+ * last resort, for the few drivers that raise a connection failure with no
+ * code, and is matched whole so a row value or a table name quoted inside a
+ * longer message cannot match.
+ */
+export function isConnectionFailure(error: unknown): boolean {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code, fatal } = current as Error & {
+         code?: unknown;
+         fatal?: unknown;
+      };
+      if (typeof code === "string") {
+         if (NODE_CONNECTION_CODES.has(code)) return true;
+         if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
+      }
+      if (fatal === true && !isMysqlConfigFault(code)) return true;
+      const message = current.message.trim();
+      if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
+         return true;
+      }
+      current = current.cause;
+   }
+   return false;
+}
+
+/** Postgres SQLSTATEs for a rejected login: class 28. */
+const POSTGRES_AUTH_SQLSTATE = /^28[0-9A-Z]{3}$/;
+
+/** mysql2's code for a rejected user or password. */
+const MYSQL_AUTH_CODES = new Set(["ER_ACCESS_DENIED_ERROR"]);
+
+/**
+ * Snowflake's login failures, as its server reports them in `code`: a wrong
+ * user or password (390100), an invalid key-pair JWT (390144), an invalid ID
+ * token (390195), an expired OAuth token (390318). Session-token codes are
+ * left out, because the SDK renews those itself.
+ */
+const SNOWFLAKE_AUTH_CODES = new Set(["390100", "390144", "390195", "390318"]);
+
+/**
+ * Whether `error` means the database rejected the connection's credentials.
+ *
+ * Read from the driver's fields on the error and its `cause` chain: a Postgres
+ * SQLSTATE in class 28, mysql2's `ER_ACCESS_DENIED_ERROR`, a Snowflake login
+ * code, or the `BigQueryAuthenticationError` Malloy's BigQuery driver raises
+ * for a rejected key or token.
+ */
+export function isCredentialRejection(error: unknown): boolean {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code } = current as Error & { code?: unknown };
+      if (typeof code === "string" || typeof code === "number") {
+         const value = String(code);
+         if (POSTGRES_AUTH_SQLSTATE.test(value)) return true;
+         if (MYSQL_AUTH_CODES.has(value)) return true;
+         if (SNOWFLAKE_AUTH_CODES.has(value)) return true;
+      }
+      if (current.name === "BigQueryAuthenticationError") return true;
+      current = current.cause;
+   }
+   return false;
+}
+
+/**
+ * The error to answer with when a failure is about the connection rather than
+ * the statement: rejected credentials, an unreachable database, or a
+ * connection the environment does not have. An unreachable database is a 502
+ * (something is down); rejected credentials and a missing connection are 424
+ * (something is misconfigured). Undefined for anything else, which keeps the
+ * status its route gave it.
+ *
+ * Credentials are checked first, so an error that matches both answers as
+ * credentials.
+ */
+export function databaseAccessFailure(
+   error: unknown,
+):
+   | ConnectionAuthError
+   | ConnectionFailedError
+   | UnconfiguredConnectionError
+   | undefined {
+   if (
+      error instanceof ConnectionAuthError ||
+      error instanceof ConnectionFailedError ||
+      error instanceof UnconfiguredConnectionError
+   ) {
+      return error;
+   }
+   const message = error instanceof Error ? error.message : String(error);
+   if (isCredentialRejection(error)) return new ConnectionAuthError(message);
+   if (isConnectionFailure(error)) return new ConnectionFailedError(message);
    return undefined;
 }
 
@@ -263,7 +459,18 @@ export function internalErrorToHttpError(
    } else if (error instanceof DestinationNotFoundError) {
       return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
-      return httpError(422, error.message);
+      // The driver's text can name the user, the account or the host, so it
+      // is logged and the body says only what to fix. warn: a misconfigured
+      // connection is the customer's to fix, not our fault.
+      logInternal("Connection credentials rejected", error, "warn");
+      return httpError(424, GENERIC_AUTH_MESSAGE, "CONNECTION_AUTH_FAILED");
+   } else if (error instanceof ConnectionFailedError) {
+      // Checked ahead of ConnectionError, which it extends: the same 502 and
+      // the same logging, plus the reason that says the database is down.
+      logInternal("Database unreachable", error, "warn");
+      return httpError(502, GENERIC_UNREACHABLE_MESSAGE, "CONNECTION_FAILED");
+   } else if (error instanceof UnconfiguredConnectionError) {
+      return httpError(424, error.message, "CONNECTION_NOT_FOUND");
    } else if (error instanceof UnsupportedCatalogFormatError) {
       return httpError(422, error.message);
    } else if (error instanceof MaterializationEligibilityError) {
@@ -283,9 +490,10 @@ export function internalErrorToHttpError(
       // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
       // sentence the product produces, and only the caller can act on it. It is
       // generalized anyway because ConnectionError is one class covering both a
-      // rejected statement and an unreachable host, and the same text that names
-      // the caller's own typo names an internal hostname when the failure is
-      // ours. Splitting the class -- a rejected statement as 4xx with its
+      // rejected statement and any driver failure no recognizer knows, and the
+      // same text that names the caller's own typo names an internal hostname
+      // when the failure is ours. (An unreachable database and rejected
+      // credentials are recognized, and answered above.) Splitting the class -- a rejected statement as 4xx with its
       // message, transport failure as a generic 502 -- is the right end state
       // and wants its own change; a table path that names nothing already took
       // that route (see TableNotFoundError, 404). Until then a caller who needs
@@ -453,8 +661,10 @@ export class ConnectionNotFoundError extends Error {
  * 404 -- which is what every spec declaring this route has always documented
  * (502 appears in none of them).
  *
- * Distinct from {@link ConnectionError}, which stays 502 for genuine transport
- * failures: unreachable database, expired credentials, exhausted quota. The
+ * Distinct from {@link ConnectionError}, which stays 502 for upstream failures
+ * such as an exhausted quota. (An unreachable database is
+ * {@link ConnectionFailedError}, also 502; rejected credentials are
+ * {@link ConnectionAuthError}, 424.) The
  * split matters beyond tidiness, because a 5xx here is counted against the
  * router's server-error budget and pages on-call for what is a typo in someone's
  * model.
@@ -491,6 +701,41 @@ export class ConnectionError extends Error {
 }
 
 /**
+ * The database could not be reached: the connection was refused, reset or
+ * timed out, or the server closed it. The query never ran, so it maps to 502
+ * with `reason: CONNECTION_FAILED`, not to the 400 a rejected query gets.
+ *
+ * 5xx because something is down, and a retry can succeed; a misconfigured
+ * connection (rejected credentials, a deleted connection) is a 424 instead.
+ * 502 is already what this server answers for a driver failure, rather than
+ * 500 (our bug), 503 (our overload: a router cools the worker down and reruns
+ * the query elsewhere, against the same database) or 504 (our query timeout).
+ * The reason is what tells it from Credible failing.
+ *
+ * Raised only where {@link isConnectionFailure} recognized the driver's error.
+ * The message is the driver's, so it is logged and generalized: it can name an
+ * internal host and port.
+ */
+export class ConnectionFailedError extends ConnectionError {}
+
+/**
+ * A model names a connection the environment does not have, usually because
+ * it was deleted after the package was loaded. Raised by the environment's
+ * connection lookup when Malloy's own lookup fails for a name the environment
+ * does not configure, with Malloy's message. Maps to 424 with
+ * `reason: CONNECTION_NOT_FOUND`.
+ *
+ * Distinct from {@link ConnectionNotFoundError}, the 404 a connection route
+ * answers for a name the caller typed: here the caller named nothing, and
+ * nothing a retry elsewhere would fix.
+ */
+export class UnconfiguredConnectionError extends Error {
+   constructor(name: string, options?: { cause?: unknown }) {
+      super(`No connection named "${name}" found in config`, options);
+   }
+}
+
+/**
  * Every database session a connection may open from this process was busy for
  * the whole wait, so the query never reached the database. A 502 like any other
  * connection-side failure, with a server-authored message, so the caller learns
@@ -517,6 +762,13 @@ export class DestinationNotFoundError extends Error {
    }
 }
 
+/**
+ * The database rejected the connection's credentials: a wrong password, an
+ * invalid key, an expired token. Raised where {@link isCredentialRejection}
+ * recognized the driver's error. Maps to 424 with
+ * `reason: CONNECTION_AUTH_FAILED`: the query never ran, and the fix is the
+ * connection's configuration, not the query and not a retry.
+ */
 export class ConnectionAuthError extends Error {
    constructor(message: string) {
       super(message);
