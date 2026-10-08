@@ -26,12 +26,17 @@ describe("package versions, before they are implemented", () => {
    const pkgUrl = (sub: string) =>
       `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
 
-   async function expect501(res: Response): Promise<void> {
+   async function expect501(
+      res: Response,
+      message = "Version IDs not implemented",
+   ): Promise<void> {
       expect(res.status).toBe(501);
       expect(((await res.json()) as { message?: string }).message).toContain(
-         "Version IDs not implemented",
+         message,
       );
    }
+   const expectVersionsRoute501 = (res: Response) =>
+      expect501(res, "Package versions are not implemented yet");
 
    beforeAll(async () => {
       env = await startRestE2E();
@@ -59,21 +64,21 @@ describe("package versions, before they are implemented", () => {
 
    it("answers 501 on the versions routes that change a version", async () => {
       const json = { "Content-Type": "application/json" };
-      await expect501(
+      await expectVersionsRoute501(
          await fetch(pkgUrl("/versions/1.0.0"), {
             method: "PATCH",
             headers: json,
             body: JSON.stringify({ archiveStatus: "archive" }),
          }),
       );
-      await expect501(
+      await expectVersionsRoute501(
          await fetch(pkgUrl("/versions/1.0.0/manifest"), {
             method: "PUT",
             headers: json,
             body: JSON.stringify({ manifestLocation: null }),
          }),
       );
-      await expect501(
+      await expectVersionsRoute501(
          await fetch(pkgUrl("/latest"), {
             method: "PUT",
             headers: json,
@@ -135,5 +140,28 @@ describe("package versions, before they are implemented", () => {
       expect((await fetch(pkgUrl("/connections/duckdb/schemas"))).status).toBe(
          200,
       );
+   });
+
+   // Credible's router sends `versionId=` (empty) on its worker calls. It names
+   // no version, so it must be served as if absent, never refused.
+   it("reads an empty versionId as no version", async () => {
+      for (const sub of [
+         "/data-apps",
+         "/connections/duckdb/schemas",
+         "/materializations",
+      ]) {
+         expect((await fetch(pkgUrl(`${sub}?versionId=`))).status).toBe(200);
+      }
+      const compiled = await fetch(
+         pkgUrl("/models/report.malloy/compile?versionId="),
+         {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               source: "query: q is report -> { select: n }",
+            }),
+         },
+      );
+      expect(compiled.status).toBe(200);
    });
 });

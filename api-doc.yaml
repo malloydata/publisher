@@ -3314,6 +3314,9 @@ components:
         One published version of a package. Its content is immutable; what
         changes over its life is its lifecycle state (`archiveStatus`), whether
         it is the package's `latest`, and the build manifest it is bound to.
+        The version fields mirror the Credible control plane's `Version`: `id`
+        is the version string and `archiveStatus` takes the control plane's
+        values, so a client of both reads a version with one model.
       required:
         - resource
         - packageName
@@ -3338,6 +3341,10 @@ components:
           description: The package this version belongs to
         id:
           $ref: "#/components/schemas/VersionIdPattern"
+          description: >-
+            The version, from the package's publisher.json: the value a
+            `versionId` names everywhere else. Called `id` as on the control
+            plane's `Version`.
         latest:
           type: boolean
           readOnly: true
@@ -3350,7 +3357,9 @@ components:
           enum: [archive, unarchive]
           description: >-
             `unarchive` while the version is in service; `archive` once it has
-            been taken out of service (reads that name it answer 410).
+            been taken out of service (reads that name it answer 410). The
+            values are the control plane's `Version.archiveStatus`, which names
+            them for the action that set them, so the two never need mapping.
         archivedAt:
           type: ["string", "null"]
           format: date-time

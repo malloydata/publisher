@@ -1842,9 +1842,17 @@ app.get(
    },
 );
 // The lifecycle routes land ahead of their handlers, so until then they answer
-// 501, the same answer a `versionId` gets where it is not implemented yet.
-const versionsNotImplemented = (_req: express.Request, res: express.Response) =>
-   setVersionIdError(res);
+// 501. Their own message, because a request to them need not carry a
+// `versionId` at all.
+const versionsNotImplemented = (
+   _req: express.Request,
+   res: express.Response,
+) => {
+   const { json, status } = internalErrorToHttpError(
+      new NotImplementedError("Package versions are not implemented yet."),
+   );
+   res.status(status).json(json);
+};
 app.patch(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/versions/:versionId`,
    versionsNotImplemented,
@@ -1931,7 +1939,9 @@ app.put(
    async (req, res) => {
       try {
          if (versionIdParam(req) !== undefined) {
-            // A published version is immutable, so a write cannot name one.
+            // The spec declares no versionId here: a published version is
+            // immutable, so a write cannot name one. Refused rather than
+            // ignored, so a write naming a version never lands on another.
             throw new BadRequestError(
                "A write cannot name a versionId: a published version is immutable.",
             );
