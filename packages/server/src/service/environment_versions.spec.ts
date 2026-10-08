@@ -591,6 +591,58 @@ describe("Environment versions under concurrency and failure", () => {
       expect(sweptSurvives).toBe(true);
    });
 
+   it("keeps a version's manifest binding when a re-publish sends null, as an orchestrator's re-load does", async () => {
+      const registry = memoryRegistry();
+      env.setVersionRegistry(registry);
+      const bound = "gs://bucket/sales/manifest.json";
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            manifestLocation: bound,
+         },
+      );
+      expect(registry.rows[0].manifestLocation).toBe(bound);
+
+      // The same content again, with no manifest to give.
+      await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            manifestLocation: null,
+         },
+      );
+
+      expect(registry.rows[0].manifestLocation).toBe(bound);
+   });
+
+   it("does not run the publish checks again on a re-publish of the same content", async () => {
+      // The content was checked when it was first published and cannot have
+      // changed (same hash), so an orchestrator's re-load must not be refused
+      // by a check that has since been tightened.
+      env.setVersionRegistry(memoryRegistry());
+      await publish("1.0.0", 1);
+      let checked = 0;
+      const pkg = await env.publishPackageVersion(
+         "sales",
+         (staging) => writePackage(staging, "1.0.0", 1),
+         {
+            sourceLocation: "/src/sales-1",
+            promotion: "on-publish",
+            validate: () => {
+               checked++;
+               return "refused by a newer check";
+            },
+         },
+      );
+      expect(checked).toBe(0);
+      expect(pkg.getVersionId()).toBe("1.0.0");
+   });
+
    it("re-places a version whose tree is missing from the tree it was just sent, without fetching it again", async () => {
       const registry = memoryRegistry();
       let fetched = 0;

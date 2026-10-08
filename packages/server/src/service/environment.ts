@@ -3565,8 +3565,11 @@ export class Environment {
             `Version ${staged.version} of package ${packageName} is archived. Unarchive it to serve it again.`,
          );
       }
+      // A publish binds a manifest it names and never unbinds: an
+      // orchestrator re-loading a version sends no manifest (or null) when it
+      // has none to give. PUT .../versions/{v}/manifest unbinds.
       const rebind =
-         options.manifestLocation !== undefined &&
+         !!options.manifestLocation &&
          options.manifestLocation !== existing.manifestLocation;
       if (rebind) {
          await options.registry.updateVersion(existing.id, {

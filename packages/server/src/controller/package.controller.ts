@@ -284,7 +284,13 @@ export class PackageController {
                      this.environmentStore.serverRootPath,
                   ),
                   validate: (pkg) => formatPublishRejections(pkg),
-                  manifestLocation: body.manifestLocation,
+                  // Only a manifest to bind. A publish never unbinds: an
+                  // orchestrator re-loading a version sends `null` when it
+                  // has none to give, which must not clear the binding the
+                  // version holds. Unbinding is PUT .../versions/{v}/manifest.
+                  ...(body.manifestLocation
+                     ? { manifestLocation: body.manifestLocation }
+                     : {}),
                },
             );
          } else if (body.location) {

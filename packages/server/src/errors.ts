@@ -155,10 +155,7 @@ export type ErrorReason =
  * Why a request about a package version was refused. Emitted as `reason`
  * because several share a status, and the difference is what a caller acts on:
  * "bump the version" and "this package's versions are immutable" are both 409.
- *
- * The spec also documents VERSION_ID_INVALID (400, a malformed `versionId`).
- * Nothing here can produce it yet, since every `versionId` still answers 501,
- * so it joins this type with the code that raises it.
+
  */
 export type PackageVersionReason =
    | "MANIFEST_VERSION_MISSING"
