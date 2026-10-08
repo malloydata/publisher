@@ -150,9 +150,19 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
+/** The `mcp` block of publisher.config.json: settings for the MCP server. */
+export type McpConfig = {
+   /**
+    * Offer `includeHiddenFilesAndSources` on MCP `execute_query`. Default false.
+    * See {@link isMcpIncludeHiddenFilesAndSources}.
+    */
+   includeHiddenFilesAndSources?: boolean;
+};
+
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
+   mcp?: McpConfig;
    retrieval?: RetrievalConfig;
    environments: Environment[];
 };
@@ -1526,6 +1536,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
+   const mcp = sanitizeMcpConfig(
+      processedConfig &&
+         typeof processedConfig === "object" &&
+         "mcp" in processedConfig
+         ? (processedConfig as { mcp: unknown }).mcp
+         : undefined,
+   );
+
    const retrieval = parseRetrievalConfig(
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as { retrieval?: unknown }).retrieval
@@ -1535,10 +1553,35 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
+      ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * Read the `mcp` block. Like `theme`, a bad field is warned about and dropped,
+ * so it takes its default rather than failing the whole config.
+ */
+function sanitizeMcpConfig(raw: unknown): McpConfig | undefined {
+   if (raw === undefined) return undefined;
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      logger.warn(
+         `Invalid "mcp" in ${PUBLISHER_CONFIG_NAME}: expected an object. Ignoring.`,
+      );
+      return undefined;
+   }
+   const mcp: McpConfig = {};
+   const value = (raw as Record<string, unknown>).includeHiddenFilesAndSources;
+   if (typeof value === "boolean") {
+      mcp.includeHiddenFilesAndSources = value;
+   } else if (value !== undefined) {
+      logger.warn(
+         `Invalid "mcp.includeHiddenFilesAndSources" in ${PUBLISHER_CONFIG_NAME}: expected a boolean (got ${JSON.stringify(value)}). Ignoring field.`,
+      );
+   }
+   return Object.keys(mcp).length > 0 ? mcp : undefined;
+}
 
 /**
  * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
@@ -1700,6 +1743,35 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return false;
+   }
+};
+
+/**
+ * Whether MCP `execute_query` offers `includeHiddenFilesAndSources`, from
+ * `mcp.includeHiddenFilesAndSources` in publisher.config.json (default false).
+ *
+ * The parameter runs what a package's index.malloy hides. An author testing a
+ * curated package needs that. An agent answering questions must stay on the
+ * curated surface, and Credible's execute_query has no such parameter. So an
+ * authoring server's config turns this on, and every other server, an eval's
+ * included, leaves it off. Off removes the parameter from the tool's schema
+ * rather than refusing it, so an agent is never offered it. REST's parameter
+ * of the same name is not affected.
+ */
+export const isMcpIncludeHiddenFilesAndSources = (
+   serverRoot: string,
+): boolean => {
+   try {
+      return (
+         getPublisherConfig(serverRoot).mcp?.includeHiddenFilesAndSources ===
+         true
+      );
+   } catch (error) {
+      logger.error(
+         `Error reading "mcp" from ${PUBLISHER_CONFIG_NAME}. Defaulting to off.`,
          { error: error instanceof Error ? error.message : String(error) },
       );
       return false;

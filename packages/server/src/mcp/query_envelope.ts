@@ -90,6 +90,38 @@ export interface QueryEnvelope {
  */
 export const MAX_RESULT_CHARS = 90_000;
 
+/**
+ * Drop repeated annotation lines, keeping the LAST copy of each.
+ *
+ * Malloy lists a model's annotations once per file in its import graph, so a
+ * model whose six imports each open with `##! experimental.access_modifiers`
+ * returns that line six times. Tags fold last-wins and the importing model
+ * comes last, so keeping the last copy preserves what the lines resolve to;
+ * keeping the first could let an import's setting override the model's own.
+ *
+ * A clone line (`## b := $a`) copies what precedes it, so no copy is dropped
+ * across one: with `## a { x=1 }`, `## b := $a`, `## a { x=1 }`, dropping the
+ * first copy would change what `b` clones. Any line holding `:=` counts, even
+ * inside a string, which only dedupes less.
+ */
+export function dedupeAnnotations(
+   annotations: Malloy.Annotation[],
+): Malloy.Annotation[] {
+   let seen = new Set<string>();
+   const kept: Malloy.Annotation[] = [];
+   for (let i = annotations.length - 1; i >= 0; i--) {
+      const annotation = annotations[i];
+      if (seen.has(annotation.value)) continue;
+      kept.push(annotation);
+      if (annotation.value.includes(":=")) {
+         seen = new Set<string>();
+         continue;
+      }
+      seen.add(annotation.value);
+   }
+   return kept.reverse();
+}
+
 function serialize(envelope: QueryEnvelope): string {
    return JSON.stringify(envelope, bigIntReplacer, 2);
 }
@@ -132,13 +164,13 @@ export function buildQueryEnvelope(
          annotations: result.annotations ?? [],
          connection_name: result.connection_name,
          ...(result.model_annotations !== undefined && {
-            model_annotations: result.model_annotations,
+            model_annotations: dedupeAnnotations(result.model_annotations),
          }),
          ...(result.query_timezone !== undefined && {
             query_timezone: result.query_timezone,
          }),
          ...(result.source_annotations !== undefined && {
-            source_annotations: result.source_annotations,
+            source_annotations: dedupeAnnotations(result.source_annotations),
          }),
       },
       _query_row_limit: rowLimit,

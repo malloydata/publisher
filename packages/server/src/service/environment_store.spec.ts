@@ -25,7 +25,7 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { BadRequestError } from "../errors";
+import { BadRequestError, EnvironmentNotFoundError } from "../errors";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -2129,10 +2129,16 @@ describe("Project Service Error Recovery", () => {
             const project = await environmentStore.getEnvironment(projectName);
             expect(project).toBeInstanceOf(Environment);
 
-            // Try to get a non-existent project
-            await expect(
-               environmentStore.getEnvironment("non-existent"),
-            ).rejects.toThrow();
+            // Try to get a non-existent project. The error carries the loaded
+            // names, which is what the MCP tools show an agent that guessed.
+            const missing = await environmentStore
+               .getEnvironment("non-existent")
+               .catch((e: unknown) => e);
+            expect(missing).toBeInstanceOf(EnvironmentNotFoundError);
+            expect((missing as EnvironmentNotFoundError).lookup).toEqual({
+               environmentName: "non-existent",
+               availableEnvironments: [projectName],
+            });
 
             // Verify the original project is still accessible
             const projectAgain =

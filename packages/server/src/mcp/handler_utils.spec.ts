@@ -7,6 +7,7 @@ import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   EnvironmentNotFoundError,
    InvalidArgumentError,
    ModelCompilationError,
    PackageManifestError,
@@ -39,6 +40,47 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Resource not found");
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("names an unknown environment and the environments that exist", () => {
+      // The generic "Resource not found: analytics/bq_demo" did not say which
+      // half was wrong, and the store's own error, which knew, was dropped.
+      const details = classifyToolError(
+         "searchDatabaseSchema",
+         "analytics/bq_demo",
+         new EnvironmentNotFoundError(
+            'Environment "analytics" could not be resolved to a path.',
+            { environmentName: "analytics", availableEnvironments: ["a", "b"] },
+         ),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. Available environments: a, b. Use a name from list_packages.",
+      );
+   });
+
+   it("says so when no environment is loaded at all", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("x", {
+            environmentName: "analytics",
+            availableEnvironments: [],
+         }),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. This server has no environments loaded. Use a name from list_packages.",
+      );
+   });
+
+   it("keeps the generic not-found for an environment error with no lookup", () => {
+      // The other throw sites carry a storage path or bucket in the message,
+      // which the generic text exists not to echo.
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("Environment path /srv/x not found"),
+      );
+      expect(details.message).toBe("Resource not found: env/pkg");
    });
 
    it("homes back-pressure as retryable, not as Malloy", () => {

@@ -1,10 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { logger } from "../logger";
 import { Environment } from "./environment";
 
 // The compile scopes exist to close the gap between /compile and an LSP: the
@@ -237,6 +238,226 @@ source: broken is duckdb.sql("select 1 as id") extend {
          ),
       );
       expect(inBase.length).toBe(keys.size);
+   });
+
+   // -- scope "package": the findings a reload adds after the worker --------
+
+   // A dashboard with each kind of finding a reload reports on the main thread
+   // and the worker compile never sees: a given annotation line that does not
+   // parse, a suggest naming a field the source lacks, and a render tag the
+   // renderer does not know.
+   const BROKEN_DASHBOARD = `##! experimental.givens
+import { base_source } from '../base.malloy'
+
+# label="Department" control=select suggest { source=sales dimension="products.department" }
+# placeholder=Pick one!
+given: DEPARTMENT :: filter<string> is f''
+
+source: sales is base_source extend {
+  dimension: dept is 'a'
+  view: by_n is {
+    where: dept ~ $DEPARTMENT
+    group_by: n
+    # hidden
+    aggregate: min_value is n.min()
+  }
+}
+
+# artifact { title="X" }
+query: x is sales -> by_n
+`;
+   const CLEAN_DASHBOARD = BROKEN_DASHBOARD.replace(
+      'dimension="products.department"',
+      "dimension=dept",
+   )
+      .replace("# placeholder=Pick one!\n", "")
+      .replace("    # hidden\n", "");
+
+   const writeDashboard = async (text: string) => {
+      const dir = path.join(rootDir, "env", "pkg", "dashboards");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "x.malloy"), text);
+   };
+   const reloadFindings = <T extends { code?: string }>(problems: T[]) =>
+      problems.filter(
+         (p) => p.code === "render-tag" || p.code === "dashboard-lint",
+      );
+   const compilePackage = async () => {
+      const { CompileController } = await import(
+         "../controller/compile.controller"
+      );
+      return new CompileController({
+         getEnvironment: async () => env,
+      } as never).compile(
+         "testEnv",
+         "pkg",
+         "base.malloy",
+         undefined,
+         false,
+         undefined,
+         "package",
+      );
+   };
+   // The oracle is a real reload of the same files. Compared both ways, so a
+   // finding only one side reports, or one side reports twice, fails.
+   const expectSameAsReload = async (
+      problems: { severity?: string; message: string }[],
+   ) => {
+      const reloaded = await env.getPackage("pkg", true);
+      // A compile finding has no subject field, so it leads the message.
+      const served = (reloaded.getPackageMetadata().warnings ?? []).map(
+         (w) =>
+            `${w.severity} ${w.subject ? `${w.subject}: ` : ""}${w.message}`,
+      );
+      expect(problems.map((p) => `${p.severity} ${p.message}`).sort()).toEqual(
+         served.sort(),
+      );
+   };
+
+   it("package: reports the render-tag and dashboard findings a reload would", async () => {
+      await writeDashboard(BROKEN_DASHBOARD);
+      const result = await compilePackage();
+      expect(result.status).toBe("error");
+      expect(reloadFindings(result.problems)).toEqual([
+         {
+            severity: "warn",
+            message: "x: Unknown render tag 'hidden' on field 'min_value'",
+            code: "render-tag",
+            model: "dashboards/x.malloy",
+         },
+         {
+            severity: "error",
+            message:
+               'x: given "DEPARTMENT" suggests options from "sales -> ' +
+               'products.department", but that source has no field "products.department".',
+            code: "dashboard-lint",
+            model: "dashboards/x.malloy",
+         },
+         {
+            severity: "error",
+            message:
+               'DEPARTMENT: given "DEPARTMENT" has an annotation that does not parse ' +
+               "(Expected an identifier), so the whole line is discarded and " +
+               "the given loses any label, control, range or suggest it " +
+               "declared. It still accepts values; only its presentation is " +
+               "lost.",
+            code: "dashboard-lint",
+         },
+      ]);
+
+      await expectSameAsReload(result.problems);
+   });
+
+   it("package: reports a dashboard tag that does not parse once, as a reload does", async () => {
+      await writeDashboard(
+         `## artifact { title="X" tiles: ["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: x } }\n`,
+      );
+      const result = await compilePackage();
+      expect(
+         result.problems
+            .filter((p) => p.model === "dashboards/x.malloy")
+            .map((p) => p.code),
+      ).toEqual(["dashboard-lint"]);
+      await expectSameAsReload(result.problems);
+   });
+
+   it("package: keeps the notebook lint's unparsed-tag finding when the dashboard lint did not report it", async () => {
+      const unparsedOf = (problems: { code?: string; model?: string }[]) =>
+         problems.filter(
+            (p) =>
+               p.model === "dashboards/x.malloy" &&
+               p.code === "notebook-artifact-unparsed",
+         );
+      // The file also fails to compile, so the dashboard lint has no facts.
+      await writeDashboard(
+         `## artifact { title="X" tiles: ["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: nope } }\n`,
+      );
+      expect(unparsedOf((await compilePackage()).problems).length).toBe(1);
+
+      // A valid notebook tag after the broken one makes the file a notebook,
+      // so the dashboard lint reports nothing. A reload keeps it too.
+      await writeDashboard(
+         `## artifact { kind=notebook title=Monthly sales! }\n` +
+            `## artifact { kind=notebook }\n` +
+            `source: a is duckdb.sql("select 1 as x")\n`,
+      );
+      const result = await compilePackage();
+      expect(unparsedOf(result.problems).length).toBe(1);
+      const reloaded = await env.getPackage("pkg", true);
+      expect(
+         (reloaded.getPackageMetadata().warnings ?? []).filter(
+            (w) =>
+               w.model === "dashboards/x.malloy" &&
+               (w.message ?? "").includes("`## artifact` tag does not parse"),
+         ).length,
+      ).toBe(1);
+   });
+
+   it("package: two views with the same render-tag finding stay two findings", async () => {
+      await writeDashboard(
+         `source: s is duckdb.sql("select 1 as x") extend {\n` +
+            `  measure: c is count()\n` +
+            `  # big_value { value=missing }\n` +
+            `  view: one is { aggregate: c }\n` +
+            `  # big_value { value=missing }\n` +
+            `  view: two is { aggregate: c }\n` +
+            `}\n`,
+      );
+      const result = await compilePackage();
+      const renderTags = result.problems.filter((p) => p.code === "render-tag");
+      expect(renderTags.length).toBe(2);
+      expect(renderTags.map((p) => p.message.split(":")[0]).sort()).toEqual([
+         "s -> one",
+         "s -> two",
+      ]);
+      await expectSameAsReload(result.problems);
+   });
+
+   it("package: a file that does not compile is reported, not logged as a reload", async () => {
+      await writeDashboard(
+         `## artifact { title="X" tiles=["a -> v"] }\n` +
+            `source: a is duckdb.sql("select 1 as x") extend { view: v is { select: nope } }\n`,
+      );
+      const warnSpy = spyOn(logger, "warn");
+      try {
+         const result = await compilePackage();
+         expect(result.status).toBe("error");
+         expect(
+            warnSpy.mock.calls.map(([message]) => String(message)),
+         ).not.toContain("Model compilation failed during reload");
+      } finally {
+         warnSpy.mockRestore();
+      }
+   });
+
+   it("package: a clean dashboard adds no findings", async () => {
+      await writeDashboard(CLEAN_DASHBOARD);
+      const { problems } = await compile("base.malloy", undefined, "package");
+      expect(problems).toEqual([]);
+   });
+
+   it("package: the dashboard lint leaves the served package untouched", async () => {
+      await writeDashboard(CLEAN_DASHBOARD);
+      const pkg = await env.getPackage("pkg", true);
+      const before = pkg.getPackageMetadata().warnings;
+      const servedModel = pkg.getModel("dashboards/x.malloy");
+      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+
+      // A what-if that breaks the dashboard: compile reports it, and the
+      // served package keeps its models, dashboards and warnings as they were.
+      const { problems } = await compile(
+         "dashboards/x.malloy",
+         BROKEN_DASHBOARD,
+         "package",
+      );
+      expect(reloadFindings(problems).length).toBe(3);
+      expect(await env.getPackage("pkg")).toBe(pkg);
+      expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
+      expect(pkg.getPackageMetadata().warnings).toEqual(before);
+      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+      expect(env.getFailedPackages().size).toBe(0);
    });
 
    // -- validation ---------------------------------------------------------
