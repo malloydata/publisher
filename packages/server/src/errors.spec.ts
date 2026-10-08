@@ -366,13 +366,27 @@ describe("isConnectionFailure", () => {
       for (const code of [
          "ER_BAD_DB_ERROR",
          "ER_NOT_SUPPORTED_AUTH_MODE",
+         "AUTH_SWITCH_PLUGIN_ERROR",
+         "MYSQL_CLEAR_PASSWORD_NOT_ENABLED",
          "HANDSHAKE_NO_SSL_SUPPORT",
+         "HANDSHAKE_SSL_ERROR",
       ]) {
          const error = Object.assign(new Error("handshake failed"), {
             code,
             fatal: true,
          });
          expect(isConnectionFailure(error)).toBe(false);
+      }
+   });
+
+   it("still reads a transient fatal mysql2 error as a connection failure", () => {
+      // Too many connections, or a server shutting down: a retry can succeed.
+      for (const code of ["ER_CON_COUNT_ERROR", "ER_SERVER_SHUTDOWN"]) {
+         const error = Object.assign(new Error("handshake failed"), {
+            code,
+            fatal: true,
+         });
+         expect(isConnectionFailure(error)).toBe(true);
       }
    });
 

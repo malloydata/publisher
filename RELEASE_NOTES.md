@@ -43,12 +43,13 @@ A connection route (`sqlQuery`, `sqlSource` and the others) given a connection n
 
 How each is recognized, from the driver's own fields on the error and its `cause`:
 
-- **Unreachable:** Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others), a Postgres SQLSTATE in class `08` or `57P01`-`57P03`, or MySQL's `fatal` flag when it comes without an `ER_` or `HANDSHAKE_` code (mysql2 also marks a wrong database name or an unsupported auth mode `fatal`). `ENOTFOUND`, a host name that does not resolve, is left out: it is almost always a wrong host in the config, which a retry will not fix. Some failures arrive with no code and are matched from the start of the message: node-pg's `Connection terminated unexpectedly`, and on MySQL `Can't add new command when connection is in closed state`, `Connection lost: The server closed the connection.` and a Node socket error such as `read ECONNRESET`, because Malloy's MySQL driver keeps only the text of a query error.
+- **Unreachable:** Node's socket codes (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT` and others), a Postgres SQLSTATE in class `08` or `57P01`-`57P03`, or MySQL's `fatal` flag, unless its code names a config fault: a wrong database name, an unsupported auth mode or plugin, or a `HANDSHAKE_` TLS failure. mysql2 marks all of those `fatal` too. `ENOTFOUND`, a host name that does not resolve, is left out: it is almost always a wrong host in the config, which a retry will not fix. Some failures arrive with no code and are matched from the start of the message: node-pg's `Connection terminated unexpectedly`, and on MySQL `Can't add new command when connection is in closed state`, `Connection lost: The server closed the connection.` and a Node socket error such as `read ECONNRESET`, because Malloy's MySQL driver keeps only the text of a query error.
 - **Credentials:** a Postgres SQLSTATE in class `28`, MySQL `ER_ACCESS_DENIED_ERROR`, Snowflake login codes `390100`, `390144`, `390195` and `390318`, and the `BigQueryAuthenticationError` Malloy's BigQuery driver raises.
 - **Missing connection:** Publisher's connection lookup, when Malloy's lookup fails for a name the environment does not configure.
 
 A failure that matches none of these keeps its old status. Not covered yet:
 
+- **Rejected Postgres credentials on the table lookup.** Malloy's Postgres driver returns that failure as text without its SQLSTATE, so it answers a plain 502. A database that is down is still recognized there, from the socket error in the text.
 - **BigQuery** on schema and table listing, the table lookup and `sqlSource`. Its SDK reports rejected credentials as a plain 401 error, and Malloy's driver returns table-lookup failures as text.
 - **Databricks**, and the **DuckDB family** (DuckLake, MotherDuck), whose errors carry no code. A catalog that is down still answers 400 on the query route.
 

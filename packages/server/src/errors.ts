@@ -233,11 +233,28 @@ const CODELESS_CONNECTION_MESSAGES = [
 
 /**
  * mysql2 codes that come with `fatal` for a fault in the connection's config,
- * not a server that is down: mysql2 marks every handshake error fatal,
- * including an unknown database (`ER_BAD_DB_ERROR`), an unsupported auth mode,
- * and a server without TLS (`HANDSHAKE_NO_SSL_SUPPORT`).
+ * which a retry will not fix. mysql2 marks every handshake and auth-switch
+ * error fatal, so `fatal` alone cannot tell these from a server that is down.
+ * An explicit list rather than an `ER_` prefix, because some fatal `ER_` codes
+ * are transient (`ER_CON_COUNT_ERROR`, too many connections, and
+ * `ER_SERVER_SHUTDOWN`) and some config faults have no `ER_` prefix.
+ * `ER_ACCESS_DENIED_ERROR` is here so it is never read as unreachable; it
+ * answers as rejected credentials.
  */
-const MYSQL_CONFIG_CODE = /^(ER_|HANDSHAKE_)/;
+const MYSQL_CONFIG_CODES = new Set([
+   "ER_ACCESS_DENIED_ERROR",
+   "ER_BAD_DB_ERROR",
+   "ER_NOT_SUPPORTED_AUTH_MODE",
+   "AUTH_SWITCH_PLUGIN_ERROR",
+   "MYSQL_CLEAR_PASSWORD_NOT_ENABLED",
+]);
+
+function isMysqlConfigFault(code: unknown): boolean {
+   return (
+      typeof code === "string" &&
+      (MYSQL_CONFIG_CODES.has(code) || code.startsWith("HANDSHAKE_"))
+   );
+}
 
 /**
  * Whether `error` means the database could not be reached, as opposed to the
@@ -246,7 +263,7 @@ const MYSQL_CONFIG_CODE = /^(ER_|HANDSHAKE_)/;
  * Read from the driver's structured fields on the error and its `cause` chain:
  * a Node socket code, a Postgres connection SQLSTATE, or mysql2's `fatal`
  * flag, which it sets when the connection is unusable, unless the same error
- * carries a mysql2 `ER_`/`HANDSHAKE_` code naming a config fault. Message text is the
+ * carries a code naming a config fault ({@link MYSQL_CONFIG_CODES}). Message text is the
  * last resort, for the few drivers that raise a connection failure with no
  * code, and is matched whole so a row value or a table name quoted inside a
  * longer message cannot match.
@@ -262,9 +279,7 @@ export function isConnectionFailure(error: unknown): boolean {
          if (NODE_CONNECTION_CODES.has(code)) return true;
          if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
       }
-      const configFault =
-         typeof code === "string" && MYSQL_CONFIG_CODE.test(code);
-      if (fatal === true && !configFault) return true;
+      if (fatal === true && !isMysqlConfigFault(code)) return true;
       const message = current.message.trim();
       if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
          return true;
