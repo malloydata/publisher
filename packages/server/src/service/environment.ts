@@ -2538,7 +2538,7 @@ export class Environment {
             // The locked form, because this whole callback already holds the
             // mutex that `getPackage` would take.
             const reloaded = await this._loadOrGetPackageLocked(
-               packageName,
+               this.resolveSlot(packageName),
                true,
             );
             return { previous, verified: await verify(reloaded) };
@@ -2546,9 +2546,14 @@ export class Environment {
             if (previous !== undefined)
                await this._writeModelFileLocked(target, previous);
             else await fs.promises.rm(target, { force: true });
-            await this._loadOrGetPackageLocked(packageName, true).catch(
-               () => undefined,
-            );
+            try {
+               await this._loadOrGetPackageLocked(
+                  this.resolveSlot(packageName),
+                  true,
+               );
+            } catch {
+               // Best-effort: the write's own error is the one reported.
+            }
             logger.warn("Dashboard write rolled back", {
                packageName,
                modelPath,
@@ -3106,18 +3111,13 @@ export class Environment {
     * unversioned package is {@link withPackageLock}).
     *
     * Used by {@link getPackage} and by {@link compileSource} so the
-    * cache-miss path doesn't re-enter the mutex. Takes a package name where a
-    * caller has only that, which resolves to the package's unversioned slot or
-    * its `latest`.
+    * cache-miss path doesn't re-enter the mutex. A caller that has only a
+    * package name resolves its slot first ({@link resolveSlot}).
     */
    private async _loadOrGetPackageLocked(
-      slotOrName: PackageSlot | string,
+      slot: PackageSlot,
       reload: boolean = false,
    ): Promise<Package> {
-      const slot =
-         typeof slotOrName === "string"
-            ? this.resolveSlot(slotOrName)
-            : slotOrName;
       if (slot.version !== undefined) {
          return this._loadVersionLocked(slot);
       }
