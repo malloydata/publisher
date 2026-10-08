@@ -72,9 +72,33 @@ package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
-You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+You can also declare a top-level DuckDB connection at the environment level. Publisher owns the low-level DuckDB settings: the database file, working directory, filesystem and network policy, extension loading, temp directories, and resource limits. A connection declares only what the DuckDB instance should read, in one or both of two ways:
 
-An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+- **`attachedDatabases`** declares foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) for the DuckDB instance to `ATTACH`, so queries can reference them. Publisher writes the `ATTACH` and the secrets for you.
+- **`setupSQL`** is a script of DuckDB statements that runs when the connection is set up, for anything `attachedDatabases` does not cover, such as a DuckLake catalog kept in a local file. It is off by default; see below.
+
+An env-level DuckDB connection must declare at least one of the two. If you need neither, you don't need an env-level DuckDB connection at all: each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
+### `setupSQL`
+
+`setupSQL` runs arbitrary DuckDB statements on the server, which can write files on the host and install and load extensions, so a deployment has to turn it on. Set `PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true` ([configuration.md](configuration.md)) to accept it. Unset, a connection carrying `setupSQL` is refused at config load, on create and update, and by the connection test. Under `EXTENSION_FETCH_POLICY=local-only` it is refused either way.
+
+```json
+{
+  "name": "orca",
+  "type": "duckdb",
+  "duckdbConnection": {
+    "setupSQL": "ATTACH 'ducklake:/srv/lake/orca.ducklake' AS lake (READ_ONLY);\nUSE lake.marts;"
+  }
+}
+```
+
+The script runs whenever the connection is opened, and again after it has been idle, so keep every statement safe to run more than once. A few things trip people up:
+
+- **Put each statement on its own line.** The script is split into statements at a `;` followed by a newline.
+- **Use absolute paths.** A relative path resolves against the directory the server was started from, not the environment directory. A read-write `ATTACH` of a path that does not exist there does not fail: DuckDB creates a new, empty database, and queries then run against no tables. Attach with `READ_ONLY` where you can, so a wrong path fails instead.
+- **Don't name an attachment after the connection.** The connection's own database already has its name, so `ATTACH … AS orca` on a connection named `orca` fails with `database with name "orca" already exists`.
+- **The script is withheld from API responses**, as credentials are, since it may hold them. Reads list it in `withheldFields` as `duckdbConnection.setupSQL`. An update that leaves it out keeps the stored script; to remove it, send `"setupSQL": ""`. See [Credentials in API responses](#credentials-in-api-responses).
 
 ## DuckLake connections (`type: "ducklake"`)
 
@@ -359,7 +383,7 @@ source on a connection without a `fingerprint`.
 
 A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
 `privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
-`secretAccessKey`, `sessionToken`, `secret`, `clientSecret` and `sasUrl` are accepted when you create
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret`, `sasUrl` and a DuckDB connection's `setupSQL` are accepted when you create
 or update a connection, and no read returns them. The connection, environment and status endpoints
 return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
 bastion's public host key.

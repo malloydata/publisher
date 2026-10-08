@@ -6725,11 +6725,13 @@ components:
     DuckdbConnection:
       type: object
       description: >
-        DuckDB database connection configuration. Exposes data-source intent,
-        attached foreign databases, and optional setup SQL for initialization
-        (e.g. ATTACH commands for external lakehouses), subject to Publisher policy
-        (setup SQL must be enabled with PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true and
-        is refused under EXTENSION_FETCH_POLICY=local-only).
+        DuckDB database connection configuration: attached foreign databases,
+        and optional setup SQL for anything they do not cover (e.g. ATTACH
+        commands for external lakehouses). Setup SQL must be enabled with
+        PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true and is refused under
+        EXTENSION_FETCH_POLICY=local-only. Database files, working directories,
+        filesystem/network policy, extension loading, temp directories, and
+        resource knobs remain owned by Publisher.
       properties:
         setupSQL:
           type: string
@@ -6737,7 +6739,11 @@ components:
             Optional initialization SQL script executed against the DuckDB
             session upon connection (e.g. ATTACH commands for external lakehouses).
             Multiple statements must be separated by a semicolon and newline (;\n).
-            Refused unless the deployment sets PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
+            Use absolute paths: a relative path resolves against the server's
+            working directory. Withheld from responses like a credential; an
+            update that omits it keeps the stored script, and an empty string
+            removes it. Refused unless the deployment sets
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
         attachedDatabases:
           type: array
           items:
