@@ -3466,7 +3466,11 @@ components:
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Notebook findings: a `notebooks/`
+            rather than as a clean package. Notebook findings: a filter
+            `suggest` in any served notebook, `.malloynb` included, that the
+            surface refuses, naming the query rather than the source it reads
+            when a notebook's `suggest { query= }` is refused because no surface
+            file exports that query; a `notebooks/`
             file with an `## artifact` note whose cells could not be read, which
             names the line and the fix and is reported with severity `error`,
             because the notebook is served with that error instead of opening.
