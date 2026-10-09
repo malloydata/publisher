@@ -3892,6 +3892,7 @@ export class Model {
             undefined,
             undefined,
             alreadyProven,
+            struct,
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
@@ -3905,7 +3906,8 @@ export class Model {
          // read of it. Same `.as || .name` convention
          // {@link resolveAuthorizeSourceFromRunnable} and the row-level gate
          // path's own label (`gate_classification.ts`) already use.
-         const label = (target as { as?: string }).as || target.name;
+         const named = struct ?? target;
+         const label = (named as { as?: string }).as || named.name;
          throw new AccessDeniedError(`Access denied for source "${label}".`);
       }
    }

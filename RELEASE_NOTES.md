@@ -63,6 +63,12 @@ A tile naming a view that does not exist, a `# drill` pointing at no dashboard, 
 - **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
 - **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
 
+## [Unreleased] — A `where:` on a composite source is served again
+
+Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again, including for a composite reached through a join. Rebinding a field such a filter reads is still refused, and so are two shapes this does not cover: a member whose own join is a composite, queried through that join, and a member dimension that reads a private member field. Upgrading is enough. See #1277.
+
+Two composite shapes still fail, in Malloy rather than in this check: members that take parameters (Malloy drops a member's arguments when it resolves the composite), and a `join_many` to a composite that carries its own `where:` (Malloy generates invalid SQL for it).
+
 ## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
 A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a federated Postgres source now accept two settings that only a proxied connection, or nothing, accepted before.

@@ -418,6 +418,75 @@ function fieldUsageClosure(
    return { paths, truncated: false };
 }
 
+function isCompositePlaceholder(field: FieldDef): boolean {
+   return (field as { e?: { node?: unknown } }).e?.node === "compositeField";
+}
+
+function isComposite(struct: SourceDef | undefined): boolean {
+   return (struct as { type?: string } | undefined)?.type === "composite";
+}
+
+function compositeMembers(
+   composite: SourceDef,
+   out: SourceDef[] = [],
+   depth = 0,
+): SourceDef[] {
+   if (depth > MAX_JOIN_RECURSION_DEPTH) return out;
+   const members = (composite as { sources?: readonly SourceDef[] }).sources;
+   for (const member of members ?? []) {
+      out.push(member);
+      if (isComposite(member)) compositeMembers(member, out, depth + 1);
+   }
+   return out;
+}
+
+/** Identity tells a member's field from a redefinition. The objects come
+ *  from `composite`, compiled with `executed`; only leaves identical to a
+ *  declaring leaf count, so a caller's `compose(...)` adds none. */
+function withCompositeMembersResolved(
+   declaring: SourceDef,
+   executed: SourceDef,
+   composite: SourceDef | undefined,
+): SourceDef {
+   if (!composite || !isComposite(declaring) || !isComposite(composite)) {
+      return declaring;
+   }
+   const leaf = (member: SourceDef) => !isComposite(member);
+   const declared = new Set(
+      compositeMembers(declaring)
+         .filter(leaf)
+         .map((member) => JSON.stringify(strip(member))),
+   );
+   const memberFields = new Set(
+      compositeMembers(composite)
+         .filter(
+            (member) =>
+               leaf(member) && declared.has(JSON.stringify(strip(member))),
+         )
+         .flatMap((member) => member.fields ?? []),
+   );
+   let resolved = false;
+   const fields = (declaring.fields ?? []).map((field) => {
+      if (!isCompositePlaceholder(field)) return field;
+      const executedField = executed.fields?.find(
+         (f) => activeName(f) === activeName(field),
+      );
+      if (!executedField || !memberFields.has(executedField)) return field;
+      resolved = true;
+      return executedField;
+   });
+   return resolved ? { ...declaring, fields } : declaring;
+}
+
+function membersDeclaringCondition(
+   composite: SourceDef,
+   condition: FilterCondition,
+): SourceDef[] {
+   return compositeMembers(composite).filter((member) =>
+      member.filterList?.includes(condition),
+   );
+}
+
 /**
  * Assert that `condition` (declared, or landed, against `declaringStruct`)
  * still reads the SAME fields when evaluated against `executedStruct`. Throws
@@ -425,10 +494,16 @@ function fieldUsageClosure(
  * its own caller-facing message; the caller is expected to catch and deny.
  */
 export function assertFilterConditionBindsToDeclaringSource(
-   declaringStruct: SourceDef,
+   declaringStructAsWritten: SourceDef,
    executedStruct: SourceDef,
    condition: FilterCondition,
+   executedComposite: SourceDef | undefined = undefined,
 ): void {
+   const declaringStruct = withCompositeMembersResolved(
+      declaringStructAsWritten,
+      executedStruct,
+      executedComposite,
+   );
    const { paths, truncated, unrecordedJoin } = fieldUsageClosure(
       declaringStruct,
       condition.refSummary,
@@ -1185,6 +1260,8 @@ export function assertInheritedSourceFiltersBind(
    depth = 0,
    visited: Set<SourceDef> = new Set(),
    alreadyProven: ReadonlySet<FilterCondition> = new Set(),
+   // `struct` before composite resolution, from the same compile.
+   unresolved: SourceDef | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;
    if (depth > MAX_JOIN_RECURSION_DEPTH) {
@@ -1193,6 +1270,7 @@ export function assertInheritedSourceFiltersBind(
       );
    }
    visited.add(struct);
+   const composite = isComposite(unresolved) ? unresolved : undefined;
    for (const condition of struct.filterList ?? []) {
       // A grafted condition's `.at` is where the graft compiled it, never
       // inside `struct`'s own span even when the gate genuinely IS
@@ -1214,10 +1292,28 @@ export function assertInheritedSourceFiltersBind(
          resolveSibling,
       );
       if (origin !== struct) {
-         assertFilterConditionBindsToDeclaringSource(origin, struct, condition);
+         assertFilterConditionBindsToDeclaringSource(
+            origin,
+            struct,
+            condition,
+            composite,
+         );
          continue;
       }
       if (isOwnFreshFilter(struct, condition, freshness)) continue;
+      const members = composite
+         ? membersDeclaringCondition(composite, condition)
+         : [];
+      if (members.length > 0) {
+         for (const member of members) {
+            assertFilterConditionBindsToDeclaringSource(
+               member,
+               struct,
+               condition,
+            );
+         }
+         continue;
+      }
       throw new Error(
          "a row-security filter's declaring source could not be resolved",
       );
@@ -1229,6 +1325,9 @@ export function assertInheritedSourceFiltersBind(
    // an unresolvable target, so this skips rather than crashing.
    for (const field of struct.fields ?? []) {
       if (isJoined(field) && isSourceDef(field)) {
+         const unresolvedJoin = unresolved?.fields?.find(
+            (f) => isJoined(f) && activeName(f) === activeName(field),
+         );
          assertInheritedSourceFiltersBind(
             field as unknown as SourceDef,
             modelDef,
@@ -1237,6 +1336,7 @@ export function assertInheritedSourceFiltersBind(
             depth + 1,
             visited,
             alreadyProven,
+            unresolvedJoin as unknown as SourceDef | undefined,
          );
       }
    }
