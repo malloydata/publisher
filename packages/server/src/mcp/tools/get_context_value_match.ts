@@ -57,12 +57,7 @@ export function editDistance(a: string, b: string, limit: number): number {
       for (let j = 1; j <= b.length; j++) {
          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
          let best = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost);
-         if (
-            i > 1 &&
-            j > 1 &&
-            a[i - 1] === b[j - 2] &&
-            a[i - 2] === b[j - 1]
-         ) {
+         if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
             best = Math.min(best, prev2[j - 2] + 1);
          }
          row.push(best);
@@ -97,7 +92,8 @@ function wordScore(word: string, valueWords: string[]): number {
       const limit = allowedEdits(word);
       if (limit === 0) continue;
       const distance = editDistance(word, candidate, limit);
-      if (distance <= limit) best = Math.max(best, distance === 1 ? 0.75 : 0.65);
+      if (distance <= limit)
+         best = Math.max(best, distance === 1 ? 0.75 : 0.65);
    }
    return best;
 }
