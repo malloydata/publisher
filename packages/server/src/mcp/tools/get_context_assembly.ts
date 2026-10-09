@@ -286,6 +286,10 @@ function expandJoins(
    );
    for (const row of rows) {
       if (matchesScope(row, request)) out.push(row);
+      // A row the values stage made answers "which strings does THIS source
+      // store". A copy under a joined root would say the same thing on a card
+      // whose own gate was never asked, so there is none.
+      if (row.fromValueSearch) continue;
       for (const place of joinedCopiesOf(
          row,
          pkgIndex.topology,

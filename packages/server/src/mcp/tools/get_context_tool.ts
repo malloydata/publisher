@@ -53,6 +53,8 @@ import {
    sourceMatchStage,
 } from "./get_context_source_match";
 import { resolveLlmStages } from "./get_context_stage_settings";
+import { valuesStage } from "./get_context_values";
+import { getDimensionValueSettings } from "../../retrieval_config";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
 import type { PackageIndex, ResolvedRequest } from "./get_context_types";
 import { indexSettingsOf } from "./index_settings";
@@ -223,9 +225,14 @@ function runListing(
 
 const RETRIEVERS: readonly Retriever[] = [semanticRetriever, lexicalRetriever];
 // Source match is listed only for a request it applies to, so a trace shows
-// no row for it otherwise.
-const rankStages = (ctx: PipelineContext): RankStage[] =>
-   sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
+// no row for it otherwise. The values stage is last: it adds rows from the
+// data, which the LLM steps before it must neither see nor reorder, and it is
+// listed only for a request with value targets.
+const rankStages = (ctx: PipelineContext): RankStage[] => [
+   ...(sourceMatchActive(ctx) ? [sourceMatchStage] : []),
+   refineStage,
+   ...(ctx.request.valueSearches.length > 0 ? [valuesStage] : []),
+];
 const CARD_STAGES: readonly CardStage[] = [rerankStage];
 
 /**
@@ -365,7 +372,10 @@ async function runContextQuery(
         }
       : ctx;
    let ranked: RankedState | undefined;
-   if (matchingSources && retrievalCtx.request.searches.length === 0) {
+   // Nothing for the retrievers to rank: every entity target went to source
+   // match, or the request is only value searches. The values stage, not the
+   // entity index, answers the second case, so it must not wait on the index.
+   if (retrievalCtx.request.searches.length === 0) {
       ranked = {
          rows: [],
          belowCutoffCount: 0,

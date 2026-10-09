@@ -141,6 +141,13 @@ interface SourceCardEntity {
    /** Which search targets matched this entity, and how well. */
    matched_targets?: MatchedTarget[];
    aliases?: string[];
+   /**
+    * The stored strings of this dimension that a `dimensional_value` target
+    * matched, best first. Publisher extension of the published shape: the
+    * hosted service's `values[]` carries `prominence` too, which a server with
+    * no value index has no counts to fill, so it is omitted.
+    */
+   values?: Array<{ value: string; relevance: number; search_text: string }>;
 }
 
 interface SourceCard {
@@ -238,6 +245,15 @@ export function toSourceResults(
          ...(includeCode && r.code ? { code: r.code } : {}),
          ...matchedTargetsFor(r, searchTexts),
          ...(r.aliases ? { aliases: r.aliases } : {}),
+         ...(r.values && r.values.length > 0
+            ? {
+                 values: r.values.map((v) => ({
+                    value: v.value,
+                    relevance: Math.round(v.score * 10_000) / 10_000,
+                    search_text: v.searchText,
+                 })),
+              }
+            : {}),
       };
       (entry.entities ??= []).push(entity);
       const relevance = foldRelevance(entry.relevance, r);
@@ -429,7 +445,10 @@ export function shapeCards(
       request.environmentName,
       request.packageName,
       new Map(
-         request.searches.map((search) => [search.targetIndex, search.text]),
+         [...request.searches, ...request.valueSearches].map((search) => [
+            search.targetIndex,
+            search.text,
+         ]),
       ),
       request.includeCode,
       pkgIndex.droppedSources,
@@ -724,8 +743,11 @@ export function semanticUnavailableError(uri: string, result: Unavailable) {
 }
 
 /**
- * A target type this server cannot search (`dimensional_value`: Publisher
- * indexes the model, not its values), with the remedy that works.
+ * A target type this server cannot search, said plainly with the remedy that
+ * works. Reached only when value search is turned off
+ * (`retrieval.dimensionValues.enabled: false`): then a `dimensional_value`
+ * target has nothing to match, and the answer is the one the analysis skill
+ * gives: target the dimension, then read its distinct values with a query.
  */
 export function unsupportedTargetWarnings(request: ResolvedRequest): string[] {
    if (request.unsupported.length === 0) return [];

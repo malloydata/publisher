@@ -80,7 +80,38 @@ export type RetrievalConfig = {
     * this says; there is no switch for that.
     */
    egress?: { preset: EgressPreset };
+   /**
+    * Value search: how `get_context` answers a `dimensional_value` target.
+    * Every key is optional; see {@link DIMENSION_VALUE_DEFAULTS}.
+    */
+   dimensionValues?: DimensionValuesConfig;
 };
+
+/** The `retrieval.dimensionValues` block, as the operator wrote it. */
+export type DimensionValuesConfig = {
+   /** `false` turns value search off; a `dimensional_value` target then gets the "No index" warning. */
+   enabled?: boolean;
+   /** Most candidate dimensions searched for one call. */
+   maxDimensions?: number;
+   /** Distinct values read from one dimension before falling back to a text filter. */
+   maxValuesPerDimension?: number;
+   /** Timeout for one lookup query, in milliseconds. */
+   timeoutMs?: number;
+   /** Timeout for the whole value step of one call, in milliseconds. */
+   budgetMs?: number;
+   /** How long a dimension's distinct values are reused, in milliseconds. 0 turns the cache off. */
+   cacheTtlMs?: number;
+};
+
+/** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
+export const DIMENSION_VALUE_DEFAULTS = {
+   enabled: true,
+   maxDimensions: 12,
+   maxValuesPerDimension: 2_000,
+   timeoutMs: 8_000,
+   budgetMs: 15_000,
+   cacheTtlMs: 600_000,
+} as const;
 
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not
@@ -412,6 +443,65 @@ function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
    return { preset: obj.preset as EgressPreset };
 }
 
+const DIMENSION_VALUE_KEYS = [
+   "enabled",
+   "maxDimensions",
+   "maxValuesPerDimension",
+   "timeoutMs",
+   "budgetMs",
+   "cacheTtlMs",
+] as const;
+
+function parseDimensionValues(raw: unknown): DimensionValuesConfig {
+   const fields = block(
+      raw,
+      "retrieval.dimensionValues",
+      DIMENSION_VALUE_KEYS,
+      `"dimensionValues": { "maxDimensions": 12, "cacheTtlMs": 600000 }`,
+   );
+   const out: DimensionValuesConfig = {};
+   if (fields.enabled !== undefined && fields.enabled !== null) {
+      if (typeof fields.enabled !== "boolean") {
+         throw new Error(
+            `Invalid retrieval.dimensionValues.enabled: expected a boolean, got ${describe(fields.enabled)}. Fix: "enabled": false`,
+         );
+      }
+      out.enabled = fields.enabled;
+   }
+   for (const key of [
+      "maxDimensions",
+      "maxValuesPerDimension",
+      "timeoutMs",
+      "budgetMs",
+   ] as const) {
+      const value = positiveInt(
+         fields[key],
+         `retrieval.dimensionValues.${key}`,
+         `set it to e.g. ${DIMENSION_VALUE_DEFAULTS[key]}`,
+      );
+      if (value !== undefined) out[key] = value;
+   }
+   // Zero is meaningful here (no cache), so positiveInt cannot read it.
+   const ttl = fields.cacheTtlMs;
+   if (ttl !== undefined && ttl !== null) {
+      const parsed =
+         typeof ttl === "string" && /^\d+$/.test(ttl.trim())
+            ? Number(ttl.trim())
+            : ttl;
+      if (
+         typeof parsed !== "number" ||
+         !Number.isSafeInteger(parsed) ||
+         parsed < 0
+      ) {
+         throw new Error(
+            `Invalid retrieval.dimensionValues.cacheTtlMs: expected a non-negative integer, got ${describe(ttl)}. Fix: "cacheTtlMs": 600000, or 0 to turn the cache off`,
+         );
+      }
+      out.cacheTtlMs = parsed;
+   }
+   return out;
+}
+
 /**
  * Validate the `retrieval` block. Throws, naming the key and the fix, on a
  * value that cannot be used: a bad value must stop the server at startup
@@ -432,7 +522,7 @@ export function parseRetrievalConfig(
    const input = block(
       raw,
       "retrieval",
-      ["indexing", "llm", "embedding", "egress"],
+      ["indexing", "llm", "embedding", "egress", "dimensionValues"],
       `"retrieval": { "indexing": { "maxEntities": 20000 } }`,
    );
    const out: RetrievalConfig = {};
@@ -465,6 +555,9 @@ export function parseRetrievalConfig(
       const egress = parseEgress(input.egress);
       if (egress) out.egress = egress;
    }
+   if (input.dimensionValues !== undefined && input.dimensionValues !== null) {
+      out.dimensionValues = parseDimensionValues(input.dimensionValues);
+   }
    return out;
 }
 
@@ -477,6 +570,11 @@ export function setRetrievalConfig(config: RetrievalConfig | undefined): void {
 
 export function loadedRetrievalConfig(): RetrievalConfig | undefined {
    return loaded;
+}
+
+/** The `retrieval.dimensionValues` settings in force, defaults filled in. */
+export function getDimensionValueSettings(): Required<DimensionValuesConfig> {
+   return { ...DIMENSION_VALUE_DEFAULTS, ...loaded?.dimensionValues };
 }
 
 /** The egress preset in force: `default` unless the operator chose `full`. */
