@@ -62,14 +62,19 @@ function host(): VersionHost<Loaded> {
       isWatchMounted: async () => false,
       retireUnversioned: () => {},
       ensurePackageRecord: async (packageName) => {
-         if (!(await repo.getPackageByName(ENV_ID, packageName))) {
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               manifestPath: "",
-            });
-         }
+         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
+         await repo.createPackage({
+            environmentId: ENV_ID,
+            name: packageName,
+            manifestPath: "",
+         });
+         return true;
       },
+      removePackageRecord: async (packageName) => {
+         const row = await repo.getPackageByName(ENV_ID, packageName);
+         if (row) await repo.deletePackage(row.id);
+      },
+      boundManifestOf: (loaded) => loaded.manifest,
       onVersionLoaded: (_pkg, loaded, isLatest) =>
          log.push(`served ${loaded.versionId}${isLatest ? " latest" : ""}`),
       isVersionBuilding: (_pkg, versionId) => building.has(versionId),

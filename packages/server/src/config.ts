@@ -1577,11 +1577,15 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as Record<string, unknown>)
          : {};
-   const versionPromotion = parseModeSetting(
-      settings.versionPromotion,
-      `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
-      VERSION_PROMOTION_MODES,
-   );
+   // Versioning transition: with it off the key is not read at all, as before
+   // versions, so a value there cannot fail a server that does not use it.
+   const versionPromotion = isVersioningEnabled()
+      ? parseModeSetting(
+           settings.versionPromotion,
+           `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
+           VERSION_PROMOTION_MODES,
+        )
+      : undefined;
 
    return {
       frozenConfig,

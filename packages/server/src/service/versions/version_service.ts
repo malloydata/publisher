@@ -64,11 +64,18 @@ export interface VersionHost<P> {
     * copy, if one is loaded. Called holding the package lock.
     */
    retireUnversioned(packageName: string): void;
-   /** Make sure the package has its registry row, with this description. */
+   /**
+    * Make sure the package has its registry row, with this description when
+    * one is given. Returns whether this call created the row.
+    */
    ensurePackageRecord(
       packageName: string,
       description: string | undefined,
-   ): Promise<void>;
+   ): Promise<boolean>;
+   /** Remove a package row this service created for a publish that failed. */
+   removePackageRecord(packageName: string): Promise<void>;
+   /** The build manifest a loaded version is bound to now, or null. */
+   boundManifestOf?(loaded: P): string | null;
    /** A version became served; `isLatest` says whether it is `latest`. */
    onVersionLoaded?(packageName: string, loaded: P, isLatest: boolean): void;
    /** Whether a materialization of this version is running now. */
@@ -125,6 +132,19 @@ export function requestedVersionId(raw: unknown): string | undefined {
 export class VersionService<P = unknown> {
    readonly cache: VersionCache<P>;
    private readonly versionLocks = new Map<string, Mutex>();
+   private readonly filesLocks = new Map<string, Mutex>();
+   /**
+    * The `latest` last read or set for each package, for the callers that
+    * need it synchronously (which version answers a lookup by name). Never
+    * consulted to decide a request: `latestOf` reads the registry.
+    */
+   private readonly latestSeen = new Map<string, string | null>();
+   /**
+    * When restoring a version's missing folder last failed, by package,
+    * version and hash, so a listing or poll that touches it does not fetch
+    * the location again on every call.
+    */
+   private readonly restoreFailedAt = new Map<string, number>();
 
    constructor(
       private readonly registry: VersionRegistry,
@@ -137,7 +157,43 @@ export class VersionService<P = unknown> {
             this.loadFromRegistry(packageName, versionId),
          release: (packageName, versionId, loaded) =>
             this.requireHost().releaseVersion(packageName, versionId, loaded),
+         // After the cache has kept it: a load an evict overtook is released
+         // instead, and must not report itself served.
+         loaded: (packageName, versionId, loaded) => {
+            void this.latestOf(packageName).then(
+               (latest) =>
+                  this.host?.onVersionLoaded?.(
+                     packageName,
+                     loaded,
+                     latest === versionId,
+                  ),
+               (error) =>
+                  logger.warn("Could not read latest after a version loaded", {
+                     packageName,
+                     error,
+                  }),
+            );
+         },
       });
+   }
+
+   /** The loaded `latest` of a package, without loading or reading anything. */
+   peekLatestLoaded(packageName: string): P | undefined {
+      const latest = this.latestSeen.get(packageName);
+      return latest ? this.cache.peek(packageName, latest) : undefined;
+   }
+
+   /**
+    * Forget everything held for a package being deleted: its loaded versions
+    * (released) and what was remembered about it.
+    */
+   forgetPackage(packageName: string): void {
+      this.cache.evictPackage(packageName);
+      this.latestSeen.delete(packageName);
+      for (const key of [...this.restoreFailedAt.keys()]) {
+         if (key.startsWith(`${packageName}@`))
+            this.restoreFailedAt.delete(key);
+      }
    }
 
    /**
@@ -207,7 +263,9 @@ export class VersionService<P = unknown> {
          this.environmentId,
          packageName,
       );
-      return pkg?.latestVersion ?? null;
+      const latest = pkg?.latestVersion ?? null;
+      this.latestSeen.set(packageName, latest);
+      return latest;
    }
 
    /**
@@ -277,7 +335,13 @@ export class VersionService<P = unknown> {
          );
       } finally {
          // Placed trees were renamed away; this only removes one that was not.
-         await store.discard(staged);
+         // Never allowed to replace the publish's own error.
+         await store.discard(staged).catch((error) =>
+            logger.warn("Could not remove a staged package version", {
+               packageName,
+               error,
+            }),
+         );
       }
    }
 
@@ -316,17 +380,32 @@ export class VersionService<P = unknown> {
          // take. Rows read under that lock are final: a concurrent first
          // publish of another version committed before this one got it.
          const first = holdingPackageLock && versions.length === 0;
-         await host.ensurePackageRecord(packageName, options.description);
-         const held = first ? await store.holdLegacy(packageName) : null;
-         // A folder with no row is a placement whose publish never committed.
-         if (await store.isPlaced(packageName, dirName)) {
-            await store.remove(packageName, dirName);
-         }
-
+         let createdRecord = false;
+         let held: Awaited<ReturnType<VersionStore["holdLegacy"]>> = null;
          let loaded: P | undefined;
          let committed: { version: Version; promoted: boolean };
          try {
-            await store.place(staged);
+            // The package's row, which the version's commit needs; created
+            // here only for a package new to this server, and removed again
+            // if this publish fails. The request's description is applied
+            // only once the version is committed.
+            createdRecord = await host.ensurePackageRecord(
+               packageName,
+               undefined,
+            );
+            held = first ? await store.holdLegacy(packageName) : null;
+            await this.withFilesLock(packageName, dirName, async () => {
+               // A folder with no row is a placement whose publish never
+               // committed.
+               if (await store.isPlaced(packageName, dirName)) {
+                  await store.remove(packageName, dirName);
+               }
+               if (!(await store.place(staged))) {
+                  throw new Error(
+                     `The folder for version ${versionId} of package ${packageName} appeared while it was being placed.`,
+                  );
+               }
+            });
             loaded = await host.loadVersion(
                packageName,
                store.versionPath(packageName, dirName),
@@ -366,14 +445,28 @@ export class VersionService<P = unknown> {
                      ),
                   );
             }
+            if (createdRecord) {
+               await host
+                  .removePackageRecord(packageName)
+                  .catch((error) =>
+                     logger.warn(
+                        "Could not remove the package row a failed publish created",
+                        { packageName, error },
+                     ),
+                  );
+            }
             throw err;
          }
 
          this.adopt(packageName, versionId, loaded);
+         if (committed.promoted) this.latestSeen.set(packageName, versionId);
          if (held) {
             await store.dropLegacy(held);
          }
          if (first) host.retireUnversioned(packageName);
+         if (options.description !== undefined) {
+            await host.ensurePackageRecord(packageName, options.description);
+         }
          host.onVersionLoaded?.(packageName, loaded, committed.promoted);
          return { loaded, version: committed.version, created: true };
       });
@@ -406,38 +499,58 @@ export class VersionService<P = unknown> {
             `Version ${versionId} of package ${packageName} is archived. Unarchive it instead of publishing it again.`,
          );
       }
-      if (!(await store.isPlaced(packageName, existing.dirName))) {
-         await store.place(staged);
-      }
+      await this.withFilesLock(packageName, existing.dirName, async () => {
+         if (!(await store.isPlaced(packageName, existing.dirName))) {
+            await store.place(staged);
+         }
+      });
 
       let version = existing;
-      if (
+      const newManifest =
          options.manifestLocation &&
          options.manifestLocation !== existing.manifestPath
-      ) {
+            ? options.manifestLocation
+            : undefined;
+      if (newManifest) {
          version = await this.registry.setVersionManifestPath(
             this.environmentId,
             packageName,
             versionId,
-            options.manifestLocation,
+            newManifest,
          );
          const resident = this.cache.peek(packageName, versionId);
          if (resident !== undefined) {
-            await host.bindVersionManifest(resident, options.manifestLocation);
+            await host.bindVersionManifest(resident, newManifest);
          }
       }
 
       // Loaded before `latest` can point at it: a version that cannot load
       // must never become what every request without a version reaches.
       const loaded = await this.cache.get(packageName, versionId);
+      // A load already running when the manifest was written binds the one
+      // it read before; bring it up to the row.
+      if (
+         newManifest &&
+         host.boundManifestOf &&
+         host.boundManifestOf(loaded) !== newManifest
+      ) {
+         await host.bindVersionManifest(loaded, newManifest);
+      }
+      if (options.description !== undefined) {
+         await host.ensurePackageRecord(packageName, options.description);
+      }
       if (options.promotion === "on-publish") {
-         await this.registry.setLatestVersion(
+         const moved = await this.registry.setLatestVersion(
             this.environmentId,
             packageName,
             versionId,
             (current) =>
                current === null || compareSemver(versionId, current) > 0,
          );
+         if (moved) {
+            this.latestSeen.set(packageName, versionId);
+            host.onVersionLoaded?.(packageName, loaded, true);
+         }
       }
       return {
          loaded,
@@ -602,24 +715,43 @@ export class VersionService<P = unknown> {
          packageName,
          versionId,
       );
-      if (moved)
+      if (moved) {
+         this.latestSeen.set(packageName, versionId);
          this.requireHost().onVersionLoaded?.(packageName, loaded, true);
+      }
       return this.getVersion(packageName, versionId);
    }
 
-   /** Run `fn` holding one version's lock. */
+   /**
+    * Run `fn` holding one version's lock. Keyed without letter case, so two
+    * versions that differ only by case (and would share a folder on a
+    * case-insensitive filesystem) never run side by side.
+    */
    async withVersionLock<T>(
       packageName: string,
       versionId: string,
       fn: () => Promise<T>,
    ): Promise<T> {
-      const key = `${packageName}@${versionId}`;
-      let lock = this.versionLocks.get(key);
-      if (!lock) {
-         lock = new Mutex();
-         this.versionLocks.set(key, lock);
-      }
-      return lock.runExclusive(fn);
+      return lockFor(
+         this.versionLocks,
+         `${packageName}@${versionId.toLowerCase()}`,
+      ).runExclusive(fn);
+   }
+
+   /**
+    * Run `fn` holding the lock on one version's folder: every placement,
+    * removal and restore of it, so two of them never rename into the same
+    * target.
+    */
+   private async withFilesLock<T>(
+      packageName: string,
+      dirName: string,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return lockFor(
+         this.filesLocks,
+         `${packageName}@${dirName.toLowerCase()}`,
+      ).runExclusive(fn);
    }
 
    /** Load a registered version for the cache, restoring a missing tree. */
@@ -634,35 +766,64 @@ export class VersionService<P = unknown> {
          packageName,
          versionId,
       );
-      if (!row) {
-         throw new PackageVersionError(
-            "VERSION_NOT_FOUND",
-            `Package ${packageName} has no version ${versionId}.`,
-         );
-      }
+      if (!row) throw versionNotFound(packageName, versionId);
       host.admit(packageName, "load a package version");
-      if (!(await store.isPlaced(packageName, row.dirName))) {
-         const restored =
-            row.sourceLocation !== null &&
-            (await store.restore(
-               packageName,
-               row,
-               host.downloaderFor(packageName, row.sourceLocation),
-            ));
-         if (!restored) {
-            throw new Error(
-               `The files of version ${versionId} of package ${packageName} are missing and could not be fetched again from where it was published.`,
-            );
-         }
-      }
-      const loaded = await host.loadVersion(
+      await this.withFilesLock(packageName, row.dirName, () =>
+         this.restoreIfMissing(row),
+      );
+      return host.loadVersion(
          packageName,
          store.versionPath(packageName, row.dirName),
          row,
       );
-      const latest = await this.latestOf(packageName);
-      host.onVersionLoaded?.(packageName, loaded, latest === versionId);
-      return loaded;
+   }
+
+   /**
+    * Put a registered version's missing folder back from where it was
+    * published, kept only when it hashes to the published hash. A failure is
+    * remembered for a while, so reads that keep touching the version do not
+    * fetch the location again each time. Called holding the folder's lock.
+    */
+   private async restoreIfMissing(row: Version): Promise<void> {
+      const store = this.requireStore();
+      const host = this.requireHost();
+      const { packageName, versionId, dirName } = row;
+      if (await store.isPlaced(packageName, dirName)) return;
+      const failureKey = `${packageName}@${versionId}@${row.contentHash}`;
+      const failedAt = this.restoreFailedAt.get(failureKey);
+      const missing = new Error(
+         `The files of version ${versionId} of package ${packageName} are missing and could not be fetched again from where it was published.`,
+      );
+      if (
+         failedAt !== undefined &&
+         Date.now() - failedAt < RESTORE_RETRY_AFTER_MS
+      ) {
+         throw missing;
+      }
+      const restored =
+         row.sourceLocation !== null &&
+         (await store.restore(
+            packageName,
+            row,
+            host.downloaderFor(packageName, row.sourceLocation),
+         ));
+      if (!restored) {
+         this.restoreFailedAt.set(failureKey, Date.now());
+         throw missing;
+      }
+      this.restoreFailedAt.delete(failureKey);
+      // The package may have been deleted while the files were fetched: a
+      // folder no row owns is removed rather than left for nobody to find.
+      if (
+         !(await this.registry.getVersion(
+            this.environmentId,
+            packageName,
+            versionId,
+         ))
+      ) {
+         await store.remove(packageName, dirName);
+         throw versionNotFound(packageName, versionId);
+      }
    }
 
    /** Put a version compiled by its publish into the cache. */
@@ -694,6 +855,18 @@ export function promoteOnPublish(
    if (promotion === "explicit") return () => false;
    return (current) =>
       current === null || compareSemver(current, versionId) <= 0;
+}
+
+/** How long a failed restore of a version's folder is not tried again. */
+const RESTORE_RETRY_AFTER_MS = 60_000;
+
+function lockFor(locks: Map<string, Mutex>, key: string): Mutex {
+   let lock = locks.get(key);
+   if (!lock) {
+      lock = new Mutex();
+      locks.set(key, lock);
+   }
+   return lock;
 }
 
 /** A version a route names in its path or body: required, and semver. */

@@ -43,6 +43,7 @@ import {
    NotQueryableError,
    PackageManifestError,
    PackageNotFoundError,
+   PackageVersionError,
    ServiceUnavailableError,
    UnparseableTextError,
    WriteRolledBackError,
@@ -723,7 +724,27 @@ export class Environment {
          )?.loaded;
       }
       const compileLock = <T>(fn: () => Promise<T>): Promise<T> =>
-         versioned ? fn() : this.withPackageLock(packageName, fn);
+         versioned
+            ? fn()
+            : this.withPackageLock(packageName, async () => {
+                 // Re-checked under the lock: a first versioned publish may
+                 // have committed while this waited, leaving `<pkg>/` holding
+                 // versions rather than a package. `fn` reads `versioned`
+                 // when it runs, so it compiles in that version instead.
+                 if (
+                    isVersioningEnabled() &&
+                    this.versionService &&
+                    !this.packages.has(packageName)
+                 ) {
+                    versioned = (
+                       await this.versionService.getLoaded(
+                          packageName,
+                          versionId,
+                       )
+                    )?.loaded;
+                 }
+                 return fn();
+              });
       // Hold the per-package mutex for the duration of every disk read —
       // both the explicit `fs.readFile(modelPath)` below and the implicit
       // import resolution that `runtime.loadModel` does through the URL
@@ -1781,6 +1802,11 @@ export class Environment {
       for (const _package of this.packages.values()) {
          _package.invalidateServeShapes();
       }
+      // Loaded versions too: whatever the versioning setting says now, what is
+      // loaded compiled against the destinations that just changed.
+      for (const [, , version] of this.versionService?.cache.entries() ?? []) {
+         version.invalidateServeShapes();
+      }
    }
 
    /**
@@ -1913,6 +1939,19 @@ export class Environment {
     */
    public getLoadedPackages(): Package[] {
       return [...this.packages.values()];
+   }
+
+   /**
+    * Whether a compiled copy of `name` is in memory: its single slot, or (with
+    * versioning on) any of its versions. Never loads anything.
+    */
+   public hasLoadedPackage(name: string): boolean {
+      if (this.packages.has(name)) return true;
+      // Versioning transition: with it off there are no loaded versions.
+      return (
+         isVersioningEnabled() &&
+         (this.versionService?.cache.loadedVersionsOf(name).length ?? 0) > 0
+      );
    }
 
    /**
@@ -2230,6 +2269,13 @@ export class Environment {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelPath);
       return this.withPackageLock(packageName, async () => {
+         // A published version takes no in-place write; checked under the
+         // lock, so a first versioned publish cannot commit between the
+         // caller's own check and the write.
+         await this.assertNotVersionedLocked(
+            packageName,
+            this.packages.get(packageName),
+         );
          const target = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
@@ -2506,12 +2552,43 @@ export class Environment {
     * without bringing back a package that was unloaded or deleted.
     */
    public peekPackage(name: string): Package | undefined {
-      return this.packages.get(name);
+      const unversioned = this.packages.get(name);
+      if (unversioned !== undefined) return unversioned;
+      // Versioning transition: with it off there are no loaded versions. With
+      // it on, a versioned package by name means its loaded `latest`.
+      return isVersioningEnabled()
+         ? (this.versionService?.peekLatestLoaded(name) ?? undefined)
+         : undefined;
    }
 
    /** The version rules for this environment's packages, once bound. */
    public getVersionService(): VersionService<Package> | null {
       return this.versionService;
+   }
+
+   /**
+    * Refuse to treat a versioned package as a single slot, on every path that
+    * loads, installs or adds one from `<pkg>/`. That folder holds versions,
+    * not a package: loading it fails, and installing over it would delete
+    * them. Called holding the package lock, so a first versioned publish
+    * cannot commit between the check and what the caller does next.
+    * Versioning transition: a no-op with it off.
+    */
+   private async assertNotVersionedLocked(
+      packageName: string,
+      resident: Package | undefined,
+   ): Promise<void> {
+      if (
+         resident === undefined &&
+         isVersioningEnabled() &&
+         this.versionService &&
+         (await this.versionService.isVersioned(packageName))
+      ) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable; it is read by version and changed by publishing a new one.`,
+         );
+      }
    }
 
    /**
@@ -2613,7 +2690,8 @@ export class Environment {
          ensurePackageRecord(
             packageName: string,
             description: string | undefined,
-         ): Promise<void>;
+         ): Promise<boolean>;
+         removePackageRecord(packageName: string): Promise<void>;
       },
    ): VersionService<Package> {
       if (this.versionService && this.boundEnvironmentId === environmentId) {
@@ -2656,12 +2734,18 @@ export class Environment {
                );
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
+            removePackageRecord: hooks.removePackageRecord,
+            boundManifestOf: (loaded) =>
+               loaded.getPackageMetadata().manifestLocation ?? null,
             onVersionLoaded: (packageName, loaded, isLatest) => {
                this.setPackageStatus(packageName, PackageStatus.SERVING);
-               this.clearPackageLoadFailure(packageName);
-               // The retrieval index is keyed by package name, so only the
-               // version a request without a version reaches may feed it.
-               if (isLatest) this.notifyPackageLoaded(loaded);
+               // The package's load failure, and the retrieval index (keyed
+               // by package name), both belong to the version a request
+               // without a version reaches: only `latest` clears or feeds them.
+               if (isLatest) {
+                  this.clearPackageLoadFailure(packageName);
+                  this.notifyPackageLoaded(loaded);
+               }
             },
          },
       );
@@ -2785,9 +2869,24 @@ export class Environment {
          options.allowAdmission === true,
       );
 
-      return this.withPackageLock(packageName, () =>
-         this._loadOrGetPackageLocked(packageName, reload),
-      );
+      return this.withPackageLock(packageName, async () => {
+         // Versioning transition: with it off every package is its one slot.
+         // With it on, re-checked under the lock: a first versioned publish
+         // may have committed while this waited, and its folder now holds
+         // versions, not a package.
+         if (
+            isVersioningEnabled() &&
+            this.versionService &&
+            !this.packages.has(packageName)
+         ) {
+            const versioned = await this.versionService.getLoaded(
+               packageName,
+               options.versionId,
+            );
+            if (versioned) return versioned.loaded;
+         }
+         return this._loadOrGetPackageLocked(packageName, reload);
+      });
    }
 
    /**
@@ -2805,6 +2904,7 @@ export class Environment {
       if (existingPackage !== undefined && !reload) {
          return existingPackage;
       }
+      await this.assertNotVersionedLocked(packageName, existingPackage);
 
       return this.trackPackageLoad(packageName, async () => {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
@@ -2916,6 +3016,7 @@ export class Environment {
       if (existingPackage !== undefined) {
          return existingPackage;
       }
+      await this.assertNotVersionedLocked(packageName, existingPackage);
 
       return this.trackPackageLoad(packageName, async () => {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
@@ -3031,6 +3132,17 @@ export class Environment {
       });
 
       return this.withPackageLock(packageName, async () => {
+         try {
+            await this.assertNotVersionedLocked(
+               packageName,
+               this.packages.get(packageName),
+            );
+         } catch (err) {
+            await fs.promises
+               .rm(stagingPath, { recursive: true, force: true })
+               .catch(() => {});
+            throw err;
+         }
          logger.debug("install.phase2.swap.started", {
             environmentName: this.environmentName,
             packageName,
@@ -4050,7 +4162,16 @@ export class Environment {
       this.packageStatuses.delete(packageName);
    }
 
-   public async deletePackage(packageName: string): Promise<void> {
+   public async deletePackage(
+      packageName: string,
+      options: {
+         /**
+          * The package had published versions. Decided by the caller before
+          * it removed the version rows, which it does first.
+          */
+         versioned?: boolean;
+      } = {},
+   ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
          // Clear the load failure before the early return, not after it. A
@@ -4065,9 +4186,14 @@ export class Environment {
          if (!_package) {
             // Versioning transition: with it off there are no versions here.
             // A versioned package: every version goes, loaded or loading, with
-            // the folder that holds them all.
-            if (isVersioningEnabled() && this.versionService) {
-               this.versionService.cache.evictPackage(packageName);
+            // the folder that holds them all. Only one: the folder of a
+            // package that merely failed to load is kept, as before.
+            if (
+               options.versioned &&
+               isVersioningEnabled() &&
+               this.versionService
+            ) {
+               this.versionService.forgetPackage(packageName);
                await new VersionStore(this.environmentPath).removePackage(
                   packageName,
                );
@@ -4250,6 +4376,10 @@ export class Environment {
       }
       this.packages.clear();
       this.packageStatuses.clear();
+      // Every loaded version too, whatever the versioning setting says now:
+      // each holds its own MalloyConfig. Evicting retires their connections,
+      // which the release of retired generations below then closes at once.
+      this.versionService?.cache.evictAll();
 
       try {
          await this.malloyConfig.releaseConnections();

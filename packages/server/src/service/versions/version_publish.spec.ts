@@ -72,14 +72,25 @@ function host(): VersionHost<Loaded> {
          log.push(`retire unversioned ${packageName}`),
       ensurePackageRecord: async (packageName, description) => {
          descriptions.push(description);
-         if (!(await repo.getPackageByName(ENV_ID, packageName))) {
+         const existing = await repo.getPackageByName(ENV_ID, packageName);
+         if (!existing) {
             await repo.createPackage({
                environmentId: ENV_ID,
                name: packageName,
                manifestPath: "",
                description,
             });
+            return true;
          }
+         if (description !== undefined) {
+            await repo.updatePackage(existing.id, { description });
+         }
+         return false;
+      },
+      removePackageRecord: async (packageName) => {
+         log.push(`remove record ${packageName}`);
+         const row = await repo.getPackageByName(ENV_ID, packageName);
+         if (row) await repo.deletePackage(row.id);
       },
    };
 }
@@ -199,7 +210,11 @@ describe("VersionService.publish", () => {
          archiveStatus: "unarchive",
       });
       expect(await latest()).toBe("1.0.0");
-      expect(descriptions).toEqual(["Sales package"]);
+      // The row is made with no description, which is set once committed.
+      expect(descriptions).toEqual([undefined, "Sales package"]);
+      expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
+         "Sales package",
+      );
       expect(versionDirs()).toEqual(["1.0.0"]);
       expect(svc.cache.peek(PKG, "1.0.0")).toBe(result.loaded);
       expect(log).toEqual(["load sales@1.0.0", "retire unversioned sales"]);
@@ -226,8 +241,13 @@ describe("VersionService.publish", () => {
       expect(error).toBeInstanceOf(BadRequestError);
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["old.malloy"]);
       expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
-      expect(await latest()).toBeNull();
-      expect(log).toEqual(["load sales@1.0.0", "release sales@1.0.0"]);
+      // The package row this publish created goes with it.
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(log).toEqual([
+         "load sales@1.0.0",
+         "release sales@1.0.0",
+         "remove record sales",
+      ]);
    });
 
    it("refuses a version that does not compile, and the versions already published keep serving", async () => {

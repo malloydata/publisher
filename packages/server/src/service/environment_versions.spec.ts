@@ -72,14 +72,18 @@ async function newEnvironment(): Promise<Environment> {
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
       ensurePackageRecord: async (packageName, description) => {
-         if (!(await repo.getPackageByName(ENV_ID, packageName))) {
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               description,
-               manifestPath: "",
-            });
-         }
+         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
+         await repo.createPackage({
+            environmentId: ENV_ID,
+            name: packageName,
+            description,
+            manifestPath: "",
+         });
+         return true;
+      },
+      removePackageRecord: async (packageName) => {
+         const row = await repo.getPackageByName(ENV_ID, packageName);
+         if (row) await repo.deletePackage(row.id);
       },
    });
    return env;
@@ -259,7 +263,10 @@ describe("Environment loading of published versions", () => {
 
       await publish(env, source("1.0.0", 1));
 
-      expect(env.peekPackage(PKG)).toBeUndefined();
+      // No unversioned copy is left; by name, the package is now its latest.
+      expect(env.peekPackage(PKG)?.getPackageMetadata().versionId).toBe(
+         "1.0.0",
+      );
       expect(await answerOf(await env.getPackage(PKG))).toBe(1);
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
       expect(fs.readdirSync(path.join(envPath, ".legacy"))).toEqual([]);
@@ -287,10 +294,30 @@ describe("Environment loading of published versions", () => {
       await publish(env, source("2.0.0", 2));
       await env.getPackage(PKG, false, { versionId: "1.0.0" });
 
-      await env.deletePackage(PKG);
+      // As the controller does it: the rows first, so nothing can resolve a
+      // version while its files go, then the environment's own state.
+      const row = await repo.getPackageByName(ENV_ID, PKG);
+      await repo.deletePackage(row!.id);
+      await env.deletePackage(PKG, { versioned: true });
 
       expect(env.getVersionService()!.cache.entries()).toEqual([]);
       expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+      // Nothing brings it back: no version resolves, and there is no package
+      // folder to load as one.
+      await expect(env.getPackage(PKG)).rejects.toThrow();
+      expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
+      expect(await env.listPackages()).toEqual([]);
+   });
+
+   it("keeps the folder of a package that is not versioned and failed to load", async () => {
+      fs.mkdirSync(path.join(envPath, "broken"));
+      fs.writeFileSync(path.join(envPath, "broken", "notes.txt"), "keep me");
+      const env = await newEnvironment();
+      await env.deletePackage("broken");
+      expect(fs.existsSync(path.join(envPath, "broken", "notes.txt"))).toBe(
+         true,
+      );
    });
 });
 

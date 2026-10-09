@@ -1406,6 +1406,11 @@ export class Package {
       return pkg;
    }
 
+   /** The published version this package is, or undefined for a package with none. */
+   public getVersionId(): string | undefined {
+      return this.packageMetadata.versionId ?? undefined;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }

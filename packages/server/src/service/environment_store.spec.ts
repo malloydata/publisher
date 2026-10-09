@@ -1785,6 +1785,8 @@ describe("EnvironmentStore Service", () => {
             path.join(serverRootPath, "publisher.config.json"),
             JSON.stringify({ versionPromotion: "manual", environments: [] }),
          );
+         // Only read with versioning on.
+         process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
          const badPromotion = new EnvironmentStore(serverRootPath);
          await badPromotion.finishedInitialization;
          expect((await badPromotion.getStatus()).initError).toContain(

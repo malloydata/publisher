@@ -125,11 +125,10 @@ export class VersionStore {
     */
    private within(area: string, candidate: string): string {
       const root = safeJoinUnderRoot(this.environmentPath, area);
+      // Resolved first, so no `..` segment survives to escape; a package name
+      // may still contain `..` inside a segment (`a..b`), which is harmless.
       const resolved = path.resolve(candidate);
-      if (
-         resolved.indexOf("..") !== -1 ||
-         !resolved.startsWith(root + path.sep)
-      ) {
+      if (!resolved.startsWith(root + path.sep)) {
          throw new Error(
             `Not a path under ${area}: ${JSON.stringify(candidate)}`,
          );

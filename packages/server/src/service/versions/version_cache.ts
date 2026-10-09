@@ -20,6 +20,11 @@ export interface VersionCacheHooks<T> {
    load(packageName: string, versionId: string): Promise<T>;
    /** Release a loaded version that leaves the cache (close its connections). */
    release(packageName: string, versionId: string, loaded: T): void;
+   /**
+    * A load was cached: it finished and no evict overtook it. Not called for
+    * a load whose result was released instead.
+    */
+   loaded?(packageName: string, versionId: string, value: T): void;
 }
 
 /**
@@ -71,6 +76,7 @@ export class VersionCache<T> {
                throw new VersionEvictedDuringLoadError(packageName, versionId);
             }
             this.loaded.set(k, value);
+            this.hooks.loaded?.(packageName, versionId, value);
             return value;
          } finally {
             // Only its own entry: an evict may already have let a newer load
@@ -109,6 +115,15 @@ export class VersionCache<T> {
       if (value === undefined) return;
       this.loaded.delete(k);
       this.hooks.release(packageName, versionId, value);
+   }
+
+   /** Evict every version of every package, loaded or loading. */
+   evictAll(): void {
+      const keys = new Set([...this.loaded.keys(), ...this.loading.keys()]);
+      for (const k of keys) {
+         const at = k.indexOf("@");
+         this.evict(k.slice(0, at), k.slice(at + 1));
+      }
    }
 
    /** Evict every version of a package, loaded or loading. */

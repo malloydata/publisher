@@ -119,7 +119,7 @@ export class QueryController {
                      // The version that answered (latest when none was
                      // named), not the raw request value; undefined for a
                      // package with no versions.
-                     version: p.getPackageMetadata().versionId ?? undefined,
+                     version: p.getVersionId(),
                      // Minted here because this is the boundary that returns
                      // it; a path with nowhere to put it does not mint one.
                      correlationId: mintCorrelationId(),

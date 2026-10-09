@@ -66,6 +66,7 @@ describe("package versioning settings", () => {
    });
 
    it("reads versionPromotion from publisher.config.json", () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
       writeConfig({
          frozenConfig: false,
          versionPromotion: "explicit",
@@ -78,6 +79,7 @@ describe("package versioning settings", () => {
    });
 
    it("lets PUBLISHER_VERSION_PROMOTION override the file", () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
       writeConfig({
          frozenConfig: false,
          versionPromotion: "explicit",
@@ -100,6 +102,7 @@ describe("package versioning settings", () => {
       expect(() => isVersioningEnabled()).toThrow(
          'PUBLISHER_PACKAGE_VERSIONING must be one of off | on (got "yes")',
       );
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
       writeConfig({
          frozenConfig: false,
          versionPromotion: "manual",
@@ -108,6 +111,16 @@ describe("package versioning settings", () => {
       expect(() => getVersionPromotionMode(root)).toThrow(
          '"versionPromotion" in publisher.config.json must be one of on-publish | explicit (got "manual")',
       );
+   });
+
+   it("ignores versionPromotion entirely with versioning off", () => {
+      writeConfig({
+         frozenConfig: false,
+         versionPromotion: "manual",
+         environments: [],
+      });
+      expect(() => getPublisherConfig(root)).not.toThrow();
+      expect(getPublisherConfig(root)).not.toHaveProperty("versionPromotion");
    });
 
    it("gives the promotion default for a config file that cannot be parsed", () => {

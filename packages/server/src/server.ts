@@ -35,6 +35,7 @@ import {
    BadRequestError,
    internalErrorToHttpError,
    NotImplementedError,
+   PackageVersionError,
    ServiceUnavailableError,
 } from "./errors";
 import {
@@ -1006,6 +1007,26 @@ const versionIdAllowed = (res: express.Response, value: unknown): boolean => {
  */
 const versionIdOf = (value: unknown): unknown =>
    isVersioningEnabled() ? value : undefined;
+
+/**
+ * The version a model query names: in the body, or in the URL as on every
+ * other package route. Both may be given only if they agree. None while
+ * versioning is off (versioning transition), as before versions.
+ */
+const queryVersionIdOf = (req: express.Request): unknown => {
+   if (!isVersioningEnabled()) return undefined;
+   const fromBody = req.body?.versionId;
+   const fromUrl = req.query.versionId;
+   const named = (value: unknown) =>
+      value !== undefined && value !== null && value !== "";
+   if (named(fromBody) && named(fromUrl) && fromBody !== fromUrl) {
+      throw new PackageVersionError(
+         "VERSION_ID_INVALID",
+         "The body and the URL name different versions; name one, or the same one.",
+      );
+   }
+   return named(fromBody) ? fromBody : fromUrl;
+};
 
 app.use(
    cors({
@@ -2107,7 +2128,7 @@ app.post(
             {
                queryMetadata: req.body?.queryMetadata,
                queryClass: req.body?.queryClass,
-               versionId: versionIdOf(req.body?.versionId),
+               versionId: queryVersionIdOf(req),
             },
             // Disables the author's `#(authorize)` gates. From a HEADER, never the
             // body, and nothing in Publisher bounds who may send it — the
@@ -2361,9 +2382,7 @@ if (!isDevelopment) {
             decodeSegment(fallback.environmentName),
          );
          const packageName = decodeSegment(fallback.packageName);
-         const known = environment
-            ?.getLoadedPackages()
-            .some((pkg) => pkg.getPackageName() === packageName);
+         const known = environment?.hasLoadedPackage(packageName) === true;
          if (!known) {
             // Null, not the names: a redirect candidate whose names did not
             // resolve is not an app route either, so it must not be rescued into
@@ -2388,12 +2407,7 @@ if (!isDevelopment) {
          const isAppRoute =
             environment !== undefined &&
             (packageName === undefined ||
-               environment
-                  .getLoadedPackages()
-                  .some(
-                     (pkg) =>
-                        pkg.getPackageName() === decodeSegment(packageName),
-                  ));
+               environment.hasLoadedPackage(decodeSegment(packageName)));
          if (isAppRoute) fallback = { kind: "spa" };
       }
       if (fallback.kind === "redirect") {

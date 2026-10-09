@@ -670,9 +670,11 @@ export class EnvironmentStore {
 
          // Read both versioning settings now, so a value outside the set fails
          // initialization naming the setting, rather than surfacing at the first
-         // publish that reads it.
-         isVersioningEnabled();
-         getVersionPromotionMode(this.serverRootPath);
+         // publish that reads it. The promotion setting only matters, and is
+         // only read, with versioning on (versioning transition).
+         if (isVersioningEnabled()) {
+            getVersionPromotionMode(this.serverRootPath);
+         }
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
@@ -1039,12 +1041,22 @@ export class EnvironmentStore {
                   manifestPath: "",
                   metadata: {},
                });
-            } else if (
+               return true;
+            }
+            if (
                description !== undefined &&
                description !== existing.description
             ) {
                await repository.updatePackage(existing.id, { description });
             }
+            return false;
+         },
+         removePackageRecord: async (packageName) => {
+            const existing = await repository.getPackageByName(
+               environmentId,
+               packageName,
+            );
+            if (existing) await repository.deletePackage(existing.id);
          },
       });
       if (alreadyBound) return;
@@ -1672,7 +1684,14 @@ export class EnvironmentStore {
       // reads an absent field as "off".
       if (versioningEnabledForStatus()) {
          status.packageVersioning = "on";
-         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
+         // A malformed value failed initialization, which this reports.
+         try {
+            status.versionPromotion = getVersionPromotionMode(
+               this.serverRootPath,
+            );
+         } catch {
+            // Left absent.
+         }
       }
 
       const environments = await this.listEnvironments(true, options);

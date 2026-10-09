@@ -170,12 +170,14 @@ export class PackageController {
       );
 
       // Versioning transition: with it off, there are no published versions.
-      // A published version is immutable, so it has nothing to reload: it is
+      // With it on, the version named is resolved first: a package with none
+      // has no version to name (404), and a malformed one is a 400. A
+      // published version is immutable, so it has nothing to reload: it is
       // answered as it is.
-      if (
-         isVersioningEnabled() &&
-         (await environment.getVersionService()?.isVersioned(packageName))
-      ) {
+      const versions = isVersioningEnabled()
+         ? environment.getVersionService()
+         : null;
+      if (versions && (await versions.resolve(packageName, versionId))) {
          const version = await environment.getPackage(packageName, false, {
             versionId,
          });
@@ -415,7 +417,9 @@ export class PackageController {
             packageName,
          );
       }
-      const result = await environment.deletePackage(packageName);
+      const result = await environment.deletePackage(packageName, {
+         versioned,
+      });
       if (!versioned) {
          await this.environmentStore.deletePackageFromDatabase(
             environmentName,
