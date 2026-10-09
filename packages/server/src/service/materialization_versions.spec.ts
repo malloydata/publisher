@@ -17,6 +17,7 @@ import { DuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
+import { MaterializationScheduler } from "./materialization_scheduler";
 import { MaterializationService } from "./materialization_service";
 import { Package } from "./package";
 import {
@@ -54,12 +55,20 @@ function writePackage(
    version: string,
    answer: number,
    scope: "version" | "package",
+   schedule?: string,
 ): string {
-   const dir = path.join(sourcesPath, `${version}-${answer}-${scope}`);
+   const dir = path.join(
+      sourcesPath,
+      `${version}-${answer}-${scope}${schedule ? "-scheduled" : ""}`,
+   );
    fs.mkdirSync(dir, { recursive: true });
    fs.writeFileSync(
       path.join(dir, "publisher.json"),
-      JSON.stringify({ name: PKG, version, materialization: { scope } }),
+      JSON.stringify({
+         name: PKG,
+         version,
+         materialization: { scope, ...(schedule ? { schedule } : {}) },
+      }),
    );
    fs.writeFileSync(
       path.join(dir, "model.malloy"),
@@ -132,8 +141,9 @@ async function publish(
    answer: number,
    scope: "version" | "package",
    promotion: "on-publish" | "explicit" = "on-publish",
+   schedule?: string,
 ) {
-   const location = writePackage(version, answer, scope);
+   const location = writePackage(version, answer, scope, schedule);
    return env.getVersionService()!.publish(
       PKG,
       async (stagingPath) => {
@@ -1024,5 +1034,72 @@ describe("a package with no versions", () => {
          (result as unknown as { compactResult: { answer: number }[] })
             .compactResult[0].answer,
       ).toBe(70);
+   });
+});
+
+describe("the scheduler, per published version", () => {
+   function scheduler(): MaterializationScheduler {
+      const store = {
+         getLoadedEnvironments: () => [env],
+      } as unknown as EnvironmentStore;
+      return new MaterializationScheduler(store, service, {
+         tickIntervalMs: 60_000,
+         maxFiresPerTick: 10,
+      });
+   }
+
+   async function scheduledRuns(): Promise<Materialization[]> {
+      const runs = (await repo.listMaterializations(ENV_ID, PKG)).filter(
+         (m) => m.metadata?.trigger === "SCHEDULER",
+      );
+      return Promise.all(runs.map((m) => settled(m.id)));
+   }
+
+   it("loads a version that is due, and builds it into its own tables", async () => {
+      await publish("1.0.0", 1, "version", "on-publish", "* * * * *");
+      await publish("2.0.0", 2, "version", "on-publish", "* * * * *");
+      // A restart: nothing is loaded.
+      env = await newEnvironment();
+      service = newService(env);
+      const sched = scheduler();
+      const now = Date.now();
+
+      await sched.tick(now);
+      expect(await scheduledRuns()).toEqual([]);
+      expect(env.getLoadedVersionIds(PKG)).toEqual([]);
+
+      await sched.tick(now + 120_000);
+      const runs = await scheduledRuns();
+      expect(runs.map((m) => [m.version, m.status]).sort()).toEqual([
+         ["1.0.0", "MANIFEST_FILE_READY"],
+         ["2.0.0", "MANIFEST_FILE_READY"],
+      ]);
+      expect(env.getLoadedVersionIds(PKG).sort()).toEqual(["1.0.0", "2.0.0"]);
+      expect(await warehouseTables()).toEqual([
+         "summary__v1_0_0",
+         "summary__v2_0_0",
+      ]);
+   });
+
+   it("never fires an archived version, and fires it again once unarchived", async () => {
+      await publish("1.0.0", 1, "version", "on-publish", "* * * * *");
+      await publish("2.0.0", 2, "version");
+      const versions = env.getVersionService()!;
+      await versions.setArchiveStatus(PKG, "1.0.0", "archive");
+      await Promise.all(reclaims);
+      const sched = scheduler();
+      const now = Date.now();
+      const attempts = spyOn(service, "createMaterialization");
+
+      await sched.tick(now);
+      await sched.tick(now + 120_000);
+      // Not even tried: it is out of the sweep.
+      expect(attempts).not.toHaveBeenCalled();
+      expect(await scheduledRuns()).toEqual([]);
+
+      await versions.setArchiveStatus(PKG, "1.0.0", "unarchive");
+      await sched.tick(now + 120_001);
+      await sched.tick(now + 240_000);
+      expect((await scheduledRuns()).map((m) => m.version)).toEqual(["1.0.0"]);
    });
 });

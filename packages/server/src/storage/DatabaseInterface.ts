@@ -135,6 +135,7 @@ export interface ResourceRepository {
    getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      version?: string,
    ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
    /**

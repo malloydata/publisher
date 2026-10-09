@@ -111,14 +111,19 @@ export class MaterializationRepository {
    async getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      // One published version's fires; undefined, the package's.
+      version?: string,
    ): Promise<Date | null> {
       const row = await this.db.get<{ created_at: unknown }>(
          `SELECT created_at FROM materializations
            WHERE environment_id = ? AND package_name = ?
              AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+             ${version !== undefined ? "AND version = ?" : ""}
            ORDER BY created_at DESC
            LIMIT 1`,
-         [environmentId, packageName],
+         version !== undefined
+            ? [environmentId, packageName, version]
+            : [environmentId, packageName],
       );
       return row?.created_at ? new Date(row.created_at as string) : null;
    }

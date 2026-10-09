@@ -1206,11 +1206,14 @@ export class MaterializationService {
    async getLatestScheduledFireAt(
       environmentName: string,
       packageName: string,
+      // One published version's fires; undefined, the package's.
+      versionId?: string,
    ): Promise<Date | null> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
       return this.repository.getLatestScheduledFireAt(
          environmentId,
          packageName,
+         versionId,
       );
    }
 

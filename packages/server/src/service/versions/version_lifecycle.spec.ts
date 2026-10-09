@@ -166,6 +166,45 @@ afterEach(async () => {
 });
 
 describe("listing and getting versions", () => {
+   it("reads a version's publisher.json without loading it, and reads it again after its package is deleted and published anew", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      const [first] = await svc.activeVersions();
+      expect(await svc.publishedManifestOf(first)).toEqual({
+         name: PKG,
+         version: "1.0.0",
+      });
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(true);
+      svc.cache.evict(PKG, "1.0.0");
+      expect(await svc.publishedManifestOf(first)).toEqual({
+         name: PKG,
+         version: "1.0.0",
+      });
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(false);
+
+      // Deleted, then the same version published again, differently.
+      const row = await repo.getPackageByName(ENV_ID, PKG);
+      await repo.deletePackage(row!.id);
+      svc.forgetPackage(PKG);
+      await new VersionStore(envPath).removePackage(PKG);
+      const dir = path.join(root, "src", "again");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: PKG, version: "1.0.0", description: "again" }),
+      );
+      fs.writeFileSync(path.join(dir, "model.malloy"), "// again");
+      await svc.publish(
+         PKG,
+         async (staging) => {
+            await fs.promises.cp(dir, staging, { recursive: true });
+         },
+         { sourceLocation: dir, promotion: "on-publish" },
+      );
+      const [again] = await svc.activeVersions();
+      expect((await svc.publishedManifestOf(again))?.description).toBe("again");
+   });
+
    it("lists highest first, archived included, with latest", async () => {
       const svc = service();
       for (const v of ["1.0.0", "2.0.0-rc.1", "1.10.0", "2.0.0"]) {

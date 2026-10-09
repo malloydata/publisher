@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { Mutex } from "async-mutex";
+import * as fs from "fs";
+import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
    BadRequestError,
@@ -203,6 +205,11 @@ export class VersionService<P = unknown> {
       for (const key of [...this.restoreFailedAt.keys()]) {
          if (key.startsWith(`${packageName}@`))
             this.restoreFailedAt.delete(key);
+      }
+      // A version published again after a delete may differ.
+      for (const key of [...this.publishedManifests.keys()]) {
+         if (key.startsWith(`${packageName}@`))
+            this.publishedManifests.delete(key);
       }
    }
 
@@ -649,6 +656,52 @@ export class VersionService<P = unknown> {
       );
       return row?.description ?? null;
    }
+
+   /** Every version in service (not archived), of every package here. */
+   async activeVersions(): Promise<Version[]> {
+      return (
+         await this.registry.listVersionsByEnvironment(this.environmentId)
+      ).filter((v) => v.archiveStatus !== "archive");
+   }
+
+   /**
+    * A version's publisher.json as it was published, read from its folder
+    * without loading the version. The folder never changes, so it is read
+    * once. Null when the folder is missing (it is fetched again when the
+    * version next loads) or the file does not parse.
+    */
+   async publishedManifestOf(
+      version: Pick<Version, "packageName" | "dirName">,
+   ): Promise<Record<string, unknown> | null> {
+      const key = `${version.packageName}@${version.dirName}`;
+      const cached = this.publishedManifests.get(key);
+      if (cached) return cached;
+      try {
+         const text = await fs.promises.readFile(
+            path.join(
+               this.requireStore().versionPath(
+                  version.packageName,
+                  version.dirName,
+               ),
+               "publisher.json",
+            ),
+            "utf8",
+         );
+         const parsed: unknown = JSON.parse(text);
+         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return null;
+         }
+         this.publishedManifests.set(key, parsed as Record<string, unknown>);
+         return parsed as Record<string, unknown>;
+      } catch {
+         return null;
+      }
+   }
+
+   private readonly publishedManifests = new Map<
+      string,
+      Record<string, unknown>
+   >();
 
    /** One version, archived or not: 400 for a malformed id, 404 for none. */
    async getVersion(

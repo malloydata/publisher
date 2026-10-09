@@ -295,10 +295,12 @@ export class DuckDBRepository implements ResourceRepository {
    async getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      version?: string,
    ): Promise<Date | null> {
       return this.materializationRepo.getLatestScheduledFireAt(
          environmentId,
          packageName,
+         version,
       );
    }
 
