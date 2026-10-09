@@ -462,6 +462,35 @@ describe("get_context value search over a stand-in warehouse", () => {
       ]);
    });
 
+   it("stops waiting for a query a driver cannot cancel, and caches its late rows", async () => {
+      // DuckDB finishes a query whatever the abort signal says, so the timeout
+      // inside the query path would hand back the late rows as a success.
+      let calls = 0;
+      _setValueFetcherForTests(async (req) => {
+         calls += 1;
+         await new Promise((resolve) => setTimeout(resolve, 150));
+         return warehouse()(req);
+      });
+      setRetrievalConfig({ dimensionValues: { timeoutMs: 20 } });
+      const handler = captureHandler(storeFor(stubPackage()));
+      const params = {
+         search_targets: [valueTarget("North")],
+         scopes: [{ ...SCOPE[0], source: "segments", entity_name: "region" }],
+      };
+      const started = performance.now();
+      const slow = await call(handler, params);
+      expect(performance.now() - started).toBeLessThan(120);
+      expect(slow.sources).toEqual([]);
+      expect(slow.warnings).toEqual([
+         "Value search skipped segments.region: the query timed out. Scope the call to the source that holds the value, or see retrieval.dimensionValues in the server configuration.",
+      ]);
+      // The query finishes in the background; the next call finds its rows.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const warm = await call(handler, params);
+      expect(calls).toBe(1);
+      expect(warm.sources[0].entities[0].values[0].value).toBe("North");
+   });
+
    it("searches a dimension past the read cap with a text filter, and says so", async () => {
       const calls: ValueFetchRequest[] = [];
       _setValueFetcherForTests(warehouse(calls));
