@@ -5,8 +5,7 @@
 
 /**
  * Every package-scoped read route serves the version a request names, and
- * `latest` when it names none, with versioning on (PUBLISHER_PACKAGE_VERSIONING
- * =on). Two versions of one package are published, each answering with its
+ * `latest` when it names none. Two versions of one package are published, each answering with its
  * own number from its model, its dashboard title, its notebook text and its
  * data-app page, so what a route returns proves which version's files it read.
  */
@@ -25,7 +24,6 @@ const PLAIN = "plain";
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env.PUBLISHER_PACKAGE_VERSIONING;
 
 /** One package tree whose every surface names `answer`. */
 function writePackage(
@@ -84,9 +82,8 @@ async function answerOf(versionId?: string): Promise<number> {
    return Number(rows[0].answer);
 }
 
-describe("package-scoped routes with versioning on", () => {
+describe("package-scoped routes of a versioned package", () => {
    beforeAll(async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-routes-")),
       );
@@ -136,9 +133,6 @@ describe("package-scoped routes with versioning on", () => {
          method: "DELETE",
       }).catch(() => undefined);
       await env?.stop();
-      if (savedFlag === undefined)
-         delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-      else process.env.PUBLISHER_PACKAGE_VERSIONING = savedFlag;
       fs.rmSync(root, { recursive: true, force: true });
    });
 
@@ -339,13 +333,50 @@ describe("package-scoped routes with versioning on", () => {
       expect(await pageQuery(PLAIN, "?versionId=1.0.0")).toBe(0);
    });
 
-   it("a page of a package with no versions sends no version with versioning off", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
-      try {
-         expect(await pageQuery(PLAIN, "?versionId=1.0.0")).toBe(0);
-      } finally {
-         process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      }
+   it("serves a page whose versionId is no version of the package from latest", async () => {
+      // A proxy may forward a page's query string with a version id of its
+      // own. The page opens from latest, and its queries answer from latest.
+      const page = await fetch(
+         `${baseUrl}/environments/${ENV_NAME}/packages/${PKG}/index.html?versionId=7.7.7`,
+      );
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain("page v2");
+      expect(await pageQuery(PKG, "?versionId=7.7.7")).toBe(2);
+      expect(await pageQuery(PKG, "?versionId=not-a-version")).toBe(2);
+   });
+
+   it("reads ?versionId= on the model query, and refuses a body and URL that disagree", async () => {
+      const query = async (url: string, body: Record<string, unknown>) =>
+         fetch(api(`${PKG}/models/model.malloy/query${url}`), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               query: "run: numbers -> which_version",
+               compactJson: true,
+               ...body,
+            }),
+         });
+      const fromUrl = await query("?versionId=1.0.0", {});
+      expect(fromUrl.status).toBe(200);
+      expect(
+         Number(JSON.parse(String((await json(fromUrl)).result))[0].answer),
+      ).toBe(1);
+      const agreeing = await query("?versionId=1.0.0", { versionId: "1.0.0" });
+      expect(agreeing.status).toBe(200);
+      const disagreeing = await query("?versionId=1.0.0", {
+         versionId: "2.0.0",
+      });
+      expect(disagreeing.status).toBe(400);
+      expect((await json(disagreeing)).reason).toBe("VERSION_ID_INVALID");
+   });
+
+   it("checks a named version on reload of a package with none", async () => {
+      const named = await fetch(api(`${PLAIN}?reload=true&versionId=1.0.0`));
+      expect(named.status).toBe(404);
+      expect((await json(named)).reason).toBe("VERSION_NOT_FOUND");
+      const malformed = await fetch(api(`${PLAIN}?reload=true&versionId=v1`));
+      expect(malformed.status).toBe(400);
+      expect((await fetch(api(`${PLAIN}?reload=true`))).status).toBe(200);
    });
 });
 

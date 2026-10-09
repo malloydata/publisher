@@ -85,9 +85,7 @@ tags:
   - name: versions
     description:
       Published, immutable versions of a package, the package's `latest`
-      pointer, and each version's lifecycle (archive, manifest binding).
-      They answer 501 while the server runs with package versioning off
-      (`PUBLISHER_PACKAGE_VERSIONING` unset or `off`)
+      pointer, and each version's lifecycle (archive, manifest binding)
 
 paths:
   /status:
@@ -1452,11 +1450,10 @@ paths:
 
         ## Versioned publish
 
-        When the server runs with package versioning on (the environment variable
-        `PUBLISHER_PACKAGE_VERSIONING=on`), a request that carries a `location` publishes an
-        immutable version of the package. The request takes no version parameter: the version is
-        the `version` field of the package's own `publisher.json`, the way `npm publish` reads
-        `package.json`, so bumping that field is the release action.
+        A request that carries a `location` publishes an immutable version of the package. The
+        request takes no version parameter: the version is the `version` field of the package's
+        own `publisher.json`, the way `npm publish` reads `package.json`, so bumping that field
+        is the release action.
 
         - A `version` that is missing, or is not a semantic version, is refused with 400
           (`reason` `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`).
@@ -1477,9 +1474,9 @@ paths:
         - The request's `description`, when sent, is the package's description. Each version
           keeps the `description` from its own publisher.json.
 
-        With versioning off (the default), or for a request without a `location`, the package is
-        a single unversioned slot, as before: publishing it again replaces its contents. A
-        package that already has versions refuses an unversioned publish with 409 (`reason`
+        A request without a `location` registers a directory already in the environment as a
+        single unversioned package, as packages loaded from `publisher.config.json` are. A
+        package that already has versions refuses that with 409 (`reason`
         `PACKAGE_IS_VERSIONED`).
       parameters:
         - name: environmentName
@@ -1591,11 +1588,13 @@ paths:
       deprecated: true
       description: |
         DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
-        operation is kept only for unversioned packages and will be removed. On a package that
-        has published versions it is refused with 409 (`reason` `PACKAGE_IS_VERSIONED`): publish
-        a new version to change its content, and use
-        `PUT .../packages/{packageName}/versions/{version}/manifest` to rebind a version's
-        `manifestLocation`.
+        operation will be removed. On a package that has published versions it changes only
+        what is not content: `manifestLocation` is bound to the package's `latest` version (as
+        `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version), and
+        `description` is the package's. `name` and the `location` the version was published from
+        may be sent back unchanged. Any other change is refused with 409 (`reason`
+        `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
+        change content.
 
         Updates the configuration and metadata of an existing package. This allows you to
         modify package settings, update the description, change the location, or update other
@@ -1708,8 +1707,9 @@ paths:
       description: |
         Lists every version published to the package, highest version first, including archived
         ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
-        request names no `versionId`. An unversioned package (one loaded from a plain directory,
-        or published with versioning off) has no versions and returns an empty list.
+        request names no `versionId`. An unversioned package (one loaded from
+        `publisher.config.json` or registered from a directory) has no versions and returns an
+        empty list.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -1728,8 +1728,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1761,8 +1759,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     patch:
@@ -1824,8 +1820,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1876,8 +1870,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1930,8 +1922,6 @@ paths:
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -3540,11 +3530,10 @@ components:
           enum: ["off", "on"]
           readOnly: true
           description: >-
-            Whether this server runs with package versioning
-            (`PUBLISHER_PACKAGE_VERSIONING`). With "on", a publish from a
-            location publishes an immutable version. An
-            orchestrator talking to servers in mid-rollout reads it to know
-            which ones take native versions.
+            "on" on every server that takes published versions: a publish
+            from a location publishes an immutable version. Absent from a
+            server that predates them, which is how an orchestrator talking
+            to servers mid-rollout tells which ones take native versions.
         versionPromotion:
           type: string
           enum: ["on-publish", "explicit"]
@@ -5081,10 +5070,13 @@ components:
             The published version this data app was listed from. Absent for a
             package that has no published versions. A link that must keep opening
             this version after `latest` moves carries it as `?versionId=`, as
-            `resource` does. The static route serving the page reads it only for
-            a package with published versions: a package with none ignores
-            `?versionId=` on its static files and serves them as before, so a
-            router that forwards a page's query string unchanged keeps working.
+            `resource` does. The static route serving the page reads it only
+            when it names a version the package has: otherwise (a package with
+            no versions, or a `versionId` that is no version of this package)
+            it serves the files of `latest`, so a router that forwards a page's
+            query string unchanged keeps working. The page's queries, through
+            the data-app runtime, follow the same rule. Files the page loads by
+            relative URL carry no `?versionId=`, so they come from `latest`.
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -8598,10 +8590,9 @@ components:
         VERSION_ID_INVALID, so a malformed value is told apart from a missing
         version. An unknown version answers 404 with `reason` VERSION_NOT_FOUND,
         and an archived one answers 410 with `reason` VERSION_ARCHIVED. A
-        package that
-        has no versions (one loaded from a plain directory, or published with
-        package versioning off) is served as before when this is omitted, and
-        answers 404 VERSION_NOT_FOUND when it is given.
+        package that has no versions (one loaded from `publisher.config.json`
+        or registered from a directory) is served as before when this is
+        omitted, and answers 404 VERSION_NOT_FOUND when it is given.
 
         Build metadata must be percent-encoded: send `1.2.0+build.5` as
         `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.

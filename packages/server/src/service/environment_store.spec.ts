@@ -189,6 +189,12 @@ mock.module("../storage/StorageManager", () => {
                   _name: string,
                ): Promise<MockData | null> => null,
 
+               // ===== VERSION METHODS: no package here has versions =====
+               listVersions: async (): Promise<unknown[]> => [],
+               listVersionsByEnvironment: async (): Promise<unknown[]> => [],
+               hasVersions: async (): Promise<boolean> => false,
+               getVersion: async (): Promise<null> => null,
+
                createPackage: async (data: MockData): Promise<MockData> => ({
                   id: "test-package-id",
                   environmentId: data.environmentId,
@@ -1758,43 +1764,16 @@ describe("EnvironmentStore Service", () => {
       },
    );
 
-   it("fails initialization on a versioning setting outside its set", async () => {
-      const saved = {
-         versioning: process.env.PUBLISHER_PACKAGE_VERSIONING,
-         promotion: process.env.PUBLISHER_VERSION_PROMOTION,
-      };
-      const restore = () => {
-         for (const [name, value] of [
-            ["PUBLISHER_PACKAGE_VERSIONING", saved.versioning],
-            ["PUBLISHER_VERSION_PROMOTION", saved.promotion],
-         ] as const) {
-            if (value === undefined) delete process.env[name];
-            else process.env[name] = value;
-         }
-      };
-      try {
-         process.env.PUBLISHER_PACKAGE_VERSIONING = "yes";
-         const badFlag = new EnvironmentStore(serverRootPath);
-         await badFlag.finishedInitialization;
-         expect((await badFlag.getStatus()).initError).toContain(
-            "PUBLISHER_PACKAGE_VERSIONING must be one of off | on",
-         );
-         restore();
-
-         writeFileSync(
-            path.join(serverRootPath, "publisher.config.json"),
-            JSON.stringify({ versionPromotion: "manual", environments: [] }),
-         );
-         // Only read with versioning on.
-         process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-         const badPromotion = new EnvironmentStore(serverRootPath);
-         await badPromotion.finishedInitialization;
-         expect((await badPromotion.getStatus()).initError).toContain(
-            '"versionPromotion" in publisher.config.json must be one of on-publish | explicit',
-         );
-      } finally {
-         restore();
-      }
+   it("fails initialization on a versionPromotion outside its set", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ versionPromotion: "manual", environments: [] }),
+      );
+      const badPromotion = new EnvironmentStore(serverRootPath);
+      await badPromotion.finishedInitialization;
+      expect((await badPromotion.getStatus()).initError).toContain(
+         '"versionPromotion" in publisher.config.json must be one of on-publish | explicit',
+      );
    });
 
    it("omits initError when initialization succeeds", async () => {

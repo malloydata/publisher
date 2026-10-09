@@ -68,11 +68,10 @@
    // --- Published-version pinning -----------------------------------------
    // A page opened at a published version (`?versionId=` in its URL) queries
    // that version, so it keeps answering from the models it shipped with after
-   // the package's `latest` moves on. Only when the package actually has
-   // published versions: a proxy may forward a page's query string unchanged,
-   // and a server or package without versions must see exactly the requests
-   // it saw before. One plain read of the package (no version named) tells:
-   // its response carries a `versionId` only for a package with versions.
+   // the package's `latest` moves on. Only when that version is one the
+   // package has: a proxy may forward a page's query string unchanged, with a
+   // `versionId` of its own, and such a page queries `latest`, as the server
+   // serves its files. One read of the package at the page's version tells.
    function pageVersionParam() {
       // Read by hand, not with URLSearchParams, so the runtime also loads where
       // that is not defined. `+` in a query string is a space.
@@ -93,14 +92,18 @@
                "/environments/" +
                encodeURIComponent(ctx.environment) +
                "/packages/" +
-               encodeURIComponent(ctx.package),
+               encodeURIComponent(ctx.package) +
+               "?versionId=" +
+               encodeURIComponent(pageVersion),
             { credentials: "include", headers: authHeaders() },
          )
             .then(function (res) {
                return res.ok ? res.json() : null;
             })
             .then(function (pkg) {
-               return pkg && pkg.versionId ? pageVersion : undefined;
+               return pkg && pkg.versionId === pageVersion
+                  ? pageVersion
+                  : undefined;
             })
             .catch(function () {
                return undefined;

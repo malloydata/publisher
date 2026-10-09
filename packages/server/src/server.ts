@@ -67,7 +67,6 @@ import {
    getQueryMetadataMode,
    embeddingStartupNotices,
    getRetrievalConfig,
-   isVersioningEnabled,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
@@ -637,18 +636,15 @@ async function serveFromPackage(
          req.params.environmentName,
          false,
       );
-      // Versioning transition: with it off, `?versionId=` is not read here.
-      // With it on, a versioned package serves the version the URL names
-      // (`latest` when none), and a package with no versions ignores the
-      // parameter, so a proxy that forwards a page's query string unchanged
-      // keeps working. The version comes from the URL only.
-      let staticVersionId: unknown;
-      if (isVersioningEnabled() && req.query.versionId !== undefined) {
-         const versions = environment.getVersionService();
-         if (await versions?.isVersioned(req.params.packageName)) {
-            staticVersionId = req.query.versionId;
-         }
-      }
+      // A page is served from the version its URL names (`?versionId=`), and
+      // from `latest` when it names none. Only a version the package has pins
+      // the page: a proxy may forward a page's query string unchanged, with a
+      // `versionId` of its own that is no version here, and that page still
+      // opens (from `latest`) rather than 404ing. The version comes from the
+      // URL only.
+      const staticVersionId = await environment
+         .getVersionService()
+         ?.pinnableVersion(req.params.packageName, req.query.versionId);
       const pkg = await environment.getPackage(req.params.packageName, false, {
          versionId: staticVersionId,
       });
@@ -989,32 +985,10 @@ const setVersionIdError = (res: express.Response) => {
 };
 
 /**
- * Versioning transition: a route that answered a `versionId` with 501 before
- * versions keeps answering it that way while versioning is off. Returns false
- * when it has sent that response. Goes away with the flag.
- */
-const versionIdAllowed = (res: express.Response, value: unknown): boolean => {
-   if (!isVersioningEnabled() && value) {
-      setVersionIdError(res);
-      return false;
-   }
-   return true;
-};
-
-/**
- * The `versionId` a request names, for the controllers: none while versioning
- * is off (versioning transition), so every package is read as its one slot.
- */
-const versionIdOf = (value: unknown): unknown =>
-   isVersioningEnabled() ? value : undefined;
-
-/**
  * The version a model query names: in the body, or in the URL as on every
- * other package route. Both may be given only if they agree. None while
- * versioning is off (versioning transition), as before versions.
+ * other package route. Both may be given only if they agree.
  */
 const queryVersionIdOf = (req: express.Request): unknown => {
-   if (!isVersioningEnabled()) return undefined;
    const fromBody = req.body?.versionId;
    const fromUrl = req.query.versionId;
    const named = (value: unknown) =>
@@ -1067,7 +1041,7 @@ app.get(
          const pkg = await environment.getPackage(
             req.params.packageName,
             false,
-            { versionId: versionIdOf(req.query.versionId) },
+            { versionId: req.query.versionId },
          );
          const dataApps = await listPackageDataApps(
             req.params.environmentName,
@@ -1190,7 +1164,7 @@ app.get(
          const environment = await environmentStore.getEnvironment(env, false);
          // 404 if missing; 404/410 for a version it does not serve.
          await environment.getPackage(pkg, false, {
-            versionId: versionIdOf(req.query.versionId),
+            versionId: req.query.versionId,
          });
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -1494,7 +1468,7 @@ app.get(
                req.params.environmentName,
                req.params.connectionName,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1516,7 +1490,7 @@ app.get(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1538,7 +1512,7 @@ app.get(
                req.params.schemaName,
                req.params.tablePath,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1583,7 +1557,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1645,7 +1619,7 @@ app.post(
                   queryMetadata: req.body?.queryMetadata,
                   queryClass: req.body?.queryClass,
                },
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1687,7 +1661,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1757,7 +1731,6 @@ app.use(versionsRouter(versionController));
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
       const reload = booleanParamOr400(req, res, "reload");
       if (reload === undefined) {
          return;
@@ -1768,7 +1741,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                reload,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1819,8 +1792,6 @@ app.delete(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -1835,7 +1806,7 @@ app.get(
                req.params.packageName,
                {
                   includeHiddenFilesAndSources,
-                  versionId: versionIdOf(req.query.versionId),
+                  versionId: req.query.versionId,
                },
             ),
          );
@@ -1850,8 +1821,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -1869,7 +1838,7 @@ app.get(
                modelPath,
                {
                   includeHiddenFilesAndSources,
-                  versionId: versionIdOf(req.query.versionId),
+                  versionId: req.query.versionId,
                },
             ),
          );
@@ -1891,7 +1860,6 @@ app.put(
    // behind it.
    queryConcurrency(),
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
       try {
          // Express stores wildcard matches in params['0'].
          const result = await dashboardController.putDashboardSource(
@@ -1899,7 +1867,7 @@ app.put(
             req.params.packageName,
             (req.params as Record<string, string>)["0"],
             req.body,
-            versionIdOf(req.query.versionId),
+            req.query.versionId,
          );
          // 201 for a file that did not exist, the way a created materialization
          // answers; 200 for one that was replaced.
@@ -1928,14 +1896,12 @@ app.put(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          res.status(200).json(
             await dashboardController.listDashboards(
                req.params.environmentName,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1949,15 +1915,13 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          res.status(200).json(
             await dashboardController.getDashboard(
                req.params.environmentName,
                req.params.packageName,
                req.params.dashboardName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1971,14 +1935,12 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          res.status(200).json(
             await modelController.listNotebooks(
                req.params.environmentName,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1995,8 +1957,6 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
    queryConcurrency(),
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          const cellIndex = parseInt(req.params.cellIndex, 10);
          if (isNaN(cellIndex)) {
@@ -2049,7 +2009,7 @@ app.get(
             filterParams,
             bypassFilters,
             givens,
-            versionIdOf(req.query.versionId),
+            req.query.versionId,
          );
          setFilterDeprecationHeaders(res, {
             filterParams,
@@ -2067,8 +2027,6 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
@@ -2077,7 +2035,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                notebookPath,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -2092,7 +2050,6 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
    queryConcurrency(),
    async (req, res) => {
-      if (!versionIdAllowed(res, req.body.versionId)) return;
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -2156,14 +2113,12 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/databases`,
    async (req, res) => {
-      if (!versionIdAllowed(res, req.query.versionId)) return;
-
       try {
          res.status(200).json(
             await databaseController.listDatabases(
                req.params.environmentName,
                req.params.packageName,
-               versionIdOf(req.query.versionId),
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -2195,7 +2150,7 @@ app.post(
             // invalid value is rejected by compileSource with a 400 naming
             // the valid set, never silently consumed.
             req.body.scope ?? "append",
-            versionIdOf(req.query.versionId),
+            req.query.versionId,
          );
          res.status(200).json(result);
       } catch (error) {

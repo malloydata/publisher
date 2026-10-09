@@ -169,16 +169,6 @@ export type PublisherConfig = {
 };
 
 /**
- * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off`. A TRANSITION flag, read from
- * the environment only. Package versions are where the publisher is going;
- * until every deployment runs with them, each place versioning changes
- * behaviour checks {@link isVersioningEnabled} and keeps the old behaviour
- * in the branch where it is false, so the flag and those branches can be
- * deleted together once it is on everywhere.
- */
-export type PackageVersioningMode = "off" | "on";
-
-/**
  * Who moves a package's `latest` version.
  *
  *  - `on-publish` (default): a publish makes the new version `latest` unless a
@@ -188,10 +178,6 @@ export type PackageVersioningMode = "off" | "on";
  */
 export type VersionPromotionMode = "on-publish" | "explicit";
 
-const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
-   "off",
-   "on",
-];
 const VERSION_PROMOTION_MODES: readonly VersionPromotionMode[] = [
    "on-publish",
    "explicit",
@@ -1577,15 +1563,11 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as Record<string, unknown>)
          : {};
-   // Versioning transition: with it off the key is not read at all, as before
-   // versions, so a value there cannot fail a server that does not use it.
-   const versionPromotion = isVersioningEnabled()
-      ? parseModeSetting(
-           settings.versionPromotion,
-           `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
-           VERSION_PROMOTION_MODES,
-        )
-      : undefined;
+   const versionPromotion = parseModeSetting(
+      settings.versionPromotion,
+      `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
+      VERSION_PROMOTION_MODES,
+   );
 
    return {
       frozenConfig,
@@ -1601,8 +1583,8 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
  * One of a closed set of modes, or undefined when unset (absent, null, or
  * blank). Matched case-insensitively. A value outside the set throws, naming
  * where it came from and what is allowed: a typo must not leave a server in a
- * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
- * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
+ * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`
+ * and `versionPromotion`.
  */
 function parseModeSetting<T extends string>(
    raw: unknown,
@@ -1619,22 +1601,6 @@ function parseModeSetting<T extends string>(
       `${where} must be one of ${allowed.join(" | ")} (got ${JSON.stringify(raw)})`,
    );
 }
-
-/**
- * Whether package versioning is on (`PUBLISHER_PACKAGE_VERSIONING=on`; off when
- * unset). Read at call time so a test can switch it; a value outside on/off
- * throws, and is read at startup so a typo fails the boot.
- *
- * When it is off the server behaves exactly as it did before versions: a
- * publish replaces the package's single slot and reads never consult the
- * version registry.
- */
-export const isVersioningEnabled = (): boolean =>
-   parseModeSetting(
-      process.env.PUBLISHER_PACKAGE_VERSIONING,
-      "PUBLISHER_PACKAGE_VERSIONING",
-      PACKAGE_VERSIONING_MODES,
-   ) === "on";
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when

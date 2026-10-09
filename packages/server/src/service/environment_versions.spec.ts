@@ -24,7 +24,6 @@ let envPath: string;
 let sourcesPath: string;
 let db: DuckDBConnection;
 let repo: DuckDBRepository;
-const savedFlag = process.env.PUBLISHER_PACKAGE_VERSIONING;
 
 /** A package tree whose one view answers `answer`, so a query names its version. */
 function writePackage(
@@ -112,7 +111,6 @@ async function refusal(promise: Promise<unknown>) {
 }
 
 beforeEach(async () => {
-   process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
    root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "environment-versions-")),
    );
@@ -130,8 +128,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-   if (savedFlag === undefined) delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-   else process.env.PUBLISHER_PACKAGE_VERSIONING = savedFlag;
    await db.close();
    fs.rmSync(root, { recursive: true, force: true });
 });
@@ -318,26 +314,5 @@ describe("Environment loading of published versions", () => {
       expect(fs.existsSync(path.join(envPath, "broken", "notes.txt"))).toBe(
          true,
       );
-   });
-});
-
-describe("Environment loading with versioning off", () => {
-   it("serves the single slot as before and never consults the registry", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
-      writePackage(path.join(envPath, "plain"), {}, 5);
-      const env = await newEnvironment();
-      const lookups = spyOn(repo, "getVersion");
-      const probes = spyOn(repo, "hasVersions");
-      try {
-         const pkg = await env.getPackage("plain", false, {
-            versionId: "1.0.0",
-         });
-         expect(await answerOf(pkg)).toBe(5);
-         expect(lookups).not.toHaveBeenCalled();
-         expect(probes).not.toHaveBeenCalled();
-      } finally {
-         lookups.mockRestore();
-         probes.mockRestore();
-      }
    });
 });

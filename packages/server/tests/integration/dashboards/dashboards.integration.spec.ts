@@ -216,17 +216,17 @@ describe("Dashboard discovery (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("501s a versionId while package versioning is off", async () => {
-      // With versioning off (the default, PUBLISHER_PACKAGE_VERSIONING unset)
-      // the routes that declared `versionId` before versions still reject it
-      // outright with 501: the caller asked for a feature this server is not
-      // running, which is not an internal failure.
+   it("answers a versionId on a package with no versions as no such version", async () => {
+      // This package was loaded from a directory, so it has no published
+      // versions: a well-formed version is 404, a malformed one 400.
       for (const sub of ["/dashboards", "/dashboards/overview"]) {
-         const res = await fetch(apiUrl(`${sub}?versionId=v1`));
-         expect(res.status).toBe(501);
-         expect(((await res.json()) as { message?: string }).message).toContain(
-            "Version IDs not implemented",
+         const missing = await fetch(apiUrl(`${sub}?versionId=1.0.0`));
+         expect(missing.status).toBe(404);
+         expect(((await missing.json()) as { reason?: string }).reason).toBe(
+            "VERSION_NOT_FOUND",
          );
+         const malformed = await fetch(apiUrl(`${sub}?versionId=v1`));
+         expect(malformed.status).toBe(400);
       }
    });
 

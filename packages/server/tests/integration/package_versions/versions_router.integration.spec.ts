@@ -22,7 +22,6 @@ const PKG = "lifecycle";
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
 let root = "";
-const savedFlag = process.env.PUBLISHER_PACKAGE_VERSIONING;
 
 function writePackage(version: string, answer: number): string {
    const dir = path.join(root, `v${answer}`);
@@ -72,7 +71,6 @@ async function answerOf(versionId?: string): Promise<number> {
 
 describe("versions routes", () => {
    beforeAll(async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-router-")),
       );
@@ -113,9 +111,6 @@ describe("versions routes", () => {
          method: "DELETE",
       }).catch(() => undefined);
       await env?.stop();
-      if (savedFlag === undefined)
-         delete process.env.PUBLISHER_PACKAGE_VERSIONING;
-      else process.env.PUBLISHER_PACKAGE_VERSIONING = savedFlag;
       fs.rmSync(root, { recursive: true, force: true });
    });
 
@@ -305,30 +300,44 @@ describe("versions routes", () => {
       });
    });
 
-   it("refuses PATCH on a versioned package", async () => {
+   it("PATCH changes a versioned package's description, not its versions'", async () => {
       const patched = await call("PATCH", "", { description: "changed" });
-      expect([patched.status, patched.json.reason]).toEqual([
+      expect(patched.status).toBe(200);
+      // Each version keeps the description its own publisher.json gave it.
+      expect((await call("GET", "/versions/2.0.0")).json.description).toBe(
+         "release 2.0.0",
+      );
+   });
+
+   it("PATCH on a versioned package rebinds latest's manifest and sets the description", async () => {
+      // The deprecated PATCH, as an orchestrator that rebinds through it sends
+      // it: the location it published from echoed back, a new manifest.
+      const versions = (await (await fetch(api("/versions"))).json()) as {
+         id: string;
+         location?: string;
+      }[];
+      const latest = versions.find((v) => v.id === "2.0.0")!;
+      const patched = await call("PATCH", "", {
+         name: PKG,
+         location: latest.location,
+         manifestLocation: null,
+         description: "The package, described",
+      });
+      expect(patched.status).toBe(200);
+      expect(patched.json).toMatchObject({ versionId: "2.0.0" });
+      expect(
+         (await call("GET", "/versions/2.0.0")).json.manifestLocation,
+      ).toBeNull();
+
+      const content = await call("PATCH", "", { explores: ["model.malloy"] });
+      expect([content.status, content.json.reason]).toEqual([
          409,
          "PACKAGE_IS_VERSIONED",
       ]);
-   });
-
-   it("answers 501 on every versions route with versioning off", async () => {
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
-      try {
-         for (const [method, suffix, body] of [
-            ["GET", "/versions", undefined],
-            ["GET", "/versions/1.0.0", undefined],
-            ["PATCH", "/versions/1.0.0", { archiveStatus: "archive" }],
-            ["PUT", "/versions/1.0.0/manifest", { manifestLocation: null }],
-            ["PUT", "/latest", { version: "1.0.0" }],
-         ] as const) {
-            expect([suffix, (await call(method, suffix, body)).status]).toEqual(
-               [suffix, 501],
-            );
-         }
-      } finally {
-         process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      }
+      const moved = await call("PATCH", "", { location: "/somewhere/else" });
+      expect([moved.status, moved.json.reason]).toEqual([
+         409,
+         "PACKAGE_IS_VERSIONED",
+      ]);
    });
 });

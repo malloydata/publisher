@@ -3,7 +3,7 @@
 
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { getVersionPromotionMode, isVersioningEnabled } from "../config";
+import { getVersionPromotionMode } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
@@ -14,6 +14,9 @@ import {
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
+import type { Environment } from "../service/environment";
+import type { Package } from "../service/package";
+import type { VersionService } from "../service/versions/version_service";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -169,14 +172,11 @@ export class PackageController {
          false,
       );
 
-      // Versioning transition: with it off, there are no published versions.
-      // With it on, the version named is resolved first: a package with none
-      // has no version to name (404), and a malformed one is a 400. A
-      // published version is immutable, so it has nothing to reload: it is
-      // answered as it is.
-      const versions = isVersioningEnabled()
-         ? environment.getVersionService()
-         : null;
+      // The version named is resolved first: a package with none has no
+      // version to name (404), and a malformed one is a 400. A published
+      // version is immutable, so it has nothing to reload: it is answered as
+      // it is.
+      const versions = environment.getVersionService();
       if (versions && (await versions.resolve(packageName, versionId))) {
          const version = await environment.getPackage(packageName, false, {
             versionId,
@@ -248,19 +248,41 @@ export class PackageController {
          environmentName,
          false,
       );
-      // Versioning transition: with it off, everything below this block is
-      // the publish as it was before versions.
-      if (isVersioningEnabled()) {
-         const versions = environment.getVersionService();
-         if (!versions) {
-            throw new Error(
-               `Environment ${environmentName} has no version registry`,
-            );
-         }
+      const versions = environment.getVersionService();
+      // Published versions are immutable, so a package that has them is not
+      // replaced by registering a directory under its name.
+      if (
+         !body.location &&
+         versions &&
+         (await versions.isVersioned(packageName))
+      ) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable; publish a new version instead of replacing it.`,
+         );
+      }
+      // Strict at publish: the author is in the loop here, so a bad explores
+      // is an actionable 400 instead of a silently hidden surface. (At
+      // startup/reload we fail safe and only warn — see Package.loadViaWorker.)
+      // The rollback differs by path so a rejected publish never destroys
+      // user content:
+      //   - location: a published version. Its tree was downloaded into a
+      //     fresh folder and the checks run before it is recorded, so a
+      //     failure removes only that download.
+      //   - no-location: addPackage registered a *pre-existing* user directory,
+      //     so we validate after the fact and `unloadPackage` (evict from
+      //     memory, keep the files) rather than delete it.
+      let result;
+      try {
          if (body.location) {
+            if (!versions) {
+               throw new Error(
+                  `Environment ${environmentName} has no version registry`,
+               );
+            }
             const location = body.location;
             // The version is the one the tree's own publisher.json declares;
-            // the request carries none. Every publish runs the publish checks.
+            // the request carries none.
             const published = await versions.publish(
                packageName,
                (stagingPath) =>
@@ -282,65 +304,7 @@ export class PackageController {
             );
             return published.loaded;
          }
-         // Published versions are immutable, so a package that has them is
-         // not replaced by an unversioned publish.
-         if (await versions.isVersioned(packageName)) {
-            throw new PackageVersionError(
-               "PACKAGE_IS_VERSIONED",
-               `Package ${packageName} has published versions, which are immutable; publish a new version instead of replacing it.`,
-            );
-         }
-      }
-      // Strict at publish: the author is in the loop here, so reject a bad
-      // explores with an actionable 400 instead of silently serving a hidden
-      // surface. (At startup/reload we fail safe and only warn — see
-      // Package.loadViaWorker.) The rollback differs by path so a rejected
-      // publish never destroys user content:
-      //   - location: the tree was just downloaded into a fresh canonical, so
-      //     validation runs inside installPackage's swap window and a failure
-      //     wipes that download (the existing rollback) — nothing pre-existing
-      //     to lose.
-      //   - no-location: addPackage registered a *pre-existing* user directory,
-      //     so we validate after the fact and `unloadPackage` (evict from
-      //     memory, keep the files) rather than delete it.
-      let result;
-      try {
-         if (body.location) {
-            const bodyLocation = body.location;
-            result = await environment.installPackage(
-               packageName,
-               (stagingPath) =>
-                  this.downloadInto(
-                     environmentName,
-                     packageName,
-                     bodyLocation,
-                     stagingPath,
-                  ),
-               (pkg) => formatPublishRejections(pkg),
-               // The install records where it fetched from, and a publish that
-               // names a manifest binds it, both under the install's own lock.
-               // The downloaded tree's publisher.json carries neither: the
-               // location is the caller's, and the orchestrator computes the
-               // manifest, not the author. Without the location a later PATCH
-               // naming the same location could not be told from new content;
-               // without the manifest the package came up serving live and was
-               // fully reloaded moments later by the drift check.
-               {
-                  update: {
-                     location: bodyLocation,
-                     // Only a manifest to bind. A fresh install serves live
-                     // already, so a null or empty value has nothing to
-                     // revert and would only recompile the package a second
-                     // time.
-                     ...(body.manifestLocation
-                        ? { manifestLocation: body.manifestLocation }
-                        : {}),
-                  },
-               },
-            );
-         } else {
-            result = await environment.addPackage(packageName);
-         }
+         result = await environment.addPackage(packageName);
       } catch (error) {
          // A failure on the server's side (5xx: a mount the server cannot
          // write, an unreachable bucket) is also an operator's problem, and
@@ -370,21 +334,19 @@ export class PackageController {
          throw error;
       }
 
-      // `addPackage`/`installPackage` are typed `Package | undefined`; a missing
+      // `addPackage` is typed `Package | undefined`; a missing
       // result here is a should-never-happen internal fault. Fail loudly rather
       // than letting optional chaining silently skip the validation below.
       if (!result) {
          throw new Error(`Failed to create package ${packageName}`);
       }
 
-      if (!body.location) {
-         const invalidMsg = formatPublishRejections(result);
-         if (invalidMsg) {
-            await environment.unloadPackage(packageName).catch(() => {
-               /* best-effort; the package is not persisted below */
-            });
-            throw new BadRequestError(invalidMsg);
-         }
+      const invalidMsg = formatPublishRejections(result);
+      if (invalidMsg) {
+         await environment.unloadPackage(packageName).catch(() => {
+            /* best-effort; the package is not persisted below */
+         });
+         throw new BadRequestError(invalidMsg);
       }
 
       await this.environmentStore.addPackageToDatabase(
@@ -403,14 +365,12 @@ export class PackageController {
          environmentName,
          false,
       );
-      // Versioning transition: with it off, the package is deleted as before.
-      // With it on, a versioned package's rows go first: once they are gone
-      // no request can resolve one of its versions, so none can fetch a
-      // version's files again while they are being removed.
+      // A versioned package's rows go first: once they are gone no request
+      // can resolve one of its versions, so none can fetch a version's files
+      // again while they are being removed.
       const versioned =
-         isVersioningEnabled() &&
          (await environment.getVersionService()?.isVersioned(packageName)) ===
-            true;
+         true;
       if (versioned) {
          await this.environmentStore.deletePackageFromDatabase(
             environmentName,
@@ -442,17 +402,13 @@ export class PackageController {
          environmentName,
          false,
       );
-      // Versioning transition: with it off there are no published versions.
-      // Deprecated in place: a published version is immutable, so a package
-      // that has versions is not changed here. Its manifest is rebound with
-      // PUT .../versions/{version}/manifest, and new content is a new version.
-      if (
-         isVersioningEnabled() &&
-         (await environment.getVersionService()?.isVersioned(packageName))
-      ) {
-         throw new PackageVersionError(
-            "PACKAGE_IS_VERSIONED",
-            `Package ${packageName} has published versions, which are immutable. Publish a new version to change it, and rebind a version's manifest with PUT .../versions/{version}/manifest.`,
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         return this.updateVersionedPackage(
+            environment,
+            versions,
+            packageName,
+            body,
          );
       }
       // A `location` that matches the one the package was installed from is a
@@ -519,6 +475,70 @@ export class PackageController {
       );
 
       return result;
+   }
+
+   /**
+    * PATCH on a package that has published versions. Deprecated: a version's
+    * content is immutable, so the only changes kept are the ones that are not
+    * content, for callers that rebind through this route: `manifestLocation`
+    * (bound to the package's `latest` version, as
+    * `PUT .../versions/{latest}/manifest` would) and the package's
+    * `description`. `name` and the `location` the version was published from
+    * may be echoed. Anything else would rewrite an immutable version and is
+    * refused with 409 PACKAGE_IS_VERSIONED.
+    */
+   private async updateVersionedPackage(
+      environment: Environment,
+      versions: VersionService<Package>,
+      packageName: string,
+      body: ApiPackage,
+   ): Promise<ApiPackage> {
+      const latest = await versions.latestOf(packageName);
+      const refuse = (why: string) =>
+         new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable: ${why} Publish a new version to change its content, and rebind a version's manifest with PUT .../versions/{version}/manifest.`,
+         );
+      if (latest === null) {
+         throw refuse("it has no latest version to apply this to.");
+      }
+      const version = await versions.getVersion(packageName, latest);
+      const kept = new Set([
+         "name",
+         "resource",
+         "manifestLocation",
+         "description",
+      ]);
+      const changed = Object.entries(body as Record<string, unknown>)
+         .filter(([key, value]) => {
+            if (value === undefined || value === null || kept.has(key)) {
+               return false;
+            }
+            // The location it was published from may be echoed back.
+            return !(key === "location" && value === version.sourceLocation);
+         })
+         .map(([key]) => key);
+      if (body.name !== undefined && body.name !== packageName) {
+         changed.push("name");
+      }
+      if (changed.length > 0) {
+         throw refuse(`this request changes ${changed.join(", ")}.`);
+      }
+
+      if (body.description !== undefined && body.description !== null) {
+         await versions.setPackageDescription(packageName, body.description);
+      }
+      const loaded =
+         body.manifestLocation !== undefined
+            ? await versions.setManifest(
+                 packageName,
+                 latest,
+                 body.manifestLocation || null,
+              )
+            : await environment.getPackage(packageName, false, {
+                 versionId: latest,
+              });
+      return environment.describePackage(loaded);
    }
 
    /**

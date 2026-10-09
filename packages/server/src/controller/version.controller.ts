@@ -4,12 +4,10 @@
 import express from "express";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
-import { isVersioningEnabled } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
-   NotImplementedError,
    PackageNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
@@ -177,9 +175,7 @@ function toApiVersion(
 }
 
 /**
- * The versions routes. Versioning transition: with it off, they answer 501,
- * as a route for a feature the server is not running; the whole gate goes
- * with the flag.
+ * The versions routes.
  */
 export function versionsRouter(controller: VersionController): express.Router {
    const router = express.Router();
@@ -191,11 +187,6 @@ export function versionsRouter(controller: VersionController): express.Router {
       ): express.RequestHandler =>
       async (req, res) => {
          try {
-            if (!isVersioningEnabled()) {
-               throw new NotImplementedError(
-                  "Package versioning is not enabled on this server (PUBLISHER_PACKAGE_VERSIONING=on).",
-               );
-            }
             assertSafePackageName(req.params.packageName);
             res.status(200).json(await run(req));
          } catch (error) {

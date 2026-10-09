@@ -8,7 +8,6 @@ import {
    getMaxQueryRows,
    getMaxResponseBytes,
    getQueryTimeoutMs,
-   isVersioningEnabled,
 } from "../config";
 import {
    BadRequestError,
@@ -424,12 +423,10 @@ export class ConnectionController {
                `/environments/${environmentName}/packages/{packageName}/connections/duckdb/...`,
          );
       } else {
-         // Versioning transition: with it off, the version is not looked at.
-         // With it on, a package route that names a version is answered for
-         // that version even though the connection is the environment's: an
+         // A package route that names a version is answered for that version even though the connection is the environment's: an
          // unknown version is 404 and an archived one 410, as on every other
          // package route.
-         if (isVersioningEnabled() && packageName) {
+         if (packageName) {
             await environment
                .getVersionService()
                ?.resolve(packageName, versionId);

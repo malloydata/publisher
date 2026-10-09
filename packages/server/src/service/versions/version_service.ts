@@ -252,6 +252,26 @@ export class VersionService<P = unknown> {
       return null;
    }
 
+   /**
+    * The version a page's URL pins, for routes that take it leniently (static
+    * files): `raw` when it names a version this package has (archived
+    * included, so a pinned page of an archived version is still refused), and
+    * undefined otherwise, which serves `latest`. A proxy may forward a page's
+    * query string with a `versionId` of its own; that must not 404 the page.
+    */
+   async pinnableVersion(
+      packageName: string,
+      raw: unknown,
+   ): Promise<string | undefined> {
+      if (typeof raw !== "string" || !isSemver(raw)) return undefined;
+      const row = await this.registry.getVersion(
+         this.environmentId,
+         packageName,
+         raw,
+      );
+      return row ? raw : undefined;
+   }
+
    /** Whether the package has any published version. */
    async isVersioned(packageName: string): Promise<boolean> {
       return this.registry.hasVersions(this.environmentId, packageName);
@@ -598,6 +618,14 @@ export class VersionService<P = unknown> {
          ...r,
          latest: latestByPackage.get(r.packageName) ?? null,
       }));
+   }
+
+   /** Set the package's own description (not any version's). */
+   async setPackageDescription(
+      packageName: string,
+      description: string,
+   ): Promise<void> {
+      await this.requireHost().ensurePackageRecord(packageName, description);
    }
 
    /** One version, archived or not: 400 for a malformed id, 404 for none. */

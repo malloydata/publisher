@@ -13,7 +13,6 @@ import {
    WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
-import { isVersioningEnabled } from "../config";
 import {
    recordDashboardWrite,
    type DashboardWriteKind,
@@ -242,20 +241,17 @@ export class DashboardController {
          environmentName,
          false,
       );
-      // Versioning transition: with it off there are no published versions.
       // A published version is immutable, so a package that has versions takes
       // no in-place write whatever version is named; one with none has no
       // version to name (404).
-      if (isVersioningEnabled()) {
-         const versions = environment.getVersionService();
-         if (versions && (await versions.isVersioned(packageName))) {
-            throw new PackageVersionError(
-               "PACKAGE_IS_VERSIONED",
-               `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
-            );
-         }
-         await versions?.resolve(packageName, versionId);
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
+         );
       }
+      await versions?.resolve(packageName, versionId);
       // Loads the package if it is not yet, and is the 404 for one that does
       // not exist.
       await environment.getPackage(packageName, false);

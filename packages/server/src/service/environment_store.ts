@@ -17,7 +17,6 @@ import {
    getPublisherConfigDir,
    getUnresolvedPublisherConfigPath,
    getVersionPromotionMode,
-   isVersioningEnabled,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -668,13 +667,10 @@ export class EnvironmentStore {
       try {
          await this.storageManager.initialize(reInit);
 
-         // Read both versioning settings now, so a value outside the set fails
+         // Read the promotion setting now, so a value outside the set fails
          // initialization naming the setting, rather than surfacing at the first
-         // publish that reads it. The promotion setting only matters, and is
-         // only read, with versioning on (versioning transition).
-         if (isVersioningEnabled()) {
-            getVersionPromotionMode(this.serverRootPath);
-         }
+         // publish that reads it.
+         getVersionPromotionMode(this.serverRootPath);
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
@@ -1014,9 +1010,6 @@ export class EnvironmentStore {
       environment: Environment,
       environmentId: string,
    ): Promise<void> {
-      // Versioning transition: with it off, no environment has version rules,
-      // and every package is served as before.
-      if (!isVersioningEnabled()) return;
       const repository = this.storageManager.getRepository();
       const environmentName = environment.getEnvironmentName();
       const alreadyBound = environment.getVersionService() !== null;
@@ -1679,19 +1672,14 @@ export class EnvironmentStore {
          operationalState,
          version: SERVER_VERSION,
       };
-      // Versioning transition: reported only while it is on, so a server running
-      // without it answers exactly as before versions. An orchestrator mid-rollout
-      // reads an absent field as "off".
-      if (versioningEnabledForStatus()) {
-         status.packageVersioning = "on";
-         // A malformed value failed initialization, which this reports.
-         try {
-            status.versionPromotion = getVersionPromotionMode(
-               this.serverRootPath,
-            );
-         } catch {
-            // Left absent.
-         }
+      // An orchestrator mid-rollout reads an absent field (a server from before
+      // versions) as "off".
+      status.packageVersioning = "on";
+      // A malformed value failed initialization, which this reports.
+      try {
+         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
+      } catch {
+         // Left absent.
       }
 
       const environments = await this.listEnvironments(true, options);
@@ -3020,18 +3008,5 @@ export class EnvironmentStore {
          errorData.task = (error as { task?: unknown }).task;
       }
       return errorData;
-   }
-}
-
-/**
- * The versioning flag for /status, which must answer even when the flag's
- * value is malformed: that failed initialization, and /status is where the
- * failure is reported.
- */
-function versioningEnabledForStatus(): boolean {
-   try {
-      return isVersioningEnabled();
-   } catch {
-      return false;
    }
 }
