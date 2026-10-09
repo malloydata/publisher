@@ -1499,7 +1499,34 @@ export function lintDashboard(
       );
    }
 
-   for (const spec of manifest.givens) {
+   for (const finding of lintGivenSuggests(manifest.givens, facts)) {
+      add(finding.message, finding.severity);
+   }
+
+   return findings;
+}
+
+/**
+ * The filter `suggest` findings for a document's givens that can be read off
+ * the file itself: a suggest block that cannot fetch options, and a suggest
+ * source or query this file does not define or import. Shared by dashboards,
+ * layout notebooks ({@link lintDashboard}) and notebooks without tiles, whose
+ * givens come from the model rather than a manifest. A suggest that does not
+ * resolve here does not compile, so the surface check skips it and this is the
+ * only thing that reports it.
+ */
+export function lintGivenSuggests(
+   givens: readonly {
+      name?: string;
+      suggest?: { query?: string; source?: string; dimension?: string };
+   }[],
+   facts: DashboardModelFacts,
+): { message: string; severity: "error" | "warn" }[] {
+   const findings: { message: string; severity: "error" | "warn" }[] = [];
+   const add = (message: string, severity: "error" | "warn" = "warn") =>
+      findings.push({ message, severity });
+   for (const spec of givens) {
+      if (spec.name === undefined) continue;
       const suggest = spec.suggest;
       if (!suggest) {
          // `readGivenControlSpec` drops a `suggest` block that cannot fetch

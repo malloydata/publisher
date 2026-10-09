@@ -124,6 +124,7 @@ import {
    dashboardSlug,
    matchesDocumentedDashboardName,
    lintDashboard,
+   lintGivenSuggests,
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
@@ -3743,13 +3744,24 @@ export class Package {
                   !this.layoutNotebooks.has(modelPath)) ||
                modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
             if (!cellNotebook) continue;
+            const name = documentFileName(modelPath);
+            const givens = model.getSurfacedGivens();
+            // What the file alone can show first, as lintDashboard reports it
+            // for a manifest: a suggest naming a source or query this file
+            // never imports does not compile, so the surface check skips it.
+            const facts = allFacts.get(modelPath);
+            if (facts) {
+               for (const finding of lintGivenSuggests(givens, facts)) {
+                  warnings.push({
+                     model: modelPath,
+                     subject: name,
+                     ...finding,
+                  });
+               }
+            }
             for (const finding of await this.lintDocumentAgainstSurface(
                modelPath,
-               {
-                  kind: "notebook",
-                  name: documentFileName(modelPath),
-                  givens: model.getSurfacedGivens(),
-               },
+               { kind: "notebook", name, givens },
             )) {
                warnings.push(finding);
             }

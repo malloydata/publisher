@@ -2074,6 +2074,68 @@ ${suggestGivens}run: order_items -> v + { ${suggestWhere} }
       }
    });
 
+   it("warns for a suggest naming a source or query a notebook without tiles never imports", async () => {
+      // Such a suggest does not compile, so the surface check skips it; the
+      // per-file check dashboards already get is what has to catch it.
+      writeSuggestPackage();
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      const givens = `# label="Product" control=select suggest { source=product dimension=category }
+given: PRODUCT :: filter<string> is f''
+# label="Brand" control=select suggest { query=brand_q dimension=brand }
+given: BRAND :: filter<string> is f''
+`;
+      const where = `where: products.category ~ $PRODUCT, products.category ~ $BRAND`;
+      fs.writeFileSync(
+         path.join(tempDir, "notebooks", "cells.malloy"),
+         `##! experimental.givens
+## artifact { kind=notebook title="Cells" }
+import { order_items } from "../store.malloy"
+${givens}run: order_items -> v + { ${where} }
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "legacy.malloynb"),
+         `>>>malloy\n##! experimental.givens\nimport { order_items } from "store.malloy"\n` +
+            `>>>malloy\n${givens}` +
+            `>>>malloy\nrun: order_items -> v + { ${where} }\n`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const findings = (pkg.getPackageMetadata().warnings ?? [])
+            .filter((w) => (w.message ?? "").includes("suggests options from"))
+            .map((w) => [w.model, w.subject, w.message, w.severity]);
+         expect(findings).toEqual([
+            [
+               "legacy.malloynb",
+               "legacy",
+               `given "PRODUCT" suggests options from source "product", which this file does not define.`,
+               "error",
+            ],
+            [
+               "legacy.malloynb",
+               "legacy",
+               `given "BRAND" suggests options from query "brand_q", which this file does not define.`,
+               "error",
+            ],
+            [
+               "notebooks/cells.malloy",
+               "cells",
+               `given "PRODUCT" suggests options from source "product", which this file does not define.`,
+               "error",
+            ],
+            [
+               "notebooks/cells.malloy",
+               "cells",
+               `given "BRAND" suggests options from query "brand_q", which this file does not define.`,
+               "error",
+            ],
+         ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: a refused named suggest query is blamed on the query in a notebook, and a dashboard runs the same suggest", async () => {
       // A dashboard defers its named queries to the source they read; a
       // notebook admits a named query only when a surface file exports it.
