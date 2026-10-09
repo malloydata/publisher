@@ -19,6 +19,7 @@ import { registerGetContextTool } from "./get_context_tool";
 import { registerListPackagesTool } from "./list_packages_tool";
 import { docOnlyText, docText } from "./package_entities";
 import { embeddingText } from "./embedding_index";
+import { setRetrievalConfig } from "../../retrieval_config";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
@@ -36,12 +37,16 @@ import { pollFor } from "../../test_helpers/poll";
 // Pin the baseline: every test in this file runs unconfigured (lexical)
 // unless it sets a provider itself, regardless of ambient EMBEDDING_* env
 // vars in the developer's shell.
+// Value search is off here: the dimensional_value tests in this file pin what a
+// server with it turned off answers. The on-mode is get_context_values.spec.ts.
 beforeEach(() => {
    _setEmbeddingProviderForTests(null);
    _resetEmbeddingIndexStateForTests();
+   setRetrievalConfig({ dimensionValues: { enabled: false } });
 });
 afterAll(() => {
    _clearEmbeddingProviderForTests();
+   setRetrievalConfig(undefined);
 });
 
 describe("get_context docText", () => {
