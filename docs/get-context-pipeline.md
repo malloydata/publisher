@@ -130,8 +130,9 @@ result.
 
 `enabled` is `auto` (on when the server has an LLM), `true` (on, and the package does not load on a server with
 no LLM) or `false` (off). Any other key under `retrieval` fails the package load with a message that names the
-valid keys, so a typo does not silently do nothing. Rephrase, per-package similarity and window settings, and
-dimension values are not built, so their keys are not accepted.
+valid keys, so a typo does not silently do nothing. Rephrase and per-package similarity and window settings are
+not built, so their keys are not accepted. Value search has no package setting; its server settings are
+`retrieval.dimensionValues` in `publisher.config.json` ([configuration.md](configuration.md#dimension-value-search)).
 
 **Server settings (`publisher.config.json`):**
 
@@ -281,21 +282,21 @@ started and stopped when we chose to go direct), Token.js (MIT), LangChain.js (M
 
 ### 2.7 What changes in retrieval
 
-| Behaviour            | Publisher `main` before                                           | Now                                                                  |
-| -------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Index text           | several vectors per entity (name and doc chunks)                  | `single` by default (one vector per entity); `facets` is the option  |
-| Candidate window     | global window                                                     | per source, 10 rows per target                                       |
-| Entities searched    | joined copies are indexed, embedded and ranked as separate rows   | direct entities only; joined copies are made at assembly             |
-| Join damping         | none                                                              | `0.9 ** (hops + 1)` on the whole score, so one hop is 0.81           |
-| Refine               | absent                                                            | an LLM rates LOW, MEDIUM or HIGH (2.10)                              |
-| Score                | cosine only                                                       | level (LOW 1, MEDIUM 2, HIGH 3) plus cosine, through the knots (2.10) |
-| Source rerank        | absent                                                            | an LLM scores whole sources 0 to 3 and drops below 2 (2.10)          |
-| Source-target search | embedding or lexical path                                         | a separate LLM match over all sources (2.11)                         |
-| Source summaries     | absent                                                            | an LLM writes a summary and a one-line summary per source (2.12)     |
-| Join topology depth  | 2                                                                 | 10, at assembly only                                                 |
-| Response budget      | none                                                              | 35,000 characters with a 1,000 reserve; whole cards only             |
-| Failure policy       | falls back to lexical                                             | an indexing or error result when embeddings are configured (2.8)     |
-| Lexical              | the only fallback                                                 | the mode when no embedding provider is configured                    |
+| Behaviour            | Publisher `main` before                                         | Now                                                                   |
+| -------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Index text           | several vectors per entity (name and doc chunks)                | `single` by default (one vector per entity); `facets` is the option   |
+| Candidate window     | global window                                                   | per source, 10 rows per target                                        |
+| Entities searched    | joined copies are indexed, embedded and ranked as separate rows | direct entities only; joined copies are made at assembly              |
+| Join damping         | none                                                            | `0.9 ** (hops + 1)` on the whole score, so one hop is 0.81            |
+| Refine               | absent                                                          | an LLM rates LOW, MEDIUM or HIGH (2.10)                               |
+| Score                | cosine only                                                     | level (LOW 1, MEDIUM 2, HIGH 3) plus cosine, through the knots (2.10) |
+| Source rerank        | absent                                                          | an LLM scores whole sources 0 to 3 and drops below 2 (2.10)           |
+| Source-target search | embedding or lexical path                                       | a separate LLM match over all sources (2.11)                          |
+| Source summaries     | absent                                                          | an LLM writes a summary and a one-line summary per source (2.12)      |
+| Join topology depth  | 2                                                               | 10, at assembly only                                                  |
+| Response budget      | none                                                            | 35,000 characters with a 1,000 reserve; whole cards only              |
+| Failure policy       | falls back to lexical                                           | an indexing or error result when embeddings are configured (2.8)      |
+| Lexical              | the only fallback                                               | the mode when no embedding provider is configured                     |
 
 The join topology is read from the compiled model: each join's alias from the model's join tree, and its target
 source (and the file that defines it) from the join entry's `sourceID`. A join with no named target (an inline
@@ -431,8 +432,11 @@ Settings and the status fields (`sourceSummaryProgress`, `stage: "source_summary
 
 - **Rephrase.** A query stage that rewrites the search text. The pipeline has the place for it; no stage is
   registered.
-- **Dimension values.** Indexing the distinct values of `#(index)` dimensions, and the cards that name the
-  unsearched dimensions of an access-gated source.
+- **A dimension value index.** Value search exists without one: a `dimensional_value` target reads a
+  dimension's distinct values through the query path when asked (the `values` rank stage, see
+  [configuration.md](configuration.md#dimension-value-search)), so access gates apply and nothing needs
+  refreshing. Indexing the distinct values of `#(index)` dimensions, as the hosted service does, is not
+  built.
 - **A replay tool** that scores retrieval without an answering agent.
 - **Per-package similarity and window settings.** They stay constants.
 - **A capped keyphrase or summary sync resumes only on restart.** `retrieval.llm.maxCallsPerSync` can stop a

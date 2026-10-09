@@ -28,7 +28,10 @@
 import { createHash } from "crypto";
 import type { GivenValue } from "@malloydata/malloy";
 import { getEmbeddingProvider } from "../../service/embedding_provider";
-import { getEgressPreset, getDimensionValueSettings } from "../../retrieval_config";
+import {
+   getEgressPreset,
+   getDimensionValueSettings,
+} from "../../retrieval_config";
 import {
    AccessDeniedError,
    QueryTimeoutError,
@@ -180,7 +183,9 @@ export function _valueCacheCounters(): { hits: number; misses: number } {
 let fetcherOverride: ValueFetcher | undefined;
 
 /** Test seam: stand in for the warehouse. Pass undefined to undo. */
-export function _setValueFetcherForTests(fetcher: ValueFetcher | undefined): void {
+export function _setValueFetcherForTests(
+   fetcher: ValueFetcher | undefined,
+): void {
    fetcherOverride = fetcher;
 }
 
@@ -308,7 +313,8 @@ export const valuesStage: RankStage = {
    async run(state, ctx) {
       const settings = getDimensionValueSettings();
       const { request, pkgIndex } = ctx;
-      const fetchDistinct = ctx.valueFetcher ?? fetcherOverride ?? defaultValueFetcher;
+      const fetchDistinct =
+         ctx.valueFetcher ?? fetcherOverride ?? defaultValueFetcher;
       const started = performance.now();
       const budgetLeft = () =>
          settings.budgetMs - (performance.now() - started);
@@ -344,11 +350,16 @@ export const valuesStage: RankStage = {
          const cached = cache.get(key);
          if (cached && ttl > 0 && Date.now() - cached.at < ttl) {
             counters.hits += 1;
-            return { kind: "values", entry: cached, filtered: stem !== undefined };
+            return {
+               kind: "values",
+               entry: cached,
+               filtered: stem !== undefined,
+            };
          }
          counters.misses += 1;
          const left = budgetLeft();
-         if (left <= 0) return { kind: "skipped", reason: "the time budget ran out" };
+         if (left <= 0)
+            return { kind: "skipped", reason: "the time budget ran out" };
          try {
             const fetched = await fetchDistinct({
                environmentStore: ctx.environmentStore,
@@ -381,7 +392,10 @@ export const valuesStage: RankStage = {
                return { kind: "skipped", reason: "the query timed out" };
             }
             if (error instanceof ServiceUnavailableError) {
-               return { kind: "skipped", reason: "the server is at its query limit" };
+               return {
+                  kind: "skipped",
+                  reason: "the server is at its query limit",
+               };
             }
             logger.warn("[MCP Tool getContext] Value lookup failed", {
                source: e.source,
@@ -410,7 +424,8 @@ export const valuesStage: RankStage = {
          const first = looked.get(e);
          return first?.kind === "values" && first.entry.truncated;
       });
-      for (const e of truncatedDims) truncatedNames.push(`${e.source}.${e.name}`);
+      for (const e of truncatedDims)
+         truncatedNames.push(`${e.source}.${e.name}`);
       const stemJobs = truncatedDims.flatMap((e) =>
          request.valueSearches.flatMap((s) => {
             const stem = filterStem(s.text);
@@ -449,10 +464,7 @@ export const valuesStage: RankStage = {
          }
       }
 
-      const matched = new Map<
-         Entity,
-         { hits: Map<number, ValueHit[]> }
-      >();
+      const matched = new Map<Entity, { hits: Map<number, ValueHit[]> }>();
       const searchedSources = new Set<string>();
       let searchedDims = 0;
       for (const e of candidates) {
@@ -537,8 +549,11 @@ export const valuesStage: RankStage = {
       // Rows. A dimension the ranker already returned gets the values
       // attached; any other matching dimension becomes a new row.
       const rows = [...state.rows];
-      const rowKey = (r: { modelPath: string; source?: string; name: string }) =>
-         `${r.modelPath}\u0000${r.source ?? ""}\u0000${r.name}`;
+      const rowKey = (r: {
+         modelPath: string;
+         source?: string;
+         name: string;
+      }) => `${r.modelPath}\u0000${r.source ?? ""}\u0000${r.name}`;
       const byKey = new Map(
          rows.filter((r) => r.kind === "dimension").map((r) => [rowKey(r), r]),
       );
@@ -588,7 +603,11 @@ export const valuesStage: RankStage = {
             }
          } else {
             const row: ResultEntity = {
-               ...projectEntity(e, request.environmentName, request.packageName),
+               ...projectEntity(
+                  e,
+                  request.environmentName,
+                  request.packageName,
+               ),
                score: best,
                rawScore: best,
                targetScores,
