@@ -189,7 +189,8 @@ export interface Package {
    id: string;
    environmentId: string;
    name: string;
-   description?: string;
+   /** Null when cleared; absent when never set. */
+   description?: string | null;
    manifestPath: string;
    createdAt: Date;
    updatedAt: Date;

@@ -38,7 +38,7 @@ let store: VersionStore;
 let log: string[];
 let failLoadFor: Set<string>;
 let watchMounted: boolean;
-let descriptions: (string | undefined)[];
+let descriptions: (string | null | undefined)[];
 let packageLock: Mutex;
 
 function host(): VersionHost<Loaded> {
@@ -78,7 +78,7 @@ function host(): VersionHost<Loaded> {
                environmentId: ENV_ID,
                name: packageName,
                manifestPath: "",
-               description,
+               description: description ?? undefined,
             });
             return true;
          }

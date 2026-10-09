@@ -559,6 +559,7 @@ describe("PackageVersionError", () => {
          VERSION_IS_LATEST: 409,
          VERSION_IS_LAST_ACTIVE: 409,
          VERSION_BUILDING: 409,
+         VERSION_NOT_LATEST: 400,
          VERSION_ARCHIVED: 410,
       } as const;
       for (const [name, status] of Object.entries(expected)) {

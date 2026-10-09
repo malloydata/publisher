@@ -72,11 +72,12 @@ export interface VersionHost<P> {
    retireUnversioned(packageName: string): void;
    /**
     * Make sure the package has its registry row, with this description when
-    * one is given. Returns whether this call created the row.
+    * one is given (null clears it; undefined leaves it). Returns whether this
+    * call created the row.
     */
    ensurePackageRecord(
       packageName: string,
-      description: string | undefined,
+      description: string | null | undefined,
    ): Promise<boolean>;
    /** Remove a package row this service created for a publish that failed. */
    removePackageRecord(packageName: string): Promise<void>;
@@ -501,8 +502,15 @@ export class VersionService<P = unknown> {
             await store.dropLegacy(held);
          }
          if (first) host.retireUnversioned(packageName);
-         if (options.description !== undefined) {
-            await host.ensurePackageRecord(packageName, options.description);
+         // The package's own description is one a request set. A package
+         // that was unversioned may carry one synced from its old tree's
+         // publisher.json: its first version clears it, so the package reads
+         // as its latest version's until a request sets one.
+         if (first || options.description !== undefined) {
+            await host.ensurePackageRecord(
+               packageName,
+               options.description ?? null,
+            );
          }
          host.onVersionLoaded?.(packageName, loaded, committed.promoted);
          return { loaded, version: committed.version, created: true };

@@ -347,7 +347,7 @@ describe("versions routes", () => {
          explores: [],
          exploresWarnings: [],
          warnings: [],
-         queryableSources: [],
+         queryableSources: null,
          storageServeBindings: [],
          materialization: null,
          queryMetadata: null,
@@ -515,6 +515,71 @@ describe("versions routes", () => {
 
       const listed = (await (await fetch(runs)).json()) as { id: string }[];
       expect(listed.map((m) => m.id)).toEqual([run.id]);
+   });
+
+   it("a package's description follows latest through an echoed PATCH, and its first version replaces an unversioned tree's", async () => {
+      const name = "echoed";
+      const environment = (await (
+         await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`)
+      ).json()) as { location?: string };
+      // Unversioned first, its row synced from its own publisher.json.
+      const lazy = path.join(environment.location!, name);
+      fs.mkdirSync(lazy, { recursive: true });
+      fs.writeFileSync(
+         path.join(lazy, "publisher.json"),
+         JSON.stringify({ name, description: "the unversioned tree" }),
+      );
+      fs.writeFileSync(
+         path.join(lazy, "model.malloy"),
+         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      );
+      const api = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}`;
+      expect((await fetch(api)).status).toBe(200);
+      const synced = await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
+         method: "PATCH",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({ name: ENV_NAME }),
+      });
+      expect(synced.status).toBeLessThan(300);
+
+      const publishVersion = async (version: string) => {
+         const dir = path.join(root, `${name}-${version}`);
+         fs.mkdirSync(dir, { recursive: true });
+         fs.writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name, version, description: `about ${version}` }),
+         );
+         fs.writeFileSync(
+            path.join(dir, "model.malloy"),
+            'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         );
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+            {
+               method: "POST",
+               headers: { "content-type": "application/json" },
+               body: JSON.stringify({ name, location: dir }),
+            },
+         );
+         expect(res.status).toBe(200);
+      };
+      const described = async () =>
+         ((await (await fetch(api)).json()) as { description?: string })
+            .description;
+
+      await publishVersion("1.0.0");
+      expect(await described()).toBe("about 1.0.0");
+
+      // A client that sends the package back whole sets nothing.
+      const read = (await (await fetch(api)).json()) as Record<string, unknown>;
+      const echoed = await fetch(api, {
+         method: "PATCH",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify(read),
+      });
+      expect(echoed.status).toBe(200);
+      await publishVersion("2.0.0");
+      expect(await described()).toBe("about 2.0.0");
    });
 
    it("a package listing refuses a versionId, and reads an empty one as none", async () => {

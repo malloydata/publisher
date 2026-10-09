@@ -7228,8 +7228,10 @@ components:
             `scope: "version"`, holds its own version's slot, so one such run is
             active per version at a time; an auto-run under `scope: "package"`
             writes the shared tables, so one is active per package. A second run
-            where one is already active answers 409, and so does a run that
-            would write a table another active run of the package writes.
+            where one is already active answers 409, and so does a run with
+            `buildInstructions` that would write a table another active run of
+            the package writes. An auto-run learns its tables only when it
+            starts building, so one that would write such a table fails then.
         buildInstructions:
           oneOf:
             - $ref: "#/components/schemas/BuildInstructions"

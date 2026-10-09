@@ -9,6 +9,7 @@ import {
    internalErrorToHttpError,
    MaterializationConflictError,
    PackageVersionError,
+   ServiceUnavailableError,
 } from "../errors";
 import { MaterializationController } from "../controller/materialization.controller";
 import type { Materialization } from "../storage/DatabaseInterface";
@@ -643,13 +644,12 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(await answerOf("2.0.0")).toBe(202);
    });
 
-   it("a run that fails after it starts rebuilding leaves the shared tables unbound for every version", async () => {
+   it("a run that fails after it starts rebuilding leaves the shared tables unbound for every other definition", async () => {
       await publish("1.0.0", 1, "package");
       const first = await build({});
       await tamper("summary", 101);
-      await publish("2.0.0", 1, "package"); // same definition: it binds
       expect(await answerOf("1.0.0")).toBe(101);
-      expect(await answerOf("2.0.0")).toBe(101);
+      await publish("2.0.0", 2, "package"); // another definition
 
       const failing = spyOn(
          service as unknown as {
@@ -667,18 +667,43 @@ describe('scope "package": the versions share the package\'s tables', () => {
          ],
       ).toEqual(["summary"]);
 
-      // `summary` may hold anything now: no version reads it.
+      // `summary` may hold 2.0.0's rows now: 1.0.0 no longer reads it.
       expect(await answerOf("1.0.0")).toBe(1);
 
       env = await newEnvironment();
       service = newService(env);
       expect(await answerOf("1.0.0")).toBe(1);
-      expect(await answerOf("2.0.0")).toBe(1);
+      expect(await answerOf("2.0.0")).toBe(2);
 
       // The next run that commits settles it.
       await build({ forceRefresh: true });
-      await tamper("summary", 111);
-      expect(await answerOf("2.0.0")).toBe(111);
+      await tamper("summary", 222);
+      expect(await answerOf("2.0.0")).toBe(222);
+      expect(await answerOf("1.0.0")).toBe(1);
+   });
+
+   it("a rebuild from the same definition leaves a version that shares it bound", async () => {
+      await publish("1.0.0", 1, "package");
+      const first = await build({});
+      await publish("2.0.0", 1, "package"); // the same definition
+      await tamper("summary", 101);
+      expect(await answerOf("1.0.0")).toBe(101);
+
+      // Even one that fails: the table holds that definition's rows either way.
+      const failing = spyOn(
+         service as unknown as {
+            executeInstructedBuild: () => Promise<unknown>;
+         },
+         "executeInstructedBuild",
+      ).mockRejectedValue(new Error("warehouse went away mid-build"));
+      expect((await build({ forceRefresh: true })).status).toBe("FAILED");
+      failing.mockRestore();
+      expect(
+         (await repo.getMaterializationById(first.id))?.metadata?.[
+            SUPERSEDED_TABLES_KEY
+         ],
+      ).toBeUndefined();
+      expect(await answerOf("1.0.0")).toBe(101);
    });
 
    it("deleting the run that rebuilt a shared table never brings back an older version's binding to it", async () => {
@@ -850,6 +875,104 @@ describe('scope "package": the versions share the package\'s tables', () => {
       } finally {
          fetchManifest.mockRestore();
       }
+   });
+
+   it("counts the runs from before the first versioned publish among the shared tables", async () => {
+      // The package, unversioned, built into `summary`; then versioned.
+      const tree = writePackage("0.0.0", 0, "package");
+      fs.cpSync(tree, path.join(envPath, PKG), { recursive: true });
+      const legacy = await settled(
+         (await service.createMaterialization(ENV, PKG, {})).id,
+      );
+      expect([legacy.status, legacy.version]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      const plan = (
+         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources)[0];
+      const refused = await service
+         .createMaterialization(ENV, PKG, {
+            versionId: "1.0.0",
+            buildInstructions: [
+               {
+                  sourceID: source.sourceID,
+                  sourceEntityId: source.sourceEntityId,
+                  physicalTableName: "summary",
+                  realization: "COPY",
+               },
+            ] as never,
+         })
+         .catch((err: unknown) => err);
+      expect(refused).toBeInstanceOf(MaterializationConflictError);
+   });
+
+   it("a run with instructions that rebuilds another version's table leaves that version serving live", async () => {
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      const instruct = async (versionId: string) => {
+         const plan = (
+            await env.getPackage(PKG, false, { versionId })
+         ).getBuildPlan()!;
+         const source = Object.values(plan.sources)[0];
+         return build({
+            versionId,
+            buildInstructions: [
+               {
+                  sourceID: source.sourceID,
+                  sourceEntityId: source.sourceEntityId,
+                  physicalTableName: "host_t",
+                  realization: "COPY",
+               },
+            ] as never,
+         });
+      };
+      expect((await instruct("2.0.0")).status).toBe("MANIFEST_FILE_READY");
+      env = await newEnvironment();
+      service = newService(env);
+      await tamper("host_t", 202);
+      expect(await answerOf("2.0.0")).toBe(202);
+
+      // 1.0.0's caller names the same table, from 1.0.0's definition.
+      expect((await instruct("1.0.0")).status).toBe("MANIFEST_FILE_READY");
+      env = await newEnvironment();
+      service = newService(env);
+      expect(await answerOf("2.0.0")).toBe(2);
+   });
+
+   it("defers unloading a version whose rebind fails while a build of it runs, and retries a busy one", async () => {
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      const cache = env.getVersionService()!.cache;
+
+      // Busy twice, then fine: still loaded.
+      let calls = 0;
+      expect(
+         await env.rebindVersionFromStore(PKG, "1.0.0", async () => {
+            calls += 1;
+            if (calls < 3) throw new ServiceUnavailableError("busy");
+            return {};
+         }),
+      ).toBe(false);
+      expect([calls, cache.isLoaded(PKG, "1.0.0")]).toEqual([3, true]);
+
+      // A failure while a build of it runs: unloaded once the build settles.
+      const release = env.registerVersionBuild(PKG, "1.0.0");
+      expect(
+         await env.rebindVersionFromStore(PKG, "1.0.0", async () => {
+            throw new Error("store unreachable");
+         }),
+      ).toBe(true);
+      expect(cache.isLoaded(PKG, "1.0.0")).toBe(true);
+      release();
+      await env
+         .getVersionService()!
+         .withVersionLock(PKG, "1.0.0", async () => {});
+      expect(cache.isLoaded(PKG, "1.0.0")).toBe(false);
    });
 
    it("one auto-run per package, while a run with instructions builds a version beside it", async () => {

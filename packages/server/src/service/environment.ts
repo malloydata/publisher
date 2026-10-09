@@ -132,6 +132,10 @@ const RETIRED_DIR_NAME = ".retired";
 // giving up and serving live. Binding happens before a package is marked
 // SERVING, so an unreachable/slow manifest store must not block the package.
 const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
+// A version's rebind that answers 503 (its compile workers are busy) is tried
+// this many times, waiting this long times the attempt between tries.
+const REBIND_ATTEMPTS = 3;
+const REBIND_RETRY_MS = 500;
 
 export enum PackageStatus {
    LOADING = "loading",
@@ -2459,10 +2463,24 @@ export class Environment {
          if (released) return;
          released = true;
          const left = (this.versionBuilds.get(k) ?? 1) - 1;
-         if (left > 0) this.versionBuilds.set(k, left);
-         else this.versionBuilds.delete(k);
+         if (left > 0) {
+            this.versionBuilds.set(k, left);
+            return;
+         }
+         this.versionBuilds.delete(k);
+         // A rebind that failed while the build ran left this to now.
+         if (this.pendingVersionEvictions.delete(k)) {
+            const versions = this.versionService;
+            void versions?.withVersionLock(packageName, versionId, async () => {
+               versions.cache.evict(packageName, versionId);
+            });
+         }
       };
    }
+
+   // Versions whose rebind failed while a build of theirs ran: unloaded once
+   // the build settles, not under it (see rebindVersionFromStore).
+   private readonly pendingVersionEvictions = new Set<string>();
 
    /** A loaded version, without loading it. */
    public peekVersion(
@@ -2780,7 +2798,7 @@ export class Environment {
          ): (stagingPath: string) => Promise<void>;
          ensurePackageRecord(
             packageName: string,
-            description: string | undefined,
+            description: string | null | undefined,
          ): Promise<boolean>;
          removePackageRecord(packageName: string): Promise<void>;
       },
@@ -2927,7 +2945,10 @@ export class Environment {
     * A version whose rebind fails is unloaded: it would otherwise keep a
     * binding the store no longer vouches for, possibly a table being rebuilt
     * from another definition. It loads again, from the store, when next read.
-    * Returns whether the rebind failed.
+    * A failure that says to retry (503: the compile workers are busy) is
+    * retried first, and a version with a build of its own running is unloaded
+    * once that build settles rather than under it. Returns whether the rebind
+    * failed.
     */
    public async rebindVersionFromStore(
       packageName: string,
@@ -2937,6 +2958,7 @@ export class Environment {
    ): Promise<boolean> {
       const versions = this.versionService;
       if (!versions) return false;
+      let unloaded: "now" | "after its build" | undefined;
       try {
          await this.trackPackageLoad(packageName, () =>
             this.withLoadedVersion(
@@ -2945,33 +2967,52 @@ export class Environment {
                "rebind it from the store",
                async (pkg) => {
                   if (pkg.getPackageMetadata().manifestLocation) return;
-                  try {
-                     const entries = await read(servingReaderOf(pkg));
-                     const signature = JSON.stringify(entries);
-                     if (
-                        options.onlyIfMoved &&
-                        this.storeBindingReads.get(pkg) === signature
-                     ) {
+                  for (let attempt = 1; ; attempt++) {
+                     try {
+                        const entries = await read(servingReaderOf(pkg));
+                        const signature = JSON.stringify(entries);
+                        if (
+                           options.onlyIfMoved &&
+                           this.storeBindingReads.get(pkg) === signature
+                        ) {
+                           return;
+                        }
+                        const { tableNameManifest, storageEntries } =
+                           splitManifestEntries(
+                              entries,
+                              `local store (package ${packageName} version ${versionId})`,
+                           );
+                        if (
+                           Object.keys(tableNameManifest).length > 0 ||
+                           pkg.hasBoundTableNameManifest()
+                        ) {
+                           await pkg.reloadAllModels(tableNameManifest);
+                        }
+                        if (getPersistStorageMode() !== "off") {
+                           pkg.bindStorageServeBindings(storageEntries);
+                        }
+                        this.storeBindingReads.set(pkg, signature);
                         return;
+                     } catch (error) {
+                        if (
+                           error instanceof ServiceUnavailableError &&
+                           attempt < REBIND_ATTEMPTS
+                        ) {
+                           await new Promise((resolve) =>
+                              setTimeout(resolve, REBIND_RETRY_MS * attempt),
+                           );
+                           continue;
+                        }
+                        const k = `${packageName}@${versionId}`;
+                        if (this.versionBuilds.has(k)) {
+                           this.pendingVersionEvictions.add(k);
+                           unloaded = "after its build";
+                        } else {
+                           versions.cache.evict(packageName, versionId);
+                           unloaded = "now";
+                        }
+                        throw error;
                      }
-                     const { tableNameManifest, storageEntries } =
-                        splitManifestEntries(
-                           entries,
-                           `local store (package ${packageName} version ${versionId})`,
-                        );
-                     if (
-                        Object.keys(tableNameManifest).length > 0 ||
-                        pkg.hasBoundTableNameManifest()
-                     ) {
-                        await pkg.reloadAllModels(tableNameManifest);
-                     }
-                     if (getPersistStorageMode() !== "off") {
-                        pkg.bindStorageServeBindings(storageEntries);
-                     }
-                     this.storeBindingReads.set(pkg, signature);
-                  } catch (error) {
-                     versions.cache.evict(packageName, versionId);
-                     throw error;
                   }
                },
             ),
@@ -2979,7 +3020,11 @@ export class Environment {
          return false;
       } catch (error) {
          logger.warn(
-            "Unloaded a version whose serve bindings could not be re-read; it loads again from the store when next read",
+            unloaded === "now"
+               ? "Unloaded a version whose serve bindings could not be re-read; it loads again from the store when next read"
+               : unloaded === "after its build"
+                 ? "A version's serve bindings could not be re-read while a build of it runs; it is unloaded once that build settles"
+                 : "Could not rebind a version's serve bindings",
             {
                packageName,
                versionId,
@@ -4424,12 +4469,12 @@ export class Environment {
           */
          versioned?: boolean;
          /**
-          * Remove the package's rows. Called holding the package's lock,
-          * before anything else goes, when the package turns out to have
-          * versions: decided under the lock, so a first versioned publish
-          * cannot commit between the decision and the delete. Once the rows
-          * are gone no request can resolve a version, so none can fetch a
-          * version's files again while they are removed.
+          * Remove the package's rows, holding the package's lock, so a first
+          * versioned publish cannot commit between the delete's decision and
+          * the rows going. For a package with versions, before anything else
+          * goes: once the rows are gone no request can resolve a version, so
+          * none can fetch a version's files again while they are removed. For
+          * one without, after it is unloaded, as before.
           */
          removeRecords?: () => Promise<void>;
       } = {},
@@ -4464,6 +4509,10 @@ export class Environment {
                   packageName,
                );
                this.deletePackageStatus(packageName);
+            } else {
+               // Not loaded, and no versions: its rows go under the lock too,
+               // so a first versioned publish cannot land between.
+               await options.removeRecords?.();
             }
             return;
          }
@@ -4527,6 +4576,9 @@ export class Environment {
          await fs.promises
             .rm(this.installRecordPath(packageName), { force: true })
             .catch(() => {});
+         // Its rows, still under the lock: a first versioned publish that
+         // waited for it must find the package gone, rows and all.
+         await options.removeRecords?.();
 
          if (renamed) {
             setImmediate(() => {

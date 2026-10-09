@@ -1426,6 +1426,17 @@ export class MaterializationService {
                undefined,
                true,
             );
+            // A version's run with instructions may rebuild a table another
+            // version's run built from another definition: that entry no
+            // longer says what the table holds (see markSuperseded). Marked
+            // before the run is recorded, so nothing it records is left
+            // behind if the marking fails.
+            await this.markSuperseded(
+               environmentId,
+               packageName,
+               "",
+               buildInstructions,
+            );
          }
 
          let created: Materialization;
@@ -1901,11 +1912,14 @@ export class MaterializationService {
          }
       }
       if (!instructed) return;
+      // Every committed run the package's versions share: neither one
+      // version's own nor a caller's instructed run. Runs from before the
+      // package's first versioned publish count, and `latest` may serve them.
       const shared = runs
          .filter(
             (m) =>
-               m.metadata?.mode === "auto" &&
-               m.metadata?.scope === "package" &&
+               m.metadata?.mode !== "orchestrated" &&
+               !isVersionOwnedRun(m) &&
                m.status === "MANIFEST_FILE_READY",
          )
          .flatMap((m) =>
@@ -1951,37 +1965,71 @@ export class MaterializationService {
                   [WRITES_TABLES_KEY]: tables,
                },
             });
-            const wanted = new Set(tables);
-            for (const m of await this.repository.listMaterializations(
+            await this.markSuperseded(
                environmentId,
                packageName,
-            )) {
-               if (m.id === id) continue;
-               const stale = Object.values(m.manifest?.entries ?? {})
-                  .map((e) => e.physicalTableName)
-                  .filter((t) => wanted.has(t));
-               if (stale.length === 0) continue;
-               const superseded = new Set([
-                  ...tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY),
-                  ...stale,
-               ]);
-               try {
-                  await this.repository.updateMaterialization(m.id, {
-                     metadata: {
-                        ...(m.metadata ?? {}),
-                        [SUPERSEDED_TABLES_KEY]: [...superseded],
-                     },
-                  });
-               } catch (err) {
-                  // Deleted meanwhile: nothing of it is read any more.
-                  logger.debug("Could not mark a run's entries superseded", {
-                     materializationId: m.id,
-                     error: errMessage(err),
-                  });
-               }
-            }
+               id,
+               instructions,
+            );
          },
       );
+   }
+
+   /**
+    * Mark, on every other run of the package, the entries a run about to
+    * write `instructions` makes stale: an entry naming one of those tables
+    * built from another definition (another content address) no longer says
+    * what the table holds, whatever happens to this run. An entry from the
+    * same definition still does, and is left alone; so is a run already
+    * marked. Called under tableLockFor.
+    */
+   private async markSuperseded(
+      environmentId: string,
+      packageName: string,
+      id: string,
+      instructions: BuildInstruction[],
+   ): Promise<void> {
+      const rebuilt = new Map<string, Set<string>>();
+      for (const i of instructions) {
+         const addresses =
+            rebuilt.get(i.physicalTableName) ?? new Set<string>();
+         addresses.add(i.sourceEntityId);
+         rebuilt.set(i.physicalTableName, addresses);
+      }
+      for (const m of await this.repository.listMaterializations(
+         environmentId,
+         packageName,
+      )) {
+         if (m.id === id) continue;
+         const already = new Set(
+            tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY),
+         );
+         const stale = Object.values(m.manifest?.entries ?? {})
+            .filter((e) => {
+               const addresses = rebuilt.get(e.physicalTableName);
+               return (
+                  addresses !== undefined &&
+                  !addresses.has(e.sourceEntityId) &&
+                  !already.has(e.physicalTableName)
+               );
+            })
+            .map((e) => e.physicalTableName);
+         if (stale.length === 0) continue;
+         try {
+            await this.repository.updateMaterialization(m.id, {
+               metadata: {
+                  ...(m.metadata ?? {}),
+                  [SUPERSEDED_TABLES_KEY]: [...new Set([...already, ...stale])],
+               },
+            });
+         } catch (err) {
+            // Deleted meanwhile: nothing of it is read any more.
+            logger.debug("Could not mark a run's entries superseded", {
+               materializationId: m.id,
+               error: errMessage(err),
+            });
+         }
+      }
    }
 
    /**

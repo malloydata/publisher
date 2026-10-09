@@ -18,6 +18,7 @@ import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
 import { versionManifestLocation } from "./manifest_location";
+import { changedFields } from "./versioned_patch";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -70,62 +71,6 @@ function formatPublishRejections(
       .filter(Boolean)
       .join("\n");
    return message || undefined;
-}
-
-/** The fields a PATCH of a versioned package applies, rather than checks. */
-const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([
-   "resource",
-   "manifestLocation",
-   "description",
-]);
-
-/**
- * The Package fields the spec declares read-only: ignored when a request
- * sends them back.
- */
-const READ_ONLY_PACKAGE_FIELDS = new Set([
-   "versionId",
-   "latestVersion",
-   "loaded",
-   "archiveStatus",
-   "exploresWarnings",
-   "warnings",
-   "manifestBindingStatus",
-   "manifestEntryCount",
-   "boundManifestUri",
-   "status",
-   "storageServeBindings",
-   "buildPlan",
-   "embeddingIndex",
-]);
-
-/** Null, absent, an empty string, list or object: a field a client left unset. */
-function isEmptyValue(value: unknown): boolean {
-   if (value === undefined || value === null || value === "") return true;
-   if (Array.isArray(value)) return value.length === 0;
-   if (typeof value === "object") {
-      return Object.values(value as object).every(isEmptyValue);
-   }
-   return false;
-}
-
-/** Whether two field values say the same thing, ignoring unset parts. */
-function sameValue(a: unknown, b: unknown): boolean {
-   return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
-}
-
-function canonical(value: unknown): unknown {
-   if (isEmptyValue(value)) return null;
-   if (Array.isArray(value)) return value.map(canonical);
-   if (typeof value === "object") {
-      return Object.fromEntries(
-         Object.keys(value as object)
-            .sort()
-            .filter((k) => !isEmptyValue((value as Record<string, unknown>)[k]))
-            .map((k) => [k, canonical((value as Record<string, unknown>)[k])]),
-      );
-   }
-   return value;
 }
 
 export class PackageController {
@@ -436,10 +381,9 @@ export class PackageController {
          environmentName,
          false,
       );
-      // A versioned package's rows go first, removed by the environment under
-      // the package's lock once it finds versions there (see
-      // Environment.deletePackage); an unversioned package's after it is
-      // unloaded, as before.
+      // The rows are removed by the environment, under the package's lock
+      // (see Environment.deletePackage): a versioned package's first, an
+      // unversioned one's after it is unloaded, as before.
       let recordsRemoved = false;
       const result = await environment.deletePackage(packageName, {
          removeRecords: async () => {
@@ -591,22 +535,23 @@ export class PackageController {
             versionId: latest,
          }),
       )) as Record<string, unknown>;
-      const changed = Object.entries(fields)
-         .filter(([key, value]) => {
-            if (APPLIED_TO_A_VERSIONED_PACKAGE.has(key)) return false;
-            if (READ_ONLY_PACKAGE_FIELDS.has(key)) return false;
-            if (isEmptyValue(value)) return false;
-            if (key === "name") return value !== packageName;
-            // The location it was published from may be echoed back.
-            if (key === "location") return value !== version.sourceLocation;
-            return !sameValue(value, current[key]);
-         })
-         .map(([key]) => key);
+      const changed = changedFields(
+         fields,
+         current,
+         packageName,
+         version.sourceLocation,
+      );
       if (changed.length > 0) {
          throw refuse(`this request changes ${changed.join(", ")}.`);
       }
 
-      if (typeof fields.description === "string") {
+      // A description is the package's own once a request sets one; one that
+      // only echoes what the package reads as now is not set, so a package
+      // with none goes on reading as its latest version's.
+      if (
+         typeof fields.description === "string" &&
+         fields.description !== current.description
+      ) {
          await versions.setPackageDescription(packageName, fields.description);
       }
       const loaded =

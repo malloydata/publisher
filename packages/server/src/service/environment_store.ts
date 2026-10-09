@@ -1059,7 +1059,7 @@ export class EnvironmentStore {
                await repository.createPackage({
                   environmentId,
                   name: packageName,
-                  description,
+                  description: description ?? undefined,
                   manifestPath: "",
                   metadata: {},
                });
@@ -1067,7 +1067,7 @@ export class EnvironmentStore {
             }
             if (
                description !== undefined &&
-               description !== existing.description
+               description !== (existing.description ?? null)
             ) {
                await repository.updatePackage(existing.id, { description });
             }
