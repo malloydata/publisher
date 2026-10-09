@@ -360,8 +360,15 @@ export const valuesStage: RankStage = {
          const left = budgetLeft();
          if (left <= 0)
             return { kind: "skipped", reason: "the time budget ran out" };
+         const timeoutMs = Math.max(1, Math.min(settings.timeoutMs, left));
          try {
-            const fetched = await fetchDistinct({
+            // The query path cancels a query through an abort signal, and a
+            // driver that cannot honour it (DuckDB) finishes anyway: the
+            // timeout then returns the late rows as a success. The wait is
+            // bounded here as well, so the call answers on time. The query is
+            // left to finish and its rows go into the cache, so the next call
+            // finds them.
+            const work = fetchDistinct({
                environmentStore: ctx.environmentStore,
                environmentName: request.environmentName,
                packageName: request.packageName,
@@ -374,16 +381,30 @@ export const valuesStage: RankStage = {
                ...(request.filterParams
                   ? { filterParams: request.filterParams }
                   : {}),
-               timeoutMs: Math.max(1, Math.min(settings.timeoutMs, left)),
-            });
-            const entry: CacheEntry = { at: Date.now(), ...fetched };
-            if (ttl > 0) {
-               cache.set(key, entry);
-               while (cache.size > CACHE_MAX_ENTRIES) {
-                  const oldest = cache.keys().next().value;
-                  if (oldest === undefined) break;
-                  cache.delete(oldest);
+               timeoutMs,
+            }).then((fetched) => {
+               const entry: CacheEntry = { at: Date.now(), ...fetched };
+               if (ttl > 0) {
+                  cache.set(key, entry);
+                  while (cache.size > CACHE_MAX_ENTRIES) {
+                     const oldest = cache.keys().next().value;
+                     if (oldest === undefined) break;
+                     cache.delete(oldest);
+                  }
                }
+               return entry;
+            });
+            // A failure after the wait is over has no caller left to tell.
+            work.catch(() => undefined);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const entry = await Promise.race([
+               work,
+               new Promise<"timeout">((resolve) => {
+                  timer = setTimeout(() => resolve("timeout"), timeoutMs);
+               }),
+            ]).finally(() => clearTimeout(timer));
+            if (entry === "timeout") {
+               return { kind: "skipped", reason: "the query timed out" };
             }
             return { kind: "values", entry, filtered: stem !== undefined };
          } catch (error) {
