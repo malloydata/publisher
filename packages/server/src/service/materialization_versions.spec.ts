@@ -173,10 +173,20 @@ async function settled(id: string): Promise<Materialization> {
             m.status === "FAILED" ||
             m.status === "CANCELLED")
       ) {
-         // The run's settle hook (its version's build registration) runs
-         // after its final status is written.
-         await new Promise((resolve) => setTimeout(resolve, 10));
-         return m;
+         // A run goes on after its final status is written: it rebinds the
+         // other loaded versions, then its settle hook releases its
+         // version's build registration. Both are done once the service
+         // stops tracking it.
+         const running = (
+            service as unknown as {
+               runningAbortControllers: Map<string, unknown>;
+            }
+         ).runningAbortControllers;
+         while (running.has(id)) {
+            if (Date.now() > deadline) throw new Error(`run ${id} never ended`);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+         }
+         return (await repo.getMaterializationById(id)) ?? m;
       }
       if (Date.now() > deadline) throw new Error(`run ${id} never settled`);
       await new Promise((resolve) => setTimeout(resolve, 20));
