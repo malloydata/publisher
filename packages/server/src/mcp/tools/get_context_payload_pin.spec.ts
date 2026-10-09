@@ -41,6 +41,7 @@ import { registerGetContextTool } from "./get_context_tool";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
+import { setRetrievalConfig } from "../../retrieval_config";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -276,10 +277,14 @@ const target = (target_type: string, search_text?: string) => ({
 // ---------------------------------------------------------------------------
 
 describe("get_context payload pin: no embedding key configured", () => {
+   // Value search off: these pins are what a server with it turned off answers
+   // to a dimensional_value target. The on-mode pins are further down.
    beforeEach(() => {
       _setEmbeddingProviderForTests(null);
       _resetEmbeddingIndexStateForTests();
+      setRetrievalConfig({ dimensionValues: { enabled: false } });
    });
+   afterEach(() => setRetrievalConfig(undefined));
 
    const run = (
       name: string,
@@ -426,9 +431,11 @@ describe("get_context payload pin: embedding configured", () => {
    beforeEach(() => {
       _setEmbeddingProviderForTests(null);
       _resetEmbeddingIndexStateForTests();
+      setRetrievalConfig({ dimensionValues: { enabled: false } });
    });
    afterEach(() => {
       _setEmbeddingProviderForTests(null);
+      setRetrievalConfig(undefined);
    });
 
    const BUCKETS = 64;

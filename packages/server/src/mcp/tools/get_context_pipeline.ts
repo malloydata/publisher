@@ -13,6 +13,7 @@ import type { EmbeddingIndexStatus } from "./embedding_index";
 import type { LlmMeter } from "./get_context_llm";
 import type { LlmStageSettings } from "./get_context_stage_settings";
 import type { StoredSourceSummary } from "./source_summaries";
+import type { ValueFetcher } from "./get_context_values";
 import {
    MAX_ENTITIES_PER_SOURCE_TARGET,
    MAX_JOINED_ROWS_PER_SOURCE_TARGET,
@@ -109,6 +110,12 @@ export interface PipelineContext {
     * summaries are off for the package or none is stored.
     */
    sourceSummaries?: ReadonlyMap<string, StoredSourceSummary>;
+   /**
+    * How the values stage reads a dimension's distinct values. Absent in
+    * production, which runs a query through the model; a test sets it to stand
+    * in for the warehouse.
+    */
+   valueFetcher?: ValueFetcher;
 }
 
 /** One row of the stage trace. `in` and `out` count what the stage's phase works on. */

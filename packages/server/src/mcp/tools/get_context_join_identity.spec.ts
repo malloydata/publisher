@@ -42,6 +42,7 @@ function request(extra: Partial<ResolvedRequest> = {}): ResolvedRequest {
       packageName: "pkg",
       kinds: new Set(["dimension", "measure"]),
       searches: [],
+      valueSearches: [],
       listingOnly: false,
       includeCode: false,
       unsupported: [],
