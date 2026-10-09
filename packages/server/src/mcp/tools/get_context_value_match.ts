@@ -11,8 +11,12 @@
  * comparable to it.
  */
 
-/** A value scoring under this is not a match. */
-export const VALUE_MATCH_FLOOR = 0.5;
+/**
+ * A value scoring under this is not a match. Above 0.5 on purpose: a phrase of
+ * two words whose second matches nothing scores at most 0.5, and "region 3"
+ * must not return every "Region N" (a live check did, at 0.5 each).
+ */
+export const VALUE_MATCH_FLOOR = 0.55;
 
 /** Most values one dimension returns for one search target. */
 export const MAX_VALUES_PER_DIMENSION_HIT = 10;
