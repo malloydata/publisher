@@ -621,6 +621,27 @@ describe("get_context value search over a stand-in warehouse", () => {
          "Auto Intenders (In-Market)",
       );
    });
+
+   it("adds no meaning guesses, and sends no values, when the phrase's own words match", async () => {
+      const sent: string[] = [];
+      _setEmbeddingProviderForTests(fakeEmbedder(sent));
+      setRetrievalConfig({ egress: { preset: "full" } });
+      _setValueFetcherForTests(warehouse());
+      const handler = captureHandler(storeFor(stubPackage()));
+      const payload = await call(handler, {
+         search_targets: [valueTarget("Home Shoppers")],
+         scopes: [
+            { ...SCOPE[0], source: "segments", entity_name: "segment_name" },
+         ],
+      });
+      // The fake embeds every non-car text to the same point, so embedding the
+      // stored values would have returned all four.
+      expect(payload.sources[0].entities[0].values).toEqual([
+         { value: "Home Shoppers", relevance: 1, search_text: "Home Shoppers" },
+      ]);
+      // Only the user's phrase left the process.
+      expect(sent).toEqual(["Home Shoppers"]);
+   });
 });
 
 /**
