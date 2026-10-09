@@ -801,6 +801,7 @@ const DATA_APPS_DEPTH_CAP = 3;
 type DataAppItem = {
    resource: string;
    packageName: string;
+   versionId?: string;
    path: string;
    title: string;
    fit?: "viewport";
@@ -833,6 +834,8 @@ async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
+   /** The published version listed from; its pages are pinned to it. */
+   versionId?: string | null,
 ): Promise<DataAppItem[]> {
    const fs = await import("fs/promises");
    const out: DataAppItem[] = [];
@@ -921,8 +924,15 @@ async function listPackageDataApps(
                // ignore; fall back to relative path as title
             }
             out.push({
-               resource: `/environments/${environmentName}/packages/${packageName}/${rel}`,
+               // A published version's page keeps opening that version after
+               // `latest` moves: the static route reads the version from the URL.
+               resource:
+                  `/environments/${environmentName}/packages/${packageName}/${rel}` +
+                  (versionId
+                     ? `?versionId=${encodeURIComponent(versionId)}`
+                     : ""),
                packageName,
+               ...(versionId ? { versionId } : {}),
                path: rel,
                title,
                fit,
@@ -1042,6 +1052,7 @@ app.get(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
+            pkg.getPackageMetadata().versionId,
          );
          res.json(dataApps);
       } catch (error) {
@@ -1702,7 +1713,15 @@ app.post(
             req.params.environmentName,
             req.body,
          );
-         res.status(200).json(_package?.getPackageMetadata());
+         // The same metadata as before for a package with no versions; a
+         // published version also carries the package's current `latest`.
+         const environment = await environmentStore.getEnvironment(
+            req.params.environmentName,
+            false,
+         );
+         res.status(200).json(
+            _package ? await environment.describePackage(_package) : undefined,
+         );
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);

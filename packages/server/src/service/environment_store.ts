@@ -1654,6 +1654,8 @@ export class EnvironmentStore {
          frozenConfig: boolean;
          operationalState: components["schemas"]["ServerStatus"]["operationalState"];
          version: string;
+         packageVersioning?: components["schemas"]["ServerStatus"]["packageVersioning"];
+         versionPromotion?: components["schemas"]["ServerStatus"]["versionPromotion"];
          emptyReason?: string;
          initError?: string;
          loadErrors?: LoadError[];
@@ -1665,13 +1667,35 @@ export class EnvironmentStore {
          operationalState,
          version: SERVER_VERSION,
       };
+      // Versioning transition: reported only while it is on, so a server running
+      // without it answers exactly as before versions. An orchestrator mid-rollout
+      // reads an absent field as "off".
+      if (versioningEnabledForStatus()) {
+         status.packageVersioning = "on";
+         status.versionPromotion = getVersionPromotionMode(this.serverRootPath);
+      }
 
       const environments = await this.listEnvironments(true, options);
 
       await Promise.all(
          environments.map(async (environment) => {
             try {
-               const packages = environment.packages;
+               // A versioned package is listed once per version it holds (each
+               // with its own versionId), not once as its latest.
+               const versionEntries =
+                  (await this.environments
+                     .get(environment.name ?? "")
+                     ?.listVersionEntries()) ?? new Map();
+               const packages =
+                  versionEntries.size === 0
+                     ? environment.packages
+                     : [
+                          ...(environment.packages ?? []).filter(
+                             (p) => !versionEntries.has(p.name ?? ""),
+                          ),
+                          ...[...versionEntries.values()].flat(),
+                       ];
+               environment.packages = packages;
                const connections = environment.connections;
 
                logger.debug(`Environment ${environment.name} status:`, {
@@ -2977,5 +3001,18 @@ export class EnvironmentStore {
          errorData.task = (error as { task?: unknown }).task;
       }
       return errorData;
+   }
+}
+
+/**
+ * The versioning flag for /status, which must answer even when the flag's
+ * value is malformed: that failed initialization, and /status is where the
+ * failure is reported.
+ */
+function versioningEnabledForStatus(): boolean {
+   try {
+      return isVersioningEnabled();
+   } catch {
+      return false;
    }
 }

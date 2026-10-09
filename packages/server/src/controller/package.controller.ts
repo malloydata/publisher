@@ -104,6 +104,10 @@ export class PackageController {
          });
          metadata = _package.getPackageMetadata();
          metadata.status = environment.describePackageStatus(packageName);
+         // A published version also carries the package's current `latest`.
+         if (metadata.versionId) {
+            metadata = await environment.describePackage(_package);
+         }
       }
 
       // Enriched on BOTH paths. This sat below a `reload` early return, so
@@ -175,7 +179,10 @@ export class PackageController {
          const version = await environment.getPackage(packageName, false, {
             versionId,
          });
-         return { metadata: version.getPackageMetadata(), mode: "unchanged" };
+         return {
+            metadata: await environment.describePackage(version),
+            mode: "unchanged",
+         };
       }
 
       // Resolve the package's source location from the currently-cached
@@ -431,6 +438,19 @@ export class PackageController {
          environmentName,
          false,
       );
+      // Versioning transition: with it off there are no published versions.
+      // Deprecated in place: a published version is immutable, so a package
+      // that has versions is not changed here. Its manifest is rebound with
+      // PUT .../versions/{version}/manifest, and new content is a new version.
+      if (
+         isVersioningEnabled() &&
+         (await environment.getVersionService()?.isVersioned(packageName))
+      ) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable. Publish a new version to change it, and rebind a version's manifest with PUT .../versions/{version}/manifest.`,
+         );
+      }
       // A `location` that matches the one the package was installed from is a
       // metadata update, not a reinstall. A package version's content does not
       // change under one URI, so re-downloading and recompiling it would only

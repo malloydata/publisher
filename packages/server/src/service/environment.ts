@@ -1955,6 +1955,15 @@ export class Environment {
                }
                try {
                   const resident = this.packages.get(packageName);
+                  // Versioning transition: with it off, every package is listed
+                  // from its single slot below.
+                  if (
+                     isVersioningEnabled() &&
+                     resident === undefined &&
+                     (await this.versionService?.isVersioned(packageName))
+                  ) {
+                     return await this.listedVersionedPackage(packageName);
+                  }
                   let metadata: ApiPackage | undefined;
                   if (resident !== undefined) {
                      metadata = resident.getPackageMetadata();
@@ -2050,10 +2059,22 @@ export class Environment {
       }
    }
 
-   public describePackageStatus(packageName: string): ApiPackageStatus {
+   public describePackageStatus(
+      packageName: string,
+      versionId?: string | null,
+   ): ApiPackageStatus {
       const inFlight = this.loadsInFlight.get(packageName);
+      // Versioning transition: with it off there are no versions to ask about.
+      // With it on, a versioned package serves through its loaded versions.
+      const versions = isVersioningEnabled() ? this.versionService : null;
+      const servingVersions = versions
+         ? versions.cache.loadedVersionsOf(packageName)
+         : [];
+      const serving = versionId
+         ? servingVersions.includes(versionId)
+         : this.packages.has(packageName) || servingVersions.length > 0;
       return {
-         serving: this.packages.has(packageName),
+         serving,
          loading: inFlight !== undefined,
          ...(inFlight !== undefined
             ? { loadingSince: new Date(inFlight.since).toISOString() }
@@ -2491,6 +2512,89 @@ export class Environment {
    /** The version rules for this environment's packages, once bound. */
    public getVersionService(): VersionService<Package> | null {
       return this.versionService;
+   }
+
+   /**
+    * A loaded package's metadata as a response carries it. For a published
+    * version that adds the package's current `latestVersion` (it moves, so it
+    * is read now, not at load) and the version's own serving status.
+    */
+   public async describePackage(pkg: Package): Promise<ApiPackage> {
+      const metadata = pkg.getPackageMetadata();
+      const versionId = metadata.versionId;
+      // Versioning transition: with it off, a package has no version fields.
+      if (!isVersioningEnabled() || !this.versionService || !versionId) {
+         return metadata;
+      }
+      return {
+         ...metadata,
+         latestVersion: await this.versionService.latestOf(
+            pkg.getPackageName(),
+         ),
+         status: this.describePackageStatus(pkg.getPackageName(), versionId),
+      };
+   }
+
+   /**
+    * A versioned package's entry in a package listing: its `latest`
+    * version's metadata, or a bare entry with no version while it has no
+    * `latest` yet (explicit promotion, before the first move).
+    */
+   private async listedVersionedPackage(
+      packageName: string,
+   ): Promise<ApiPackage> {
+      const latest = await this.versionService!.latestOf(packageName);
+      if (latest === null) {
+         return {
+            name: packageName,
+            resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${packageName}`,
+            versionId: null,
+            latestVersion: null,
+            status: this.describePackageStatus(packageName),
+         };
+      }
+      const loaded = await this.getPackage(packageName, false, {
+         versionId: latest,
+      });
+      return { ...(await this.describePackage(loaded)), name: packageName };
+   }
+
+   /**
+    * For `/status`: every version each versioned package here holds, archived
+    * and unloaded ones included, so a reconcile that reads it never mistakes
+    * a version that is not in memory for one that is missing. A loaded
+    * version carries its full metadata (manifest binding included); one that
+    * is not carries its name, version, `latestVersion`, `archiveStatus` and
+    * status. Empty with versioning off.
+    */
+   public async listVersionEntries(): Promise<Map<string, ApiPackage[]>> {
+      const entries = new Map<string, ApiPackage[]>();
+      // Versioning transition: with it off there are no versions to report.
+      if (!isVersioningEnabled() || !this.versionService) return entries;
+      const versions = this.versionService;
+      const rows = await versions.listAllVersions();
+      for (const row of rows) {
+         const loaded = versions.cache.peek(row.packageName, row.versionId);
+         const base: ApiPackage = loaded
+            ? loaded.getPackageMetadata()
+            : {
+                 name: row.packageName,
+                 resource: `${API_PREFIX}/environments/${this.environmentName}/packages/${row.packageName}`,
+                 versionId: row.versionId,
+              };
+         const list = entries.get(row.packageName) ?? [];
+         list.push({
+            ...base,
+            name: row.packageName,
+            versionId: row.versionId,
+            latestVersion: row.latest,
+            archiveStatus: row.archiveStatus,
+            loaded: loaded !== undefined,
+            status: this.describePackageStatus(row.packageName, row.versionId),
+         });
+         entries.set(row.packageName, list);
+      }
+      return entries;
    }
 
    /**

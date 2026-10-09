@@ -121,6 +121,14 @@ export class VersionCache<T> {
       }
    }
 
+   /** The versions of one package loaded now. */
+   loadedVersionsOf(packageName: string): string[] {
+      const prefix = `${packageName}@`;
+      return [...this.loaded.keys()]
+         .filter((k) => k.startsWith(prefix))
+         .map((k) => k.slice(prefix.length));
+   }
+
    /** The versions loaded now, as `[packageName, versionId, loaded]`. */
    entries(): [string, string, T][] {
       return [...this.loaded].map(([k, value]) => {

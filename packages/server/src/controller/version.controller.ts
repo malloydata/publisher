@@ -106,13 +106,13 @@ export class VersionController {
             "`manifestLocation` must be the URI of a build manifest, or null to serve live.",
          );
       }
-      const { versions } = await this.service(environmentName);
+      const { versions, environment } = await this.service(environmentName);
       const loaded: Package = await versions.setManifest(
          packageName,
          version,
          location as string | null,
       );
-      return loaded.getPackageMetadata();
+      return environment.describePackage(loaded);
    }
 
    async setLatest(

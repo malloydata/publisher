@@ -253,6 +253,66 @@ describe("versions routes", () => {
       expect(unknown.status).toBe(404);
    });
 
+   it("lists every version on /status, with the versioning settings", async () => {
+      const status = (await (
+         await fetch(`${baseUrl}/api/v0/status`)
+      ).json()) as {
+         packageVersioning?: string;
+         versionPromotion?: string;
+         environments: {
+            name: string;
+            packages?: Record<string, unknown>[];
+         }[];
+      };
+      expect(status.packageVersioning).toBe("on");
+      expect(status.versionPromotion).toBe("on-publish");
+      const entries = (
+         status.environments.find((e) => e.name === ENV_NAME)?.packages ?? []
+      ).filter((p) => p.name === PKG);
+      expect(
+         entries
+            .map((p) => [p.versionId, p.latestVersion, p.archiveStatus])
+            .sort(),
+      ).toEqual([
+         ["1.0.0", "2.0.0", "unarchive"],
+         ["1.1.0", "2.0.0", "unarchive"],
+         ["2.0.0", "2.0.0", "unarchive"],
+      ]);
+      for (const entry of entries) {
+         expect(entry.resource).toBe(
+            `/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
+         );
+         expect(typeof entry.loaded).toBe("boolean");
+         expect(entry.status).toMatchObject({ serving: entry.loaded });
+      }
+   });
+
+   it("lists the package once, as its latest, and its GET carries latestVersion", async () => {
+      const listed = (await (
+         await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages`)
+      ).json()) as Record<string, unknown>[];
+      const mine = listed.filter((p) => p.name === PKG);
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({
+         versionId: "2.0.0",
+         latestVersion: "2.0.0",
+         status: { serving: true },
+      });
+      const v1 = await call("GET", "?versionId=1.0.0");
+      expect(v1.json).toMatchObject({
+         versionId: "1.0.0",
+         latestVersion: "2.0.0",
+      });
+   });
+
+   it("refuses PATCH on a versioned package", async () => {
+      const patched = await call("PATCH", "", { description: "changed" });
+      expect([patched.status, patched.json.reason]).toEqual([
+         409,
+         "PACKAGE_IS_VERSIONED",
+      ]);
+   });
+
    it("answers 501 on every versions route with versioning off", async () => {
       process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
       try {

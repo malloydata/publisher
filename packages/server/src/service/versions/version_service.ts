@@ -472,6 +472,21 @@ export class VersionService<P = unknown> {
       return { latest: await this.latestOf(packageName), versions };
    }
 
+   /** Every version in the environment, each with its package's `latest`. */
+   async listAllVersions(): Promise<(Version & { latest: string | null })[]> {
+      const rows = await this.registry.listVersionsByEnvironment(
+         this.environmentId,
+      );
+      const latestByPackage = new Map<string, string | null>();
+      for (const name of new Set(rows.map((r) => r.packageName))) {
+         latestByPackage.set(name, await this.latestOf(name));
+      }
+      return rows.map((r) => ({
+         ...r,
+         latest: latestByPackage.get(r.packageName) ?? null,
+      }));
+   }
+
    /** One version, archived or not: 400 for a malformed id, 404 for none. */
    async getVersion(
       packageName: string,

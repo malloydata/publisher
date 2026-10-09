@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import vm from "vm";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const ENV_NAME = "package-versions-routes-env";
@@ -316,4 +317,66 @@ describe("package-scoped routes with versioning on", () => {
       expect((await json(res)).reason).toBe("VERSION_NOT_FOUND");
       expect((await fetch(api(`${PLAIN}/models`))).status).toBe(200);
    });
+
+   it("lists a data app with its version, and a pinned page queries that version", async () => {
+      const apps = (await (
+         await fetch(api(`${PKG}/data-apps?versionId=1.0.0`))
+      ).json()) as Record<string, unknown>[];
+      expect(apps[0]).toMatchObject({
+         versionId: "1.0.0",
+         resource: `/environments/${ENV_NAME}/packages/${PKG}/index.html?versionId=1.0.0`,
+      });
+      const plainApps = (await (
+         await fetch(api(`${PLAIN}/data-apps`))
+      ).json()) as Record<string, unknown>[];
+      expect(plainApps[0].versionId).toBeUndefined();
+      expect(String(plainApps[0].resource)).not.toContain("versionId");
+
+      expect(await pageQuery(PKG, "?versionId=1.0.0")).toBe(1);
+      expect(await pageQuery(PKG, "")).toBe(2);
+      // A page of a package with no versions ignores the parameter: it is
+      // neither pinned nor refused.
+      expect(await pageQuery(PLAIN, "?versionId=1.0.0")).toBe(0);
+   });
+
+   it("a page of a package with no versions sends no version with versioning off", async () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      try {
+         expect(await pageQuery(PLAIN, "?versionId=1.0.0")).toBe(0);
+      } finally {
+         process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      }
+   });
 });
+
+/**
+ * Run the data-app runtime (GET /sdk/publisher.js) as a page served from the
+ * package with `search` as its query string, and return what its default
+ * query answers. Sandbox-evaluated, as in sdk_givens.integration.spec.ts.
+ */
+async function pageQuery(packageName: string, search: string): Promise<number> {
+   const source = await (await fetch(`${baseUrl}/sdk/publisher.js`)).text();
+   const sandbox: Record<string, unknown> = {
+      fetch,
+      location: {
+         pathname: `/environments/${ENV_NAME}/packages/${packageName}/index.html`,
+         search,
+         origin: baseUrl,
+      },
+      console,
+   };
+   sandbox.self = sandbox;
+   sandbox.top = sandbox;
+   sandbox.window = sandbox;
+   vm.runInContext(source, vm.createContext(sandbox), {
+      filename: "publisher.js",
+   });
+   const publisher = (sandbox.window as { Publisher: unknown }).Publisher as {
+      query: (model: string, malloy: string) => Promise<{ answer: number }[]>;
+   };
+   const rows = await publisher.query(
+      "model.malloy",
+      "run: numbers -> which_version",
+   );
+   return Number(rows[0].answer);
+}
