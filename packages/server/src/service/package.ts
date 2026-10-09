@@ -1940,12 +1940,22 @@ export class Package {
     *
     * Refused bindings are DROPPED, not fatal: that source serves live, which is
     * always correct because the tier is a performance tier. The rest bind.
+    *
+    * A published version also binds only the tables its own definition built.
+    * Storage bindings are keyed by source NAME, and the versions of a
+    * `scope: package` package share the package's tables under unchanged
+    * names, so after one version rebuilt a table from a changed definition,
+    * another version of the same name would read rows its definition never
+    * asked for. A version's tree is immutable, so its content addresses never
+    * change: an entry whose `sourceEntityId` none of its same-named sources has
+    * was built by another version, and that source serves live. (The
+    * colocated tier is keyed by content address already.)
     */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
       const derived = deriveServeBindings(
-         entries,
+         this.getVersionId() === undefined ? entries : this.ownEntries(entries),
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
       );
       const eligibility = this.sourceEligibility;
@@ -1984,6 +1994,36 @@ export class Package {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * The entries this version's own sources built: same name, same content
+    * address. See {@link bindStorageServeBindings}.
+    */
+   private ownEntries(
+      entries: Record<string, ManifestEntry>,
+   ): Record<string, ManifestEntry> {
+      const own = new Set(
+         Object.values(this.buildPlan?.sources ?? {}).map(
+            (source) => `${source.name}\u0000${source.sourceEntityId}`,
+         ),
+      );
+      const kept: Record<string, ManifestEntry> = {};
+      for (const [key, entry] of Object.entries(entries)) {
+         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
+            kept[key] = entry;
+            continue;
+         }
+         logger.info(
+            "Serving a source live: its stored table was built from another version's definition",
+            {
+               packageName: this.packageName,
+               versionId: this.getVersionId(),
+               sourceName: entry.sourceName,
+            },
+         );
+      }
+      return kept;
    }
 
    /**

@@ -102,6 +102,7 @@ import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { VersionRegistry, VersionService } from "./versions/version_service";
 import { VersionStore } from "./versions/version_store";
+import { ownedVersionOf } from "./versions/materialization_scope";
 
 /**
  * Sibling dirs under `environmentPath` used by the install/delete pipeline so
@@ -441,9 +442,26 @@ export class Environment {
    // materialization repository. Undefined ⇒ no re-bind on load (routing then
    // depends on a fresh build, the old behavior). See
    // {@link rebindServeBindingsFromLocalStore}.
+   //
+   // `owned` names a published version of a `scope: version` package, which
+   // serves only its own runs' tables; undefined reads the package's shared
+   // runs (see ownedVersionOf).
    private storageBindingResolver?: (
       packageName: string,
+      owned: string | undefined,
    ) => Promise<Record<string, ManifestEntry>>;
+   // Materializations running now, per `package@version`: a version is never
+   // archived while one builds it (see registerVersionBuild).
+   private readonly versionBuilds = new Map<string, number>();
+   // What each loaded version read from the store when it loaded, so the
+   // settle after it is findable rebinds only when the store moved meanwhile
+   // (see settleSharedBindings).
+   private readonly storeBindingReads = new WeakMap<Package, string>();
+   // Called when a version is archived, to reclaim the tables it alone owns.
+   // Set by EnvironmentStore (see setVersionArchivedHook).
+   private versionArchivedHook:
+      | ((packageName: string, versionId: string) => void)
+      | null = null;
    public metadata: ApiEnvironment;
    // The shared memory governor that consults process RSS. Optional —
    // when null the gate is a no-op and the environment behaves exactly
@@ -2401,9 +2419,84 @@ export class Environment {
     * materialization entries — both tiers (see {@link storageBindingResolver}).
     */
    public setStorageBindingResolver(
-      resolver: (packageName: string) => Promise<Record<string, ManifestEntry>>,
+      resolver: (
+         packageName: string,
+         owned: string | undefined,
+      ) => Promise<Record<string, ManifestEntry>>,
    ): void {
       this.storageBindingResolver = resolver;
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback run when a version is
+    * archived, which reclaims the tables that version alone owns. It must
+    * only schedule work, and must not throw.
+    */
+   public setVersionArchivedHook(
+      hook: ((packageName: string, versionId: string) => void) | null,
+   ): void {
+      this.versionArchivedHook = hook;
+   }
+
+   /**
+    * Record that a materialization of a version is running, until the
+    * returned release is called. Called holding the version's lock, so an
+    * archive (which takes the same lock) either refuses because the build is
+    * running, or commits before the build starts and the build is refused.
+    */
+   public registerVersionBuild(
+      packageName: string,
+      versionId: string,
+   ): () => void {
+      const k = `${packageName}@${versionId}`;
+      this.versionBuilds.set(k, (this.versionBuilds.get(k) ?? 0) + 1);
+      let released = false;
+      return () => {
+         if (released) return;
+         released = true;
+         const left = (this.versionBuilds.get(k) ?? 1) - 1;
+         if (left > 0) this.versionBuilds.set(k, left);
+         else this.versionBuilds.delete(k);
+      };
+   }
+
+   /** A loaded version, without loading it. */
+   public peekVersion(
+      packageName: string,
+      versionId: string,
+   ): Package | undefined {
+      return this.versionService?.cache.peek(packageName, versionId);
+   }
+
+   /** The versions of a package loaded now. */
+   public getLoadedVersionIds(packageName: string): string[] {
+      return this.versionService?.cache.loadedVersionsOf(packageName) ?? [];
+   }
+
+   /**
+    * Run `fn` on a loaded version, holding that version's lock, so it never
+    * overlaps a manifest rebind or an archive of it. A version that is not
+    * loaded is skipped (undefined): it binds from the store when it loads.
+    */
+   private async withLoadedVersion<T>(
+      packageName: string,
+      versionId: string,
+      what: string,
+      fn: (pkg: Package) => Promise<T>,
+   ): Promise<T | undefined> {
+      const versions = this.versionService;
+      if (!versions) return undefined;
+      return versions.withVersionLock(packageName, versionId, async () => {
+         const pkg = versions.cache.peek(packageName, versionId);
+         if (!pkg) {
+            logger.debug(`Cannot ${what}: the version is not loaded`, {
+               packageName,
+               versionId,
+            });
+            return undefined;
+         }
+         return fn(pkg);
+      });
    }
 
    /**
@@ -2448,7 +2541,13 @@ export class Environment {
       if (pkg.getPackageMetadata().manifestLocation) return;
       const packageName = pkg.getPackageName();
       try {
-         const rawEntries = await this.storageBindingResolver(packageName);
+         const rawEntries = await this.storageBindingResolver(
+            packageName,
+            ownedVersionOf(pkg),
+         );
+         if (pkg.getVersionId() !== undefined) {
+            this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
+         }
          if (Object.keys(rawEntries).length === 0) return;
          const { tableNameManifest, storageEntries } = splitManifestEntries(
             rawEntries,
@@ -2721,8 +2820,13 @@ export class Environment {
             removePackageRecord: hooks.removePackageRecord,
             boundManifestOf: (loaded) =>
                loaded.getPackageMetadata().manifestLocation ?? null,
+            isVersionBuilding: (packageName, versionId) =>
+               this.versionBuilds.has(`${packageName}@${versionId}`),
+            onVersionArchived: (packageName, versionId) =>
+               this.versionArchivedHook?.(packageName, versionId),
             onVersionLoaded: (packageName, loaded, isLatest) => {
                this.setPackageStatus(packageName, PackageStatus.SERVING);
+               void this.settleSharedBindings(packageName, loaded);
                // The package's load failure, and the retrieval index (keyed
                // by package name), both belong to the version a request
                // without a version reaches: only `latest` clears or feeds them.
@@ -2771,7 +2875,63 @@ export class Environment {
          manifestLocation: version.manifestPath,
       });
       await this.bindManifestIfConfigured(loaded);
+      await this.rebindServeBindingsFromLocalStore(loaded);
       return loaded;
+   }
+
+   /**
+    * Read a version's shared bindings from the store again, once it is
+    * findable. An auto-run of a `scope: package` version records the shared
+    * tables it is about to rebuild, then rebinds the versions it finds
+    * loaded. A version that read the store before that record and became
+    * findable after that rebind was missed by both, and would serve a table
+    * the run is rebuilding. Read here, after it is findable, the store has
+    * the record, or the run's later rebinds find the version. A version that
+    * owns its tables shares none, and one bound to a host manifest is the
+    * host's to bind.
+    */
+   private async settleSharedBindings(
+      packageName: string,
+      loaded: Package,
+   ): Promise<void> {
+      const versionId = loaded.getVersionId();
+      if (versionId === undefined || ownedVersionOf(loaded) !== undefined) {
+         return;
+      }
+      if (loaded.getPackageMetadata().manifestLocation) return;
+      if (!this.storageBindingResolver) return;
+      try {
+         const entries = await this.storageBindingResolver(
+            packageName,
+            undefined,
+         );
+         // Nothing moved since the load read the store: what it bound stands.
+         if (this.storeBindingReads.get(loaded) === JSON.stringify(entries)) {
+            return;
+         }
+         const { tableNameManifest, storageEntries } = splitManifestEntries(
+            entries,
+            `local store (package ${packageName} version ${versionId})`,
+         );
+         await this.bindPackageColocatedServeManifest(
+            packageName,
+            tableNameManifest,
+            versionId,
+         );
+         if (getPersistStorageMode() !== "off") {
+            await this.bindPackageStorageServeBindings(
+               packageName,
+               storageEntries,
+               versionId,
+            );
+         }
+      } catch (error) {
+         logger.warn("Failed to settle a loaded version's serve bindings", {
+            packageName,
+            versionId,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 
    /** Rebind a loaded version to a build manifest, or revert it to live. */
@@ -3331,8 +3491,25 @@ export class Environment {
    public async reloadAllModelsForPackage(
       packageName: string,
       manifest: FreshnessManifest,
+      // A published version of the package; undefined, its unversioned slot.
+      versionId?: string,
    ): Promise<void> {
       assertSafePackageName(packageName);
+      if (versionId !== undefined) {
+         await this.trackPackageLoad(packageName, () =>
+            this.withLoadedVersion(
+               packageName,
+               versionId,
+               "reload its models",
+               async (pkg) => {
+                  const has = Object.keys(manifest).length > 0;
+                  if (!has && !pkg.hasBoundTableNameManifest()) return;
+                  await pkg.reloadAllModels(manifest);
+               },
+            ),
+         );
+         return;
+      }
       return this.trackPackageLoad(packageName, () =>
          this.withPackageLock(packageName, async () => {
             const pkg = this.packages.get(packageName);
@@ -3361,8 +3538,23 @@ export class Environment {
    public async bindPackageStorageServeBindings(
       packageName: string,
       entries: Record<string, ManifestEntry>,
+      // A published version of the package; undefined, its unversioned slot.
+      versionId?: string,
    ): Promise<void> {
       assertSafePackageName(packageName);
+      if (versionId !== undefined) {
+         await this.withLoadedVersion(
+            packageName,
+            versionId,
+            "bind storage serve bindings",
+            async (pkg) => {
+               // Host-authoritative, as below.
+               if (pkg.getPackageMetadata().manifestLocation) return;
+               pkg.bindStorageServeBindings(entries);
+            },
+         );
+         return;
+      }
       return this.withPackageLock(packageName, async () => {
          const pkg = this.packages.get(packageName);
          if (!pkg) {
@@ -3416,8 +3608,28 @@ export class Environment {
    public async bindPackageColocatedServeManifest(
       packageName: string,
       entries: FreshnessManifest,
+      // A published version of the package; undefined, its unversioned slot.
+      versionId?: string,
    ): Promise<void> {
       assertSafePackageName(packageName);
+      if (versionId !== undefined) {
+         await this.trackPackageLoad(packageName, () =>
+            this.withLoadedVersion(
+               packageName,
+               versionId,
+               "bind a colocated serve manifest",
+               async (pkg) => {
+                  // Host-authoritative, as below.
+                  if (pkg.getPackageMetadata().manifestLocation) return;
+                  const hasColocated = Object.keys(entries).length > 0;
+                  if (hasColocated || pkg.hasBoundTableNameManifest()) {
+                     await pkg.reloadAllModels(entries);
+                  }
+               },
+            ),
+         );
+         return;
+      }
       // A recompile, so reported as loading while it runs (see trackPackageLoad).
       return this.trackPackageLoad(packageName, () =>
          this.withPackageLock(packageName, async () => {

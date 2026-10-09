@@ -2994,9 +2994,11 @@ paths:
         - materializations
       operationId: list-materializations
       summary: List materializations for a package
-      description:
+      description: >-
         Returns the materialization history for the package, ordered by
-        most recent first.
+        most recent first. For a package with published versions, the runs of
+        one version (the one `versionId` names, or `latest`), together with
+        the runs from before the package's first versioned publish.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -3035,6 +3037,11 @@ paths:
         - materializations
       operationId: get-materialization
       summary: Get a specific materialization
+      description: >-
+        A run's id is unique, so with no `versionId` the run is found whichever
+        version built it. Naming a version also requires the run to be that
+        version's (or one from before the package's first versioned publish);
+        the same holds for stopping and deleting a run.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"

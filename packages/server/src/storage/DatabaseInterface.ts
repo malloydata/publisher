@@ -124,22 +124,29 @@ export interface ResourceRepository {
    listMaterializations(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]>;
    getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
    ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot: a run that writes only one version's own tables holds
+    * its version's slot, so versions build side by side.
+    */
    getActiveMaterialization(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null>;
    createMaterialization(
       environmentId: string,
       packageName: string,
       status?: MaterializationStatus,
       metadata?: Record<string, unknown> | null,
+      options?: { version?: string | null; lockVersion?: string },
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,
@@ -299,8 +306,20 @@ export interface Materialization {
    completedAt: Date | null;
    error: string | null;
    metadata: Record<string, unknown> | null;
+   /** The package version the run built; null for a package with none. */
+   version: string | null;
    createdAt: Date;
    updatedAt: Date;
+}
+
+/** Narrows a materialization listing to one version's runs. */
+export interface MaterializationListOptions {
+   limit?: number;
+   offset?: number;
+   /** Only the runs that built this version. */
+   version?: string;
+   /** With `version`: also the runs from before any version existed. */
+   includeUnversioned?: boolean;
 }
 
 /**

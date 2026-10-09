@@ -4,6 +4,7 @@
 import {
    BuildManifestResult,
    Materialization,
+   MaterializationListOptions,
    MaterializationStatus,
    MaterializationUpdate,
 } from "../DatabaseInterface";
@@ -21,8 +22,20 @@ const ACTIVE_STATUSES: readonly MaterializationStatus[] = [
    "MANIFEST_ROWS_READY",
 ];
 
-function activeKeyFor(environmentId: string, packageName: string): string {
-   return `${environmentId}|${packageName}`;
+/**
+ * The slot a run holds while it is active. One run at a time per package by
+ * default; a run that writes only one version's own tables holds that
+ * version's slot instead (`lockVersion`), so versions build side by side.
+ * Package names cannot contain `@`, so the two shapes never collide.
+ */
+function activeKeyFor(
+   environmentId: string,
+   packageName: string,
+   lockVersion?: string,
+): string {
+   return lockVersion === undefined
+      ? `${environmentId}|${packageName}`
+      : `${environmentId}|${packageName}@${lockVersion}`;
 }
 
 /**
@@ -62,11 +75,18 @@ export class MaterializationRepository {
    async list(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ?";
       const params: unknown[] = [environmentId, packageName];
+      if (options?.version !== undefined) {
+         sql += options.includeUnversioned
+            ? " AND (version = ? OR version IS NULL)"
+            : " AND version = ?";
+         params.push(options.version);
+      }
+      sql += " ORDER BY created_at DESC";
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
          params.push(options.limit);
@@ -111,14 +131,22 @@ export class MaterializationRepository {
       return row ? this.mapRow(row) : null;
    }
 
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot (see activeKeyFor).
+    */
    async getActive(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null> {
       const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
       const row = await this.db.get<Record<string, unknown>>(
-         `SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN (${placeholders})`,
-         [environmentId, packageName, ...ACTIVE_STATUSES],
+         `SELECT * FROM materializations WHERE active_key = ? AND status IN (${placeholders})`,
+         [
+            activeKeyFor(environmentId, packageName, lockVersion),
+            ...ACTIVE_STATUSES,
+         ],
       );
       return row ? this.mapRow(row) : null;
    }
@@ -128,6 +156,12 @@ export class MaterializationRepository {
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
+      options: {
+         /** The package version the run builds; null when it has none. */
+         version?: string | null;
+         /** Hold this version's slot rather than the package's. */
+         lockVersion?: string;
+      } = {},
    ): Promise<Materialization> {
       const id = this.generateId();
       const now = this.now();
@@ -138,13 +172,13 @@ export class MaterializationRepository {
       // than in a check-then-write window.
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
-         : activeKeyFor(environmentId, packageName);
+         : activeKeyFor(environmentId, packageName, options.lockVersion);
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at, version)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
             RETURNING *`,
             [
                id,
@@ -155,6 +189,7 @@ export class MaterializationRepository {
                metadataJson,
                iso,
                iso,
+               options.version ?? null,
             ],
          );
          return this.mapRow(rows[0]);
@@ -180,15 +215,17 @@ export class MaterializationRepository {
       if (updates.status !== undefined) {
          setClauses.push(`status = ?`);
          params.push(updates.status);
-         // Clear active_key on any transition to a terminal state; set it on
-         // any transition to a non-terminal state. The unique index
-         // guarantees we can never end up with two active rows for the same
-         // (environment, package).
+         // Clear active_key on any transition to a terminal state; keep it
+         // on a transition between non-terminal states, so a run keeps the
+         // slot it was created holding (its package's or its version's). A
+         // terminal state has no way out, so a key is never set again; the
+         // fallback only covers a row written without one. The unique index
+         // guarantees no two active rows ever hold one slot.
          if (TERMINAL_STATUSES.has(updates.status)) {
             setClauses.push(`active_key = NULL`);
          } else {
             setClauses.push(
-               `active_key = environment_id || '|' || package_name`,
+               `active_key = COALESCE(active_key, environment_id || '|' || package_name)`,
             );
          }
       }
@@ -280,6 +317,7 @@ export class MaterializationRepository {
             ? new Date(row.completed_at as string)
             : null,
          error: row.error != null ? (row.error as string) : null,
+         version: row.version != null ? (row.version as string) : null,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
       };

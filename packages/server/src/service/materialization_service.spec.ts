@@ -315,6 +315,17 @@ function buildEnvironmentStub(opts: {
    };
 }
 
+/**
+ * The version surface of an environment whose packages have no published
+ * versions. Every fake environment here spreads it in.
+ */
+const UNVERSIONED_ENVIRONMENT = {
+   getVersionService: () => null,
+   getLoadedVersionIds: () => [],
+   peekVersion: () => undefined,
+   registerVersionBuild: () => () => undefined,
+};
+
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
 function setPackage(
    environmentStore: EnvironmentStore,
@@ -331,6 +342,7 @@ function setPackage(
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({
+      ...UNVERSIONED_ENVIRONMENT,
       getPackage: sinon.stub().resolves(pkg),
       withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
          fn(),
@@ -365,6 +377,7 @@ describe("MaterializationService", () => {
          });
          const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
@@ -413,6 +426,7 @@ describe("MaterializationService", () => {
          });
          const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
@@ -488,6 +502,7 @@ describe("MaterializationService", () => {
          const storageSpy = sinon.stub().resolves();
          const colocatedSpy = sinon.stub().resolves();
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
@@ -647,6 +662,9 @@ describe("MaterializationService", () => {
                mode: "auto",
                trigger: "ON_DEMAND",
             },
+            // An unversioned package's run builds no version and holds the
+            // package's slot.
+            { version: null, lockVersion: undefined },
          ]);
       });
 
@@ -1008,6 +1026,7 @@ describe("MaterializationService", () => {
          const runSQL = sinon.stub().resolves();
          const getMalloyConnection = sinon.stub().resolves({ runSQL });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon.stub().resolves({ getMalloyConnection }),
             withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
                fn(),
@@ -1044,6 +1063,7 @@ describe("MaterializationService", () => {
             .stub()
             .resolves({ runSQL, dialectName: "duckdb" });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon.stub().resolves({ getMalloyConnection }),
             withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
                fn(),
@@ -1084,6 +1104,7 @@ describe("MaterializationService", () => {
             .stub()
             .resolves({ runSQL, dialectName: "standardsql" });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon.stub().resolves({ getMalloyConnection }),
             withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
                fn(),
@@ -1121,6 +1142,7 @@ describe("MaterializationService", () => {
          const runSQL = sinon.stub().rejects(new Error("boom"));
          const getMalloyConnection = sinon.stub().resolves({ runSQL });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon.stub().resolves({ getMalloyConnection }),
             withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
                fn(),
@@ -1179,6 +1201,7 @@ describe("deleteMaterialization telemetry", () => {
          .stub()
          .resolves({ runSQL, dialectName: "duckdb" });
       (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+         ...UNVERSIONED_ENVIRONMENT,
          getPackage: sinon.stub().resolves({ getMalloyConnection }),
          withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
             fn(),

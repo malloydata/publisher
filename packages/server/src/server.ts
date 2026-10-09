@@ -433,6 +433,22 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+// Archiving a version reclaims the tables it alone owns, in the background.
+environmentStore.setVersionArchivedHook(
+   (environmentName, packageName, versionId) => {
+      void materializationService.reclaimVersionTables(
+         environmentName,
+         packageName,
+         versionId,
+      );
+   },
+);
+// A reclaim that a crash or a failed drop cut short is retried once the
+// environments have loaded: nothing else would start it again.
+void environmentStore.finishedInitialization.then(
+   () => materializationService.reclaimArchivedVersions(),
+   () => undefined,
+);
 /**
  * Construct and start the standalone materialization scheduler from environment
  * config, or return null when the feature is disabled
@@ -2191,7 +2207,7 @@ app.get(
          const builds = await materializationController.listMaterializations(
             req.params.environmentName,
             req.params.packageName,
-            { limit, offset },
+            { limit, offset, versionId: req.query.versionId },
          );
          res.status(200).json(builds);
       } catch (error) {
@@ -2209,6 +2225,7 @@ app.get(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            req.query.versionId,
          );
          res.status(200).json(build);
       } catch (error) {
@@ -2228,6 +2245,7 @@ app.post(
                req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
+               req.query.versionId,
             );
             res.status(200).json(build);
          } else {
@@ -2254,7 +2272,7 @@ app.delete(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
+            { dropTables, versionId: req.query.versionId },
          );
          res.status(204).send();
       } catch (error) {

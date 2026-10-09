@@ -7,6 +7,7 @@ import {
    IncrementalLedgerEntry,
    LedgerTableIdentity,
    Materialization,
+   MaterializationListOptions,
    StorageDestination,
    MaterializationStatus,
    MaterializationUpdate,
@@ -282,7 +283,7 @@ export class DuckDBRepository implements ResourceRepository {
    async listMaterializations(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]> {
       return this.materializationRepo.list(environmentId, packageName, options);
    }
@@ -304,8 +305,13 @@ export class DuckDBRepository implements ResourceRepository {
    async getActiveMaterialization(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null> {
-      return this.materializationRepo.getActive(environmentId, packageName);
+      return this.materializationRepo.getActive(
+         environmentId,
+         packageName,
+         lockVersion,
+      );
    }
 
    async createMaterialization(
@@ -313,12 +319,14 @@ export class DuckDBRepository implements ResourceRepository {
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
+      options: { version?: string | null; lockVersion?: string } = {},
    ): Promise<Materialization> {
       return this.materializationRepo.create(
          environmentId,
          packageName,
          status,
          metadata,
+         options,
       );
    }
 

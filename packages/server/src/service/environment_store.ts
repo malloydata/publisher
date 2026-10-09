@@ -53,6 +53,7 @@ import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
 import { VersionStore } from "./versions/version_store";
+import { storageBindingResolverFor } from "./versions/materialization_scope";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
@@ -497,6 +498,15 @@ export class EnvironmentStore {
    private packageLoadedHook:
       | ((environmentName: string, pkg: Package) => void)
       | null = null;
+   // Called when a version is archived. Set once at server start; each
+   // Environment picks it up when its version registry is bound.
+   private versionArchivedHook:
+      | ((
+           environmentName: string,
+           packageName: string,
+           versionId: string,
+        ) => void)
+      | null = null;
 
    /**
     * Set of environment names that should be loaded "in place" — i.e. the
@@ -579,6 +589,36 @@ export class EnvironmentStore {
       for (const env of this.environments.values()) {
          this.attachPackageLoadedHook(env);
       }
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback run when a version is
+    * archived, which reclaims the tables that version alone owns. Remembered,
+    * so Environments bound after this call also use it.
+    */
+   public setVersionArchivedHook(
+      hook:
+         | ((
+              environmentName: string,
+              packageName: string,
+              versionId: string,
+           ) => void)
+         | null,
+   ): void {
+      this.versionArchivedHook = hook;
+      for (const env of this.environments.values()) {
+         this.attachVersionArchivedHook(env);
+      }
+   }
+
+   private attachVersionArchivedHook(env: Environment): void {
+      const hook = this.versionArchivedHook;
+      env.setVersionArchivedHook(
+         hook
+            ? (packageName, versionId) =>
+                 hook(env.getEnvironmentName(), packageName, versionId)
+            : null,
+      );
    }
 
    private attachPackageLoadedHook(env: Environment): void {
@@ -825,28 +865,7 @@ export class EnvironmentStore {
                            this.memoryGovernor,
                         );
                         this.attachPackageLoadedHook(environmentInstance);
-                        // Re-establish serve routing when a package loads, from
-                        // its latest successful materialization — so serving
-                        // survives a restart, not only a fresh build. The full
-                        // entry map is returned; the environment splits it by
-                        // tier (colocated + storage=) in
-                        // rebindServeBindingsFromLocalStore.
                         const envId = dbEnvironment.id;
-                        environmentInstance.setStorageBindingResolver(
-                           async (packageName) => {
-                              const runs =
-                                 await repository.listMaterializations(
-                                    envId,
-                                    packageName,
-                                 );
-                              const latest = runs.find(
-                                 (m) =>
-                                    m.status === "MANIFEST_FILE_READY" &&
-                                    m.manifest?.entries,
-                              );
-                              return latest?.manifest?.entries ?? {};
-                           },
-                        );
 
                         await this.bindVersionRegistry(
                            environmentInstance,
@@ -1013,6 +1032,16 @@ export class EnvironmentStore {
       const repository = this.storageManager.getRepository();
       const environmentName = environment.getEnvironmentName();
       const alreadyBound = environment.getVersionService() !== null;
+      // Re-establish serve routing when a package loads, from its latest
+      // successful materialization — so serving survives a restart, not only
+      // a fresh build. The full entry map is returned; the environment splits
+      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // A version of a `scope: version` package reads only its own runs;
+      // everything else reads the package's shared runs.
+      environment.setStorageBindingResolver(
+         storageBindingResolverFor(repository, environmentId),
+      );
+      this.attachVersionArchivedHook(environment);
       environment.bindVersions(repository, environmentId, {
          downloaderFor: (packageName, location) => (stagingPath) =>
             this.downloadPackageInto(

@@ -182,6 +182,35 @@ describe("versions routes", () => {
       expect(await answerOf("1.0.0")).toBe(1);
    });
 
+   it("takes versionId on every materialization route", async () => {
+      const listed = await call("GET", "/materializations?versionId=1.1.0");
+      expect([listed.status, listed.json]).toEqual([200, []]);
+      for (const [versionId, status, reason] of [
+         ["9.9.9", 404, "VERSION_NOT_FOUND"],
+         ["not-a-version", 400, "VERSION_ID_INVALID"],
+      ] as const) {
+         const answers = [
+            await call("GET", `/materializations?versionId=${versionId}`),
+            await call("POST", "/materializations", { versionId }),
+            await call("GET", `/materializations/m-1?versionId=${versionId}`),
+            await call(
+               "POST",
+               `/materializations/m-1?action=stop&versionId=${versionId}`,
+            ),
+            await call(
+               "DELETE",
+               `/materializations/m-1?versionId=${versionId}`,
+            ),
+         ];
+         for (const answer of answers) {
+            expect([answer.status, answer.json.reason]).toEqual([
+               status,
+               reason,
+            ]);
+         }
+      }
+   });
+
    it("refuses to archive latest, and refuses a bad body", async () => {
       const latest = await call("PATCH", "/versions/2.0.0", {
          archiveStatus: "archive",
