@@ -648,6 +648,7 @@ export class Environment {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
+      versionId?: unknown,
    ): Promise<{
       problems: TaggedLogMessage[];
       sql?: string;
@@ -707,6 +708,22 @@ export class Environment {
                `/compile takes a .malloy model path.`,
          );
       }
+      // Versioning transition: with it off, every package compiles in its single
+      // slot, under its lock. With it on, a versioned package compiles in the
+      // resolved version's own folder, with no lock: its files never change.
+      let versioned: Package | undefined;
+      if (
+         isVersioningEnabled() &&
+         this.versionService &&
+         (!this.packages.has(packageName) ||
+            (versionId !== undefined && versionId !== null && versionId !== ""))
+      ) {
+         versioned = (
+            await this.versionService.getLoaded(packageName, versionId)
+         )?.loaded;
+      }
+      const compileLock = <T>(fn: () => Promise<T>): Promise<T> =>
+         versioned ? fn() : this.withPackageLock(packageName, fn);
       // Hold the per-package mutex for the duration of every disk read —
       // both the explicit `fs.readFile(modelPath)` below and the implicit
       // import resolution that `runtime.loadModel` does through the URL
@@ -715,19 +732,14 @@ export class Environment {
       // compile can never observe a half-rewritten tree. The slow Phase 1
       // download happens outside this lock, so a multi-second clone does
       // not block compiles.
-      return this.withPackageLock(packageName, async () => {
+      return compileLock(async () => {
          // Sanitized join: input segments are allowlisted above; the
          // resolve-and-contain check here is the secondary guard CodeQL's
          // path-injection sanitizer recognises.
-         const modelPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-            modelName,
-         );
-         const packagePath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
+         const packagePath = versioned
+            ? versioned.getPackagePath()
+            : safeJoinUnderRoot(this.environmentPath, packageName);
+         const modelPath = safeJoinUnderRoot(packagePath, modelName);
          // Where the compiled text lives, by scope. "append": a virtual file
          // in the model's directory (so relative imports resolve) holding the
          // model's content with the source appended — the historical behavior,
@@ -808,7 +820,8 @@ export class Environment {
          };
 
          // Use the locked variant — we already hold the per-package mutex.
-         const pkg = await this._loadOrGetPackageLocked(packageName);
+         const pkg =
+            versioned ?? (await this._loadOrGetPackageLocked(packageName));
 
          // Authorize gate: /compile is compile-only, but it can still act
          // as a schema oracle (a denied caller learns a gated source's columns

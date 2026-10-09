@@ -62,6 +62,7 @@ import {
    getQueryMetadataMode,
    embeddingStartupNotices,
    getRetrievalConfig,
+   isVersioningEnabled,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
@@ -630,7 +631,21 @@ async function serveFromPackage(
          req.params.environmentName,
          false,
       );
-      const pkg = await environment.getPackage(req.params.packageName, false);
+      // Versioning transition: with it off, `?versionId=` is not read here.
+      // With it on, a versioned package serves the version the URL names
+      // (`latest` when none), and a package with no versions ignores the
+      // parameter, so a proxy that forwards a page's query string unchanged
+      // keeps working. The version comes from the URL only.
+      let staticVersionId: unknown;
+      if (isVersioningEnabled() && req.query.versionId !== undefined) {
+         const versions = environment.getVersionService();
+         if (await versions?.isVersioned(req.params.packageName)) {
+            staticVersionId = req.query.versionId;
+         }
+      }
+      const pkg = await environment.getPackage(req.params.packageName, false, {
+         versionId: staticVersionId,
+      });
       // Only the package's public/ directory is web-served. Models, data, and
       // the publisher.json manifest live outside it and are never reachable
       // through this route. This single directory boundary is the whole
@@ -957,6 +972,26 @@ const setVersionIdError = (res: express.Response) => {
    res.status(status).json(json);
 };
 
+/**
+ * Versioning transition: a route that answered a `versionId` with 501 before
+ * versions keeps answering it that way while versioning is off. Returns false
+ * when it has sent that response. Goes away with the flag.
+ */
+const versionIdAllowed = (res: express.Response, value: unknown): boolean => {
+   if (!isVersioningEnabled() && value) {
+      setVersionIdError(res);
+      return false;
+   }
+   return true;
+};
+
+/**
+ * The `versionId` a request names, for the controllers: none while versioning
+ * is off (versioning transition), so every package is read as its one slot.
+ */
+const versionIdOf = (value: unknown): unknown =>
+   isVersioningEnabled() ? value : undefined;
+
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -996,6 +1031,7 @@ app.get(
          const pkg = await environment.getPackage(
             req.params.packageName,
             false,
+            { versionId: versionIdOf(req.query.versionId) },
          );
          const dataApps = await listPackageDataApps(
             req.params.environmentName,
@@ -1115,7 +1151,10 @@ app.get(
          assertSafePackageName(env);
          assertSafePackageName(pkg);
          const environment = await environmentStore.getEnvironment(env, false);
-         await environment.getPackage(pkg, false); // 404 if missing
+         // 404 if missing; 404/410 for a version it does not serve.
+         await environment.getPackage(pkg, false, {
+            versionId: versionIdOf(req.query.versionId),
+         });
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1418,6 +1457,7 @@ app.get(
                req.params.environmentName,
                req.params.connectionName,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1439,6 +1479,7 @@ app.get(
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1460,6 +1501,7 @@ app.get(
                req.params.schemaName,
                req.params.tablePath,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1504,6 +1546,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1565,6 +1608,7 @@ app.post(
                   queryMetadata: req.body?.queryMetadata,
                   queryClass: req.body?.queryClass,
                },
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1606,6 +1650,7 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1619,6 +1664,7 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages`,
    async (req, res) => {
+      // Listing is not package-scoped and takes no version.
       if (req.query.versionId) {
          setVersionIdError(res);
          return;
@@ -1663,10 +1709,7 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
       const reload = booleanParamOr400(req, res, "reload");
       if (reload === undefined) {
          return;
@@ -1677,6 +1720,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                reload,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1727,10 +1771,7 @@ app.delete(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
@@ -1744,7 +1785,10 @@ app.get(
             await modelController.listModels(
                req.params.environmentName,
                req.params.packageName,
-               { includeHiddenFilesAndSources },
+               {
+                  includeHiddenFilesAndSources,
+                  versionId: versionIdOf(req.query.versionId),
+               },
             ),
          );
       } catch (error) {
@@ -1758,10 +1802,7 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
@@ -1778,7 +1819,10 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
-               { includeHiddenFilesAndSources },
+               {
+                  includeHiddenFilesAndSources,
+                  versionId: versionIdOf(req.query.versionId),
+               },
             ),
          );
       } catch (error) {
@@ -1799,10 +1843,7 @@ app.put(
    // behind it.
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
       try {
          // Express stores wildcard matches in params['0'].
          const result = await dashboardController.putDashboardSource(
@@ -1810,6 +1851,7 @@ app.put(
             req.params.packageName,
             (req.params as Record<string, string>)["0"],
             req.body,
+            versionIdOf(req.query.versionId),
          );
          // 201 for a file that did not exist, the way a created materialization
          // answers; 200 for one that was replaced.
@@ -1838,16 +1880,14 @@ app.put(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          res.status(200).json(
             await dashboardController.listDashboards(
                req.params.environmentName,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1861,10 +1901,7 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          res.status(200).json(
@@ -1872,6 +1909,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                req.params.dashboardName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1885,16 +1923,14 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          res.status(200).json(
             await modelController.listNotebooks(
                req.params.environmentName,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -1911,10 +1947,7 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          const cellIndex = parseInt(req.params.cellIndex, 10);
@@ -1968,6 +2001,7 @@ app.get(
             filterParams,
             bypassFilters,
             givens,
+            versionIdOf(req.query.versionId),
          );
          setFilterDeprecationHeaders(res, {
             filterParams,
@@ -1985,10 +2019,7 @@ app.get(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          // Express stores wildcard matches in params['0']
@@ -1998,6 +2029,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                notebookPath,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -2012,10 +2044,7 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
    queryConcurrency(),
    async (req, res) => {
-      if (req.body.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.body.versionId)) return;
       const includeHiddenFilesAndSources = booleanParamOr400(
          req,
          res,
@@ -2051,7 +2080,7 @@ app.post(
             {
                queryMetadata: req.body?.queryMetadata,
                queryClass: req.body?.queryClass,
-               versionId: req.body?.versionId as string | undefined,
+               versionId: versionIdOf(req.body?.versionId),
             },
             // Disables the author's `#(authorize)` gates. From a HEADER, never the
             // body, and nothing in Publisher bounds who may send it — the
@@ -2079,16 +2108,14 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/databases`,
    async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
+      if (!versionIdAllowed(res, req.query.versionId)) return;
 
       try {
          res.status(200).json(
             await databaseController.listDatabases(
                req.params.environmentName,
                req.params.packageName,
+               versionIdOf(req.query.versionId),
             ),
          );
       } catch (error) {
@@ -2120,6 +2147,7 @@ app.post(
             // invalid value is rejected by compileSource with a 400 naming
             // the valid set, never silently consumed.
             req.body.scope ?? "append",
+            versionIdOf(req.query.versionId),
          );
          res.status(200).json(result);
       } catch (error) {

@@ -16,12 +16,13 @@ export class DatabaseController {
    public async listDatabases(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiDatabase[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       return p.listDatabases();
    }
 }

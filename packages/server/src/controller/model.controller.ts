@@ -3,7 +3,11 @@
 
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
-import { ModelNotFoundError, NotQueryableError } from "../errors";
+import {
+   ModelNotFoundError,
+   NotQueryableError,
+   PackageVersionError,
+} from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
@@ -23,6 +27,8 @@ type ApiRawNotebook = components["schemas"]["RawNotebook"];
  */
 export interface ModelReadOptions {
    includeHiddenFilesAndSources?: boolean;
+   /** The published version to read; absent, empty or null means `latest`. */
+   versionId?: unknown;
 }
 
 export class ModelController {
@@ -41,19 +47,22 @@ export class ModelController {
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: options.versionId,
+      });
       return p.listModels(options);
    }
 
    public async listNotebooks(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiNotebook[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       return p.listNotebooks();
    }
 
@@ -70,7 +79,9 @@ export class ModelController {
             environmentName,
             false,
          );
-         const p = await environment.getPackage(packageName, false);
+         const p = await environment.getPackage(packageName, false, {
+            versionId: options.versionId,
+         });
          const model = p.getModel(modelPath);
          if (!model) {
             throw new ModelNotFoundError(`${modelPath} does not exist`);
@@ -120,7 +131,8 @@ export class ModelController {
          // Re-throw these as-is, so they keep their 404.
          if (
             error instanceof ModelNotFoundError ||
-            error instanceof NotQueryableError
+            error instanceof NotQueryableError ||
+            error instanceof PackageVersionError
          ) {
             throw error;
          }
@@ -135,12 +147,13 @@ export class ModelController {
       environmentName: string,
       packageName: string,
       notebookPath: string,
+      versionId?: unknown,
    ): Promise<ApiRawNotebook> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
@@ -160,6 +173,7 @@ export class ModelController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
+      versionId?: unknown,
    ): Promise<NotebookCellRunResult> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -169,7 +183,7 @@ export class ModelController {
       // QueryController.getQuery — already-loaded packages bypass the
       // package-load admission gate.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);

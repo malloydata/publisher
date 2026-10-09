@@ -48,7 +48,7 @@ export class QueryController {
       metadata?: {
          queryMetadata?: unknown;
          queryClass?: unknown;
-         versionId?: string;
+         versionId?: unknown;
       },
       /**
        * Skip `#(authorize)` gates for this request. Set from the
@@ -80,7 +80,9 @@ export class QueryController {
       // package-load admission gate, so this is the only thing protecting
       // query traffic on a hot pod.
       environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, {
+         versionId: metadata?.versionId,
+      });
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -114,10 +116,10 @@ export class QueryController {
                      request: requestMetadata,
                      queryClass,
                      environment: environmentName,
-                     // Always undefined today: the route 501s any versionId
-                     // before this runs. Wired so that lifting that rejection
-                     // is the whole change.
-                     version: metadata?.versionId,
+                     // The version that answered (latest when none was
+                     // named), not the raw request value; undefined for a
+                     // package with no versions.
+                     version: p.getPackageMetadata().versionId ?? undefined,
                      // Minted here because this is the boundary that returns
                      // it; a path with nowhere to put it does not mint one.
                      correlationId: mintCorrelationId(),

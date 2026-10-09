@@ -20,9 +20,10 @@ type ApiPackage = components["schemas"]["Package"];
 /**
  * Which path a reload took. `in-place` recompiles the tree already on disk and
  * leaves it alone; `reinstalled` re-fetches from the package's install location,
- * which overwrites on-disk edits.
+ * which overwrites on-disk edits. `unchanged` answers for a published version,
+ * which is immutable: nothing is recompiled or re-fetched.
  */
-export type PackageReloadMode = "in-place" | "reinstalled";
+export type PackageReloadMode = "in-place" | "reinstalled" | "unchanged";
 
 /**
  * Everything that is strict-at-publish, joined into one 400 message (or
@@ -86,17 +87,21 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       reload: boolean,
+      versionId?: unknown,
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
-         metadata = (await this.reloadPackage(environmentName, packageName))
-            .metadata;
+         metadata = (
+            await this.reloadPackage(environmentName, packageName, versionId)
+         ).metadata;
       } else {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
             false,
          );
-         const _package = await environment.getPackage(packageName, false);
+         const _package = await environment.getPackage(packageName, false, {
+            versionId,
+         });
          metadata = _package.getPackageMetadata();
          metadata.status = environment.describePackageStatus(packageName);
       }
@@ -153,11 +158,25 @@ export class PackageController {
    public async reloadPackage(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+
+      // Versioning transition: with it off, there are no published versions.
+      // A published version is immutable, so it has nothing to reload: it is
+      // answered as it is.
+      if (
+         isVersioningEnabled() &&
+         (await environment.getVersionService()?.isVersioned(packageName))
+      ) {
+         const version = await environment.getPackage(packageName, false, {
+            versionId,
+         });
+         return { metadata: version.getPackageMetadata(), mode: "unchanged" };
+      }
 
       // Resolve the package's source location from the currently-cached
       // metadata WITHOUT triggering a stale-state reload. If a `location`

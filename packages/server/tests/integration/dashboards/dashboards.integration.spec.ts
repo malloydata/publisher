@@ -216,11 +216,11 @@ describe("Dashboard discovery (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("501s a versionId, which the whole API reserves but does not implement", async () => {
-      // Publisher has no package versioning. Every route declaring `versionId`
-      // rejects it outright, and 501 is what the spec documents for that — the
-      // caller asked for a feature the server does not have, which is not an
-      // internal failure.
+   it("501s a versionId while package versioning is off", async () => {
+      // With versioning off (the default, PUBLISHER_PACKAGE_VERSIONING unset)
+      // the routes that declared `versionId` before versions still reject it
+      // outright with 501: the caller asked for a feature this server is not
+      // running, which is not an internal failure.
       for (const sub of ["/dashboards", "/dashboards/overview"]) {
          const res = await fetch(apiUrl(`${sub}?versionId=v1`));
          expect(res.status).toBe(501);
