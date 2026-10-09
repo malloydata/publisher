@@ -450,3 +450,122 @@ run: daily -> { select: total }
       ).toThrow(/requires a "source" column/);
    });
 });
+
+describe("scenario grammar: package versions", () => {
+   it("refuses a package that is both configured and published", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Model sales/x.malloy\n\n${MODEL}\n\n` +
+               `## Version sales@1.0.0\n\n${MODEL}\n`,
+            "t",
+         ),
+      ).toThrow("either configured or published");
+   });
+
+   it("refuses (version=) on an orchestrated build, which could not carry it", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build (orchestrated, version=1.0.0)\n\n- daily -> daily_t @ lake\n`,
+            "t",
+         ),
+      ).toThrow("not supported with (orchestrated)");
+   });
+
+   const MODEL = "```malloy\nsource: s is orders_pg.sql('SELECT 1 as n')\n```";
+
+   it("reads a published version, its scope, and a refusal's reason", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Version sales@1.2.0 (scope=version)\n\n${MODEL}\n\n` +
+            `## Version sales@1.2.0 (refused)\n\n${MODEL}\n\nreason: VERSION_CONFLICT\n`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => {
+            const v = s as {
+               kind: string;
+               pkg: string;
+               version: string;
+               scope?: string;
+               refused: boolean;
+               reason?: string;
+            };
+            return [v.kind, v.pkg, v.version, v.scope, v.refused, v.reason];
+         }),
+      ).toEqual([
+         ["version", "sales", "1.2.0", "version", false, undefined],
+         ["version", "sales", "1.2.0", undefined, true, "VERSION_CONFLICT"],
+      ]);
+   });
+
+   it("refuses a version step with no model, or with no version", () => {
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Version sales@1.0.0\n`, "t"),
+      ).toThrow(/missing a ```malloy block/);
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Version sales\n\n${MODEL}\n`, "t"),
+      ).toThrow(/expected <package>@<version>/);
+   });
+
+   it("refuses a reason on a step that does not expect a refusal", () => {
+      // A reason with nothing refused would assert nothing: the publish is
+      // checked for success, and the reason never read.
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Version sales@1.0.0\n\n${MODEL}\n\nreason: VERSION_CONFLICT\n`,
+            "t",
+         ),
+      ).toThrow(/describe a refusal/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Archive sales@1.0.0\n\nreason: VERSION_IS_LATEST\n`,
+            "t",
+         ),
+      ).toThrow(/describes a refusal/);
+   });
+
+   it("reads latest, archive and unarchive as one lifecycle kind", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Latest sales@1.0.0\n\n## Archive sales@1.1.0 (refused)\n\nreason: VERSION_IS_LATEST\n\n## Unarchive sales@1.1.0\n`,
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => {
+            const v = s as { kind: string; action: string; refused: boolean };
+            return [v.kind, v.action, v.refused];
+         }),
+      ).toEqual([
+         ["versionLifecycle", "latest", false],
+         ["versionLifecycle", "archive", true],
+         ["versionLifecycle", "unarchive", false],
+      ]);
+   });
+
+   it("reads (version=) on a query and a publish, and rejects it where it means nothing", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Publish sales (version=1.0.0)\n\n## Query q (version=1.0.0)\n\n` +
+            "```malloy\nrun: s -> { select: n }\n```\n\nExpect:\n\n| n |\n| - |\n| 1 |\n",
+         "t",
+      );
+      expect(
+         parsed.steps.map((s) => (s as { versionId?: string }).versionId),
+      ).toEqual(["1.0.0", "1.0.0"]);
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Restart (version=1.0.0)\n`, "t"),
+      ).toThrow(/unknown attribute "version"/);
+   });
+
+   it("requires a version column in ## Versions, and rejects one it cannot compare", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Versions sales\n\nExpect:\n\n| latest |\n| ------ |\n| true   |\n`,
+            "t",
+         ),
+      ).toThrow(/needs a "version" column/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Versions sales\n\nExpect:\n\n| version | lateset |\n| ------- | ------- |\n| 1.0.0   | true    |\n`,
+            "t",
+         ),
+      ).toThrow(/unknown: lateset/);
+   });
+});
