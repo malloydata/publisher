@@ -745,7 +745,11 @@ package reload empties it.
 
 **Meaning matches** ("people about to buy a car" finds `Auto Intenders (In-Market)`) need an embedding
 provider and `retrieval.egress.preset: "full"`, because the values are sent to the provider. Only
-dimensions with at most 500 values are embedded. With the default preset nothing leaves the process.
+dimensions with at most 500 values are embedded, and a dimension where the phrase's own words already match
+(a spelling score of 0.75 or more) is not embedded at all, so a literal answer gets no meaning guesses beside
+it and its values are not sent. The meaning score is the cosine, with a floor of 0.4: short strings embed
+close to each other, so treat a meaning match as a candidate to confirm, not as a verdict. With the default
+preset nothing is sent, not even the phrase.
 
 **Settings** (`publisher.config.json`; unknown keys fail the start):
 

@@ -98,8 +98,20 @@ const MAX_VALUE_CHARS = 200;
 /** Most values of one dimension embedded for meaning matching. */
 export const MAX_EMBEDDED_VALUES = 500;
 
-/** Cosine under which a meaning match is not reported. */
-export const SEMANTIC_VALUE_FLOOR = 0.35;
+/**
+ * Cosine under which a meaning match is not reported. Short strings embed close
+ * to each other (a live check put "Travel Seekers" at 0.52 against the phrase
+ * "Home Shoppers"), so this is a floor against noise, not a verdict.
+ */
+export const SEMANTIC_VALUE_FLOOR = 0.4;
+
+/**
+ * A spelling-based score at or above this is an answer: the phrase's own words
+ * are in the value, so meaning matches would only add guesses beside it. The
+ * dimension is then not embedded at all, which also keeps its values off the
+ * wire to the embedding provider.
+ */
+export const SEMANTIC_SKIP_ABOVE = 0.75;
 
 /** Lookup queries in flight at once. */
 const LOOKUP_CONCURRENCY = 4;
@@ -515,6 +527,7 @@ export const valuesStage: RankStage = {
             if (
                provider &&
                phraseVectors &&
+               (lexical[0]?.score ?? 0) < SEMANTIC_SKIP_ABOVE &&
                !entry.truncated &&
                entry.values.length > 0 &&
                entry.values.length <= MAX_EMBEDDED_VALUES
