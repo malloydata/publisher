@@ -29,8 +29,10 @@ const LEGACY_DIR_NAME = ".legacy";
  * A version folder name: `versionDirName` of a semantic version, so the
  * version's own characters with `+` written as `_`. Checked on every name the
  * store joins into a path, including names read back from the registry.
+ * Unambiguous by construction (the suffix must start with `-` or `_`), so a
+ * long non-matching name fails in linear time.
  */
-const DIR_NAME_RE = /^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z._-]*$/;
+const DIR_NAME_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-_][0-9A-Za-z._-]*)?$/;
 
 /** A downloaded tree, read and hashed, not yet placed. */
 export interface StagedVersion {
@@ -113,7 +115,26 @@ export class VersionStore {
 
    /** Remove a staged tree that will not be placed. */
    async discard(staged: StagedVersion): Promise<void> {
-      await removeQuietly(staged.stagingPath);
+      await removeQuietly(this.within(STAGING_DIR_NAME, staged.stagingPath));
+   }
+
+   /**
+    * `candidate`, checked to sit inside this environment's `area` folder. The
+    * staged and held paths callers hand back were made here, but the store
+    * never removes or renames a path on the caller's word alone.
+    */
+   private within(area: string, candidate: string): string {
+      const root = safeJoinUnderRoot(this.environmentPath, area);
+      const resolved = path.resolve(candidate);
+      if (
+         resolved.indexOf("..") !== -1 ||
+         !resolved.startsWith(root + path.sep)
+      ) {
+         throw new Error(
+            `Not a path under ${area}: ${JSON.stringify(candidate)}`,
+         );
+      }
+      return resolved;
    }
 
    /**
@@ -128,7 +149,10 @@ export class VersionStore {
          return false;
       }
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
-      await fs.promises.rename(staged.stagingPath, target);
+      await fs.promises.rename(
+         this.within(STAGING_DIR_NAME, staged.stagingPath),
+         target,
+      );
       return true;
    }
 
@@ -215,21 +239,41 @@ export class VersionStore {
 
    /**
     * Put a held unversioned tree back at `<pkg>/`, replacing whatever the
-    * failed publish left there.
+    * failed publish left there. That leftover is moved aside first and only
+    * removed once the held tree is back, so a failed rename never leaves the
+    * package with no tree at all.
     */
    async restoreLegacy(held: LegacyTree): Promise<void> {
       assertSafePackageName(held.packageName);
+      const heldPath = this.within(LEGACY_DIR_NAME, held.heldPath);
       const packagePath = safeJoinUnderRoot(
          this.environmentPath,
          held.packageName,
       );
-      await removeQuietly(packagePath);
-      await fs.promises.rename(held.heldPath, packagePath);
+      let leftover: string | null = null;
+      if (await exists(packagePath)) {
+         leftover = safeJoinUnderRoot(
+            this.environmentPath,
+            STAGING_DIR_NAME,
+            `${held.packageName}-${crypto.randomUUID()}`,
+         );
+         await fs.promises.mkdir(path.dirname(leftover), { recursive: true });
+         await fs.promises.rename(packagePath, leftover);
+      }
+      try {
+         await fs.promises.rename(heldPath, packagePath);
+      } catch (err) {
+         if (leftover) {
+            await fs.promises.rename(leftover, packagePath).catch(() => {});
+         }
+         throw err;
+      }
+      if (leftover) await removeQuietly(leftover);
    }
 
    /** Remove a held unversioned tree once the publish that held it commits. */
    async dropLegacy(held: LegacyTree): Promise<void> {
-      await removeQuietly(held.heldPath);
+      await removeQuietly(this.within(LEGACY_DIR_NAME, held.heldPath));
    }
 
    /**
@@ -239,15 +283,27 @@ export class VersionStore {
     *
     *  - A held legacy tree is dropped if its package has versions (its first
     *    versioned publish committed before the crash) and put back otherwise.
+    *    Of several held for one package, only the newest is put back.
     *  - In a versioned package's folder, a version folder with no row is
     *    removed: a placement whose publish never committed. Folders of
     *    packages with no rows are never touched, since those hold unversioned
     *    packages.
     */
    async cleanup(versionedPackages: Map<string, Set<string>>): Promise<void> {
-      for (const held of await this.listHeldLegacy()) {
+      const allHeld = await this.listHeldLegacy();
+      const newest = new Map<string, (typeof allHeld)[number]>();
+      for (const held of allHeld) {
+         const current = newest.get(held.packageName);
+         if (!current || held.mtimeMs > current.mtimeMs) {
+            newest.set(held.packageName, held);
+         }
+      }
+      for (const held of allHeld) {
          try {
-            if (versionedPackages.has(held.packageName)) {
+            if (
+               versionedPackages.has(held.packageName) ||
+               newest.get(held.packageName) !== held
+            ) {
                await this.dropLegacy(held);
             } else {
                logger.warn(
@@ -287,7 +343,9 @@ export class VersionStore {
       }
    }
 
-   private async listHeldLegacy(): Promise<LegacyTree[]> {
+   private async listHeldLegacy(): Promise<
+      (LegacyTree & { mtimeMs: number })[]
+   > {
       const legacyRoot = safeJoinUnderRoot(
          this.environmentPath,
          LEGACY_DIR_NAME,
@@ -298,7 +356,7 @@ export class VersionStore {
       } catch {
          return [];
       }
-      const held: LegacyTree[] = [];
+      const held: (LegacyTree & { mtimeMs: number })[] = [];
       for (const name of names) {
          // `<pkg>-<uuid>`: a v4 UUID is 36 characters.
          const packageName = name.slice(0, -37);
@@ -310,10 +368,10 @@ export class VersionStore {
          } catch {
             continue;
          }
-         held.push({
-            packageName,
-            heldPath: safeJoinUnderRoot(legacyRoot, name),
-         });
+         const heldPath = safeJoinUnderRoot(legacyRoot, name);
+         const stat = await fs.promises.lstat(heldPath).catch(() => undefined);
+         if (!stat) continue;
+         held.push({ packageName, heldPath, mtimeMs: stat.mtimeMs });
       }
       return held;
    }

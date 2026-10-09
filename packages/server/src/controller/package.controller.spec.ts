@@ -34,7 +34,12 @@ describe("PackageController.addPackage explores validation", () => {
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const environment = { addPackage, unloadPackage, deletePackage };
+      const environment = {
+         getVersionService: () => null,
+         addPackage,
+         unloadPackage,
+         deletePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -88,7 +93,12 @@ describe("PackageController.addPackage explores validation", () => {
          );
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
-      const environment = { installPackage, unloadPackage, deletePackage };
+      const environment = {
+         getVersionService: () => null,
+         installPackage,
+         unloadPackage,
+         deletePackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -124,7 +134,9 @@ describe("PackageController.addPackage explores validation", () => {
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
@@ -166,7 +178,11 @@ describe("PackageController.addPackage persistence policy validation", () => {
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const environment = { addPackage, unloadPackage };
+      const environment = {
+         getVersionService: () => null,
+         addPackage,
+         unloadPackage,
+      };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -209,7 +225,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
                return mockPackage;
             },
          );
-      const environment = { installPackage };
+      const environment = { getVersionService: () => null, installPackage };
       const getEnvironment = sinon.stub().resolves(environment);
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
@@ -256,9 +272,11 @@ describe("PackageController.addPackage incremental policy validation", () => {
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon
-         .stub()
-         .resolves({ addPackage, unloadPackage });
+      const getEnvironment = sinon.stub().resolves({
+         addPackage,
+         unloadPackage,
+         getVersionService: () => null,
+      });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
@@ -290,7 +308,9 @@ describe("PackageController.addPackage incremental policy validation", () => {
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
-      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, getVersionService: () => null });
       const addPackageToDatabase = sinon.stub().resolves(undefined);
       const environmentStore = {
          publisherConfigIsFrozen: false,
@@ -730,7 +750,9 @@ describe("PackageController.addPackage manifestLocation", () => {
    function addPackageController(environment: object) {
       const environmentStore = {
          publisherConfigIsFrozen: false,
-         getEnvironment: sinon.stub().resolves(environment),
+         getEnvironment: sinon
+            .stub()
+            .resolves({ getVersionService: () => null, ...environment }),
          addPackageToDatabase: sinon.stub().resolves(undefined),
       } as unknown as EnvironmentStore;
       return new PackageController(environmentStore);
@@ -821,7 +843,7 @@ describe("PackageController.addPackage manifestLocation", () => {
          formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       });
-      const environment = { installPackage };
+      const environment = { getVersionService: () => null, installPackage };
       const environmentStore = {
          publisherConfigIsFrozen: false,
          getEnvironment: sinon.stub().resolves(environment),

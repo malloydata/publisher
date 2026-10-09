@@ -7,7 +7,7 @@ import {
    type PackageVersionErrorReason,
 } from "../../errors";
 import { NewVersion } from "../DatabaseInterface";
-import { DuckDBConnection } from "./DuckDBConnection";
+import { DuckDBConnection, isUniqueViolation } from "./DuckDBConnection";
 import { DuckDBRepository } from "./DuckDBRepository";
 import { initializeSchema } from "./schema";
 
@@ -392,6 +392,66 @@ describe("VersionRepository", () => {
       await repo.commitPublish(newVersion("1.0.0"), always);
       await repo.deleteEnvironment(ENV_ID);
       expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
+   });
+
+   it("deletes versions with the environment's packages", async () => {
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      await repo.deletePackagesByEnvironmentId(ENV_ID);
+      expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
+   });
+
+   it("says whether a package has any version", async () => {
+      const { repo } = await freshRepo();
+      expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);
+      await repo.commitPublish(newVersion("1.0.0"), never);
+      expect(await repo.hasVersions(ENV_ID, PKG)).toBe(true);
+      expect(await repo.hasVersions(ENV_ID, "other")).toBe(false);
+   });
+
+   it("lets only one of two concurrent archives take the second-to-last version", async () => {
+      // No latest (explicit promotion), two versions in service: each archive
+      // alone is allowed, both together would leave none. The guard and the
+      // write share one transaction, so exactly one wins.
+      const { repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), never);
+      await repo.commitPublish(newVersion("2.0.0"), never);
+      const outcomes = await Promise.allSettled([
+         repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive"),
+         repo.setVersionArchiveStatus(ENV_ID, PKG, "2.0.0", "archive"),
+      ]);
+      expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+      const refused = outcomes.find((o) => o.status === "rejected") as
+         | PromiseRejectedResult
+         | undefined;
+      expect((refused!.reason as PackageVersionError).reason).toBe(
+         "VERSION_IS_LAST_ACTIVE",
+      );
+      const active = (await repo.listVersions(ENV_ID, PKG)).filter(
+         (v) => v.archiveStatus === "unarchive",
+      );
+      expect(active).toHaveLength(1);
+   });
+
+   it("tells a duplicate key from a foreign-key failure", async () => {
+      // A version insert can only be a VERSION_CONFLICT when the key is taken;
+      // a missing environment must not read as one.
+      const db = await freshDb();
+      await db.run("CREATE TABLE parent (id INTEGER PRIMARY KEY)");
+      await db.run(
+         "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))",
+      );
+      await db.run("INSERT INTO parent VALUES (1)");
+      await db.run("INSERT INTO child VALUES (1, 1)");
+      const duplicate = await db
+         .run("INSERT INTO child VALUES (1, 1)")
+         .catch((err: unknown) => err);
+      const foreignKey = await db
+         .run("INSERT INTO child VALUES (2, 99)")
+         .catch((err: unknown) => err);
+      expect(isUniqueViolation(duplicate)).toBe(true);
+      expect(foreignKey).toBeInstanceOf(Error);
+      expect(isUniqueViolation(foreignKey)).toBe(false);
    });
 });
 

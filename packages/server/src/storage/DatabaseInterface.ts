@@ -43,6 +43,7 @@ export interface ResourceRepository {
 
    // Versions
    listVersions(environmentId: string, packageName: string): Promise<Version[]>;
+   hasVersions(environmentId: string, packageName: string): Promise<boolean>;
    listVersionsByEnvironment(environmentId: string): Promise<Version[]>;
    getVersion(
       environmentId: string,

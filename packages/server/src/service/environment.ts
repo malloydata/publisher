@@ -62,7 +62,7 @@ import {
 } from "./compile_restriction";
 import { translatorMalloyError } from "./translator_error";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
-import { getPersistStorageMode } from "../config";
+import { getPersistStorageMode, isVersioningEnabled } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -99,6 +99,8 @@ import {
 import { ApiConnection, Model } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import { VersionRegistry, VersionService } from "./versions/version_service";
+import { VersionStore } from "./versions/version_store";
 
 /**
  * Sibling dirs under `environmentPath` used by the install/delete pipeline so
@@ -307,6 +309,13 @@ const MAX_RECORDED_ADD_FAILURES = 100;
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
+   /**
+    * The version rules for this environment's packages, bound by the
+    * EnvironmentStore once the environment has a registry row. Versioned
+    * packages never enter `packages`: their loaded versions live in this
+    * service's cache, keyed by (package, version).
+    */
+   private versionService: VersionService<Package> | null = null;
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
    // packageMutex. Connection updates may invalidate cached package
    // MalloyConfigs and force reloads, so the environment lock is the outer one.
@@ -2466,12 +2475,173 @@ export class Environment {
       return this.packages.get(name);
    }
 
+   /** The version rules for this environment's packages, once bound. */
+   public getVersionService(): VersionService<Package> | null {
+      return this.versionService;
+   }
+
+   /**
+    * Give this environment its version rules, backed by the registry rows of
+    * `environmentId`. Idempotent per id. `hooks` are what only the store
+    * knows: how to fetch a location, and how to write the package's row.
+    */
+   public bindVersions(
+      registry: VersionRegistry,
+      environmentId: string,
+      hooks: {
+         downloaderFor(
+            packageName: string,
+            location: string,
+         ): (stagingPath: string) => Promise<void>;
+         ensurePackageRecord(
+            packageName: string,
+            description: string | undefined,
+         ): Promise<void>;
+      },
+   ): VersionService<Package> {
+      if (this.versionService && this.boundEnvironmentId === environmentId) {
+         return this.versionService;
+      }
+      this.boundEnvironmentId = environmentId;
+      this.versionService = new VersionService<Package>(
+         registry,
+         environmentId,
+         new VersionStore(this.environmentPath),
+         {
+            loadVersion: (packageName, versionPath, version) =>
+               this.trackPackageLoad(packageName, () =>
+                  this.loadVersionPackage(packageName, versionPath, version),
+               ),
+            releaseVersion: (packageName, versionId, loaded) =>
+               this.retireConnectionGeneration(
+                  `package ${packageName} version ${versionId}`,
+                  () => loaded.getMalloyConfig().shutdown("close"),
+               ),
+            bindVersionManifest: (loaded, manifestPath) =>
+               this.bindVersionManifest(loaded, manifestPath),
+            downloaderFor: hooks.downloaderFor,
+            admit: (packageName, reason) =>
+               this.assertCanAdmitNewPackage(packageName, reason, false),
+            withPackageLock: (packageName, fn) =>
+               this.withPackageLock(packageName, fn),
+            isWatchMounted: async (packageName) => {
+               const stat = await fs.promises
+                  .lstat(safeJoinUnderRoot(this.environmentPath, packageName))
+                  .catch(() => undefined);
+               return stat?.isSymbolicLink() === true;
+            },
+            retireUnversioned: (packageName) => {
+               const unversioned = this.packages.get(packageName);
+               if (!unversioned) return;
+               this.packages.delete(packageName);
+               this.retireConnectionGeneration(`package ${packageName}`, () =>
+                  unversioned.getMalloyConfig().shutdown("close"),
+               );
+            },
+            ensurePackageRecord: hooks.ensurePackageRecord,
+            onVersionLoaded: (packageName, loaded, isLatest) => {
+               this.setPackageStatus(packageName, PackageStatus.SERVING);
+               this.clearPackageLoadFailure(packageName);
+               // The retrieval index is keyed by package name, so only the
+               // version a request without a version reaches may feed it.
+               if (isLatest) this.notifyPackageLoaded(loaded);
+            },
+         },
+      );
+      return this.versionService;
+   }
+
+   private boundEnvironmentId: string | null = null;
+
+   /**
+    * Compile one published version from its own folder. Its files are never
+    * removed on a failed load: they belong to the registry row (a failed
+    * publish removes its own placement).
+    */
+   private async loadVersionPackage(
+      packageName: string,
+      versionPath: string,
+      version: {
+         versionId: string;
+         manifestPath: string | null;
+         sourceLocation: string | null;
+      },
+   ): Promise<Package> {
+      const loaded = await Package.create(
+         this.environmentName,
+         packageName,
+         versionPath,
+         () => this.malloyConfig.malloyConfig,
+      );
+      this.attachDestinationServeConfig(loaded);
+      // The version's serving state lives on its registry row, not in its
+      // immutable publisher.json: where it came from, which version it is,
+      // and the manifest it is bound to.
+      loaded.setPackageMetadata({
+         ...loaded.getPackageMetadata(),
+         versionId: version.versionId,
+         ...(version.sourceLocation
+            ? { location: version.sourceLocation }
+            : {}),
+         manifestLocation: version.manifestPath,
+      });
+      await this.bindManifestIfConfigured(loaded);
+      return loaded;
+   }
+
+   /** Rebind a loaded version to a build manifest, or revert it to live. */
+   private async bindVersionManifest(
+      loaded: Package,
+      manifestPath: string | null,
+   ): Promise<void> {
+      const packageName = loaded.getPackageName();
+      const wasBound =
+         loaded.hasBoundTableNameManifest() || loaded.hasStorageServeBindings();
+      loaded.setPackageMetadata({
+         ...loaded.getPackageMetadata(),
+         manifestLocation: manifestPath,
+      });
+      if (manifestPath) {
+         await this.trackPackageLoad(packageName, () =>
+            this.bindManifest(loaded, manifestPath),
+         );
+      } else if (wasBound) {
+         await this.trackPackageLoad(packageName, async () => {
+            await loaded.reloadAllModels({});
+            loaded.bindStorageServeBindings({});
+         });
+      }
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
-      options: { allowAdmission?: boolean } = {},
+      options: { allowAdmission?: boolean; versionId?: unknown } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
+      // Versioning transition: with it off, every package is the single slot
+      // served below.
+      if (isVersioningEnabled()) {
+         // A published version is immutable, so it has nothing to reload: a
+         // versioned package answers with the named version (or `latest`) as
+         // it is, resolved through the registry, never the disk. An
+         // unversioned package already loaded here skips the lookup unless
+         // the request names a version, which it does not have (404).
+         const namesVersion =
+            options.versionId !== undefined &&
+            options.versionId !== null &&
+            options.versionId !== "";
+         if (
+            this.versionService &&
+            (namesVersion || !this.packages.has(packageName))
+         ) {
+            const versioned = await this.versionService.getLoaded(
+               packageName,
+               options.versionId,
+            );
+            if (versioned) return versioned.loaded;
+         }
+      }
       // Fast-path: serve from cache without acquiring the lock. Safe because
       // `Package` references are immutable; the disk-reading methods that
       // actually need protection (compileSource, getModelFileText,
@@ -3776,6 +3946,16 @@ export class Environment {
 
          const _package = this.packages.get(packageName);
          if (!_package) {
+            // Versioning transition: with it off there are no versions here.
+            // A versioned package: every version goes, loaded or loading, with
+            // the folder that holds them all.
+            if (isVersioningEnabled() && this.versionService) {
+               this.versionService.cache.evictPackage(packageName);
+               await new VersionStore(this.environmentPath).removePackage(
+                  packageName,
+               );
+               this.deletePackageStatus(packageName);
+            }
             return;
          }
          const packageStatus = this.packageStatuses.get(packageName);

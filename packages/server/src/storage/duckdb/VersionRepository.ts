@@ -47,6 +47,15 @@ export class VersionRepository {
       return rows.map(mapRow);
    }
 
+   /** Whether the package has any version: one indexed probe, not a listing. */
+   async hasAny(environmentId: string, packageName: string): Promise<boolean> {
+      const row = await this.db.get<{ one: number }>(
+         "SELECT 1 AS one FROM versions WHERE environment_id = ? AND package_name = ? LIMIT 1",
+         [environmentId, packageName],
+      );
+      return row !== null;
+   }
+
    async get(
       environmentId: string,
       packageName: string,

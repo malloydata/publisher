@@ -6,10 +6,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-   getPackageVersioningMode,
    getPersistStorageMode,
    getPublisherConfig,
    getVersionPromotionMode,
+   isVersioningEnabled,
 } from "./config";
 
 describe("package versioning settings", () => {
@@ -42,37 +42,48 @@ describe("package versioning settings", () => {
          JSON.stringify(body),
       );
 
-   it("defaults to unversioned, promoted on publish", () => {
+   it("defaults to versioning off, promoted on publish", () => {
       writeConfig({ frozenConfig: false, environments: [] });
-      expect(getPackageVersioningMode(root)).toBe("off");
+      expect(isVersioningEnabled()).toBe(false);
       expect(getVersionPromotionMode(root)).toBe("on-publish");
    });
 
-   it("reads both settings from publisher.config.json", () => {
+   it("turns versioning on only from the environment", () => {
+      // A transition switch, read from the environment alone: a
+      // publisher.config.json key does nothing.
       writeConfig({
          frozenConfig: false,
          packageVersioning: "on",
+         environments: [],
+      });
+      expect(isVersioningEnabled()).toBe(false);
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "on";
+      expect(isVersioningEnabled()).toBe(true);
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      expect(isVersioningEnabled()).toBe(false);
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "";
+      expect(isVersioningEnabled()).toBe(false);
+   });
+
+   it("reads versionPromotion from publisher.config.json", () => {
+      writeConfig({
+         frozenConfig: false,
          versionPromotion: "explicit",
          environments: [],
       });
-      expect(getPackageVersioningMode(root)).toBe("on");
       expect(getVersionPromotionMode(root)).toBe("explicit");
       expect(getPublisherConfig(root)).toMatchObject({
-         packageVersioning: "on",
          versionPromotion: "explicit",
       });
    });
 
-   it("lets the environment variable override the file", () => {
+   it("lets PUBLISHER_VERSION_PROMOTION override the file", () => {
       writeConfig({
          frozenConfig: false,
-         packageVersioning: "on",
          versionPromotion: "explicit",
          environments: [],
       });
-      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
       process.env.PUBLISHER_VERSION_PROMOTION = "on-publish";
-      expect(getPackageVersioningMode(root)).toBe("off");
       expect(getVersionPromotionMode(root)).toBe("on-publish");
    });
 
@@ -80,28 +91,27 @@ describe("package versioning settings", () => {
       writeConfig({ frozenConfig: false, environments: [] });
       process.env.PUBLISHER_PACKAGE_VERSIONING = " ON ";
       process.env.PUBLISHER_VERSION_PROMOTION = "Explicit";
-      expect(getPackageVersioningMode(root)).toBe("on");
+      expect(isVersioningEnabled()).toBe(true);
       expect(getVersionPromotionMode(root)).toBe("explicit");
    });
 
    it("refuses a value outside the set, naming where it came from", () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "yes";
+      expect(() => isVersioningEnabled()).toThrow(
+         'PUBLISHER_PACKAGE_VERSIONING must be one of off | on (got "yes")',
+      );
       writeConfig({
          frozenConfig: false,
-         packageVersioning: "yes",
+         versionPromotion: "manual",
          environments: [],
       });
-      expect(() => getPackageVersioningMode(root)).toThrow(
-         '"packageVersioning" in publisher.config.json must be one of off | on (got "yes")',
-      );
-      process.env.PUBLISHER_VERSION_PROMOTION = "manual";
       expect(() => getVersionPromotionMode(root)).toThrow(
-         'PUBLISHER_VERSION_PROMOTION must be one of on-publish | explicit (got "manual")',
+         '"versionPromotion" in publisher.config.json must be one of on-publish | explicit (got "manual")',
       );
    });
 
-   it("gives the defaults for a config file that cannot be parsed", () => {
+   it("gives the promotion default for a config file that cannot be parsed", () => {
       fs.writeFileSync(path.join(root, "publisher.config.json"), "{ not json");
-      expect(getPackageVersioningMode(root)).toBe("off");
       expect(getVersionPromotionMode(root)).toBe("on-publish");
    });
 });

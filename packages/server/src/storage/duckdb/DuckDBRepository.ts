@@ -129,6 +129,7 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
+      await this.versionRepo.deleteByEnvironmentId(id);
       return this.packageRepo.deletePackagesByEnvironmentId(id);
    }
 
@@ -139,6 +140,13 @@ export class DuckDBRepository implements ResourceRepository {
       packageName: string,
    ): Promise<Version[]> {
       return this.versionRepo.list(environmentId, packageName);
+   }
+
+   async hasVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<boolean> {
+      return this.versionRepo.hasAny(environmentId, packageName);
    }
 
    async listVersionsByEnvironment(environmentId: string): Promise<Version[]> {

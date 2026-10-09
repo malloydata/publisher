@@ -299,4 +299,56 @@ describe("VersionStore.cleanup", () => {
          "publisher.json",
       ]);
    });
+
+   it("puts back only the newest of several trees held for one package", async () => {
+      await writes(
+         { name: "c" },
+         { "old.malloy": "older" },
+      )(path.join(envPath, "c"));
+      const older = await store.holdLegacy("c");
+      await writes(
+         { name: "c" },
+         { "new.malloy": "newer" },
+      )(path.join(envPath, "c"));
+      const newer = await store.holdLegacy("c");
+      const past = new Date(Date.now() - 60_000);
+      fs.utimesSync(older!.heldPath, past, past);
+
+      await store.cleanup(new Map());
+
+      expect(fs.readdirSync(path.join(envPath, "c")).sort()).toEqual([
+         "new.malloy",
+         "publisher.json",
+      ]);
+      expect(fs.readdirSync(path.join(envPath, ".legacy"))).toEqual([]);
+      expect(fs.existsSync(newer!.heldPath)).toBe(false);
+   });
+});
+
+describe("VersionStore path containment", () => {
+   it("refuses to remove or move a staged or held path outside its folder", async () => {
+      const outside = path.join(root, "outside");
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, "keep"), "x");
+      const staged = {
+         packageName: "sales",
+         stagingPath: outside,
+         versionId: "1.0.0",
+         dirName: "1.0.0",
+         contentHash: "h",
+         description: null,
+      };
+      await expect(store.discard(staged)).rejects.toThrow(/Not a path under/);
+      await expect(store.place(staged)).rejects.toThrow(/Not a path under/);
+      await expect(
+         store.dropLegacy({ packageName: "sales", heldPath: outside }),
+      ).rejects.toThrow(/Not a path under/);
+      await expect(
+         store.restoreLegacy({
+            packageName: "sales",
+            heldPath: path.join(envPath, ".legacy", "..", "..", "outside"),
+         }),
+      ).rejects.toThrow(/Not a path under/);
+      expect(fs.readdirSync(outside)).toEqual(["keep"]);
+   });
 });

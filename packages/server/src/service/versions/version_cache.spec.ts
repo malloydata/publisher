@@ -59,6 +59,7 @@ describe("VersionCache", () => {
       const { cache, loads, open } = harness();
       const one = cache.get("p", "1.0.0");
       const two = cache.get("p", "2.0.0");
+      await Promise.resolve();
       expect(loads).toEqual(["p@1.0.0", "p@2.0.0"]);
       await open("p@2.0.0");
       expect((await two).id).toBe("p@2.0.0");
@@ -125,5 +126,56 @@ describe("VersionCache", () => {
       );
       expect(released.sort()).toEqual(["p@1.0.0", "p@2.0.0"]);
       expect(cache.isLoaded("q", "1.0.0")).toBe(true);
+   });
+
+   it("a read after an evict starts its own load instead of joining the overtaken one", async () => {
+      // Archive then unarchive while the first load is still running: the
+      // next read must load afresh and succeed, not inherit the stale failure.
+      const loads: string[] = [];
+      const pending: ((value: Loaded) => void)[] = [];
+      const released: string[] = [];
+      const cache = new VersionCache<Loaded>({
+         load: (pkg, v) => {
+            loads.push(`${pkg}@${v}`);
+            return new Promise<Loaded>((resolve) => pending.push(resolve));
+         },
+         release: (_pkg, _v, loaded) => released.push(loaded.id),
+      });
+      const overtaken = cache.get("p", "1.0.0");
+      await Promise.resolve();
+      cache.evict("p", "1.0.0");
+      const fresh = cache.get("p", "1.0.0");
+      await Promise.resolve();
+      expect(loads).toEqual(["p@1.0.0", "p@1.0.0"]);
+
+      // The old load finishes first and must not clear the new one's slot.
+      pending[0]({ id: "old" });
+      await expect(overtaken).rejects.toBeInstanceOf(
+         VersionEvictedDuringLoadError,
+      );
+      expect(released).toEqual(["old"]);
+      const joined = cache.get("p", "1.0.0");
+      expect(loads).toHaveLength(2);
+
+      pending[1]({ id: "new" });
+      expect((await fresh).id).toBe("new");
+      expect((await joined).id).toBe("new");
+      expect(cache.peek("p", "1.0.0")?.id).toBe("new");
+   });
+
+   it("does not keep a load that throws before it awaits anything", async () => {
+      let calls = 0;
+      const cache = new VersionCache<Loaded>({
+         load: (pkg, v) => {
+            calls += 1;
+            if (calls === 1) throw new Error("synchronous failure");
+            return Promise.resolve({ id: `${pkg}@${v}` });
+         },
+         release: () => {},
+      });
+      await expect(cache.get("p", "1.0.0")).rejects.toThrow(
+         "synchronous failure",
+      );
+      expect((await cache.get("p", "1.0.0")).id).toBe("p@1.0.0");
    });
 });

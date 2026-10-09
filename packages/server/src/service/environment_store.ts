@@ -13,11 +13,11 @@ import { simpleGit, type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
-   getPackageVersioningMode,
    getProcessedPublisherConfig,
    getPublisherConfigDir,
    getUnresolvedPublisherConfigPath,
    getVersionPromotionMode,
+   isVersioningEnabled,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -53,6 +53,7 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import type { Package } from "./package";
+import { VersionStore } from "./versions/version_store";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 type ApiEnvironment = components["schemas"]["Environment"];
@@ -667,10 +668,10 @@ export class EnvironmentStore {
       try {
          await this.storageManager.initialize(reInit);
 
-         // Read both versioning settings now, so a value outside the set, from
-         // the environment or the config file, fails initialization naming the
-         // setting, rather than surfacing at the first publish that reads it.
-         getPackageVersioningMode(this.serverRootPath);
+         // Read both versioning settings now, so a value outside the set fails
+         // initialization naming the setting, rather than surfacing at the first
+         // publish that reads it.
+         isVersioningEnabled();
          getVersionPromotionMode(this.serverRootPath);
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
@@ -849,6 +850,11 @@ export class EnvironmentStore {
                            },
                         );
 
+                        await this.bindVersionRegistry(
+                           environmentInstance,
+                           envId,
+                        );
+
                         // Get packages from database
                         const packages = await repository.listPackages(
                            dbEnvironment.id,
@@ -996,6 +1002,121 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Give an environment its version rules, backed by its registry rows.
+    * Idempotent. The first bind of an environment also settles what a crash
+    * may have left on disk, before anything of it loads: version folders no
+    * row owns, and unversioned trees a first versioned publish moved aside.
+    */
+   private async bindVersionRegistry(
+      environment: Environment,
+      environmentId: string,
+   ): Promise<void> {
+      // Versioning transition: with it off, no environment has version rules,
+      // and every package is served as before.
+      if (!isVersioningEnabled()) return;
+      const repository = this.storageManager.getRepository();
+      const environmentName = environment.getEnvironmentName();
+      const alreadyBound = environment.getVersionService() !== null;
+      environment.bindVersions(repository, environmentId, {
+         downloaderFor: (packageName, location) => (stagingPath) =>
+            this.downloadPackageInto(
+               environmentName,
+               packageName,
+               location,
+               stagingPath,
+            ),
+         ensurePackageRecord: async (packageName, description) => {
+            const existing = await repository.getPackageByName(
+               environmentId,
+               packageName,
+            );
+            if (!existing) {
+               await repository.createPackage({
+                  environmentId,
+                  name: packageName,
+                  description,
+                  manifestPath: "",
+                  metadata: {},
+               });
+            } else if (
+               description !== undefined &&
+               description !== existing.description
+            ) {
+               await repository.updatePackage(existing.id, { description });
+            }
+         },
+      });
+      if (alreadyBound) return;
+      try {
+         const owned = new Map<string, Set<string>>();
+         for (const version of await repository.listVersionsByEnvironment(
+            environmentId,
+         )) {
+            const dirs = owned.get(version.packageName) ?? new Set<string>();
+            dirs.add(version.dirName);
+            owned.set(version.packageName, dirs);
+         }
+         await new VersionStore(environment.getEnvironmentPath()).cleanup(
+            owned,
+         );
+      } catch (error) {
+         logger.warn("Could not clean up package version folders", {
+            environmentName,
+            error,
+         });
+      }
+   }
+
+   /**
+    * Fetch a package location into `targetPath`: a GitHub URL, a gs:// or
+    * s3:// prefix (or .zip), or a local directory or .zip. Callers pass a
+    * staging folder, so a long download holds no lock.
+    */
+   public async downloadPackageInto(
+      environmentName: string,
+      packageName: string,
+      packageLocation: string,
+      targetPath: string,
+   ): Promise<void> {
+      const isCompressedFile = packageLocation.endsWith(".zip");
+      if (
+         packageLocation.startsWith("https://") ||
+         packageLocation.startsWith("git@")
+      ) {
+         await this.downloadGitHubDirectory(packageLocation, targetPath);
+      } else if (packageLocation.startsWith("gs://")) {
+         await this.downloadGcsDirectory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      } else if (packageLocation.startsWith("s3://")) {
+         await this.downloadS3Directory(
+            packageLocation,
+            environmentName,
+            targetPath,
+            isCompressedFile,
+         );
+      }
+
+      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
+         // Absolute paths from the publisher.config could be placed outside of
+         // /etc/publisher, so they are mounted in the right place.
+         // `path.isAbsolute` is what catches a Windows drive-letter path
+         // (`D:\pkgs\sales`), which no other branch claims either; without it
+         // the install stages nothing and fails with a bare ENOENT rename.
+         // Same pairing as isLocalPath.
+         await this.mountLocalDirectory(
+            packageLocation,
+            targetPath,
+            environmentName,
+            packageName,
+         );
+      }
+   }
+
    public async addEnvironmentToDatabase(
       environment: Environment,
    ): Promise<void> {
@@ -1029,6 +1150,8 @@ export class EnvironmentStore {
 
       // Sync packages
       await this.addPackages(environment, dbEnvironment.id, repository);
+
+      await this.bindVersionRegistry(environment, dbEnvironment.id);
 
       logger.info(`Synced environment "${environmentName}" to database`);
    }

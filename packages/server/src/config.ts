@@ -164,25 +164,17 @@ export type PublisherConfig = {
    theme?: Theme;
    mcp?: McpConfig;
    retrieval?: RetrievalConfig;
-   packageVersioning?: PackageVersioningMode;
    versionPromotion?: VersionPromotionMode;
    environments: Environment[];
 };
 
 /**
- * Whether a publish (`POST .../packages` with a `location`) creates an
- * immutable, numbered version of the package, read from the package's own
- * `publisher.json` `version`, or replaces its single unversioned slot as before.
- *
- *  - `off` (default): every package is one unversioned slot. Nothing about the
- *    server changes, which is what lets this ship dormant.
- *  - `on`: a publish with a `location` is a versioned publish. A package loaded
- *    from config, from a plain directory, or mounted by watch mode stays
- *    unversioned either way.
- *
- * It decides how a PUBLISH is read, never how a read resolves: a package that
- * has versions serves them whatever this says, so turning it off cannot strand
- * one.
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off`. A TRANSITION flag, read from
+ * the environment only. Package versions are where the publisher is going;
+ * until every deployment runs with them, each place versioning changes
+ * behaviour checks {@link isVersioningEnabled} and keeps the old behaviour
+ * in the branch where it is false, so the flag and those branches can be
+ * deleted together once it is on everywhere.
  */
 export type PackageVersioningMode = "off" | "on";
 
@@ -1585,11 +1577,6 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as Record<string, unknown>)
          : {};
-   const packageVersioning = parseModeSetting(
-      settings.packageVersioning,
-      `"packageVersioning" in ${PUBLISHER_CONFIG_NAME}`,
-      PACKAGE_VERSIONING_MODES,
-   );
    const versionPromotion = parseModeSetting(
       settings.versionPromotion,
       `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
@@ -1601,7 +1588,6 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
-      ...(packageVersioning ? { packageVersioning } : {}),
       ...(versionPromotion ? { versionPromotion } : {}),
       environments,
    } as PublisherConfig;
@@ -1612,7 +1598,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
  * blank). Matched case-insensitively. A value outside the set throws, naming
  * where it came from and what is allowed: a typo must not leave a server in a
  * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
- * `packageVersioning` and `versionPromotion`.
+ * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
  */
 function parseModeSetting<T extends string>(
    raw: unknown,
@@ -1631,20 +1617,20 @@ function parseModeSetting<T extends string>(
 }
 
 /**
- * The server's {@link PackageVersioningMode}: `PUBLISHER_PACKAGE_VERSIONING`
- * when set, otherwise `packageVersioning` in publisher.config.json, otherwise
- * `off`. Read at call time, like the PERSIST_* knobs, so a test can switch it.
+ * Whether package versioning is on (`PUBLISHER_PACKAGE_VERSIONING=on`; off when
+ * unset). Read at call time so a test can switch it; a value outside on/off
+ * throws, and is read at startup so a typo fails the boot.
+ *
+ * When it is off the server behaves exactly as it did before versions: a
+ * publish replaces the package's single slot and reads never consult the
+ * version registry.
  */
-export const getPackageVersioningMode = (
-   serverRoot: string,
-): PackageVersioningMode =>
+export const isVersioningEnabled = (): boolean =>
    parseModeSetting(
       process.env.PUBLISHER_PACKAGE_VERSIONING,
       "PUBLISHER_PACKAGE_VERSIONING",
       PACKAGE_VERSIONING_MODES,
-   ) ??
-   readConfigMode(serverRoot, (config) => config.packageVersioning) ??
-   "off";
+   ) === "on";
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when

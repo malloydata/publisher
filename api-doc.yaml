@@ -1450,11 +1450,11 @@ paths:
 
         ## Versioned publish
 
-        When the server runs with package versioning on (`packageVersioning: "on"` in
-        `publisher.config.json`, or `PUBLISHER_PACKAGE_VERSIONING=on`), a request that carries a
-        `location` publishes an immutable version of the package. The request takes no version
-        parameter: the version is the `version` field of the package's own `publisher.json`, the
-        way `npm publish` reads `package.json`, so bumping that field is the release action.
+        When the server runs with package versioning on (the environment variable
+        `PUBLISHER_PACKAGE_VERSIONING=on`), a request that carries a `location` publishes an
+        immutable version of the package. The request takes no version parameter: the version is
+        the `version` field of the package's own `publisher.json`, the way `npm publish` reads
+        `package.json`, so bumping that field is the release action.
 
         - A `version` that is missing, or is not a semantic version, is refused with 400
           (`reason` `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`).
@@ -1720,6 +1720,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/PackageVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -1749,6 +1751,8 @@ paths:
                 $ref: "#/components/schemas/PackageVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -1804,6 +1808,8 @@ paths:
                 $ref: "#/components/schemas/PackageVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1852,6 +1858,8 @@ paths:
                 $ref: "#/components/schemas/Package"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1900,12 +1908,16 @@ paths:
                 $ref: "#/components/schemas/PackageVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2083,9 +2095,10 @@ paths:
         behind an authenticating gateway; see docs/security-posture.md.
 
         A published version is immutable, so a package with versions refuses
-        this write with 409 (`reason` `PACKAGE_IS_VERSIONED`): change the file in
-        the package's source and publish a new version. That is also why this
-        operation takes no `versionId`.
+        this write with 409 (`reason` `PACKAGE_IS_VERSIONED`), whatever
+        `versionId` names: change the file in the package's source and publish
+        a new version. A `versionId` on a package with no versions answers 404
+        (`reason` `VERSION_NOT_FOUND`).
       parameters:
         - name: environmentName
           in: path
@@ -2105,6 +2118,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         required: true
         content:
@@ -3166,9 +3180,10 @@ components:
             $ref: "#/components/schemas/Error"
     Gone:
       description: |
-        The version named by `versionId` has been archived (`reason`
-        VERSION_ARCHIVED). It is out of service until it is unarchived; the
-        package's other versions are unaffected.
+        The version the request names (by `versionId`, the path, or the
+        publisher.json of the tree being published) has been archived
+        (`reason` VERSION_ARCHIVED). It is out of service until it is
+        unarchived; the package's other versions are unaffected.
       content:
         application/json:
           schema:
@@ -3300,6 +3315,15 @@ components:
         build metadata (`+20231120.deadbeef`). Pre-release and
         build suffixes are accepted so release-candidate builds can be
         published.
+
+    VersionIdOrEmpty:
+      description: >-
+        A `VersionIdPattern`, or the empty string, which names no version and
+        so means the package's `latest`.
+      anyOf:
+        - $ref: "#/components/schemas/VersionIdPattern"
+        - type: string
+          maxLength: 0
 
     PackageVersion:
       type: object
@@ -3504,8 +3528,9 @@ components:
           enum: ["off", "on"]
           readOnly: true
           description: >-
-            The `packageVersioning` setting this server runs with. With "on", a
-            publish from a location publishes an immutable version. An
+            Whether this server runs with package versioning
+            (`PUBLISHER_PACKAGE_VERSIONING`). With "on", a publish from a
+            location publishes an immutable version. An
             orchestrator talking to servers in mid-rollout reads it to know
             which ones take native versions.
         versionPromotion:
@@ -5561,10 +5586,10 @@ components:
             {"columnName": value}. If false (default), returns the full Malloy
             result with type metadata for rendering.'
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionIdOrEmpty"
           description: >-
-            The published version of the package to query. Omitted, the query
-            runs against the package's `latest` version. An unknown version
+            The published version of the package to query. Omitted or empty,
+            the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
             (`reason` VERSION_ARCHIVED).
         filterParams:
@@ -7187,9 +7212,9 @@ components:
         (read off `Package.buildPlan`).
       properties:
         versionId:
-          $ref: "#/components/schemas/VersionIdPattern"
+          $ref: "#/components/schemas/VersionIdOrEmpty"
           description: >-
-            The published version of the package to build. Omitted, the
+            The published version of the package to build. Omitted or empty, the
             package's `latest` version is built. An unknown version answers 404
             (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
             VERSION_ARCHIVED). Carried in the body rather than the query string
@@ -8550,10 +8575,12 @@ components:
       name: versionId
       in: query
       required: false
+      allowEmptyValue: true
       description: |
         The published version of the package to serve, a semantic version such
-        as `1.2.0` or `1.2.0-rc1`. Omitted, the request is served from the
-        package's `latest` version.
+        as `1.2.0` or `1.2.0-rc1`. Omitted or empty (`versionId=`, which a proxy
+        forwarding a page's query string may send), the request is served from
+        the package's `latest` version.
 
         A value that is not a semantic version answers 400 with `reason`
         VERSION_ID_INVALID, so a malformed value is told apart from a missing
@@ -8567,7 +8594,7 @@ components:
         Build metadata must be percent-encoded: send `1.2.0+build.5` as
         `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.
       schema:
-        $ref: "#/components/schemas/VersionIdPattern"
+        $ref: "#/components/schemas/VersionIdOrEmpty"
     versionPath:
       name: version
       in: path

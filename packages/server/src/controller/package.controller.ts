@@ -1,14 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
+import { getVersionPromotionMode, isVersioningEnabled } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
    PackageAdmissionRefusedError,
+   PackageVersionError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
@@ -219,6 +220,49 @@ export class PackageController {
          environmentName,
          false,
       );
+      // Versioning transition: with it off, everything below this block is
+      // the publish as it was before versions.
+      if (isVersioningEnabled()) {
+         const versions = environment.getVersionService();
+         if (!versions) {
+            throw new Error(
+               `Environment ${environmentName} has no version registry`,
+            );
+         }
+         if (body.location) {
+            const location = body.location;
+            // The version is the one the tree's own publisher.json declares;
+            // the request carries none. Every publish runs the publish checks.
+            const published = await versions.publish(
+               packageName,
+               (stagingPath) =>
+                  this.downloadInto(
+                     environmentName,
+                     packageName,
+                     location,
+                     stagingPath,
+                  ),
+               {
+                  sourceLocation: location,
+                  manifestLocation: body.manifestLocation,
+                  description: body.description,
+                  promotion: getVersionPromotionMode(
+                     this.environmentStore.serverRootPath,
+                  ),
+                  validate: (pkg) => formatPublishRejections(pkg),
+               },
+            );
+            return published.loaded;
+         }
+         // Published versions are immutable, so a package that has them is
+         // not replaced by an unversioned publish.
+         if (await versions.isVersioned(packageName)) {
+            throw new PackageVersionError(
+               "PACKAGE_IS_VERSIONED",
+               `Package ${packageName} has published versions, which are immutable; publish a new version instead of replacing it.`,
+            );
+         }
+      }
       // Strict at publish: the author is in the loop here, so reject a bad
       // explores with an actionable 400 instead of silently serving a hidden
       // surface. (At startup/reload we fail safe and only warn — see
@@ -331,11 +375,27 @@ export class PackageController {
          environmentName,
          false,
       );
+      // Versioning transition: with it off, the package is deleted as before.
+      // With it on, a versioned package's rows go first: once they are gone
+      // no request can resolve one of its versions, so none can fetch a
+      // version's files again while they are being removed.
+      const versioned =
+         isVersioningEnabled() &&
+         (await environment.getVersionService()?.isVersioned(packageName)) ===
+            true;
+      if (versioned) {
+         await this.environmentStore.deletePackageFromDatabase(
+            environmentName,
+            packageName,
+         );
+      }
       const result = await environment.deletePackage(packageName);
-      await this.environmentStore.deletePackageFromDatabase(
-         environmentName,
-         packageName,
-      );
+      if (!versioned) {
+         await this.environmentStore.deletePackageFromDatabase(
+            environmentName,
+            packageName,
+         );
+      }
 
       return result;
    }
@@ -430,44 +490,11 @@ export class PackageController {
       packageLocation: string,
       targetPath: string,
    ) {
-      const isCompressedFile = packageLocation.endsWith(".zip");
-      if (
-         packageLocation.startsWith("https://") ||
-         packageLocation.startsWith("git@")
-      ) {
-         await this.environmentStore.downloadGitHubDirectory(
-            packageLocation,
-            targetPath,
-         );
-      } else if (packageLocation.startsWith("gs://")) {
-         await this.environmentStore.downloadGcsDirectory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      } else if (packageLocation.startsWith("s3://")) {
-         await this.environmentStore.downloadS3Directory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      }
-
-      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
-         // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
-         // so we need to mount them on the right place. `path.isAbsolute` is
-         // what catches a Windows drive-letter path (`D:\pkgs\sales`), which no
-         // other branch here claims either — without it the install stages
-         // nothing and the swap fails with a bare ENOENT rename. Same pairing
-         // as environment_store's isLocalPath.
-         await this.environmentStore.mountLocalDirectory(
-            packageLocation,
-            targetPath,
-            environmentName,
-            packageName,
-         );
-      }
+      await this.environmentStore.downloadPackageInto(
+         environmentName,
+         packageName,
+         packageLocation,
+         targetPath,
+      );
    }
 }

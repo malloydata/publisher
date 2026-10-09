@@ -59,7 +59,11 @@ export class VersionCache<T> {
       if (inFlight) return inFlight;
 
       const generation = this.generations.get(k) ?? 0;
-      const load = (async () => {
+      const entry: { load?: Promise<T> } = {};
+      entry.load = (async () => {
+         // Yield first, so the entry is registered below before anything in
+         // here can settle, even a load that throws synchronously.
+         await Promise.resolve();
          try {
             const value = await this.hooks.load(packageName, versionId);
             if ((this.generations.get(k) ?? 0) !== generation) {
@@ -69,11 +73,26 @@ export class VersionCache<T> {
             this.loaded.set(k, value);
             return value;
          } finally {
-            this.loading.delete(k);
+            // Only its own entry: an evict may already have let a newer load
+            // take the slot.
+            if (this.loading.get(k) === entry.load) this.loading.delete(k);
          }
       })();
-      this.loading.set(k, load);
-      return load;
+      this.loading.set(k, entry.load);
+      return entry.load;
+   }
+
+   /**
+    * Cache a version compiled elsewhere (by its publish). A version already
+    * cached keeps its copy, and the newcomer is released.
+    */
+   put(packageName: string, versionId: string, value: T): void {
+      const k = key(packageName, versionId);
+      if (this.loaded.has(k)) {
+         this.hooks.release(packageName, versionId, value);
+         return;
+      }
+      this.loaded.set(k, value);
    }
 
    /**
@@ -83,6 +102,9 @@ export class VersionCache<T> {
    evict(packageName: string, versionId: string): void {
       const k = key(packageName, versionId);
       this.generations.set(k, (this.generations.get(k) ?? 0) + 1);
+      // A read after the evict starts a fresh load rather than joining the
+      // overtaken one, which can only fail.
+      this.loading.delete(k);
       const value = this.loaded.get(k);
       if (value === undefined) return;
       this.loaded.delete(k);
