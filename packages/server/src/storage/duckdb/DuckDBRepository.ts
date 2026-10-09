@@ -10,8 +10,12 @@ import {
    StorageDestination,
    MaterializationStatus,
    MaterializationUpdate,
+   NewVersion,
    Package,
+   PromoteRule,
    ResourceRepository,
+   Version,
+   VersionArchiveStatus,
 } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
@@ -20,10 +24,12 @@ import { IncrementalLedgerRepository } from "./IncrementalLedgerRepository";
 import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
+import { VersionRepository } from "./VersionRepository";
 
 export class DuckDBRepository implements ResourceRepository {
    private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
+   private versionRepo: VersionRepository;
    private connectionRepo: ConnectionRepository;
    private destinationRepo: StorageDestinationRepository;
    private materializationRepo: MaterializationRepository;
@@ -32,6 +38,7 @@ export class DuckDBRepository implements ResourceRepository {
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
+      this.versionRepo = new VersionRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
       this.destinationRepo = new StorageDestinationRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
@@ -70,6 +77,7 @@ export class DuckDBRepository implements ResourceRepository {
       await this.materializationRepo.deleteByEnvironmentId(id);
       await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
       await this.destinationRepo.deleteByEnvironmentId(id);
+      await this.versionRepo.deleteByEnvironmentId(id);
       await this.packageRepo.deletePackagesByEnvironmentId(id);
       await this.environmentRepo.deleteEnvironment(id);
    }
@@ -115,12 +123,83 @@ export class DuckDBRepository implements ResourceRepository {
             pkg.environmentId,
             pkg.name,
          );
+         await this.versionRepo.deleteByPackage(pkg.environmentId, pkg.name);
       }
       await this.packageRepo.deletePackage(id);
    }
 
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
       return this.packageRepo.deletePackagesByEnvironmentId(id);
+   }
+
+   // ==================== VERSIONS ====================
+
+   async listVersions(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Version[]> {
+      return this.versionRepo.list(environmentId, packageName);
+   }
+
+   async listVersionsByEnvironment(environmentId: string): Promise<Version[]> {
+      return this.versionRepo.listByEnvironment(environmentId);
+   }
+
+   async getVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<Version | null> {
+      return this.versionRepo.get(environmentId, packageName, versionId);
+   }
+
+   async commitPublish(
+      version: NewVersion,
+      promote: PromoteRule,
+   ): Promise<{ version: Version; promoted: boolean }> {
+      return this.versionRepo.commitPublish(version, promote);
+   }
+
+   async setLatestVersion(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      onlyIf?: PromoteRule,
+   ): Promise<boolean> {
+      return this.versionRepo.setLatest(
+         environmentId,
+         packageName,
+         versionId,
+         onlyIf,
+      );
+   }
+
+   async setVersionArchiveStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionArchiveStatus,
+   ): Promise<Version> {
+      return this.versionRepo.setArchiveStatus(
+         environmentId,
+         packageName,
+         versionId,
+         status,
+      );
+   }
+
+   async setVersionManifestPath(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      manifestPath: string | null,
+   ): Promise<Version> {
+      return this.versionRepo.setManifestPath(
+         environmentId,
+         packageName,
+         versionId,
+         manifestPath,
+      );
    }
 
    // ==================== CONNECTIONS ====================

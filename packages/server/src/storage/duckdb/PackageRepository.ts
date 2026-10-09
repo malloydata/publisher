@@ -66,6 +66,8 @@ export class PackageRepository {
       return {
          id,
          ...pkg,
+         // Not written above: only the version calls move the pointer.
+         latestVersion: null,
          createdAt: now,
          updatedAt: now,
       };
@@ -133,6 +135,7 @@ export class PackageRepository {
             : undefined,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
+         latestVersion: (row.latest_version as string | null) ?? null,
       };
    }
 }
