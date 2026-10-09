@@ -528,6 +528,8 @@ export function internalErrorToHttpError(
       return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
+   } else if (error instanceof VersionFilesMissingError) {
+      return httpError(424, error.message);
    } else if (error instanceof PackageManifestError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
@@ -856,6 +858,18 @@ export class ModelCompilationError extends Error {
  * the worker flags it `isManifestError` and deserializeError restores the
  * class; without that the pool reports the author's typo as a 503 outage.
  */
+/**
+ * A published version's files are missing and could not be fetched again
+ * from where it was published (unreachable, or changed since). 424: the
+ * dependency the version needs is what failed, not the request.
+ */
+export class VersionFilesMissingError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "VersionFilesMissingError";
+   }
+}
+
 export class PackageManifestError extends Error {
    constructor(message: string) {
       super(message);

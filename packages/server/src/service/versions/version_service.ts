@@ -3,7 +3,11 @@
 
 import { Mutex } from "async-mutex";
 import type { VersionPromotionMode } from "../../config";
-import { BadRequestError, PackageVersionError } from "../../errors";
+import {
+   BadRequestError,
+   PackageVersionError,
+   VersionFilesMissingError,
+} from "../../errors";
 import { logger } from "../../logger";
 import { assertSafePackageName } from "../../path_safety";
 import {
@@ -117,7 +121,7 @@ export function requestedVersionId(raw: unknown): string | undefined {
    if (typeof raw !== "string" || !isSemver(raw)) {
       throw new PackageVersionError(
          "VERSION_ID_INVALID",
-         `versionId ${JSON.stringify(raw)} is not a semantic version such as "1.2.0" or "1.2.0-rc1".`,
+         `versionId ${echo(raw)} is not a semantic version such as "1.2.0" or "1.2.0-rc1".`,
       );
    }
    return raw;
@@ -657,25 +661,34 @@ export class VersionService<P = unknown> {
    ): Promise<Version> {
       const versionId = requiredVersionId(rawVersion);
       const host = this.requireHost();
+      // Looked up before the lock, so a request naming a version that does
+      // not exist leaves no lock behind.
+      await this.getVersion(packageName, versionId);
       return this.withVersionLock(packageName, versionId, async () => {
          const current = await this.getVersion(packageName, versionId);
-         if (current.archiveStatus === status) return current;
-         if (status === "archive") {
-            // `latest` is refused by the registry's own guard
-            // (VERSION_IS_LATEST) whatever is building, so this check is for
-            // any other version. It runs under this version's lock, which a
-            // run of the version also takes, so no run starts between the
-            // check and the write.
-            const latest = await this.latestOf(packageName);
-            if (
-               latest !== versionId &&
-               host.isVersionBuilding?.(packageName, versionId)
-            ) {
+         if (current.archiveStatus === status) {
+            // An archived version is never served: if anything of it is
+            // loaded, it goes, whatever let it in.
+            if (status === "archive") this.cache.evict(packageName, versionId);
+            return current;
+         }
+         // A version being built is never archived: the archive would reclaim
+         // the tables the run is writing. Refused whichever version it is; the
+         // reason says why the archive cannot happen now.
+         if (
+            status === "archive" &&
+            host.isVersionBuilding?.(packageName, versionId)
+         ) {
+            if ((await this.latestOf(packageName)) === versionId) {
                throw new PackageVersionError(
-                  "VERSION_BUILDING",
-                  `A materialization of version ${versionId} of package ${packageName} is running, and archiving would reclaim the tables it is writing. Wait for it, or stop it.`,
+                  "VERSION_IS_LATEST",
+                  `Version ${versionId} is the latest version of package ${packageName}; make another version latest before archiving it.`,
                );
             }
+            throw new PackageVersionError(
+               "VERSION_BUILDING",
+               `A materialization of version ${versionId} of package ${packageName} is running, and archiving would reclaim the tables it is writing. Wait for it, or stop it.`,
+            );
          }
          const updated = await this.registry.setVersionArchiveStatus(
             this.environmentId,
@@ -685,7 +698,17 @@ export class VersionService<P = unknown> {
          );
          if (status === "archive") {
             this.cache.evict(packageName, versionId);
-            host.onVersionArchived?.(packageName, versionId);
+            // The archive is committed; reclaiming its tables must not turn
+            // that into a failure.
+            try {
+               host.onVersionArchived?.(packageName, versionId);
+            } catch (error) {
+               logger.warn("Could not start reclaiming an archived version", {
+                  packageName,
+                  versionId,
+                  error,
+               });
+            }
          }
          return updated;
       });
@@ -704,6 +727,9 @@ export class VersionService<P = unknown> {
    ): Promise<P> {
       const versionId = requiredVersionId(rawVersion);
       const host = this.requireHost();
+      // Looked up before the lock, so a request naming a version that does
+      // not exist leaves no lock behind.
+      await this.getVersion(packageName, versionId);
       return this.withVersionLock(packageName, versionId, async () => {
          const current = await this.getVersion(packageName, versionId);
          if (current.archiveStatus === "archive") {
@@ -715,15 +741,62 @@ export class VersionService<P = unknown> {
             versionId,
             manifestLocation,
          );
-         const resident = this.cache.peek(packageName, versionId);
-         if (resident !== undefined) {
-            await host.bindVersionManifest(resident, manifestLocation);
-            return resident;
+         try {
+            const resident = this.cache.peek(packageName, versionId);
+            // Not loaded: load it (through memory admission, like any load).
+            // A load already running read the row before this write and binds
+            // the previous manifest, so it is brought up to the row after.
+            const loaded =
+               resident ?? (await this.loadOrRefuse(packageName, versionId));
+            if (
+               resident !== undefined ||
+               !host.boundManifestOf ||
+               host.boundManifestOf(loaded) !== manifestLocation
+            ) {
+               await host.bindVersionManifest(loaded, manifestLocation);
+            }
+            return loaded;
+         } catch (error) {
+            // Nothing was bound: the row goes back, so it never names a
+            // binding the version does not serve.
+            await this.registry
+               .setVersionManifestPath(
+                  this.environmentId,
+                  packageName,
+                  versionId,
+                  current.manifestPath,
+               )
+               .catch((restoreError) =>
+                  logger.error(
+                     "Could not restore a version's manifest after its bind failed",
+                     { packageName, versionId, error: restoreError },
+                  ),
+               );
+            throw error;
          }
-         // Not loaded: load it, which binds it from the row just written, and
-         // goes through memory admission like any other load.
-         return this.cache.get(packageName, versionId);
       });
+   }
+
+   /**
+    * Load a version for a lifecycle change. A load an archive or a delete
+    * overtook answers what that change means (410, 404) rather than a 500.
+    */
+   private async loadOrRefuse(
+      packageName: string,
+      versionId: string,
+   ): Promise<P> {
+      for (let attempt = 0; ; attempt++) {
+         try {
+            return await this.cache.get(packageName, versionId);
+         } catch (error) {
+            if (!(error instanceof VersionEvictedDuringLoadError)) throw error;
+            const row = await this.getVersion(packageName, versionId);
+            if (row.archiveStatus === "archive") {
+               throw versionArchived(packageName, versionId);
+            }
+            if (attempt >= 2) throw error;
+         }
+      }
    }
 
    /**
@@ -737,7 +810,7 @@ export class VersionService<P = unknown> {
       if (target.archiveStatus === "archive") {
          throw versionArchived(packageName, versionId);
       }
-      const loaded = await this.cache.get(packageName, versionId);
+      const loaded = await this.loadOrRefuse(packageName, versionId);
       const moved = await this.registry.setLatestVersion(
          this.environmentId,
          packageName,
@@ -795,6 +868,10 @@ export class VersionService<P = unknown> {
          versionId,
       );
       if (!row) throw versionNotFound(packageName, versionId);
+      // An archived version is never loaded, whatever a caller checked before.
+      if (row.archiveStatus === "archive") {
+         throw versionArchived(packageName, versionId);
+      }
       host.admit(packageName, "load a package version");
       await this.withFilesLock(packageName, row.dirName, () =>
          this.restoreIfMissing(row),
@@ -819,7 +896,7 @@ export class VersionService<P = unknown> {
       if (await store.isPlaced(packageName, dirName)) return;
       const failureKey = `${packageName}@${versionId}@${row.contentHash}`;
       const failedAt = this.restoreFailedAt.get(failureKey);
-      const missing = new Error(
+      const missing = new VersionFilesMissingError(
          `The files of version ${versionId} of package ${packageName} are missing and could not be fetched again from where it was published.`,
       );
       if (
@@ -895,6 +972,12 @@ function lockFor(locks: Map<string, Mutex>, key: string): Mutex {
       locks.set(key, lock);
    }
    return lock;
+}
+
+/** A short rendering of a refused value: never more than 64 characters. */
+function echo(raw: unknown): string {
+   const text = JSON.stringify(raw) ?? String(raw);
+   return text.length > 64 ? `${text.slice(0, 61)}...` : text;
 }
 
 /** A version a route names in its path or body: required, and semver. */

@@ -24,6 +24,8 @@ let envPath: string;
 let sourcesPath: string;
 let db: DuckDBConnection;
 let repo: DuckDBRepository;
+/** How many times a version's files were fetched again from their location. */
+let restoreDownloads = 0;
 
 /** A package tree whose one view answers `answer`, so a query names its version. */
 function writePackage(
@@ -68,6 +70,7 @@ async function newEnvironment(): Promise<Environment> {
    const env = await Environment.create("testEnv", envPath, []);
    env.bindVersions(repo, ENV_ID, {
       downloaderFor: (_packageName, location) => async (stagingPath) => {
+         restoreDownloads += 1;
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
       ensurePackageRecord: async (packageName, description) => {
@@ -88,13 +91,17 @@ async function newEnvironment(): Promise<Environment> {
    return env;
 }
 
-async function publish(env: Environment, location: string) {
+async function publish(
+   env: Environment,
+   location: string,
+   promotion: "on-publish" | "explicit" = "on-publish",
+) {
    return env.getVersionService()!.publish(
       PKG,
       async (stagingPath) => {
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
-      { sourceLocation: location, promotion: "on-publish" },
+      { sourceLocation: location, promotion },
    );
 }
 
@@ -313,6 +320,132 @@ describe("Environment loading of published versions", () => {
       await env.deletePackage("broken");
       expect(fs.existsSync(path.join(envPath, "broken", "notes.txt"))).toBe(
          true,
+      );
+   });
+});
+
+describe("Environment loading: races, listings and bookkeeping", () => {
+   it("a read racing a package's first publish waits for it, then serves the version", async () => {
+      const env = await newEnvironment();
+      // Hold the publish's compile, with the package lock held.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const create = Package.create.bind(Package);
+      const spy = spyOn(Package, "create").mockImplementationOnce(
+         async (...args: Parameters<typeof Package.create>) => {
+            await gate;
+            return create(...args);
+         },
+      );
+      try {
+         const publishing = publish(env, source("1.0.0", 1));
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         // The package has no version yet, and no folder of its own to load.
+         const reading = env.getPackage(PKG);
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         release();
+         await publishing;
+         const read = await reading;
+         expect(await answerOf(read)).toBe(1);
+      } finally {
+         spy.mockRestore();
+      }
+      // Still listed and serving: the read did not drop its status.
+      expect((await env.listPackages()).map((p) => p.name)).toEqual([PKG]);
+      expect(env.describePackageStatus(PKG).serving).toBe(true);
+      expect(env.hasLoadedPackage(PKG)).toBe(true);
+      expect(env.getFailedPackages().size).toBe(0);
+   });
+
+   it("lists a package with no latest yet without reporting a failure", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1), "explicit");
+      const listed = await env.listPackages();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+         name: PKG,
+         versionId: null,
+         latestVersion: null,
+      });
+      expect(env.getFailedPackages().size).toBe(0);
+   });
+
+   it("does not fetch an unrestorable version's location again on every read", async () => {
+      const location = source("1.0.0", 1);
+      await publish(await newEnvironment(), location);
+      fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
+      writePackage(location, { version: "1.0.0" }, 99);
+      const restarted = await newEnvironment();
+      restoreDownloads = 0;
+      for (let i = 0; i < 3; i++) {
+         await expect(restarted.getPackage(PKG)).rejects.toThrow(
+            /missing and could not be fetched again/,
+         );
+      }
+      expect(restoreDownloads).toBe(1);
+   });
+
+   it("closing the environment releases every loaded version's connections", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0", 1))).loaded;
+      const v2 = (await publish(env, source("2.0.0", 2))).loaded;
+      const shutdowns = [v1, v2].map((pkg) =>
+         spyOn(pkg.getMalloyConfig(), "shutdown"),
+      );
+      await env.closeAllConnections();
+      expect(env.getVersionService()!.cache.entries()).toEqual([]);
+      for (const shutdown of shutdowns) {
+         expect(shutdown).toHaveBeenCalled();
+      }
+   });
+
+   it("refuses to add or install a versioned package as a single slot, keeping its versions", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      expect(await refusal(env.addPackage(PKG))).toEqual({
+         status: 409,
+         reason: "PACKAGE_IS_VERSIONED",
+      });
+      const other = writePackage(path.join(root, "unversioned"), {}, 7);
+      expect(
+         await refusal(
+            env.installPackage(PKG, async (stagingPath) => {
+               await fs.promises.cp(other, stagingPath, { recursive: true });
+            }),
+         ),
+      ).toEqual({ status: 409, reason: "PACKAGE_IS_VERSIONED" });
+      expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["1.0.0"]);
+      expect(await answerOf(await env.getPackage(PKG))).toBe(1);
+   });
+
+   it("publishes only one of two versions that differ only by case, even at once", async () => {
+      const env = await newEnvironment();
+      const upper = writePackage(
+         path.join(root, "upper"),
+         { version: "1.0.0-RC1" },
+         1,
+      );
+      const lower = writePackage(
+         path.join(root, "lower"),
+         { version: "1.0.0-rc1" },
+         2,
+      );
+      const outcomes = await Promise.allSettled([
+         publish(env, upper),
+         publish(env, lower),
+      ]);
+      expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+      const refused = outcomes.find(
+         (o) => o.status === "rejected",
+      ) as PromiseRejectedResult;
+      expect((refused.reason as PackageVersionError).reason).toBe(
+         "VERSION_CONFLICT",
+      );
+      const [only] = await repo.listVersions(ENV_ID, PKG);
+      const served = await env.getPackage(PKG);
+      // The version recorded is the one whose files are served.
+      expect(await answerOf(served)).toBe(
+         only.versionId === "1.0.0-RC1" ? 1 : 2,
       );
    });
 });

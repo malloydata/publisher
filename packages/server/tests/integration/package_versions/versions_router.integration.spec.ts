@@ -309,6 +309,88 @@ describe("versions routes", () => {
       );
    });
 
+   it("binds only a gs:// or s3:// manifest URI", async () => {
+      for (const manifestLocation of [
+         "file:///etc/passwd",
+         "/var/data/manifest.json",
+         "https://example.com/m.json",
+         "gs://",
+         "",
+      ]) {
+         const refused = await call("PUT", "/versions/1.1.0/manifest", {
+            manifestLocation,
+         });
+         expect([manifestLocation, refused.status]).toEqual([
+            manifestLocation,
+            400,
+         ]);
+      }
+   });
+
+   it("refuses lifecycle bodies of the wrong type with 400", async () => {
+      for (const body of [
+         { archiveStatus: ["archive"] },
+         { archiveStatus: 1 },
+         {},
+      ]) {
+         expect((await call("PATCH", "/versions/1.0.0", body)).status).toBe(
+            400,
+         );
+      }
+      for (const body of [
+         { version: 1 },
+         { version: ["1.0.0"] },
+         { version: {} },
+      ]) {
+         const refused = await call("PUT", "/latest", body);
+         expect([refused.status, refused.json.reason]).toEqual([
+            400,
+            "VERSION_ID_INVALID",
+         ]);
+      }
+      for (const body of [
+         { manifestLocation: 123 },
+         { manifestLocation: [] },
+      ]) {
+         expect(
+            (await call("PUT", "/versions/1.0.0/manifest", body)).status,
+         ).toBe(400);
+      }
+   });
+
+   it("round-trips a version with build metadata through the path and resource", async () => {
+      const name = "lifecycle-build";
+      const dir = path.join(root, "build-meta");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name, version: "1.0.0+b.1" }),
+      );
+      fs.writeFileSync(
+         path.join(dir, "model.malloy"),
+         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      );
+      const published = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name, location: dir }),
+         },
+      );
+      expect(published.status).toBe(200);
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}/versions/1.0.0%2Bb.1`,
+      );
+      expect(res.status).toBe(200);
+      const version = (await res.json()) as { id: string; resource: string };
+      expect(version.id).toBe("1.0.0+b.1");
+      expect(version.resource).toBe(
+         `/api/v0/environments/${ENV_NAME}/packages/${name}/versions/1.0.0%2Bb.1`,
+      );
+      expect((await fetch(`${baseUrl}${version.resource}`)).status).toBe(200);
+   });
+
    it("PATCH on a versioned package rebinds latest's manifest and sets the description", async () => {
       // The deprecated PATCH, as an orchestrator that rebinds through it sends
       // it: the location it published from echoed back, a new manifest.

@@ -95,13 +95,16 @@ export class VersionController {
       this.assertWritable();
       const fields = (body ?? {}) as { manifestLocation?: unknown };
       const location = fields.manifestLocation;
+      // A gs:// or s3:// URI, as the spec declares: the manifest is fetched
+      // from object storage, never read from a path on this server.
       if (
          !("manifestLocation" in fields) ||
          (location !== null &&
-            (typeof location !== "string" || location === ""))
+            (typeof location !== "string" ||
+               !/^(gs|s3):\/\/[^/]+\/./.test(location)))
       ) {
          throw new BadRequestError(
-            "`manifestLocation` must be the URI of a build manifest, or null to serve live.",
+            "`manifestLocation` must be the gs:// or s3:// URI of a build manifest, or null to serve live.",
          );
       }
       const { versions, environment } = await this.service(environmentName);

@@ -7,8 +7,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+   internalErrorToHttpError,
    PackageVersionError,
    type PackageVersionErrorReason,
+   VersionFilesMissingError,
 } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { DuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
@@ -35,11 +37,16 @@ let repo: DuckDBRepository;
 let log: string[];
 let building: Set<string>;
 let failLoad: Set<string>;
+/** Loads of these versions wait until the test releases them. */
+let heldLoads: Map<string, Promise<void>>;
+let failBind: boolean;
+let throwOnArchive: boolean;
 
 function host(): VersionHost<Loaded> {
    const lock = new Mutex();
    return {
       loadVersion: async (_pkg, _path, version) => {
+         await heldLoads.get(version.versionId);
          if (failLoad.has(version.versionId)) {
             throw new Error(`cannot load ${version.versionId}`);
          }
@@ -51,6 +58,7 @@ function host(): VersionHost<Loaded> {
       },
       releaseVersion: (_pkg, versionId) => log.push(`release ${versionId}`),
       bindVersionManifest: async (loaded, manifestPath) => {
+         if (failBind) throw new Error("bind failed");
          loaded.manifest = manifestPath;
          log.push(`bind ${loaded.versionId} ${manifestPath}`);
       },
@@ -78,7 +86,10 @@ function host(): VersionHost<Loaded> {
       onVersionLoaded: (_pkg, loaded, isLatest) =>
          log.push(`served ${loaded.versionId}${isLatest ? " latest" : ""}`),
       isVersionBuilding: (_pkg, versionId) => building.has(versionId),
-      onVersionArchived: (_pkg, versionId) => log.push(`reclaim ${versionId}`),
+      onVersionArchived: (_pkg, versionId) => {
+         if (throwOnArchive) throw new Error("reclaim could not start");
+         log.push(`reclaim ${versionId}`);
+      },
    };
 }
 
@@ -144,6 +155,9 @@ beforeEach(async () => {
    log = [];
    building = new Set();
    failLoad = new Set();
+   heldLoads = new Map();
+   failBind = false;
+   throwOnArchive = false;
 });
 
 afterEach(async () => {
@@ -335,5 +349,146 @@ describe("moving latest", () => {
       await svc.setLatest(PKG, "1.0.0");
       await publish(svc, "3.0.0");
       expect(await latest()).toBe("3.0.0");
+   });
+});
+
+/** Hold the next load of `versionId` until the returned function is called. */
+function holdLoad(versionId: string): () => void {
+   let release!: () => void;
+   heldLoads.set(
+      versionId,
+      new Promise<void>((resolve) => {
+         release = resolve;
+      }),
+   );
+   return () => {
+      heldLoads.delete(versionId);
+      release();
+   };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+describe("lifecycle races and failures", () => {
+   it("a manifest set while the version is loading binds the load, not just the row", async () => {
+      await publish(service(), "1.0.0");
+      const restarted = service();
+      const release = holdLoad("1.0.0");
+      // A read starts loading the version from the row (no manifest)...
+      const read = restarted.getLoaded(PKG, "1.0.0");
+      await tick();
+      // ...and a rebind lands while it runs.
+      const bound = restarted.setManifest(PKG, "1.0.0", "gs://m/new.json");
+      await tick();
+      release();
+      const loaded = await bound;
+      expect(loaded.manifest).toBe("gs://m/new.json");
+      expect((await read)!.loaded).toBe(loaded);
+      expect((await restarted.getVersion(PKG, "1.0.0")).manifestPath).toBe(
+         "gs://m/new.json",
+      );
+   });
+
+   it("puts the manifest row back when the bind fails", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await svc.setManifest(PKG, "1.0.0", "gs://m/old.json");
+      failBind = true;
+      await expect(
+         svc.setManifest(PKG, "1.0.0", "gs://m/new.json"),
+      ).rejects.toThrow("bind failed");
+      expect((await svc.getVersion(PKG, "1.0.0")).manifestPath).toBe(
+         "gs://m/old.json",
+      );
+   });
+
+   it("a latest move overtaken by an archive answers 410, not 500", async () => {
+      await publish(service(), "1.0.0");
+      await publish(service(), "2.0.0");
+      const svc = service();
+      const release = holdLoad("1.0.0");
+      const move = svc.setLatest(PKG, "1.0.0");
+      await tick();
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      release();
+      await expectReason(move, "VERSION_ARCHIVED");
+      expect(await latest()).toBe("2.0.0");
+   });
+
+   it("never archives a version that is building, whichever it is", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      await publish(svc, "3.0.0");
+      building.add("1.0.0");
+      await expectReason(
+         svc.setArchiveStatus(PKG, "1.0.0", "archive"),
+         "VERSION_BUILDING",
+      );
+      building.add("3.0.0");
+      await expectReason(
+         svc.setArchiveStatus(PKG, "3.0.0", "archive"),
+         "VERSION_IS_LATEST",
+      );
+   });
+
+   it("leaves no lock behind for a version that does not exist", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      const locks = (svc as unknown as { versionLocks: Map<string, unknown> })
+         .versionLocks;
+      const before = locks.size;
+      for (let i = 0; i < 20; i++) {
+         await expectReason(
+            svc.setArchiveStatus(PKG, `9.9.${i}`, "archive"),
+            "VERSION_NOT_FOUND",
+         );
+         await expectReason(
+            svc.setManifest(PKG, `9.8.${i}`, null),
+            "VERSION_NOT_FOUND",
+         );
+      }
+      expect(locks.size).toBe(before);
+   });
+
+   it("archiving an archived version again unloads anything of it that is loaded", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      // Something put it back in the cache behind the registry's back.
+      svc.cache.put(PKG, "1.0.0", { versionId: "1.0.0", manifest: null });
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      expect(svc.cache.isLoaded(PKG, "1.0.0")).toBe(false);
+   });
+
+   it("keeps a committed archive when starting the reclaim throws", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      throwOnArchive = true;
+      const archived = await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      expect(archived.archiveStatus).toBe("archive");
+   });
+
+   it("never loads an archived version, whatever a caller checked first", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      await svc.setArchiveStatus(PKG, "1.0.0", "archive");
+      await expectReason(svc.cache.get(PKG, "1.0.0"), "VERSION_ARCHIVED");
+   });
+
+   it("answers missing files that cannot be fetched again with a 424 error", async () => {
+      await publish(service(), "1.0.0");
+      fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
+      fs.rmSync(path.join(root, "src", "1.0.0"), { recursive: true });
+      const error = await service()
+         .getLoaded(PKG)
+         .catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(VersionFilesMissingError);
+      expect(
+         internalErrorToHttpError(error as Error, { log: false }).status,
+      ).toBe(424);
    });
 });

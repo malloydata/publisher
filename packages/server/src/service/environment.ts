@@ -2782,19 +2782,29 @@ export class Environment {
       const packageName = loaded.getPackageName();
       const wasBound =
          loaded.hasBoundTableNameManifest() || loaded.hasStorageServeBindings();
+      const previous = loaded.getPackageMetadata().manifestLocation ?? null;
       loaded.setPackageMetadata({
          ...loaded.getPackageMetadata(),
          manifestLocation: manifestPath,
       });
-      if (manifestPath) {
-         await this.trackPackageLoad(packageName, () =>
-            this.bindManifest(loaded, manifestPath),
-         );
-      } else if (wasBound) {
-         await this.trackPackageLoad(packageName, async () => {
-            await loaded.reloadAllModels({});
-            loaded.bindStorageServeBindings({});
+      try {
+         if (manifestPath) {
+            await this.trackPackageLoad(packageName, () =>
+               this.bindManifest(loaded, manifestPath),
+            );
+         } else if (wasBound) {
+            await this.trackPackageLoad(packageName, async () => {
+               await loaded.reloadAllModels({});
+               loaded.bindStorageServeBindings({});
+            });
+         }
+      } catch (error) {
+         // The models still use the previous binding, so the metadata says so.
+         loaded.setPackageMetadata({
+            ...loaded.getPackageMetadata(),
+            manifestLocation: previous,
          });
+         throw error;
       }
    }
 
