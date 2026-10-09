@@ -25,6 +25,10 @@ import { DashboardController } from "./controller/dashboard.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
+import {
+   VersionController,
+   versionsRouter,
+} from "./controller/version.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import {
@@ -424,6 +428,7 @@ const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
+const versionController = new VersionController(environmentStore);
 const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
@@ -1705,6 +1710,9 @@ app.post(
       }
    },
 );
+
+// A package's published versions, their lifecycle and its `latest`.
+app.use(versionsRouter(versionController));
 
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,

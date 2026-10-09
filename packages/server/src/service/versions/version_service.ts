@@ -71,6 +71,13 @@ export interface VersionHost<P> {
    ): Promise<void>;
    /** A version became served; `isLatest` says whether it is `latest`. */
    onVersionLoaded?(packageName: string, loaded: P, isLatest: boolean): void;
+   /** Whether a materialization of this version is running now. */
+   isVersionBuilding?(packageName: string, versionId: string): boolean;
+   /**
+    * A version was archived and unloaded: reclaim what it alone owns (its
+    * `scope: version` tables). Runs in the background; must not throw.
+    */
+   onVersionArchived?(packageName: string, versionId: string): void;
 }
 
 export interface PublishOptions<P> {
@@ -444,6 +451,147 @@ export class VersionService<P = unknown> {
       };
    }
 
+   /**
+    * A package's versions, highest first, archived ones included, with the
+    * package's `latest`. A package with no versions has none to list.
+    */
+   async listVersions(
+      packageName: string,
+   ): Promise<{ latest: string | null; versions: Version[] }> {
+      const versions = await this.registry.listVersions(
+         this.environmentId,
+         packageName,
+      );
+      versions.sort((a, b) => {
+         const order = compareSemver(b.versionId, a.versionId);
+         // Build metadata does not order versions; the later publish first.
+         return order !== 0
+            ? order
+            : b.createdAt.getTime() - a.createdAt.getTime();
+      });
+      return { latest: await this.latestOf(packageName), versions };
+   }
+
+   /** One version, archived or not: 400 for a malformed id, 404 for none. */
+   async getVersion(
+      packageName: string,
+      rawVersion: unknown,
+   ): Promise<Version> {
+      const versionId = requiredVersionId(rawVersion);
+      const row = await this.registry.getVersion(
+         this.environmentId,
+         packageName,
+         versionId,
+      );
+      if (!row) throw versionNotFound(packageName, versionId);
+      return row;
+   }
+
+   /**
+    * Archive or unarchive a version. Archiving refuses the package's
+    * `latest`, its last version in service, and a version a materialization
+    * is building; then unloads it and hands its own tables to reclaim. Its
+    * files stay. Unarchiving puts it back in service; it loads on its next
+    * read. The state it is already in changes nothing.
+    */
+   async setArchiveStatus(
+      packageName: string,
+      rawVersion: unknown,
+      status: "archive" | "unarchive",
+   ): Promise<Version> {
+      const versionId = requiredVersionId(rawVersion);
+      const host = this.requireHost();
+      return this.withVersionLock(packageName, versionId, async () => {
+         const current = await this.getVersion(packageName, versionId);
+         if (current.archiveStatus === status) return current;
+         if (status === "archive") {
+            // `latest` is refused by the registry's own guard
+            // (VERSION_IS_LATEST) whatever is building, so this check is for
+            // any other version. It runs under this version's lock, which a
+            // run of the version also takes, so no run starts between the
+            // check and the write.
+            const latest = await this.latestOf(packageName);
+            if (
+               latest !== versionId &&
+               host.isVersionBuilding?.(packageName, versionId)
+            ) {
+               throw new PackageVersionError(
+                  "VERSION_BUILDING",
+                  `A materialization of version ${versionId} of package ${packageName} is running, and archiving would reclaim the tables it is writing. Wait for it, or stop it.`,
+               );
+            }
+         }
+         const updated = await this.registry.setVersionArchiveStatus(
+            this.environmentId,
+            packageName,
+            versionId,
+            status,
+         );
+         if (status === "archive") {
+            this.cache.evict(packageName, versionId);
+            host.onVersionArchived?.(packageName, versionId);
+         }
+         return updated;
+      });
+   }
+
+   /**
+    * Bind a version to a build manifest, or to none (null: serves live). The
+    * binding is serving state, not content, so it is the one thing about a
+    * published version that changes. An archived version is refused before
+    * anything is written. Returns the version, loaded and bound.
+    */
+   async setManifest(
+      packageName: string,
+      rawVersion: unknown,
+      manifestLocation: string | null,
+   ): Promise<P> {
+      const versionId = requiredVersionId(rawVersion);
+      const host = this.requireHost();
+      return this.withVersionLock(packageName, versionId, async () => {
+         const current = await this.getVersion(packageName, versionId);
+         if (current.archiveStatus === "archive") {
+            throw versionArchived(packageName, versionId);
+         }
+         await this.registry.setVersionManifestPath(
+            this.environmentId,
+            packageName,
+            versionId,
+            manifestLocation,
+         );
+         const resident = this.cache.peek(packageName, versionId);
+         if (resident !== undefined) {
+            await host.bindVersionManifest(resident, manifestLocation);
+            return resident;
+         }
+         // Not loaded: load it, which binds it from the row just written, and
+         // goes through memory admission like any other load.
+         return this.cache.get(packageName, versionId);
+      });
+   }
+
+   /**
+    * Make a version the package's `latest`: the one every request with no
+    * version is served. It must exist and be in service, and it is loaded
+    * first, so a version that cannot load never becomes `latest`.
+    */
+   async setLatest(packageName: string, rawVersion: unknown): Promise<Version> {
+      const versionId = requiredVersionId(rawVersion);
+      const target = await this.getVersion(packageName, versionId);
+      if (target.archiveStatus === "archive") {
+         throw versionArchived(packageName, versionId);
+      }
+      const loaded = await this.cache.get(packageName, versionId);
+      const moved = await this.registry.setLatestVersion(
+         this.environmentId,
+         packageName,
+         versionId,
+      );
+      if (moved)
+         this.requireHost().onVersionLoaded?.(packageName, loaded, true);
+      return this.getVersion(packageName, versionId);
+   }
+
    /** Run `fn` holding one version's lock. */
    async withVersionLock<T>(
       packageName: string,
@@ -531,4 +679,30 @@ export function promoteOnPublish(
    if (promotion === "explicit") return () => false;
    return (current) =>
       current === null || compareSemver(current, versionId) <= 0;
+}
+
+/** A version a route names in its path or body: required, and semver. */
+function requiredVersionId(raw: unknown): string {
+   const versionId = requestedVersionId(raw);
+   if (versionId === undefined) {
+      throw new PackageVersionError(
+         "VERSION_ID_INVALID",
+         'A version is required, such as "1.2.0".',
+      );
+   }
+   return versionId;
+}
+
+function versionNotFound(packageName: string, versionId: string) {
+   return new PackageVersionError(
+      "VERSION_NOT_FOUND",
+      `Package ${packageName} has no version ${versionId}.`,
+   );
+}
+
+function versionArchived(packageName: string, versionId: string) {
+   return new PackageVersionError(
+      "VERSION_ARCHIVED",
+      `Version ${versionId} of package ${packageName} is archived. Unarchive it first.`,
+   );
 }

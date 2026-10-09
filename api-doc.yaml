@@ -85,7 +85,9 @@ tags:
   - name: versions
     description:
       Published, immutable versions of a package, the package's `latest`
-      pointer, and each version's lifecycle (archive, manifest binding)
+      pointer, and each version's lifecycle (archive, manifest binding).
+      They answer 501 while the server runs with package versioning off
+      (`PUBLISHER_PACKAGE_VERSIONING` unset or `off`)
 
 paths:
   /status:
@@ -1726,6 +1728,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1757,6 +1761,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     patch:
@@ -1818,6 +1824,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1868,6 +1876,8 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1920,6 +1930,8 @@ paths:
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
