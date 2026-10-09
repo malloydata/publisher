@@ -129,6 +129,10 @@ export class DuckDBRepository implements ResourceRepository {
       await this.packageRepo.deletePackage(id);
    }
 
+   async deletePackageRecord(id: string): Promise<void> {
+      await this.packageRepo.deletePackage(id);
+   }
+
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
       await this.versionRepo.deleteByEnvironmentId(id);
       return this.packageRepo.deletePackagesByEnvironmentId(id);

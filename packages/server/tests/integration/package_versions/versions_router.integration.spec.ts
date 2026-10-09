@@ -329,6 +329,222 @@ describe("versions routes", () => {
       });
    });
 
+   it("PATCH accepts the package echoed back, and a client's unset fields", async () => {
+      // A client that reads the package and sends it back whole.
+      const read = await call("GET", "");
+      expect(read.status).toBe(200);
+      const echoed = await call("PATCH", "", read.json);
+      expect([echoed.status, echoed.json.reason]).toEqual([200, undefined]);
+
+      // A generated client that serializes every field it knows, unset ones
+      // as empty lists, null, or their defaults.
+      const serialized = await call("PATCH", "", {
+         name: null,
+         location: null,
+         manifestLocation: null,
+         description: null,
+         scope: "package",
+         explores: [],
+         exploresWarnings: [],
+         warnings: [],
+         queryableSources: [],
+         storageServeBindings: [],
+         materialization: null,
+         queryMetadata: null,
+      });
+      expect([serialized.status, serialized.json.reason]).toEqual([
+         200,
+         undefined,
+      ]);
+   });
+
+   it("PATCH refuses a description that is not text, and a manifest that is not gs:// or s3://", async () => {
+      for (const body of [
+         { description: 7 },
+         { description: ["x"] },
+         { manifestLocation: "/var/data/manifest.json" },
+         { manifestLocation: "file:///etc/passwd" },
+         { manifestLocation: 3 },
+      ]) {
+         expect([
+            JSON.stringify(body),
+            (await call("PATCH", "", body)).status,
+         ]).toEqual([JSON.stringify(body), 400]);
+      }
+   });
+
+   it("a package's own description reads back, and an environment update keeps it", async () => {
+      expect(
+         (await call("PATCH", "", { description: "Package-level" })).status,
+      ).toBe(200);
+      expect((await call("GET", "")).json.description).toBe("Package-level");
+      const listed = async () =>
+         (
+            (await (
+               await fetch(
+                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+               )
+            ).json()) as { name: string; description?: string }[]
+         ).find((p) => p.name === PKG);
+      expect((await listed())?.description).toBe("Package-level");
+
+      // Re-syncing the environment's rows (as any environment update does)
+      // does not write latest's own description over it.
+      const updated = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}`,
+         {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: ENV_NAME }),
+         },
+      );
+      expect(updated.status).toBeLessThan(300);
+      expect((await listed())?.description).toBe("Package-level");
+      // Each version keeps its own.
+      expect((await call("GET", "/versions/2.0.0")).json.description).toBe(
+         "release 2.0.0",
+      );
+   });
+
+   it("with no description of its own, a package reads as its latest version's, even across an environment update", async () => {
+      const name = "described-by-latest";
+      const publishVersion = async (version: string) => {
+         const dir = path.join(root, `${name}-${version}`);
+         fs.mkdirSync(dir, { recursive: true });
+         fs.writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name, version, description: `about ${version}` }),
+         );
+         fs.writeFileSync(
+            path.join(dir, "model.malloy"),
+            'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+         );
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+            {
+               method: "POST",
+               headers: { "content-type": "application/json" },
+               body: JSON.stringify({ name, location: dir }),
+            },
+         );
+         expect(res.status).toBe(200);
+      };
+      const described = async () =>
+         (
+            (await (
+               await fetch(
+                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}`,
+               )
+            ).json()) as { description?: string }
+         ).description;
+
+      await publishVersion("1.0.0");
+      expect(await described()).toBe("about 1.0.0");
+      const updated = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}`,
+         {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: ENV_NAME }),
+         },
+      );
+      expect(updated.status).toBeLessThan(300);
+      await publishVersion("2.0.0");
+      expect(await described()).toBe("about 2.0.0");
+   });
+
+   it("a failed first publish removes only the package row it created, keeping the package's runs", async () => {
+      // A package folder the server loads lazily, with no row of its own, and
+      // a materialization run recorded under its name.
+      const environment = (await (
+         await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`)
+      ).json()) as { location?: string };
+      expect(typeof environment.location).toBe("string");
+      const lazy = path.join(environment.location!, "lazy");
+      fs.mkdirSync(lazy, { recursive: true });
+      fs.writeFileSync(
+         path.join(lazy, "publisher.json"),
+         JSON.stringify({ name: "lazy" }),
+      );
+      fs.writeFileSync(
+         path.join(lazy, "model.malloy"),
+         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      );
+      const runs = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/lazy/materializations`;
+      const created = await fetch(runs, {
+         method: "POST",
+         headers: { "content-type": "application/json" },
+         body: "{}",
+      });
+      expect(created.status).toBe(201);
+      const run = (await created.json()) as { id: string };
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+         const status = (
+            (await (await fetch(`${runs}/${run.id}`)).json()) as {
+               status: string;
+            }
+         ).status;
+         if (["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(status)) {
+            break;
+         }
+         if (Date.now() > deadline) throw new Error("run never settled");
+         await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      // A first versioned publish over it that fails to compile.
+      const broken = path.join(root, "lazy-broken");
+      fs.mkdirSync(broken, { recursive: true });
+      fs.writeFileSync(
+         path.join(broken, "publisher.json"),
+         JSON.stringify({ name: "lazy", version: "1.0.0" }),
+      );
+      fs.writeFileSync(
+         path.join(broken, "model.malloy"),
+         "source: broken is not malloy\n",
+      );
+      const published = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: "lazy", location: broken }),
+         },
+      );
+      expect(published.status).toBeGreaterThanOrEqual(400);
+
+      const listed = (await (await fetch(runs)).json()) as { id: string }[];
+      expect(listed.map((m) => m.id)).toEqual([run.id]);
+   });
+
+   it("a package listing refuses a versionId, and reads an empty one as none", async () => {
+      const listing = (query: string) =>
+         fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}/packages${query}`);
+      expect((await listing("?versionId=1.0.0")).status).toBe(400);
+      expect((await listing("?versionId=")).status).toBe(200);
+   });
+
+   it("a publish refuses a manifest that is not gs:// or s3://, before it fetches anything", async () => {
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               name: "never-published",
+               location: writePackage("1.0.0", 1),
+               manifestLocation: "/var/data/manifest.json",
+            }),
+         },
+      );
+      expect(res.status).toBe(400);
+      const versions = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/never-published/versions`,
+      );
+      // Nothing was published: the package does not exist.
+      expect(versions.status).toBe(404);
+   });
+
    it("PATCH changes a versioned package's description, not its versions'", async () => {
       const patched = await call("PATCH", "", { description: "changed" });
       expect(patched.status).toBe(200);

@@ -40,6 +40,12 @@ export interface ResourceRepository {
    updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
    /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
+   /**
+    * Remove only the package's own row, keeping what is keyed by its name
+    * (its runs, its incremental ledger, its versions): for undoing a row this
+    * server just created, which owns none of them.
+    */
+   deletePackageRecord(id: string): Promise<void>;
 
    // Versions
    listVersions(environmentId: string, packageName: string): Promise<Version[]>;

@@ -17,6 +17,7 @@ import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
+import { versionManifestLocation } from "./manifest_location";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -69,6 +70,62 @@ function formatPublishRejections(
       .filter(Boolean)
       .join("\n");
    return message || undefined;
+}
+
+/** The fields a PATCH of a versioned package applies, rather than checks. */
+const APPLIED_TO_A_VERSIONED_PACKAGE = new Set([
+   "resource",
+   "manifestLocation",
+   "description",
+]);
+
+/**
+ * The Package fields the spec declares read-only: ignored when a request
+ * sends them back.
+ */
+const READ_ONLY_PACKAGE_FIELDS = new Set([
+   "versionId",
+   "latestVersion",
+   "loaded",
+   "archiveStatus",
+   "exploresWarnings",
+   "warnings",
+   "manifestBindingStatus",
+   "manifestEntryCount",
+   "boundManifestUri",
+   "status",
+   "storageServeBindings",
+   "buildPlan",
+   "embeddingIndex",
+]);
+
+/** Null, absent, an empty string, list or object: a field a client left unset. */
+function isEmptyValue(value: unknown): boolean {
+   if (value === undefined || value === null || value === "") return true;
+   if (Array.isArray(value)) return value.length === 0;
+   if (typeof value === "object") {
+      return Object.values(value as object).every(isEmptyValue);
+   }
+   return false;
+}
+
+/** Whether two field values say the same thing, ignoring unset parts. */
+function sameValue(a: unknown, b: unknown): boolean {
+   return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+function canonical(value: unknown): unknown {
+   if (isEmptyValue(value)) return null;
+   if (Array.isArray(value)) return value.map(canonical);
+   if (typeof value === "object") {
+      return Object.fromEntries(
+         Object.keys(value as object)
+            .sort()
+            .filter((k) => !isEmptyValue((value as Record<string, unknown>)[k]))
+            .map((k) => [k, canonical((value as Record<string, unknown>)[k])]),
+      );
+   }
+   return value;
 }
 
 export class PackageController {
@@ -280,7 +337,21 @@ export class PackageController {
                   `Environment ${environmentName} has no version registry`,
                );
             }
-            const location = body.location;
+            const location: unknown = body.location;
+            if (typeof location !== "string") {
+               throw new BadRequestError("`location` must be a string.");
+            }
+            const fields = body as Record<string, unknown>;
+            if (
+               fields.description !== undefined &&
+               fields.description !== null &&
+               typeof fields.description !== "string"
+            ) {
+               throw new BadRequestError("`description` must be a string.");
+            }
+            const manifestLocation = versionManifestLocation(
+               fields.manifestLocation,
+            );
             // The version is the one the tree's own publisher.json declares;
             // the request carries none.
             const published = await versions.publish(
@@ -294,8 +365,8 @@ export class PackageController {
                   ),
                {
                   sourceLocation: location,
-                  manifestLocation: body.manifestLocation,
-                  description: body.description,
+                  manifestLocation,
+                  description: body.description ?? undefined,
                   promotion: getVersionPromotionMode(
                      this.environmentStore.serverRootPath,
                   ),
@@ -365,22 +436,21 @@ export class PackageController {
          environmentName,
          false,
       );
-      // A versioned package's rows go first: once they are gone no request
-      // can resolve one of its versions, so none can fetch a version's files
-      // again while they are being removed.
-      const versioned =
-         (await environment.getVersionService()?.isVersioned(packageName)) ===
-         true;
-      if (versioned) {
-         await this.environmentStore.deletePackageFromDatabase(
-            environmentName,
-            packageName,
-         );
-      }
+      // A versioned package's rows go first, removed by the environment under
+      // the package's lock once it finds versions there (see
+      // Environment.deletePackage); an unversioned package's after it is
+      // unloaded, as before.
+      let recordsRemoved = false;
       const result = await environment.deletePackage(packageName, {
-         versioned,
+         removeRecords: async () => {
+            await this.environmentStore.deletePackageFromDatabase(
+               environmentName,
+               packageName,
+            );
+            recordsRemoved = true;
+         },
       });
-      if (!versioned) {
+      if (!recordsRemoved) {
          await this.environmentStore.deletePackageFromDatabase(
             environmentName,
             packageName,
@@ -483,9 +553,13 @@ export class PackageController {
     * content, for callers that rebind through this route: `manifestLocation`
     * (bound to the package's `latest` version, as
     * `PUT .../versions/{latest}/manifest` would) and the package's
-    * `description`. `name` and the `location` the version was published from
-    * may be echoed. Anything else would rewrite an immutable version and is
-    * refused with 409 PACKAGE_IS_VERSIONED.
+    * `description`.
+    *
+    * A body that echoes the package back is accepted, because clients send
+    * whole objects: read-only fields are ignored, and every other field may
+    * carry the value latest has now (an empty list, an empty object, null and
+    * absent all count as the same). Only a value that would change latest's
+    * content is refused, with 409 PACKAGE_IS_VERSIONED.
     */
    private async updateVersionedPackage(
       environment: Environment,
@@ -493,6 +567,15 @@ export class PackageController {
       packageName: string,
       body: ApiPackage,
    ): Promise<ApiPackage> {
+      const fields = body as Record<string, unknown>;
+      if (
+         fields.description !== undefined &&
+         fields.description !== null &&
+         typeof fields.description !== "string"
+      ) {
+         throw new BadRequestError("`description` must be a string.");
+      }
+      const manifestLocation = versionManifestLocation(fields.manifestLocation);
       const latest = await versions.latestOf(packageName);
       const refuse = (why: string) =>
          new PackageVersionError(
@@ -503,38 +586,32 @@ export class PackageController {
          throw refuse("it has no latest version to apply this to.");
       }
       const version = await versions.getVersion(packageName, latest);
-      const kept = new Set([
-         "name",
-         "resource",
-         "manifestLocation",
-         "description",
-      ]);
-      const changed = Object.entries(body as Record<string, unknown>)
+      const current = (await environment.describePackage(
+         await environment.getPackage(packageName, false, {
+            versionId: latest,
+         }),
+      )) as Record<string, unknown>;
+      const changed = Object.entries(fields)
          .filter(([key, value]) => {
-            if (value === undefined || value === null || kept.has(key)) {
-               return false;
-            }
+            if (APPLIED_TO_A_VERSIONED_PACKAGE.has(key)) return false;
+            if (READ_ONLY_PACKAGE_FIELDS.has(key)) return false;
+            if (isEmptyValue(value)) return false;
+            if (key === "name") return value !== packageName;
             // The location it was published from may be echoed back.
-            return !(key === "location" && value === version.sourceLocation);
+            if (key === "location") return value !== version.sourceLocation;
+            return !sameValue(value, current[key]);
          })
          .map(([key]) => key);
-      if (body.name !== undefined && body.name !== packageName) {
-         changed.push("name");
-      }
       if (changed.length > 0) {
          throw refuse(`this request changes ${changed.join(", ")}.`);
       }
 
-      if (body.description !== undefined && body.description !== null) {
-         await versions.setPackageDescription(packageName, body.description);
+      if (typeof fields.description === "string") {
+         await versions.setPackageDescription(packageName, fields.description);
       }
       const loaded =
-         body.manifestLocation !== undefined
-            ? await versions.setManifest(
-                 packageName,
-                 latest,
-                 body.manifestLocation || null,
-              )
+         manifestLocation !== undefined
+            ? await versions.setManifest(packageName, latest, manifestLocation)
             : await environment.getPackage(packageName, false, {
                  versionId: latest,
               });

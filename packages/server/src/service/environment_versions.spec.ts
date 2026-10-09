@@ -325,6 +325,48 @@ describe("Environment loading of published versions", () => {
 });
 
 describe("Environment loading: races, listings and bookkeeping", () => {
+   it("a delete that waits behind a first publish deletes the version that publish committed", async () => {
+      const env = await newEnvironment();
+      // Hold the publish's compile, with the package lock held.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const create = Package.create.bind(Package);
+      const spy = spyOn(Package, "create").mockImplementationOnce(
+         async (...args: Parameters<typeof Package.create>) => {
+            await gate;
+            return create(...args);
+         },
+      );
+      let removedRecords = 0;
+      try {
+         const publishing = publish(env, source("1.0.0", 1));
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         // Nothing is published yet when the delete is asked for.
+         expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+         const deleting = env.deletePackage(PKG, {
+            removeRecords: async () => {
+               removedRecords += 1;
+               const row = await repo.getPackageByName(ENV_ID, PKG);
+               if (row) await repo.deletePackage(row.id);
+            },
+         });
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         release();
+         await publishing;
+         await deleting;
+      } finally {
+         release();
+         spy.mockRestore();
+      }
+      // Decided under the lock, after the publish committed: all of it went.
+      expect(removedRecords).toBe(1);
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+      expect(env.getVersionService()!.cache.entries()).toEqual([]);
+      expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
+      expect(await env.listPackages()).toEqual([]);
+      expect(env.getFailedPackages().size).toBe(0);
+   });
+
    it("a read racing a package's first publish waits for it, then serves the version", async () => {
       const env = await newEnvironment();
       // Hold the publish's compile, with the package lock held.

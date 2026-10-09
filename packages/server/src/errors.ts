@@ -848,17 +848,6 @@ export class ModelCompilationError extends Error {
 }
 
 /**
- * The package's publisher.json cannot be used as written: it is not a JSON
- * object, it has a malformed `explores` or an unknown `scope`, or its two
- * `scope` homes disagree. The
- * package is not served until the author fixes the file.
- *
- * 424, like a model that does not compile: the request was fine, the package it
- * depends on is not. The manifest is read inside the package-load worker, so
- * the worker flags it `isManifestError` and deserializeError restores the
- * class; without that the pool reports the author's typo as a 503 outage.
- */
-/**
  * A published version's files are missing and could not be fetched again
  * from where it was published (unreachable, or changed since). 424: the
  * dependency the version needs is what failed, not the request.
@@ -870,6 +859,17 @@ export class VersionFilesMissingError extends Error {
    }
 }
 
+/**
+ * The package's publisher.json cannot be used as written: it is not a JSON
+ * object, it has a malformed `explores` or an unknown `scope`, or its two
+ * `scope` homes disagree. The
+ * package is not served until the author fixes the file.
+ *
+ * 424, like a model that does not compile: the request was fine, the package it
+ * depends on is not. The manifest is read inside the package-load worker, so
+ * the worker flags it `isManifestError` and deserializeError restores the
+ * class; without that the pool reports the author's typo as a 503 outage.
+ */
 export class PackageManifestError extends Error {
    constructor(message: string) {
       super(message);

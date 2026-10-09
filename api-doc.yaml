@@ -1412,6 +1412,10 @@ paths:
         This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
         than ignored, because answering 200 here reads as a reload that worked. Reload is
         per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
+
+        A package with published versions is listed once, as its `latest` version. A
+        non-empty `versionId` is rejected with 400: read one version with
+        `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
       parameters:
         - name: environmentName
           in: path
@@ -1434,8 +1438,6 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     post:
@@ -1510,8 +1512,6 @@ paths:
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1576,8 +1576,6 @@ paths:
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     patch:
@@ -1650,8 +1648,6 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
@@ -1693,8 +1689,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1979,8 +1973,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2045,8 +2037,6 @@ paths:
           $ref: "#/components/responses/ModelCompilationError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
     put:
       tags:
         - models
@@ -2163,8 +2153,6 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2234,8 +2222,6 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "502":
@@ -2401,8 +2387,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2461,8 +2445,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2510,8 +2492,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2563,8 +2543,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
 
   /environments/{environmentName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}:
     get:
@@ -2670,8 +2648,6 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "502":
@@ -2722,8 +2698,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2776,8 +2750,6 @@ paths:
           $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -5606,7 +5578,11 @@ components:
             The published version of the package to query. Omitted or empty,
             the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
-            (`reason` VERSION_ARCHIVED).
+            (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
+            string, as a proxy forwarding a page's URL sends, is read the same way;
+            when both name a version they must agree, or the request answers 400.
+            It is not declared as a query parameter, so generated clients keep
+            their argument order.
         filterParams:
           type: object
           deprecated: true

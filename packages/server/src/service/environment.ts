@@ -1815,8 +1815,8 @@ export class Environment {
       for (const _package of this.packages.values()) {
          _package.invalidateServeShapes();
       }
-      // Loaded versions too: whatever the versioning setting says now, what is
-      // loaded compiled against the destinations that just changed.
+      // Loaded versions too: they compiled against the destinations that just
+      // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
          version.invalidateServeShapes();
       }
@@ -1955,8 +1955,8 @@ export class Environment {
    }
 
    /**
-    * Whether a compiled copy of `name` is in memory: its single slot, or (with
-    * versioning on) any of its versions. Never loads anything.
+    * Whether a compiled copy of `name` is in memory: its single slot, or any
+    * of its versions. Never loads anything.
     */
    public hasLoadedPackage(name: string): boolean {
       if (this.packages.has(name)) return true;
@@ -2679,7 +2679,9 @@ export class Environment {
    /**
     * A loaded package's metadata as a response carries it. For a published
     * version that adds the package's current `latestVersion` (it moves, so it
-    * is read now, not at load) and the version's own serving status.
+    * is read now, not at load) and the version's own serving status, and the
+    * description is the package's own when a request set one (the version's
+    * publisher.json description otherwise).
     */
    public async describePackage(pkg: Package): Promise<ApiPackage> {
       const metadata = pkg.getPackageMetadata();
@@ -2687,12 +2689,14 @@ export class Environment {
       if (!this.versionService || !versionId) {
          return metadata;
       }
+      const packageName = pkg.getPackageName();
+      const description =
+         await this.versionService.packageDescriptionOf(packageName);
       return {
          ...metadata,
-         latestVersion: await this.versionService.latestOf(
-            pkg.getPackageName(),
-         ),
-         status: this.describePackageStatus(pkg.getPackageName(), versionId),
+         ...(description !== null ? { description } : {}),
+         latestVersion: await this.versionService.latestOf(packageName),
+         status: this.describePackageStatus(packageName, versionId),
       };
    }
 
@@ -2726,7 +2730,7 @@ export class Environment {
     * a version that is not in memory for one that is missing. A loaded
     * version carries its full metadata (manifest binding included); one that
     * is not carries its name, version, `latestVersion`, `archiveStatus` and
-    * status. Empty with versioning off.
+    * status. Empty when no package here has versions.
     */
    public async listVersionEntries(): Promise<Map<string, ApiPackage[]>> {
       const entries = new Map<string, ApiPackage[]>();
@@ -4363,10 +4367,19 @@ export class Environment {
       packageName: string,
       options: {
          /**
-          * The package had published versions. Decided by the caller before
-          * it removed the version rows, which it does first.
+          * The package had published versions, and the caller has already
+          * removed their rows.
           */
          versioned?: boolean;
+         /**
+          * Remove the package's rows. Called holding the package's lock,
+          * before anything else goes, when the package turns out to have
+          * versions: decided under the lock, so a first versioned publish
+          * cannot commit between the decision and the delete. Once the rows
+          * are gone no request can resolve a version, so none can fetch a
+          * version's files again while they are removed.
+          */
+         removeRecords?: () => Promise<void>;
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
@@ -4384,7 +4397,16 @@ export class Environment {
             // A versioned package: every version goes, loaded or loading, with
             // the folder that holds them all. Only one: the folder of a
             // package that merely failed to load is kept, as before.
-            if (options.versioned && this.versionService) {
+            const versions = this.versionService;
+            const versioned =
+               versions !== null &&
+               (options.versioned === true ||
+                  versions.cache.loadedVersionsOf(packageName).length > 0 ||
+                  (await versions.isVersioned(packageName)));
+            if (versioned && !options.versioned) {
+               await options.removeRecords?.();
+            }
+            if (versioned && this.versionService) {
                this.versionService.forgetPackage(packageName);
                await new VersionStore(this.environmentPath).removePackage(
                   packageName,
@@ -4568,8 +4590,7 @@ export class Environment {
       }
       this.packages.clear();
       this.packageStatuses.clear();
-      // Every loaded version too, whatever the versioning setting says now:
-      // each holds its own MalloyConfig. Evicting retires their connections,
+      // Every loaded version too: each holds its own MalloyConfig. Evicting retires their connections,
       // which the release of retired generations below then closes at once.
       this.versionService?.cache.evictAll();
 

@@ -165,12 +165,18 @@ export class VersionService<P = unknown> {
          // instead, and must not report itself served.
          loaded: (packageName, versionId, loaded) => {
             void this.latestOf(packageName).then(
-               (latest) =>
+               (latest) => {
+                  // Still the one served: an archive or a delete may have
+                  // unloaded it while `latest` was read, and a version no
+                  // longer served must not report itself serving.
+                  if (this.cache.peek(packageName, versionId) !== loaded)
+                     return;
                   this.host?.onVersionLoaded?.(
                      packageName,
                      loaded,
                      latest === versionId,
-                  ),
+                  );
+               },
                (error) =>
                   logger.warn("Could not read latest after a version loaded", {
                      packageName,
@@ -630,6 +636,18 @@ export class VersionService<P = unknown> {
       description: string,
    ): Promise<void> {
       await this.requireHost().ensurePackageRecord(packageName, description);
+   }
+
+   /**
+    * The package's own description, set by a create or PATCH request; null
+    * when none was. A version's publisher.json description is that version's.
+    */
+   async packageDescriptionOf(packageName: string): Promise<string | null> {
+      const row = await this.registry.getPackageByName(
+         this.environmentId,
+         packageName,
+      );
+      return row?.description ?? null;
    }
 
    /** One version, archived or not: 400 for a malformed id, 404 for none. */

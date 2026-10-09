@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Mutex } from "async-mutex";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -370,6 +370,47 @@ function holdLoad(versionId: string): () => void {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("lifecycle races and failures", () => {
+   it("a version unloaded while its load is being reported never reports itself served", async () => {
+      await publish(service(), "1.0.0");
+      await publish(service(), "2.0.0");
+      const svc = service();
+      log = [];
+      // Hold the read of `latest` the report makes once the load is cached.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const reporting = new Promise<void>((resolve) => (reached = resolve));
+      let armed = false;
+      const read = repo.getPackageByName.bind(repo);
+      const spy = spyOn(repo, "getPackageByName").mockImplementation(
+         async (...args: Parameters<typeof repo.getPackageByName>) => {
+            if (armed) {
+               armed = false;
+               reached();
+               await gate;
+            }
+            return read(...args);
+         },
+      );
+      try {
+         const releaseLoad = holdLoad("1.0.0");
+         const loading = svc.getLoaded(PKG, "1.0.0");
+         await tick();
+         armed = true;
+         releaseLoad();
+         await loading;
+         await reporting;
+         // Unloaded while the report waits.
+         svc.cache.evict(PKG, "1.0.0");
+         release();
+         await tick();
+      } finally {
+         release();
+         spy.mockRestore();
+      }
+      expect(log.filter((line) => line.startsWith("served"))).toEqual([]);
+   });
+
    it("a manifest set while the version is loading binds the load, not just the row", async () => {
       await publish(service(), "1.0.0");
       const restarted = service();

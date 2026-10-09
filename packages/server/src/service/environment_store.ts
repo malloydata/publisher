@@ -1078,7 +1078,9 @@ export class EnvironmentStore {
                environmentId,
                packageName,
             );
-            if (existing) await repository.deletePackage(existing.id);
+            // The row only: what is keyed by the package's name (an
+            // unversioned package's runs and ledger) predates this publish.
+            if (existing) await repository.deletePackageRecord(existing.id);
          },
       });
       if (alreadyBound) return;
@@ -1171,6 +1173,10 @@ export class EnvironmentStore {
          environment,
          repository,
       );
+      // Its version rules as soon as it has a row: the environment is already
+      // served, and a publish to it needs them. A sync below that fails must
+      // not leave it without them.
+      await this.bindVersionRegistry(environment, dbEnvironment.id);
 
       // Sync connections
       await this.addConnections(environment, dbEnvironment.id, repository);
@@ -1184,8 +1190,6 @@ export class EnvironmentStore {
 
       // Sync packages
       await this.addPackages(environment, dbEnvironment.id, repository);
-
-      await this.bindVersionRegistry(environment, dbEnvironment.id);
 
       logger.info(`Synced environment "${environmentName}" to database`);
    }
@@ -1262,9 +1266,24 @@ export class EnvironmentStore {
             logger.warn("Skipping package with undefined name");
             continue;
          }
+         if (await this.isVersionedPackage(environment, pkg.name)) continue;
 
          await this.addPackage(pkg, environmentId, repository);
       }
+   }
+
+   /**
+    * Whether a package has published versions. Its row is the version
+    * registry's (its `latest` pointer, and the description a request set),
+    * so a sync from the listing, which shows its latest version, must not
+    * write over it.
+    */
+   private async isVersionedPackage(
+      environment: Environment,
+      packageName: string,
+   ): Promise<boolean> {
+      const versions = environment.getVersionService();
+      return versions !== null && (await versions.isVersioned(packageName));
    }
 
    private async addPackage(
@@ -1515,6 +1534,7 @@ export class EnvironmentStore {
          logger.warn(`Package "${packageName}" not found in environment`);
          return;
       }
+      if (await this.isVersionedPackage(environment, packageName)) return;
 
       // Sync the specific package
       await this.addPackage(pkg, dbEnvironment.id, repository);

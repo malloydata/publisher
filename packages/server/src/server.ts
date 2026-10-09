@@ -34,7 +34,6 @@ import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    BadRequestError,
    internalErrorToHttpError,
-   NotImplementedError,
    PackageVersionError,
    ServiceUnavailableError,
 } from "./errors";
@@ -993,13 +992,6 @@ if (!isDevelopment) {
    );
 }
 
-const setVersionIdError = (res: express.Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
-
 /**
  * The version a model query names: in the body, or in the URL as on every
  * other package route. Both may be given only if they agree.
@@ -1691,9 +1683,15 @@ app.post(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages`,
    async (req, res) => {
-      // Listing is not package-scoped and takes no version.
+      // Listing is not package-scoped and takes no version. An empty one is
+      // what a proxy forwarding a page's query string may send: no version.
       if (req.query.versionId) {
-         setVersionIdError(res);
+         const { json, status } = internalErrorToHttpError(
+            new BadRequestError(
+               "A package listing takes no versionId: it lists every package, each as its latest version. Read one version with GET .../packages/{packageName}?versionId=.",
+            ),
+         );
+         res.status(status).json(json);
          return;
       }
       if (req.query.reload !== undefined) {
