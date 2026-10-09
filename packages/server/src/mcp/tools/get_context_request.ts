@@ -3,10 +3,12 @@
 
 import { z } from "zod/v3";
 import { entityRowKey } from "./embedding_index";
+import { getDimensionValueSettings } from "../../retrieval_config";
 import type {
    Entity,
    ResolvedRequest,
    ResolvedSearch,
+   ResolvedValueSearch,
 } from "./get_context_types";
 
 /**
@@ -29,7 +31,10 @@ const DEFAULT_RANKED_LIMIT = 20;
  * Divergences: `scopes` is required (exactly one environment + package),
  * because indexes are built per package and lazily, so an unscoped search
  * could not tell "not modelled" from "not indexed yet"; and `target_type` adds
- * `join`. `dimensional_value` is accepted and answered with a warning.
+ * `join`. `dimensional_value` is answered by reading the data through the
+ * query path (see get_context_values.ts), not from an index; with
+ * `retrieval.dimensionValues.enabled: false` it is accepted and answered with
+ * a warning.
  */
 export const SEARCH_TARGET_TYPES = [
    "source",
@@ -44,7 +49,9 @@ export type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
 
 /**
  * Which indexed entity kinds a target selects. `view` covers named queries, as
- * the published shape defines it; `dimensional_value` selects nothing.
+ * the published shape defines it. `dimensional_value` selects nothing: with
+ * value search on, resolveRequest routes it to the values stage before this
+ * table is read; the empty list is what remains when it is turned off.
  */
 const KINDS_BY_TARGET: Record<SearchTargetType, string[]> = {
    source: ["source"],
@@ -110,6 +117,12 @@ export const convergedContextShape = {
       .describe(
          "Values for filters a source declares via #(filter), keyed by filter name.",
       ),
+   givens: z
+      .record(z.unknown())
+      .nullish()
+      .describe(
+         "Given values, as execute_query takes them. Read only by `dimensional_value` lookups, which run through the same access gates as a query: send the givens a gate needs, or that source's values are withheld.",
+      ),
    user_prompt: z
       .string()
       .nullish()
@@ -151,7 +164,19 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    const searches: ResolvedSearch[] = [];
    const unsupported: SearchTargetType[] = [];
 
+   const valueSearches: ResolvedValueSearch[] = [];
+   const valuesOn = getDimensionValueSettings().enabled;
+
    params.search_targets.forEach((target, targetIndex) => {
+      if (target.target_type === "dimensional_value" && valuesOn) {
+         // Answered by the values stage, which reads the data through the
+         // query path; it selects no indexed entity kind. A target with no
+         // text has nothing to look up and is ignored, as a listing of values
+         // is a query's job.
+         const text = target.search_text?.trim();
+         if (text) valueSearches.push({ targetIndex, text });
+         return;
+      }
       const targetKinds = KINDS_BY_TARGET[target.target_type];
       if (targetKinds.length === 0) {
          unsupported.push(target.target_type);
@@ -171,7 +196,8 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       }
    });
 
-   const listingOnly = searches.length === 0;
+   // A value search is a ranked request even with no entity target beside it.
+   const listingOnly = searches.length === 0 && valueSearches.length === 0;
    const pureSourceListing =
       listingOnly &&
       params.search_targets.length > 0 &&
@@ -185,6 +211,9 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       ...(scope.entity_name ? { entityName: scope.entity_name } : {}),
       kinds,
       searches,
+      valueSearches,
+      ...(params.givens ? { givens: params.givens } : {}),
+      ...(params.filter_params ? { filterParams: params.filter_params } : {}),
       listingOnly,
       // Pinning an entity by name turns code on, even over an explicit
       // `include_code: false`, matching the hosted retrieval API.

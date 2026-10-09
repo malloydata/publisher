@@ -121,6 +121,15 @@ export interface ResultEntity {
    targetReasons?: Map<number, string>;
    /** Joins crossed to reach the field, set on assembly's joined copies. */
    joinHops?: number;
+   /**
+    * Set by the values stage on a dimension whose stored strings matched a
+    * `dimensional_value` target, best first. Never copied onto a joined copy:
+    * a value was read under one source's access gate and must not appear on
+    * another source's card.
+    */
+   values?: Array<{ value: string; score: number; searchText: string }>;
+   /** Set on a row the values stage created, so assembly makes no joined copy of it. */
+   fromValueSearch?: true;
 }
 
 /** A join as reported in source context: enough to write the traversal. */
@@ -217,6 +226,12 @@ export interface ResolvedSearch {
    kinds: string[];
 }
 
+/** A `dimensional_value` target that carries text, kept with its index. */
+export interface ResolvedValueSearch {
+   targetIndex: number;
+   text: string;
+}
+
 /**
  * The request reduced to what retrieval works in: one scope, the kinds in
  * play, and the searches to rank. Resolved once so the listing and ranked
@@ -237,6 +252,19 @@ export interface ResolvedRequest {
    /** Every kind any target selects. Empty only if every target was unsupported. */
    kinds: Set<string>;
    searches: ResolvedSearch[];
+   /**
+    * `dimensional_value` targets with text, answered by the values stage rather
+    * than by entity retrieval. Empty when value search is turned off.
+    */
+   valueSearches: ResolvedValueSearch[];
+   /**
+    * Given values the caller sent. Used only to read dimension values through
+    * the query path, where they unlock `#(authorize)` and `#(access_filter)`
+    * exactly as they do for `execute_query`; entity ranking never reads them.
+    */
+   givens?: Record<string, unknown>;
+   /** Filter parameter values; read by value lookups for sources with required filters. */
+   filterParams?: Record<string, string | string[]>;
    /** True when no target carried search text: enumerate, do not rank. */
    listingOnly: boolean;
    /** Serialize each entity's Malloy expression as `code`. */
