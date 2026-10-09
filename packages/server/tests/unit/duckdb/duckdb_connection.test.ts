@@ -57,6 +57,32 @@ describe("DuckDBConnection (storage DAO over @duckdb/node-api)", () => {
          await conn.close();
          await expect(conn.close()).resolves.toBeUndefined();
       });
+
+      it("close() waits for the statement in flight, which still answers", async () => {
+         // A close under a running statement used to free the handle that
+         // statement was using: the statement never settled on macOS, and
+         // the process crashed on the CI runners.
+         const inFlight = conn.all<{ n: bigint | number }>(
+            "SELECT count(*) AS n FROM range(30000000) t(x) WHERE x % 7 = 3",
+         );
+         await new Promise((resolve) => setTimeout(resolve, 10));
+         await conn.close();
+         const rows = await inFlight;
+         expect(Number(rows[0].n)).toBe(4285714);
+      }, 20000);
+
+      it("a statement issued while close() waits is refused, not run on the closed handle", async () => {
+         const inFlight = conn.all("SELECT count(*) FROM range(30000000)");
+         await new Promise((resolve) => setTimeout(resolve, 10));
+         const closing = conn.close();
+         const late = conn.all("SELECT 1 AS one");
+         await closing;
+         await inFlight;
+         await expect(late).rejects.toThrow("Database not initialized");
+         await expect(
+            conn.transaction((tx) => tx.run("SELECT 1")),
+         ).rejects.toThrow("Database not initialized");
+      }, 20000);
    });
 
    describe("run / all / get with ? placeholders", () => {

@@ -104,32 +104,41 @@ export class DuckDBConnection implements DatabaseConnection {
       }
    }
 
+   /**
+    * Close the handle once the statement in flight, if any, has finished:
+    * closing under a running statement frees what it is still using, which
+    * hangs or crashes the process. A statement queued behind the close is
+    * refused as not initialized rather than run on a closed handle.
+    */
    async close(): Promise<void> {
-      try {
-         if (this.connection) {
-            this.connection.closeSync();
-            this.connection = null;
+      return this.mutex.runExclusive(() => {
+         try {
+            if (this.connection) {
+               this.connection.closeSync();
+               this.connection = null;
+            }
+            if (this.instance) {
+               this.instance.closeSync();
+               this.instance = null;
+            }
+            // Debug, not stdout: the schema reconcile opens and closes a
+            // scratch in-memory database on every boot, and an unconditional
+            // "closed" line during startup reads as the real store going away.
+            logger.debug("DuckDB connection closed");
+         } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            throw new Error(`Failed to close DuckDB connection: ${message}`);
          }
-         if (this.instance) {
-            this.instance.closeSync();
-            this.instance = null;
-         }
-         // Debug, not stdout: the schema reconcile opens and closes a scratch
-         // in-memory database on every boot, and an unconditional "closed" line
-         // during startup reads as the real store going away.
-         logger.debug("DuckDB connection closed");
-      } catch (err) {
-         const message = err instanceof Error ? err.message : String(err);
-         throw new Error(`Failed to close DuckDB connection: ${message}`);
-      }
+      });
    }
 
    async isInitialized(): Promise<boolean> {
       if (!this.connection) return false;
 
       return this.mutex.runExclusive(async () => {
+         if (!this.connection) return false;
          try {
-            const reader = await this.connection!.runAndReadAll(
+            const reader = await this.connection.runAndReadAll(
                "SELECT name FROM sqlite_master WHERE type='table' AND name='environments'",
             );
             return reader.getRowObjectsJS().length > 0;
@@ -140,16 +149,16 @@ export class DuckDBConnection implements DatabaseConnection {
    }
 
    async run(query: string, params?: unknown[]): Promise<void> {
-      const connection = this.requireConnection();
+      this.requireConnection();
       return this.mutex.runExclusive(() =>
-         this.runUnlocked(connection, query, params),
+         this.runUnlocked(this.requireConnection(), query, params),
       );
    }
 
    async all<T>(query: string, params?: unknown[]): Promise<T[]> {
-      const connection = this.requireConnection();
+      this.requireConnection();
       return this.mutex.runExclusive(() =>
-         this.allUnlocked<T>(connection, query, params),
+         this.allUnlocked<T>(this.requireConnection(), query, params),
       );
    }
 
@@ -173,8 +182,10 @@ export class DuckDBConnection implements DatabaseConnection {
    async transaction<T>(
       fn: (tx: TransactionQueries) => Promise<T>,
    ): Promise<T> {
-      const connection = this.requireConnection();
+      this.requireConnection();
       return this.mutex.runExclusive(async () => {
+         // Again under the mutex: a close may have run while this waited.
+         const connection = this.requireConnection();
          const tx: TransactionQueries = {
             run: (query, params) => this.runUnlocked(connection, query, params),
             all: <R>(query: string, params?: unknown[]) =>
