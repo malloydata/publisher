@@ -1700,5 +1700,124 @@
       "warnings": [
          "No index for target_type dimensional_value: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension })."
       ]
+   },
+   "values/gated source withheld": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "segments.malloy",
+                  "source": "segments"
+               },
+               "one_line_summary": "Audience segments.",
+               "docs": "Audience segments.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "segment_name",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:segments:segment_name",
+                  "relevance": 0.9167,
+                  "data_type": "string",
+                  "matched_targets": [
+                     {
+                        "search_text": "auto intenders",
+                        "relevance": 0.9167
+                     }
+                  ],
+                  "values": [
+                     {
+                        "value": "Auto Intenders (In-Market)",
+                        "relevance": 0.9167,
+                        "search_text": "auto intenders"
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.9167
+         },
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "segments.malloy",
+                  "source": "locked"
+               },
+               "one_line_summary": "A gated source.",
+               "docs": "A gated source.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "locked_name",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:locked:locked_name",
+                  "data_type": "string"
+               }
+            ]
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 2,
+      "returned": 2,
+      "warnings": [
+         "Dimension values were not searched in locked because an access gate applies to it and the givens sent with this call did not pass it. Send the givens the gate reads (the same ones execute_query takes), or read the dimension's distinct values with execute_query."
+      ]
+   },
+   "values/hit": {
+      "sources": [
+         {
+            "source_info": {
+               "resource_id": {
+                  "environment": "pin",
+                  "package": "pkg",
+                  "model_path": "segments.malloy",
+                  "source": "segments"
+               },
+               "one_line_summary": "Audience segments.",
+               "docs": "Audience segments.",
+               "joins": []
+            },
+            "entities": [
+               {
+                  "name": "segment_name",
+                  "entity_type": "dimension",
+                  "entity_id": "dimension:segments:segment_name",
+                  "relevance": 0.8629,
+                  "data_type": "string",
+                  "matched_targets": [
+                     {
+                        "search_text": "auto intender",
+                        "relevance": 0.8629
+                     }
+                  ],
+                  "values": [
+                     {
+                        "value": "Auto Intenders (In-Market)",
+                        "relevance": 0.8629,
+                        "search_text": "auto intender"
+                     }
+                  ]
+               }
+            ],
+            "relevance": 0.8629
+         }
+      ],
+      "ranking": "relevance",
+      "total_available": 1,
+      "returned": 1
+   },
+   "values/no match": {
+      "sources": [],
+      "ranking": "relevance",
+      "total_available": 0,
+      "returned": 0,
+      "warnings": [
+         "No stored value matched \"zzzzzz\" in 1 string dimension of 1 source. Check the spelling, or read a dimension's distinct values with execute_query."
+      ]
    }
 }

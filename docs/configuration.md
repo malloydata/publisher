@@ -648,8 +648,9 @@ request. Chat requests made while a person waits retry once, after at most one s
 
 **What is sent.** Entity names, kinds, data types, source names, model paths, the package name and
 `#(doc)` text (a source's own docs for rerank). Never any other annotation, so an access predicate
-cannot leave the process whatever the egress preset says. Dimension values would be sent only under
-`egress.preset: "full"`; none are indexed yet, so none are sent.
+cannot leave the process whatever the egress preset says. Dimension values (the matched strings of a
+`dimensional_value` search, see "Dimension value search" below) are sent, to rerank and to the
+embedding provider, only under `egress.preset: "full"`.
 
 **Trace.** A request that carries the header `X-Publisher-Retrieval-Trace: summary` gets a
 `retrieval_trace` block with one row per stage. Starting the server with `PUBLISHER_MCP_TRACE=retrieval`
@@ -721,6 +722,67 @@ Calls count against `retrieval.llm.maxCallsPerRequest`, and the trace names the 
 `get_context` returns an error result naming `source_match` with `retrieval_stage: "source_match"`.
 It never falls back to embeddings. The text sent is the same kind as for rerank: names, paths and
 `#(doc)` text only.
+
+### Dimension value search
+
+A `get_context` target `{"target_type": "dimensional_value", "search_text": "Auto Intenders"}` returns the
+string the data stores for what the user typed (`Auto Intenders (In-Market)`) and the dimension that
+holds it, as `values[]` on that dimension's entity: `{value, relevance, search_text}`, best first, at most
+10 per dimension. It works with no embedding provider and no LLM.
+
+**It reads the data when asked; nothing is indexed.** For each string dimension in scope (the source's
+own, not joined copies), `get_context` runs `run: source -> { where: dim != null; group_by: dim; limit: N }`
+through the same call `execute_query` uses, then matches the phrase against the strings that come back:
+the same string, the same after case, accents, punctuation and spacing, a partial phrase, and a typo (one
+edit in a word of 4 or 5 letters, two in a longer one). Scope the call to the source that holds the value:
+an unscoped call reads up to `maxDimensions` dimensions, ranked by how well their names and docs match.
+
+**Access.** Because the read is a query, a gate applies to it as it does to `execute_query`:
+
+- `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
+  returns, with its dimensions and no `values`, and a warning says the values were withheld.
+- `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot apply
+  and the source is withheld.
+- `get_context` takes an optional `givens` argument, read only by this lookup, with the trust `execute_query`'s
+  `givens` has: the caller asserts them. See [authorize.md](authorize.md#security-model).
+
+**Cache.** A dimension's distinct values are kept per package for `cacheTtlMs`. The key holds a hash of the
+givens and `filter_params` sent, so one caller's list is never served to a caller with other givens. A
+package reload empties it.
+
+**Meaning matches** ("people about to buy a car" finds `Auto Intenders (In-Market)`) need an embedding
+provider and `retrieval.egress.preset: "full"`, because the values are sent to the provider. Only
+dimensions with at most 500 values are embedded. With the default preset nothing leaves the process.
+
+**Settings** (`publisher.config.json`; unknown keys fail the start):
+
+```json
+{
+  "retrieval": {
+    "dimensionValues": {
+      "enabled": true,
+      "maxDimensions": 12,
+      "maxValuesPerDimension": 2000,
+      "timeoutMs": 8000,
+      "budgetMs": 15000,
+      "cacheTtlMs": 600000
+    }
+  }
+}
+```
+
+| Key                     | Default  | Meaning                                                                                                                                |
+| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`               | `true`   | `false` makes a `dimensional_value` target answer with the "No index for target_type" warning, as before.                              |
+| `maxDimensions`         | `12`     | String dimensions read for one call. A warning says how many were skipped.                                                             |
+| `maxValuesPerDimension` | `2000`   | Distinct values read from one dimension. A dimension with more is searched again with a text filter on the longest word of the phrase. |
+| `timeoutMs`             | `8000`   | One lookup query. A timeout skips that dimension and warns; it never fails the call.                                                   |
+| `budgetMs`              | `15000`  | The whole value step of one call.                                                                                                      |
+| `cacheTtlMs`            | `600000` | How long a dimension's values are reused. `0` turns the cache off.                                                                     |
+
+**Cost.** One query per dimension read, on a cold cache. On DuckDB that is milliseconds. On a metered
+warehouse it is a scan of one column per dimension, up to `maxDimensions`, so scope the call, or lower
+`maxDimensions`. Each query holds a query slot like `execute_query`.
 
 ## Semantic ranking for `search_database_schema`
 

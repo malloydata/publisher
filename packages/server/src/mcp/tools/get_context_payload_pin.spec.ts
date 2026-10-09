@@ -42,6 +42,11 @@ import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
 import { pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { setRetrievalConfig } from "../../retrieval_config";
+import { AccessDeniedError } from "../../errors";
+import {
+   _resetValueCacheForTests,
+   _setValueFetcherForTests,
+} from "./get_context_values";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -724,5 +729,80 @@ describe("get_context payload pin: embedding configured", () => {
       });
       expect("retrieval" in payload).toBe(false);
       pin("configured/listing", payload);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Value search on (a stand-in warehouse; the checks against a real model, where
+// the gates are enforced, are in get_context_values.spec.ts)
+// ---------------------------------------------------------------------------
+
+describe("get_context payload pin: value search", () => {
+   const typed = (kind: string, name: string) => ({
+      kind,
+      name,
+      type: { kind: "string_type" },
+      annotations: [],
+   });
+   const segments = () =>
+      packageOf({
+         "segments.malloy": {
+            getSourceInfos: () => [
+               {
+                  name: "segments",
+                  annotations: ["#(doc) Audience segments."],
+                  schema: { fields: [typed("dimension", "segment_name")] },
+               },
+               {
+                  name: "locked",
+                  annotations: ["#(doc) A gated source."],
+                  schema: { fields: [typed("dimension", "locked_name")] },
+               },
+            ],
+            getQueries: () => [],
+         },
+      });
+   const stored: Record<string, string[]> = {
+      "segments.segment_name": ["Auto Intenders (In-Market)", "Home Shoppers"],
+   };
+   const handlerFor = () =>
+      captureHandler({ getEnvironment: async () => envWith(segments()) });
+
+   beforeEach(() => {
+      _setEmbeddingProviderForTests(null);
+      _resetEmbeddingIndexStateForTests();
+      _resetValueCacheForTests();
+      _setValueFetcherForTests(async (req) => {
+         if (req.source === "locked") throw new AccessDeniedError("denied");
+         return {
+            values: stored[`${req.source}.${req.dimension}`] ?? [],
+            truncated: false,
+         };
+      });
+   });
+   afterEach(() => _setValueFetcherForTests(undefined));
+
+   it("a value hit nests under its dimension", async () => {
+      const payload = await call(handlerFor(), {
+         search_targets: [target("dimensional_value", "auto intender")],
+         scopes: [{ environment: "pin", package: "pkg", source: "segments" }],
+      });
+      pin("values/hit", payload);
+   });
+
+   it("a gated source answers with its dimensions, no values, and a warning", async () => {
+      const payload = await call(handlerFor(), {
+         search_targets: [target("dimensional_value", "auto intenders")],
+         scopes: [{ environment: "pin", package: "pkg" }],
+      });
+      pin("values/gated source withheld", payload);
+   });
+
+   it("no match says what was searched", async () => {
+      const payload = await call(handlerFor(), {
+         search_targets: [target("dimensional_value", "zzzzzz")],
+         scopes: [{ environment: "pin", package: "pkg", source: "segments" }],
+      });
+      pin("values/no match", payload);
    });
 });

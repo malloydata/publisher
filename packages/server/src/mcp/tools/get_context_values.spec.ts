@@ -235,8 +235,18 @@ function stubPackage() {
                fields: [
                   str("dimension", "segment_name"),
                   str("dimension", "region"),
-                  { kind: "dimension", name: "size", type: { kind: "number_type" }, annotations: [] },
-                  { kind: "measure", name: "members", type: { kind: "number_type" }, annotations: [] },
+                  {
+                     kind: "dimension",
+                     name: "size",
+                     type: { kind: "number_type" },
+                     annotations: [],
+                  },
+                  {
+                     kind: "measure",
+                     name: "members",
+                     type: { kind: "number_type" },
+                     annotations: [],
+                  },
                ],
             },
          },
@@ -439,7 +449,9 @@ describe("get_context value search over a stand-in warehouse", () => {
       const handler = captureHandler(storeFor(stubPackage()));
       const payload = await call(handler, {
          search_targets: [valueTarget("Auto Enthusiasts")],
-         scopes: [{ ...SCOPE[0], source: "segments", entity_name: "segment_name" }],
+         scopes: [
+            { ...SCOPE[0], source: "segments", entity_name: "segment_name" },
+         ],
       });
       expect(calls.map((c) => c.stem)).toEqual([undefined, "enth"]);
       expect(payload.sources[0].entities[0].values[0]).toEqual({
@@ -459,7 +471,9 @@ describe("get_context value search over a stand-in warehouse", () => {
       const ask = (givens?: Record<string, unknown>) =>
          call(handler, {
             search_targets: [valueTarget("North")],
-            scopes: [{ ...SCOPE[0], source: "segments", entity_name: "region" }],
+            scopes: [
+               { ...SCOPE[0], source: "segments", entity_name: "region" },
+            ],
             ...(givens ? { givens } : {}),
          });
       await ask();
@@ -500,10 +514,12 @@ describe("get_context value search over a stand-in warehouse", () => {
          scopes: [SCOPE[0]],
       });
       const bySource = Object.fromEntries(
-         payload.sources.map((s: { source_info: { resource_id: { source: string } }; entities: unknown[] }) => [
-            s.source_info.resource_id.source,
-            s.entities,
-         ]),
+         payload.sources.map(
+            (s: {
+               source_info: { resource_id: { source: string } };
+               entities: unknown[];
+            }) => [s.source_info.resource_id.source, s.entities],
+         ),
       );
       expect(JSON.stringify(bySource.locked)).not.toContain("Secret");
       expect(bySource.locked).toEqual([
@@ -529,7 +545,9 @@ describe("get_context value search over a stand-in warehouse", () => {
       const handler = captureHandler(storeFor(stubPackage()));
       const payload = await call(handler, {
          search_targets: [valueTarget("people about to buy a car")],
-         scopes: [{ ...SCOPE[0], source: "segments", entity_name: "segment_name" }],
+         scopes: [
+            { ...SCOPE[0], source: "segments", entity_name: "segment_name" },
+         ],
       });
       expect(sent).toEqual([]);
       // No shared word: spelling-based matching finds nothing.
@@ -544,7 +562,9 @@ describe("get_context value search over a stand-in warehouse", () => {
       const handler = captureHandler(storeFor(stubPackage()));
       const payload = await call(handler, {
          search_targets: [valueTarget("people about to buy a car")],
-         scopes: [{ ...SCOPE[0], source: "segments", entity_name: "segment_name" }],
+         scopes: [
+            { ...SCOPE[0], source: "segments", entity_name: "segment_name" },
+         ],
       });
       expect(sent).toContain("Auto Intenders (In-Market)");
       expect(payload.sources[0].entities[0].values[0].value).toBe(
@@ -664,10 +684,14 @@ describe("get_context value search over a real model (gates are the query path's
          ...extra,
       });
    const valuesOf = (payload: {
-      sources: Array<{ entities?: Array<{ values?: Array<{ value: string }> }> }>;
+      sources: Array<{
+         entities?: Array<{ values?: Array<{ value: string }> }>;
+      }>;
    }) =>
       payload.sources.flatMap((s) =>
-         (s.entities ?? []).flatMap((e) => (e.values ?? []).map((v) => v.value)),
+         (s.entities ?? []).flatMap((e) =>
+            (e.values ?? []).map((v) => v.value),
+         ),
       );
 
    it("reads an ungated source's values, without any givens", async () => {
