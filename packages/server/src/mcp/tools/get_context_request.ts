@@ -166,15 +166,17 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
 
    const valueSearches: ResolvedValueSearch[] = [];
    const valuesOn = getDimensionValueSettings().enabled;
+   let textlessValueTargets = 0;
 
    params.search_targets.forEach((target, targetIndex) => {
       if (target.target_type === "dimensional_value" && valuesOn) {
          // Answered by the values stage, which reads the data through the
          // query path; it selects no indexed entity kind. A target with no
-         // text has nothing to look up and is ignored, as a listing of values
-         // is a query's job.
+         // text has nothing to look up: listing a dimension's values is a
+         // query's job, and the response says so.
          const text = target.search_text?.trim();
          if (text) valueSearches.push({ targetIndex, text });
+         else textlessValueTargets += 1;
          return;
       }
       const targetKinds = KINDS_BY_TARGET[target.target_type];
@@ -212,6 +214,7 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       kinds,
       searches,
       valueSearches,
+      ...(textlessValueTargets > 0 ? { textlessValueTargets } : {}),
       ...(params.givens ? { givens: params.givens } : {}),
       ...(params.filter_params ? { filterParams: params.filter_params } : {}),
       listingOnly,

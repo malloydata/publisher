@@ -257,6 +257,8 @@ export interface ResolvedRequest {
     * than by entity retrieval. Empty when value search is turned off.
     */
    valueSearches: ResolvedValueSearch[];
+   /** `dimensional_value` targets sent with no `search_text`, for a warning. Absent when none. */
+   textlessValueTargets?: number;
    /**
     * Given values the caller sent. Used only to read dimension values through
     * the query path, where they unlock `#(authorize)` and `#(access_filter)`

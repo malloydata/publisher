@@ -414,6 +414,20 @@ describe("get_context value search over a stand-in warehouse", () => {
       ]);
    });
 
+   it("lists no values for a value target without search_text, and says how to list them", async () => {
+      const calls: ValueFetchRequest[] = [];
+      _setValueFetcherForTests(warehouse(calls));
+      const handler = captureHandler(storeFor(stubPackage()));
+      const payload = await call(handler, {
+         search_targets: [{ target_type: "dimensional_value" }],
+         scopes: [{ ...SCOPE[0], source: "segments" }],
+      });
+      expect(calls).toEqual([]);
+      expect(payload.warnings).toEqual([
+         "A dimensional_value target needs search_text: it looks up the value you give it and does not list values. To list a dimension's values, run it with execute_query (e.g. run: source -> { group_by: the_dimension }).",
+      ]);
+   });
+
    it("caps the dimensions searched and says how many it skipped", async () => {
       const calls: ValueFetchRequest[] = [];
       _setValueFetcherForTests(warehouse(calls));
