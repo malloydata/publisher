@@ -197,6 +197,13 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    return "error";
 }
 
+/** `notebooks/review.malloy` or `notebooks/review.malloynb` → `review`: how a warning names a notebook. */
+function documentFileName(modelPath: string): string {
+   const basename = modelPath.slice(modelPath.lastIndexOf("/") + 1);
+   const dot = basename.lastIndexOf(".");
+   return dot > 0 ? basename.slice(0, dot) : basename;
+}
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -3318,7 +3325,7 @@ export class Package {
          // The file IS a dashboard, so a drill naming it resolves. Every
          // dashboard is served whatever the surface is: the surface limits
          // what its tiles may read, not whether it is listed (see
-         // applyQueryBoundaryToModels and lintTilesAgainstSurface).
+         // applyQueryBoundaryToModels and lintDocumentAgainstSurface).
          dashboardSlugs.add(name);
 
          const holder = discovered.get(name);
@@ -3526,18 +3533,27 @@ export class Package {
 
    /**
     * One finding per tile, single query, or filter suggestion that the query
-    * route will refuse for reading a source the surface does not publish. The
-    * dashboard is listed and every tile compiles, because /compile is exempt
+    * route will refuse for reading something the surface does not publish. The
+    * document is listed and every tile compiles, because /compile is exempt
     * from the surface, so without this the author sees nothing wrong until a
-    * tile answers 404.
+    * tile answers 404 or a picker has no options.
+    *
+    * Takes a dashboard's or layout notebook's manifest, or for any other
+    * served notebook (cells or `.malloynb`) just its kind, name and the givens
+    * its controls render from.
     *
     * Asks the model the same two checks the query route runs
     * ({@link Model.surfaceRefusal}), so the lint and the query cannot
     * disagree. A request that does not compile is left to the other lints.
     */
-   private async lintTilesAgainstSurface(
+   private async lintDocumentAgainstSurface(
       modelPath: string,
-      manifest: DashboardManifest,
+      manifest: Pick<DashboardManifest, "kind" | "name" | "tiles" | "query"> & {
+         givens: readonly {
+            name?: string;
+            suggest?: { query?: string; source?: string; dimension?: string };
+         }[];
+      },
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
@@ -3556,8 +3572,7 @@ export class Package {
       // working fix is to let index.malloy be the surface.
       // `source` is absent when the query route's refusal would not name it
       // (a gated model), and then neither does the warning.
-      const fixFor = (source: string | undefined) => {
-         const name = source ?? "the source it reads";
+      const fixFor = (name: string) => {
          return surfaceIsIndex
             ? `Fix: add ${name} to the export { ... } in ${INDEX_MODEL_NAME}.`
             : listedModel
@@ -3565,24 +3580,34 @@ export class Package {
               : `Fix: delete "explores" from publisher.json and add ${name} ` +
                 `to the export { ... } in ${INDEX_MODEL_NAME}.`;
       };
+      // `query` is set when the route refuses the query's own name, not the
+      // source it reads; see Model.surfaceRefusal.
+      type Refusal = { source?: string; query?: string };
+      const readsWhat = (refusal: Refusal) =>
+         refusal.query !== undefined
+            ? `query ${refusal.query}`
+            : (refusal.source ?? "a source");
+      const fixWhat = (refusal: Refusal) =>
+         refusal.query ?? refusal.source ?? "the source it reads";
       const checks: {
          request: { queryName?: string; query?: string };
-         describe: (source: string) => string;
+         describe: (refusal: Refusal) => string;
       }[] = [];
       for (const tile of queryTiles(manifest.tiles)) {
          checks.push({
             request: { query: `run: ${tile.query}` },
-            describe: (source) =>
+            describe: (refusal) =>
                `Tile ${tile.query} on ${manifest.kind} ${manifest.name} reads ` +
-               `${source}, ${unexported}, so it won't load.`,
+               `${readsWhat(refusal)}, ${unexported}, so it won't load. ` +
+               fixFor(fixWhat(refusal)),
          });
       }
       if (manifest.query) {
          checks.push({
             request: { queryName: manifest.query },
-            describe: (source) =>
-               `Dashboard ${manifest.name} reads ${source}, ` +
-               `${unexported}, so it won't load.`,
+            describe: (refusal) =>
+               `Dashboard ${manifest.name} reads ${readsWhat(refusal)}, ` +
+               `${unexported}, so it won't load. ${fixFor(fixWhat(refusal))}`,
          });
       }
       for (const given of manifest.givens) {
@@ -3598,10 +3623,17 @@ export class Package {
          if (!request) continue;
          checks.push({
             request,
-            describe: (source) =>
-               `Filter ${given.name} on dashboard ${manifest.name} suggests ` +
-               `from ${source}, ${unexported}, so its list will be ` +
-               `empty.`,
+            describe: (refusal) =>
+               `Filter ${given.name} on ${manifest.kind} ${manifest.name} ` +
+               `suggests from ${readsWhat(refusal)}, ${unexported}, so its ` +
+               `list will be empty. ${fixFor(fixWhat(refusal))}` +
+               // A notebook admits a named query only when a surface file
+               // exports the query itself, so the other way out is the
+               // source form over an exported source.
+               (refusal.query !== undefined
+                  ? ` Or suggest with source= and dimension= over a source ` +
+                    `that is exported.`
+                  : ""),
          });
       }
       // Each check compiles one query against the loaded model, independently
@@ -3615,7 +3647,7 @@ export class Package {
          findings.push({
             model: modelPath,
             subject: manifest.name,
-            message: `${checks[i].describe(refusal.source ?? "a source")} ${fixFor(refusal.source)}`,
+            message: checks[i].describe(refusal),
             severity: "error",
          });
       });
@@ -3691,12 +3723,35 @@ export class Package {
                warnings.push({ model: modelPath, ...finding });
             }
             if (manifest) {
-               for (const finding of await this.lintTilesAgainstSurface(
+               for (const finding of await this.lintDocumentAgainstSurface(
                   modelPath,
                   manifest,
                )) {
                   warnings.push(finding);
                }
+            }
+         }
+         // A notebook without `tiles=` (cells, or a `.malloynb`) has no
+         // manifest, but its controls render from the model's givens and their
+         // suggests run against the notebook path all the same. A layout
+         // notebook was linted above through its manifest.
+         for (const [modelPath, model] of Array.from(this.models).sort(
+            ([a], [b]) => (a < b ? -1 : 1),
+         )) {
+            const cellNotebook =
+               (this.isServedNotebook(modelPath) &&
+                  !this.layoutNotebooks.has(modelPath)) ||
+               modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+            if (!cellNotebook) continue;
+            for (const finding of await this.lintDocumentAgainstSurface(
+               modelPath,
+               {
+                  kind: "notebook",
+                  name: documentFileName(modelPath),
+                  givens: model.getSurfacedGivens(),
+               },
+            )) {
+               warnings.push(finding);
             }
          }
          // Drill tags live on model dimensions, not on any one dashboard, so

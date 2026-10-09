@@ -5705,13 +5705,16 @@ export class Model {
     * Returns undefined when the request would pass, or when it does not
     * compile: a tile that fails to compile is a different finding, and a
     * missing target must not be reported as a hidden one. On a refusal,
-    * `source` is the source the query reads, when it can be read and the
-    * query route's own refusal would name it.
+    * `query` is set when the request names a query and that name is what the
+    * route refuses (a notebook's own or imported query that no surface file
+    * exports, whatever it reads). Otherwise `source` is the source the query
+    * reads, when it can be read and the query route's own refusal would name
+    * it.
     */
    public async surfaceRefusal(request: {
       queryName?: string;
       query?: string;
-   }): Promise<{ source?: string } | undefined> {
+   }): Promise<{ source?: string; query?: string } | undefined> {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return undefined;
       const text =
@@ -5739,12 +5742,32 @@ export class Model {
          }
          throw error;
       }
+      const byName = request.query ? undefined : request.queryName;
+      let early: "cleared" | "deferred";
       try {
-         const early = this.assertQueryBoundaryEarly(
+         early = this.assertQueryBoundaryEarly(
             undefined,
-            request.query ? undefined : request.queryName,
+            byName,
             request.query,
          );
+      } catch (error) {
+         // A request by name alone is refused early only for the name: a
+         // dashboard defers its own and imported queries to the compiled
+         // check below, a notebook admits only a query a surface file exports.
+         // Blaming the source it reads would send the author to export a
+         // source that may already be exported.
+         if (byName && error instanceof NotQueryableError) {
+            return { query: byName };
+         }
+         if (error instanceof OffSurfaceError) {
+            return {
+               source: compiledSource && this.offSurfaceBase(compiledSource),
+            };
+         }
+         if (error instanceof NotQueryableError) return {};
+         throw error;
+      }
+      try {
          if (early === "deferred") {
             this.assertQueryBoundaryCompiled(compiledSource, request.query);
          }
@@ -5782,6 +5805,11 @@ export class Model {
          current = next;
       }
       return current;
+   }
+
+   /** The givens this model surfaces: what a notebook renders its controls from. */
+   public getSurfacedGivens(): readonly ApiGiven[] {
+      return this.givens ?? [];
    }
 
    /** A `.malloynb`, or a `.malloy` the package discovered as a served notebook. */

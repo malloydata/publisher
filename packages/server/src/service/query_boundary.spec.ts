@@ -1974,6 +1974,158 @@ query: dash is customers -> {
       }
    });
 
+   // A package whose index.malloy exports order_items (joined to products)
+   // and not products, with a suggest of each shape the query route treats
+   // differently. Shared by the notebook suggest tests below.
+   function writeSuggestPackage(): void {
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "store.malloy"),
+         `source: products is duckdb.sql("select 1 as id, 'a' as category")
+source: order_items is duckdb.sql("select 1 as product_id, 5 as amt") extend {
+  join_one: products on product_id = products.id
+  measure: total is amt.sum()
+  view: v is { aggregate: total }
+}`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "store.malloy"\nexport { order_items }`,
+      );
+   }
+   const suggestGivens = `# label="Hidden" control=select suggest { source=products dimension=category }
+given: HIDDEN :: filter<string> is f''
+# label="Joined" control=select suggest { source=order_items dimension="products.category" }
+given: JOINED :: filter<string> is f''
+query: cat_q is order_items -> { group_by: products.category }
+# label="Own query" control=select suggest { query=cat_q dimension=category }
+given: OWN_QUERY :: filter<string> is f''
+`;
+   const suggestWhere = `where: products.category ~ $HIDDEN, products.category ~ $JOINED, products.category ~ $OWN_QUERY`;
+   const suggestWarnings = (pkg: Package) =>
+      (pkg.getPackageMetadata().warnings ?? [])
+         .map((w) => w.message ?? "")
+         .filter((m) => m.includes("so its list will be empty"));
+
+   it("declared: warns for a refused filter suggest in a notebook without tiles, cells or .malloynb, and only for the refused ones", async () => {
+      writeSuggestPackage();
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      fs.writeFileSync(
+         path.join(tempDir, "notebooks", "cells.malloy"),
+         `##! experimental.givens
+## artifact { kind=notebook title="Cells" }
+import { order_items, products } from "../store.malloy"
+${suggestGivens}run: order_items -> v + { ${suggestWhere} }
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "legacy.malloynb"),
+         `>>>malloy\n##! experimental.givens\nimport { order_items, products } from "store.malloy"\n` +
+            `>>>malloy\n${suggestGivens}` +
+            `>>>malloy\nrun: order_items -> v + { ${suggestWhere} }\n`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(suggestWarnings(pkg)).toEqual([
+            `Filter HIDDEN on notebook legacy suggests from products, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add products to the export { ... } in index.malloy.`,
+            `Filter OWN_QUERY on notebook legacy suggests from query cat_q, ` +
+               `which index.malloy doesn't export, so its list will be empty. ` +
+               `Fix: add cat_q to the export { ... } in index.malloy. Or ` +
+               `suggest with source= and dimension= over a source that is ` +
+               `exported.`,
+            `Filter HIDDEN on notebook cells suggests from products, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add products to the export { ... } in index.malloy.`,
+            `Filter OWN_QUERY on notebook cells suggests from query cat_q, ` +
+               `which index.malloy doesn't export, so its list will be empty. ` +
+               `Fix: add cat_q to the export { ... } in index.malloy. Or ` +
+               `suggest with source= and dimension= over a source that is ` +
+               `exported.`,
+         ]);
+         // The lint agrees with the route: what it flags is refused when the
+         // picker asks for options, and what it passes runs.
+         for (const modelPath of [
+            "notebooks/cells.malloy",
+            "legacy.malloynb",
+         ]) {
+            const notebook = pkg.getModel(modelPath)!;
+            await expect(
+               notebook.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: products -> { group_by: category }",
+               ),
+            ).rejects.toThrow(NotQueryableError);
+            await expect(
+               notebook.getQueryResults(undefined, "cat_q", undefined),
+            ).rejects.toThrow(NotQueryableError);
+            const joined = await notebook.getQueryResults(
+               undefined,
+               undefined,
+               "run: order_items -> { group_by: products.category }",
+            );
+            expect(joined.result.data).toBeDefined();
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a refused named suggest query is blamed on the query in a notebook, and a dashboard runs the same suggest", async () => {
+      // A dashboard defers its named queries to the source they read; a
+      // notebook admits a named query only when a surface file exports it.
+      // So the same suggest over an exported source runs on a dashboard and is
+      // refused in a notebook, and the notebook's warning names the query,
+      // not the exported source.
+      writeSuggestPackage();
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      const body = `##! experimental.givens
+## artifact { KIND title="Doc" tiles=["t -> w"] }
+import { order_items, products } from "../store.malloy"
+${suggestGivens}source: t is order_items extend { view: w is v + { ${suggestWhere} } }
+`;
+      fs.writeFileSync(
+         path.join(tempDir, "notebooks", "lay.malloy"),
+         body.replace("KIND", "kind=notebook"),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "dash.malloy"),
+         body.replace("KIND ", ""),
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(suggestWarnings(pkg)).toEqual([
+            `Filter HIDDEN on dashboard dash suggests from products, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add products to the export { ... } in index.malloy.`,
+            `Filter HIDDEN on notebook lay suggests from products, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add products to the export { ... } in index.malloy.`,
+            `Filter OWN_QUERY on notebook lay suggests from query cat_q, ` +
+               `which index.malloy doesn't export, so its list will be empty. ` +
+               `Fix: add cat_q to the export { ... } in index.malloy. Or ` +
+               `suggest with source= and dimension= over a source that is ` +
+               `exported.`,
+         ]);
+         const ran = await pkg
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(undefined, "cat_q", undefined);
+         expect(ran.result.data).toBeDefined();
+         await expect(
+            pkg
+               .getModel("notebooks/lay.malloy")!
+               .getQueryResults(undefined, "cat_q", undefined),
+         ).rejects.toThrow(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: a dashboards/ file with no artifact tag, listed in explores, is published like any other file", async () => {
       // Only a tagged file is a dashboard. An untagged one that explores lists
       // is an ordinary surface file, as it always was: listed, queryable, and
