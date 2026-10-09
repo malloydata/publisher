@@ -40,7 +40,6 @@ A notebook is a dashboard with one column. Its artifact tag lists the tiles in r
 |##
 import { order_items } from "../storefront.malloy"
 
-#(description="Narrow to one product category")
 # label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
@@ -68,7 +67,7 @@ source: category_tiles is order_items extend {
 - **Place the file in one order: header, imports and givens, then the prose blocks in tile order, then the `<source>_tiles` extension.** Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the extension is the convention the builder writes, and it inserts a new block after the last one.
 - **Chart tags go on the view** (`# line_chart`, `# label="…"`), as on a dashboard; the `malloy-dashboards` skill has the tag set and the lint.
 - **Givens work as in any notebook**: declare `given:` above the view that reads it as `$NAME`, with the controls tags shown.
-- **A `suggest` reads only what the package serves.** With an `index.malloy`, `suggest { source=… }` needs a source it exports; importing one into the notebook is not enough. A suggest over a hidden source answers 404 and the picker says "Could not load the options for this control". For values on a joined source, name the join: `suggest { source=order_items dimension="products.category" }`. Prefer `source=` in a notebook: `suggest { query=… }` works only when `index.malloy` exports that query itself, and a query the notebook declares or imports is refused even when it reads an exported source. A layout notebook's package warnings name a broken suggest (`… so its list will be empty`); fix each before you publish. A cell notebook gets no such warning, so open it and check that every picker lists options.
+- **A `suggest` reads only what the package serves.** With an `index.malloy`, `suggest { source=… }` needs a source it exports; importing one into the notebook is not enough. A suggest over a hidden source answers 404 and the picker says "Could not load the options for this control". For values on a joined source, name the join: `suggest { source=order_items dimension="products.category" }`. Prefer `source=` in a notebook: `suggest { query=… }` works only when `index.malloy` exports that query itself, and a query the notebook declares or imports is refused even when it reads an exported source. The package warnings name a broken suggest (`… so its list will be empty`); fix each before you publish, then open the notebook and check that every picker lists options.
 - **Tiles run through the model query endpoint**, and the notebook also carries cells made from its tiles, so cell runs, `get_context` and notebook chat work on it as on any notebook.
 - **The tag's `kind=` decides the document's kind, not the folder.** Keep notebooks in `notebooks/` and dashboards in `dashboards/`; a file in the other folder works, and the lint notes it (`notebook-other-folder`). An untagged `.malloy` file in `notebooks/` is a shared include.
 
@@ -152,7 +151,6 @@ Pick a **Category** in the controls above and every chart below re-runs for it.
 Leave the control empty to read the whole catalog.
 |##
 
-#(description="Narrow to one product category")
 # label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
@@ -187,7 +185,7 @@ Interactive parameters are common and important. Add them to most notebooks. **U
 
 A notebook's parameter surface comes from the `given:` declarations the file declares or imports. Publisher's notebook UI renders a Filters panel above the notebook: declared givens become parameter inputs, the values a user sets are forwarded to Malloy's runtime, and every query cell re-executes with those values applied. A `given:` is read by the cells below it, so declare it before the first cell that uses it.
 
-The widget for each parameter follows the given's declared Malloy type (`string`, `string[]`, `number`, `boolean`, `date`/`timestamp`, `filter<T>`); see `docs/givens.md` for the full type table. A `#(description="...")` annotation on the given renders as helper text under its input. It draws a cosmetic `malformed-route` warning that you can ignore; see `docs/givens.md` § Annotations. A control tag (`control=select suggest { source=… dimension=… }`) goes on the `given:` as shown in the complete notebook above, with an exported source when the package has an `index.malloy` (see "Author a notebook as a layout of tiles").
+The widget for each parameter follows the given's declared Malloy type (`string`, `string[]`, `number`, `boolean`, `date`/`timestamp`, `filter<T>`); see `docs/givens.md` for the full type table. Helper text under an input comes only from a `#(description="...")` annotation. Malloy ends an annotation's route at the first space, so a description of more than one word draws a compile warning (``Annotation prefix `#(description="Narrow` is not a well-formed route``). The warning is cosmetic and the text still renders; see `docs/givens.md` § Annotations. The examples here leave it out: the `# label` is usually enough. A control tag (`control=select suggest { source=… dimension=… }`) goes on the `given:` as shown in the complete notebook above, with an exported source when the package has an `index.malloy` (see "Author a notebook as a layout of tiles").
 
 `malloy-model` § Access Control covers the syntax and the `#(authorize)`/`#(access_filter)` gating story built on top of givens.
 
