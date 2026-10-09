@@ -81,6 +81,13 @@ describe("value matching", () => {
       expect(score("home shoppers")).toBe(0);
    });
 
+   it("does not match a value on one word of a two-word phrase", () => {
+      // Found live: "region 3" returned every "Region N" at 0.5 each.
+      expect(scoreValue("region 3", "Region 0")).toBe(0);
+      expect(scoreValue("auto buyers", "Auto Intenders")).toBe(0);
+      expect(scoreValue("region 3", "Region 3")).toBe(0.98);
+   });
+
    it("ranks a closer value above a longer one and breaks ties stably", () => {
       const hits = matchValues("auto intenders", [
          "Home Shoppers",
