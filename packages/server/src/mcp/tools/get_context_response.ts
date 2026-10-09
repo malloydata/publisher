@@ -750,9 +750,17 @@ export function semanticUnavailableError(uri: string, result: Unavailable) {
  * gives: target the dimension, then read its distinct values with a query.
  */
 export function unsupportedTargetWarnings(request: ResolvedRequest): string[] {
-   if (request.unsupported.length === 0) return [];
-   const named = [...new Set(request.unsupported)].join(", ");
-   return [
-      `No index for target_type ${named}: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension }).`,
-   ];
+   const warnings: string[] = [];
+   if (request.unsupported.length > 0) {
+      const named = [...new Set(request.unsupported)].join(", ");
+      warnings.push(
+         `No index for target_type ${named}: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension }).`,
+      );
+   }
+   if (request.textlessValueTargets) {
+      warnings.push(
+         "A dimensional_value target needs search_text: it looks up the value you give it and does not list values. To list a dimension's values, run it with execute_query (e.g. run: source -> { group_by: the_dimension }).",
+      );
+   }
+   return warnings;
 }
