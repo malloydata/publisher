@@ -25,6 +25,7 @@ import { Package } from "./package";
 import {
    SUPERSEDED_TABLES_KEY,
    ServingReader,
+   WRITES_TABLES_KEY,
    storageBindingResolverFor,
 } from "./versions/materialization_scope";
 
@@ -387,6 +388,65 @@ describe('scope "version": each version builds and serves its own tables', () =>
          expect((await settled(a.id)).status).toBe("MANIFEST_FILE_READY");
          expect((await settled(b.id)).status).toBe("MANIFEST_FILE_READY");
       } finally {
+         release();
+      }
+   });
+
+   it("an auto-run claims its own tables, so no run with instructions writes one while it builds", async () => {
+      // Its tables are named for the version, but a run with instructions
+      // may name any table: the claim, not the naming, keeps the two apart.
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const building = new Promise<void>((resolve) => (reached = resolve));
+      const target = service as unknown as {
+         executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
+      };
+      const execute = target.executeInstructedBuild.bind(service);
+      const held = spyOn(target, "executeInstructedBuild").mockImplementation(
+         async (...args: unknown[]) => {
+            reached();
+            await gate;
+            return execute(...args);
+         },
+      );
+      try {
+         const auto = await service.createMaterialization(ENV, PKG, {});
+         await building;
+         expect(
+            (await repo.getMaterializationById(auto.id))?.metadata?.[
+               WRITES_TABLES_KEY
+            ],
+         ).toEqual(["summary__v2_0_0"]);
+
+         const source = Object.values(
+            (
+               await env.getPackage(PKG, false, { versionId: "1.0.0" })
+            ).getBuildPlan()!.sources,
+         )[0];
+         const clash = await service
+            .createMaterialization(ENV, PKG, {
+               versionId: "1.0.0",
+               buildInstructions: [
+                  {
+                     sourceID: source.sourceID,
+                     sourceEntityId: source.sourceEntityId,
+                     physicalTableName: "summary__v2_0_0",
+                     realization: "COPY",
+                  },
+               ] as never,
+            })
+            .then(() => undefined)
+            .catch((err: unknown) => err);
+         expect(clash).toBeInstanceOf(MaterializationConflictError);
+         expect((clash as Error).message).toContain(auto.id);
+
+         release();
+         expect((await settled(auto.id)).status).toBe("MANIFEST_FILE_READY");
+      } finally {
+         held.mockRestore();
          release();
       }
    });

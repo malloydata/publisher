@@ -753,7 +753,8 @@ describe("versions routes", () => {
 
    it("PATCH on a versioned package rebinds latest's manifest and sets the description", async () => {
       // The deprecated PATCH, as an orchestrator that rebinds through it sends
-      // it: the location it published from echoed back, a new manifest.
+      // it: the location it published from echoed back, and a manifest it
+      // never set, serialized as null, which leaves the binding as it is.
       const versions = (await (await fetch(api("/versions"))).json()) as {
          id: string;
          location?: string;

@@ -845,6 +845,64 @@ describe("PackageController.addPackage manifestLocation", () => {
    });
 });
 
+describe("PackageController.updatePackage on a versioned package", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   function versionedPatchController() {
+      const loaded = { name: "pkg" };
+      const versions = {
+         isVersioned: async () => true,
+         latestOf: async () => "2.0.0",
+         getVersion: async () => ({
+            sourceLocation: "gs://bucket/pkg-2.0.0.zip",
+         }),
+         setManifest: sinon.stub().resolves(loaded),
+         setPackageDescription: sinon.stub().resolves(undefined),
+      };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment: sinon.stub().resolves({
+            getVersionService: () => versions,
+            getPackage: sinon.stub().resolves(loaded),
+            describePackage: sinon
+               .stub()
+               .resolves({ name: "pkg", versionId: "2.0.0" }),
+         }),
+      } as unknown as EnvironmentStore;
+      return { controller: new PackageController(environmentStore), versions };
+   }
+
+   it("rebinds latest to a manifest URI, and leaves the binding alone on a null or empty one", async () => {
+      // A generated client serializes a field it was never given as null, so
+      // a null is unset here, as it is on a publish. Read as a clear, it
+      // would turn latest back to serving live with a 200. Clearing is
+      // PUT .../versions/{version}/manifest's.
+      const { controller, versions } = versionedPatchController();
+      for (const manifestLocation of [null, ""]) {
+         const patched = await controller.updatePackage("env", "pkg", {
+            name: null as unknown as string,
+            location: null as unknown as string,
+            manifestLocation,
+            description: null as unknown as string,
+         });
+         expect(patched).toMatchObject({ versionId: "2.0.0" });
+      }
+      expect(versions.setManifest.called).toBe(false);
+
+      await controller.updatePackage("env", "pkg", {
+         manifestLocation: "gs://bucket/pkg-2.0.0.manifest.json",
+      });
+      expect(versions.setManifest.firstCall.args).toEqual([
+         "pkg",
+         "2.0.0",
+         "gs://bucket/pkg-2.0.0.manifest.json",
+      ]);
+   });
+});
+
 /**
  * A version service whose publish runs the publish checks it is handed on
  * `loaded`, as the real one does before it records anything, and otherwise

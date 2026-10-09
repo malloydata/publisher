@@ -1587,8 +1587,9 @@ paths:
       description: |
         DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
         operation will be removed. On a package that has published versions it changes only
-        what is not content: `manifestLocation` is bound to the package's `latest` version (as
-        `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version), and
+        what is not content: a `manifestLocation` URI is bound to the package's `latest` version
+        (as `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version),
+        while a null or empty one leaves the binding as it is (clear it with that route), and
         `description` is the package's. `name` and the `location` the version was published from
         may be sent back unchanged. Any other change is refused with 409 (`reason`
         `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
