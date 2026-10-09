@@ -168,6 +168,7 @@ export type PackageVersionErrorReason =
    | "VERSION_IS_LATEST"
    | "VERSION_IS_LAST_ACTIVE"
    | "VERSION_BUILDING"
+   | "VERSION_NOT_LATEST"
    | "VERSION_ARCHIVED";
 
 const PACKAGE_VERSION_ERROR_STATUS: Record<PackageVersionErrorReason, number> =
@@ -181,6 +182,7 @@ const PACKAGE_VERSION_ERROR_STATUS: Record<PackageVersionErrorReason, number> =
       VERSION_IS_LATEST: 409,
       VERSION_IS_LAST_ACTIVE: 409,
       VERSION_BUILDING: 409,
+      VERSION_NOT_LATEST: 400,
       VERSION_ARCHIVED: 410,
    };
 

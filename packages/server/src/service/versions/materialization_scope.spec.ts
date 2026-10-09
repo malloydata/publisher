@@ -6,7 +6,7 @@ import type { Materialization } from "../../storage/DatabaseInterface";
 import {
    newestServingEntries,
    ownedVersionOf,
-   REBUILDING_TABLES_KEY,
+   SUPERSEDED_TABLES_KEY,
    versionedTableName,
    versionTableSuffix,
 } from "./materialization_scope";
@@ -95,17 +95,23 @@ describe("ownedVersionOf", () => {
 describe("newestServingEntries", () => {
    const owned = (id: string, version: string) =>
       run(id, { version, metadata: { scope: "version" } });
+   const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
 
    it("reads a version's own runs only", () => {
       const runs = [owned("b", "2.0.0"), owned("a", "1.0.0"), run("legacy")];
-      expect(tablesOf(newestServingEntries(runs, "1.0.0"))).toEqual(["t_a"]);
+      expect(
+         tablesOf(
+            newestServingEntries(runs, { versionId: "1.0.0", owned: "1.0.0" }),
+         ),
+      ).toEqual(["t_a"]);
    });
 
    it("never reads a version-owned run as one of the package's", () => {
       const runs = [owned("b", "2.0.0"), run("shared", { version: "1.0.0" })];
-      expect(tablesOf(newestServingEntries(runs, undefined))).toEqual([
-         "t_shared",
-      ]);
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_shared"]);
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "2.0.0" })),
+      ).toEqual(["t_shared"]);
    });
 
    it("skips the run asking, and runs that did not commit", () => {
@@ -114,27 +120,60 @@ describe("newestServingEntries", () => {
          run("failed", { status: "FAILED" }),
          run("committed"),
       ];
-      expect(tablesOf(newestServingEntries(runs, undefined, "self"))).toEqual([
+      expect(tablesOf(newestServingEntries(runs, {}, "self"))).toEqual([
          "t_committed",
       ]);
    });
 
-   it("drops the shared tables a newer run set out to rebuild without committing", () => {
+   it("takes the run that committed last, not the one created last", () => {
       const runs = [
-         run("failed", {
-            status: "FAILED",
-            metadata: { [REBUILDING_TABLES_KEY]: ["orders"] },
-         }),
-         run("committed", { tables: ["orders", "items"] }),
+         run("created-later", { createdAt: at(5), completedAt: at(6) }),
+         run("committed-later", { createdAt: at(1), completedAt: at(9) }),
       ];
-      expect(tablesOf(newestServingEntries(runs, undefined))).toEqual([
-         "items",
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual([
+         "t_committed-later",
+      ]);
+   });
+
+   it("leaves out the tables a later run superseded", () => {
+      const runs = [
+         run("committed", {
+            tables: ["orders", "items"],
+            metadata: { [SUPERSEDED_TABLES_KEY]: ["orders"] },
+         }),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["items"]);
+   });
+
+   it("never counts another version's run with instructions as one of the package's", () => {
+      const runs = [
+         run("instructed", {
+            version: "1.0.0",
+            metadata: { mode: "orchestrated", scope: "package" },
+            completedAt: at(9),
+         }),
+         run("auto", {
+            version: "2.0.0",
+            metadata: { mode: "auto", scope: "package" },
+            completedAt: at(5),
+         }),
+      ];
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "2.0.0" })),
+      ).toEqual(["t_auto"]);
+      // Its own version reads it.
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "1.0.0" })),
+      ).toEqual(["t_instructed"]);
+      // A package with no versions reads every run, as before.
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual([
+         "t_instructed",
       ]);
    });
 
    it("answers nothing when no run committed", () => {
       expect(
-         newestServingEntries([run("x", { status: "PENDING" })], undefined),
+         newestServingEntries([run("x", { status: "PENDING" })], {}),
       ).toEqual({});
    });
 });

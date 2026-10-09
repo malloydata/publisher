@@ -51,88 +51,117 @@ export function isVersionOwnedRun(
 }
 
 /**
- * Where a run records, before it builds anything, the shared tables it is
- * about to rebuild: an auto-run of a `scope: package` version rebuilds them in
- * place, one source at a time, under the names every version reads. Replaced,
- * with the rest of the run's metadata, when the run commits.
+ * Who reads a package's runs: a published version (`versionId`), which under
+ * `scope: version` reads only its own runs (`owned`), or the package's
+ * unversioned slot (neither).
  */
-export const REBUILDING_TABLES_KEY = "rebuildingTables";
+export interface ServingReader {
+   versionId?: string;
+   owned?: string;
+}
+
+/** The reader a loaded package is. */
+export function servingReaderOf(pkg: ScopedPackage): ServingReader {
+   const versionId = pkg.getVersionId();
+   if (versionId === undefined) return {};
+   return { versionId, owned: ownedVersionOf(pkg) };
+}
 
 /**
- * `entries` (the newest committed shared run's) minus every table a newer run
- * set out to rebuild without committing. Such a table may already hold what
- * that run's definition builds, and keeps holding it if the run failed, so
- * `entries` can no longer say what is in it. Dropped, the table serves live
- * for every version, and the next run rebuilds it rather than reusing it.
+ * Where a run records the tables of other runs it has made stale: an auto-run
+ * of a `scope: package` version marks, on every older run, the entries for the
+ * shared tables it is about to rebuild, before it builds them. Whatever then
+ * happens to this run (it commits, fails, or its record is deleted), those
+ * tables no longer hold what the older entries say, so they are never read
+ * again.
  */
-export function withoutUnsettledRebuilds(
-   entries: Record<string, ManifestEntry>,
-   newerRuns: Pick<Materialization, "metadata">[],
+export const SUPERSEDED_TABLES_KEY = "supersededTables";
+
+/**
+ * Where a published version's run records the tables it writes, once they are
+ * known: at its start for a run with instructions, before it builds for an
+ * auto-run of shared tables. Two active runs never write one table.
+ */
+export const WRITES_TABLES_KEY = "writesTables";
+
+/** A metadata list of table names, or empty. */
+export function tableNamesIn(
+   metadata: Record<string, unknown> | null,
+   key: string,
+): string[] {
+   const tables = metadata?.[key];
+   return Array.isArray(tables)
+      ? tables.filter((t): t is string => typeof t === "string")
+      : [];
+}
+
+/** Whether `reader` serves from what run `m` built. */
+function readsRun(m: Materialization, reader: ServingReader): boolean {
+   if (reader.owned !== undefined) return m.version === reader.owned;
+   if (isVersionOwnedRun(m)) return false;
+   // A run with instructions built the tables its caller named for its own
+   // version: another version never serves them, nor counts it as the newest.
+   return !(
+      reader.versionId !== undefined &&
+      m.metadata?.mode === "orchestrated" &&
+      m.version !== null &&
+      m.version !== reader.versionId
+   );
+}
+
+/** When a committed run committed; runs are ordered by it, not by creation. */
+function committedAt(m: Materialization): number {
+   return (m.completedAt ?? m.createdAt).getTime();
+}
+
+/**
+ * The entries a package serves from: those of the newest committed run among
+ * the runs `reader` reads (see readsRun), less the tables a later run has
+ * superseded (see SUPERSEDED_TABLES_KEY). `excludeId` skips one run, the one
+ * asking.
+ */
+export function newestServingEntries(
+   runs: Materialization[],
+   reader: ServingReader,
+   excludeId?: string,
 ): Record<string, ManifestEntry> {
-   const unsettled = new Set<string>();
-   for (const run of newerRuns) {
-      const tables = run.metadata?.[REBUILDING_TABLES_KEY];
-      if (!Array.isArray(tables)) continue;
-      for (const table of tables) {
-         if (typeof table === "string") unsettled.add(table);
-      }
+   let newest: Materialization | undefined;
+   for (const m of runs) {
+      if (m.id === excludeId || !readsRun(m, reader)) continue;
+      if (m.status !== "MANIFEST_FILE_READY" || !m.manifest?.entries) continue;
+      if (!newest || committedAt(m) > committedAt(newest)) newest = m;
    }
-   if (unsettled.size === 0) return entries;
+   if (!newest?.manifest?.entries) return {};
+   const superseded = new Set(
+      tableNamesIn(newest.metadata, SUPERSEDED_TABLES_KEY),
+   );
+   if (superseded.size === 0) return newest.manifest.entries;
    return Object.fromEntries(
-      Object.entries(entries).filter(
-         ([, entry]) => !unsettled.has(entry.physicalTableName),
+      Object.entries(newest.manifest.entries).filter(
+         ([, entry]) => !superseded.has(entry.physicalTableName),
       ),
    );
 }
 
 /**
- * The entries a package serves from, given its runs newest first: the newest
- * committed run among those it reads. `owned` names a version that reads only
- * its own runs; undefined reads the package's shared runs, less any table a
- * newer shared run is rebuilding (see withoutUnsettledRebuilds). `excludeId`
- * skips one run, the one asking.
- */
-export function newestServingEntries(
-   runs: Materialization[],
-   owned: string | undefined,
-   excludeId?: string,
-): Record<string, ManifestEntry> {
-   const newer: Materialization[] = [];
-   for (const m of runs) {
-      if (m.id === excludeId) continue;
-      if (owned !== undefined ? m.version !== owned : isVersionOwnedRun(m)) {
-         continue;
-      }
-      if (m.status === "MANIFEST_FILE_READY" && m.manifest?.entries) {
-         return owned !== undefined
-            ? m.manifest.entries
-            : withoutUnsettledRebuilds(m.manifest.entries, newer);
-      }
-      newer.push(m);
-   }
-   return {};
-}
-
-/**
- * How a loaded package finds, in the store, the tables it serves from: the
- * newest committed run it reads (see newestServingEntries). `owned` names a
- * `scope: version` version, which reads only its own runs.
+ * How a loaded package finds, in the store, the tables it serves from (see
+ * newestServingEntries).
  */
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
 ): (
    packageName: string,
-   owned: string | undefined,
+   reader: ServingReader,
 ) => Promise<Record<string, ManifestEntry>> {
-   return async (packageName, owned) =>
+   return async (packageName, reader) =>
       newestServingEntries(
          await repository.listMaterializations(
             environmentId,
             packageName,
-            owned !== undefined ? { version: owned } : undefined,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
          ),
-         owned,
+         reader,
       );
 }
 

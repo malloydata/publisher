@@ -6902,6 +6902,8 @@ components:
                 running, so it cannot be archived yet.
               * VERSION_ID_INVALID (400): a requested `versionId` is not a
                 semantic version.
+              * VERSION_NOT_LATEST (400): an auto-run of a version other than
+                `latest`, in a package whose versions share their tables.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
 
@@ -6910,7 +6912,7 @@ components:
             MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
-            VERSION_NOT_FOUND, VERSION_ARCHIVED.
+            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:
           type: array
           description: |
@@ -7219,13 +7221,15 @@ components:
             the version as a suffix (`order_summary__v1_2_0`). Under
             `scope: "package"` (the default) the versions share the package's
             tables, so an auto-run (no `buildInstructions`) of a version other
-            than `latest` is refused with 400: it would rebuild the table
-            `latest` serves. Pass `buildInstructions` to build any version into
-            tables you name. A run with `buildInstructions`, or under
-            `scope: "version"`, writes only tables of its own version, so one
-            such run is active per version at a time; an auto-run under
-            `scope: "package"` writes the shared tables, so one is active per
-            package. A second run where one is already active answers 409.
+            than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it
+            would rebuild the table `latest` serves. Pass `buildInstructions`
+            to build any version into tables you name, other than the ones the
+            versions share. A run with `buildInstructions`, or under
+            `scope: "version"`, holds its own version's slot, so one such run is
+            active per version at a time; an auto-run under `scope: "package"`
+            writes the shared tables, so one is active per package. A second run
+            where one is already active answers 409, and so does a run that
+            would write a table another active run of the package writes.
         buildInstructions:
           oneOf:
             - $ref: "#/components/schemas/BuildInstructions"

@@ -102,7 +102,11 @@ import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { VersionRegistry, VersionService } from "./versions/version_service";
 import { VersionStore } from "./versions/version_store";
-import { ownedVersionOf } from "./versions/materialization_scope";
+import {
+   ownedVersionOf,
+   ServingReader,
+   servingReaderOf,
+} from "./versions/materialization_scope";
 
 /**
  * Sibling dirs under `environmentPath` used by the install/delete pipeline so
@@ -443,20 +447,20 @@ export class Environment {
    // depends on a fresh build, the old behavior). See
    // {@link rebindServeBindingsFromLocalStore}.
    //
-   // `owned` names a published version of a `scope: version` package, which
-   // serves only its own runs' tables; undefined reads the package's shared
-   // runs (see ownedVersionOf).
+   // `reader` says who reads the runs: a published version (only its own runs
+   // under `scope: version`) or the unversioned slot (see ServingReader).
    private storageBindingResolver?: (
       packageName: string,
-      owned: string | undefined,
+      reader: ServingReader,
    ) => Promise<Record<string, ManifestEntry>>;
    // Materializations running now, per `package@version`: a version is never
    // archived while one builds it (see registerVersionBuild).
    private readonly versionBuilds = new Map<string, number>();
-   // What each loaded version read from the store when it loaded, so the
-   // settle after it is findable rebinds only when the store moved meanwhile
-   // (see settleSharedBindings).
+   // What each loaded version last bound from the store, so a settle rebinds
+   // only when the store moved since (see settleSharedBindings).
    private readonly storeBindingReads = new WeakMap<Package, string>();
+   // The loaded versions already settled once they became findable.
+   private readonly settledVersions = new WeakSet<Package>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
    private versionArchivedHook:
@@ -2421,7 +2425,7 @@ export class Environment {
    public setStorageBindingResolver(
       resolver: (
          packageName: string,
-         owned: string | undefined,
+         reader: ServingReader,
       ) => Promise<Record<string, ManifestEntry>>,
    ): void {
       this.storageBindingResolver = resolver;
@@ -2543,7 +2547,7 @@ export class Environment {
       try {
          const rawEntries = await this.storageBindingResolver(
             packageName,
-            ownedVersionOf(pkg),
+            servingReaderOf(pkg),
          );
          if (pkg.getVersionId() !== undefined) {
             this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
@@ -2884,15 +2888,14 @@ export class Environment {
    }
 
    /**
-    * Read a version's shared bindings from the store again, once it is
-    * findable. An auto-run of a `scope: package` version records the shared
-    * tables it is about to rebuild, then rebinds the versions it finds
-    * loaded. A version that read the store before that record and became
+    * Read a version's shared bindings from the store again, once, when it
+    * first becomes findable. An auto-run of a `scope: package` version marks
+    * the shared tables it is about to rebuild, then rebinds the versions it
+    * finds loaded. A version that read the store before that mark and became
     * findable after that rebind was missed by both, and would serve a table
-    * the run is rebuilding. Read here, after it is findable, the store has
-    * the record, or the run's later rebinds find the version. A version that
-    * owns its tables shares none, and one bound to a host manifest is the
-    * host's to bind.
+    * the run is rebuilding. Read here, after it is findable, the store has the
+    * mark, or the run's later rebinds find the version. A version that owns
+    * its tables shares none.
     */
    private async settleSharedBindings(
       packageName: string,
@@ -2902,39 +2905,88 @@ export class Environment {
       if (versionId === undefined || ownedVersionOf(loaded) !== undefined) {
          return;
       }
-      if (loaded.getPackageMetadata().manifestLocation) return;
-      if (!this.storageBindingResolver) return;
+      if (this.settledVersions.has(loaded)) return;
+      this.settledVersions.add(loaded);
+      const resolver = this.storageBindingResolver;
+      if (!resolver) return;
+      await this.rebindVersionFromStore(
+         packageName,
+         versionId,
+         (reader) => resolver(packageName, reader),
+         { onlyIfMoved: true },
+      );
+   }
+
+   /**
+    * Read a loaded version's tables from the store and bind them, holding the
+    * version's lock, so two of these never apply out of the order they read
+    * in. `read` answers for the version as a reader (see ServingReader);
+    * `onlyIfMoved` skips a bind when the store says what this version last
+    * bound from it. A version bound to a host manifest is the host's.
+    *
+    * A version whose rebind fails is unloaded: it would otherwise keep a
+    * binding the store no longer vouches for, possibly a table being rebuilt
+    * from another definition. It loads again, from the store, when next read.
+    * Returns whether the rebind failed.
+    */
+   public async rebindVersionFromStore(
+      packageName: string,
+      versionId: string,
+      read: (reader: ServingReader) => Promise<Record<string, ManifestEntry>>,
+      options: { onlyIfMoved?: boolean } = {},
+   ): Promise<boolean> {
+      const versions = this.versionService;
+      if (!versions) return false;
       try {
-         const entries = await this.storageBindingResolver(
-            packageName,
-            undefined,
-         );
-         // Nothing moved since the load read the store: what it bound stands.
-         if (this.storeBindingReads.get(loaded) === JSON.stringify(entries)) {
-            return;
-         }
-         const { tableNameManifest, storageEntries } = splitManifestEntries(
-            entries,
-            `local store (package ${packageName} version ${versionId})`,
-         );
-         await this.bindPackageColocatedServeManifest(
-            packageName,
-            tableNameManifest,
-            versionId,
-         );
-         if (getPersistStorageMode() !== "off") {
-            await this.bindPackageStorageServeBindings(
+         await this.trackPackageLoad(packageName, () =>
+            this.withLoadedVersion(
                packageName,
-               storageEntries,
                versionId,
-            );
-         }
+               "rebind it from the store",
+               async (pkg) => {
+                  if (pkg.getPackageMetadata().manifestLocation) return;
+                  try {
+                     const entries = await read(servingReaderOf(pkg));
+                     const signature = JSON.stringify(entries);
+                     if (
+                        options.onlyIfMoved &&
+                        this.storeBindingReads.get(pkg) === signature
+                     ) {
+                        return;
+                     }
+                     const { tableNameManifest, storageEntries } =
+                        splitManifestEntries(
+                           entries,
+                           `local store (package ${packageName} version ${versionId})`,
+                        );
+                     if (
+                        Object.keys(tableNameManifest).length > 0 ||
+                        pkg.hasBoundTableNameManifest()
+                     ) {
+                        await pkg.reloadAllModels(tableNameManifest);
+                     }
+                     if (getPersistStorageMode() !== "off") {
+                        pkg.bindStorageServeBindings(storageEntries);
+                     }
+                     this.storeBindingReads.set(pkg, signature);
+                  } catch (error) {
+                     versions.cache.evict(packageName, versionId);
+                     throw error;
+                  }
+               },
+            ),
+         );
+         return false;
       } catch (error) {
-         logger.warn("Failed to settle a loaded version's serve bindings", {
-            packageName,
-            versionId,
-            error: error instanceof Error ? error.message : String(error),
-         });
+         logger.warn(
+            "Unloaded a version whose serve bindings could not be re-read; it loads again from the store when next read",
+            {
+               packageName,
+               versionId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         return true;
       }
    }
 

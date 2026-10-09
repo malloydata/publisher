@@ -92,11 +92,15 @@ import {
    isVersionOwnedRun,
    newestServingEntries,
    ownedVersionOf,
-   REBUILDING_TABLES_KEY,
+   ServingReader,
+   SUPERSEDED_TABLES_KEY,
+   tableNamesIn,
+   WRITES_TABLES_KEY,
    versionedTableName,
    versionTableSuffix,
 } from "./versions/materialization_scope";
 import { requestedVersionId } from "./versions/version_service";
+import { Mutex } from "async-mutex";
 import { resolvePartitionColumns } from "./persist_partition";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -1141,11 +1145,21 @@ export class MaterializationService {
       options?: { limit?: number; offset?: number; versionId?: unknown },
    ): Promise<Materialization[]> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
-      const version = await this.resolveRunVersion(
-         environmentName,
-         packageName,
-         options?.versionId,
-      );
+      // Naming no version of a package that has no `latest` yet (explicit
+      // promotion, before the first move) lists every run, as before.
+      const versions = (
+         await this.environmentStore.getEnvironment(environmentName, false)
+      ).getVersionService();
+      const version =
+         requestedVersionId(options?.versionId) === undefined &&
+         versions !== null &&
+         (await versions.latestOf(packageName)) === null
+            ? null
+            : await this.resolveRunVersion(
+                 environmentName,
+                 packageName,
+                 options?.versionId,
+              );
       return this.repository.listMaterializations(environmentId, packageName, {
          limit: options?.limit,
          offset: options?.offset,
@@ -1336,7 +1350,8 @@ export class MaterializationService {
          // under one self-assigned name, and `latest` is what serves it. An
          // auto-run of another version would rebuild it from that version's
          // definition under `latest`'s feet.
-         throw new BadRequestError(
+         throw new PackageVersionError(
+            "VERSION_NOT_LATEST",
             `Version ${version} of package ${packageName} is not its latest, and the package's materialization scope is "package": its versions share the package's tables, so an auto-run of this version would rebuild what latest serves. Build latest, give each version tables of its own with "materialization": { "scope": "version" } in publisher.json, or pass buildInstructions to build into tables you name.`,
          );
       }
@@ -1377,6 +1392,18 @@ export class MaterializationService {
          // run built rides its metadata, beside the scope that decided whose
          // tables it builds.
          ...(version !== null ? { versionId: version, scope } : {}),
+         // A version's run with instructions writes these, while it is
+         // active: no other active run of the package may (see
+         // claimTables).
+         ...(version !== null && orchestrated
+            ? {
+                 [WRITES_TABLES_KEY]: [
+                    ...new Set(
+                       buildInstructions.map((i) => i.physicalTableName),
+                    ),
+                 ],
+              }
+            : {}),
       };
 
       const start = async (): Promise<Materialization> => {
@@ -1387,6 +1414,15 @@ export class MaterializationService {
          );
          if (active) {
             throw this.activeConflict(packageName, active.id, active.version);
+         }
+         if (version !== null && orchestrated) {
+            await this.assertTablesFree(
+               environmentId,
+               packageName,
+               tableNamesIn(metadata, WRITES_TABLES_KEY),
+               undefined,
+               true,
+            );
          }
 
          let created: Materialization;
@@ -1454,10 +1490,14 @@ export class MaterializationService {
       // also takes: either the archive commits first and this answers 410, or
       // the run is registered first and the archive answers 409
       // VERSION_BUILDING. Archiving reclaims a version's tables, so it must
-      // never overlap a run writing them.
+      // never overlap a run writing them. Then under the package's table
+      // lock, so the tables a run with instructions claims are checked and
+      // recorded as one step (see claimTables).
       return versions.withVersionLock(packageName, version, async () => {
          await versions.resolve(packageName, version);
-         return start();
+         return this.tableLockFor(environmentId, packageName).runExclusive(
+            start,
+         );
       });
    }
 
@@ -1522,6 +1562,10 @@ export class MaterializationService {
          // (`scope: version`); undefined, the package's shared ones.
          const owned =
             versionId !== undefined ? ownedVersionOf(pkg) : undefined;
+         // Whose runs this run reuses from: its own under `scope: version`,
+         // the package's shared ones otherwise (see ServingReader).
+         const reader: ServingReader =
+            versionId !== undefined ? { versionId, owned } : {};
 
          // A published version's tree never changes, so compiling it needs
          // no lock; an unversioned package's can be replaced under it.
@@ -1605,7 +1649,7 @@ export class MaterializationService {
                   environmentId,
                   packageName,
                   id,
-                  owned,
+                  reader,
                );
             }
          } else {
@@ -1618,7 +1662,7 @@ export class MaterializationService {
                     environmentId,
                     packageName,
                     id,
-                    owned,
+                    reader,
                  );
             ({
                instructions,
@@ -1635,17 +1679,23 @@ export class MaterializationService {
 
          // An auto-run of a version of a `scope: package` package rebuilds,
          // source by source, the tables every version of the package reads.
-         // Recorded first, so that until it commits (and for good, if it
-         // fails) those tables count as of unknown content: the other loaded
-         // versions serve them live from now on, rather than reading rows this
-         // run's definition builds (see withoutUnsettledRebuilds).
+         // Before it does, it claims them, and marks every older run's
+         // entries for them superseded: whatever happens to this run, those
+         // tables will no longer hold what the older entries say. Then every
+         // other loaded version is rebound, so none reads rows this run's
+         // definition builds (a version that cannot be rebound is unloaded).
          if (
             !orchestrated &&
             versionId !== undefined &&
             owned === undefined &&
             instructions.length > 0
          ) {
-            await this.markRebuildingSharedTables(id, instructions);
+            await this.claimTables(
+               environmentId,
+               packageName,
+               id,
+               instructions,
+            );
             markedShared = true;
             await this.rebindLoadedVersions(
                environmentName,
@@ -1797,23 +1847,138 @@ export class MaterializationService {
    }
 
    /**
-    * Record on a run, before it builds, the shared tables it rebuilds (see
-    * REBUILDING_TABLES_KEY). Merged into the metadata the run was created
-    * with, which its commit replaces.
+    * The lock under which a published version's run checks and records the
+    * tables it writes, per package. Runs of different versions hold
+    * different active slots, so this is what keeps two of them from writing
+    * one table at once. In-process: one publisher owns its store.
     */
-   private async markRebuildingSharedTables(
+   private tableLockFor(environmentId: string, packageName: string): Mutex {
+      const key = `${environmentId}|${packageName}`;
+      let lock = this.tableLocks.get(key);
+      if (!lock) {
+         lock = new Mutex();
+         this.tableLocks.set(key, lock);
+      }
+      return lock;
+   }
+
+   private readonly tableLocks = new Map<string, Mutex>();
+
+   /**
+    * Refuse tables another active run of the package writes, and, for a run
+    * with instructions, the tables the package's versions share (the
+    * newest auto-run's): those are rebuilt only by an auto-run of `latest`,
+    * which marks what it makes stale. Called under tableLockFor.
+    */
+   private async assertTablesFree(
+      environmentId: string,
+      packageName: string,
+      tables: string[],
+      excludeId: string | undefined,
+      instructed: boolean,
+   ): Promise<void> {
+      const wanted = new Set(tables);
+      if (wanted.size === 0) return;
+      const runs = await this.repository.listMaterializations(
+         environmentId,
+         packageName,
+      );
+      for (const m of runs) {
+         if (m.id === excludeId) continue;
+         if (m.status !== "PENDING" && m.status !== "MANIFEST_ROWS_READY") {
+            continue;
+         }
+         const clash = tableNamesIn(m.metadata, WRITES_TABLES_KEY).find((t) =>
+            wanted.has(t),
+         );
+         if (clash !== undefined) {
+            throw new MaterializationConflictError(
+               `Table ${clash} is being written by materialization ${m.id}${m.version ? ` of version ${m.version}` : ""} of package ${packageName}; two runs never write one table at once.`,
+            );
+         }
+      }
+      if (!instructed) return;
+      const shared = runs
+         .filter(
+            (m) =>
+               m.metadata?.mode === "auto" &&
+               m.metadata?.scope === "package" &&
+               m.status === "MANIFEST_FILE_READY",
+         )
+         .flatMap((m) =>
+            Object.values(m.manifest?.entries ?? {}).map(
+               (e) => e.physicalTableName,
+            ),
+         );
+      const clash = shared.find((t) => wanted.has(t));
+      if (clash !== undefined) {
+         throw new MaterializationConflictError(
+            `Table ${clash} is one the versions of package ${packageName} share, which only an auto-run of its latest version rebuilds; name tables of your own in buildInstructions.`,
+         );
+      }
+   }
+
+   /**
+    * Before an auto-run of a `scope: package` version rebuilds the shared
+    * tables in `instructions`: refuse them if another active run writes one,
+    * record them as this run's (WRITES_TABLES_KEY), and mark every other
+    * run's entries for them superseded (SUPERSEDED_TABLES_KEY), all under the
+    * package's table lock.
+    */
+   private async claimTables(
+      environmentId: string,
+      packageName: string,
       id: string,
       instructions: BuildInstruction[],
    ): Promise<void> {
-      const run = await this.repository.getMaterializationById(id);
-      await this.repository.updateMaterialization(id, {
-         metadata: {
-            ...(run?.metadata ?? {}),
-            [REBUILDING_TABLES_KEY]: [
-               ...new Set(instructions.map((i) => i.physicalTableName)),
-            ],
+      const tables = [...new Set(instructions.map((i) => i.physicalTableName))];
+      await this.tableLockFor(environmentId, packageName).runExclusive(
+         async () => {
+            await this.assertTablesFree(
+               environmentId,
+               packageName,
+               tables,
+               id,
+               false,
+            );
+            const run = await this.repository.getMaterializationById(id);
+            await this.repository.updateMaterialization(id, {
+               metadata: {
+                  ...(run?.metadata ?? {}),
+                  [WRITES_TABLES_KEY]: tables,
+               },
+            });
+            const wanted = new Set(tables);
+            for (const m of await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) {
+               if (m.id === id) continue;
+               const stale = Object.values(m.manifest?.entries ?? {})
+                  .map((e) => e.physicalTableName)
+                  .filter((t) => wanted.has(t));
+               if (stale.length === 0) continue;
+               const superseded = new Set([
+                  ...tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY),
+                  ...stale,
+               ]);
+               try {
+                  await this.repository.updateMaterialization(m.id, {
+                     metadata: {
+                        ...(m.metadata ?? {}),
+                        [SUPERSEDED_TABLES_KEY]: [...superseded],
+                     },
+                  });
+               } catch (err) {
+                  // Deleted meanwhile: nothing of it is read any more.
+                  logger.debug("Could not mark a run's entries superseded", {
+                     materializationId: m.id,
+                     error: errMessage(err),
+                  });
+               }
+            }
          },
-      });
+      );
    }
 
    /**
@@ -2084,9 +2249,8 @@ export class MaterializationService {
       environmentId: string,
       packageName: string,
       excludeId: string,
-      // Only this `scope: version` version's own runs; undefined, the
-      // package's shared ones.
-      owned?: string,
+      // Whose runs the references resolve against (see ServingReader).
+      reader: ServingReader = {},
    ): Promise<void> {
       let cached: Record<string, ManifestEntry>;
       try {
@@ -2094,7 +2258,7 @@ export class MaterializationService {
             environmentId,
             packageName,
             excludeId,
-            owned,
+            reader,
          );
       } catch (err) {
          logger.warn(
@@ -2190,21 +2354,20 @@ export class MaterializationService {
    /**
     * Entries of the most recent successful (MANIFEST_FILE_READY) materialization
     * for this package, used for skip-if-unchanged. Excludes the in-flight run.
-    * `owned` narrows it to one `scope: version` version's own runs; otherwise
-    * the package's shared runs, less any table a newer run is rebuilding (see
-    * newestServingEntries).
+    * `reader` says whose runs count (see newestServingEntries): a published
+    * version's, or the unversioned slot's.
     */
    private async getMostRecentManifestEntries(
       environmentId: string,
       packageName: string,
       excludeId: string,
-      owned?: string,
+      reader: ServingReader = {},
    ): Promise<Record<string, ManifestEntry>> {
       const list =
          (await this.repository.listMaterializations(
             environmentId,
             packageName,
-            owned !== undefined ? { version: owned } : undefined,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
          )) ?? [];
       // Legacy tolerance, removable with `ManifestEntry.error`: a manifest
       // written by 0.0.245-0.0.246 records a failed source among its entries.
@@ -2213,7 +2376,7 @@ export class MaterializationService {
       // -- and seeding a downstream FROM from it would compile against a table
       // that was never created.
       return Object.fromEntries(
-         Object.entries(newestServingEntries(list, owned, excludeId)).filter(
+         Object.entries(newestServingEntries(list, reader, excludeId)).filter(
             ([, entry]) => !isLegacyFailedEntry(entry),
          ),
       );
@@ -4898,21 +5061,29 @@ export class MaterializationService {
       }
       for (const versionId of slots) {
          if (versionId !== undefined && versionId === exceptVersion) continue;
+         if (versionId !== undefined) {
+            // Read and bound under the version's lock; a version that cannot
+            // be rebound is unloaded, and binds from the store when next read.
+            await environment.rebindVersionFromStore(
+               packageName,
+               versionId,
+               (reader) =>
+                  // "" excludes nothing — a deleted record is already gone.
+                  this.getMostRecentManifestEntries(
+                     environmentId,
+                     packageName,
+                     "",
+                     reader,
+                  ),
+            );
+            continue;
+         }
          try {
-            let owned: string | undefined;
-            if (versionId !== undefined) {
-               // Only what is loaded: a version unloaded since it was listed
-               // binds from the store when it next loads.
-               const pkg = environment.peekVersion(packageName, versionId);
-               if (!pkg || pkg.getPackageMetadata().manifestLocation) continue;
-               owned = ownedVersionOf(pkg);
-            }
             // "" excludes nothing — a deleted record is already gone.
             const entries = await this.getMostRecentManifestEntries(
                environmentId,
                packageName,
                "",
-               owned,
             );
             const { tableNameManifest, storageEntries } = splitManifestEntries(
                entries,

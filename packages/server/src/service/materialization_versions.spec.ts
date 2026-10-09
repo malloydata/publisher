@@ -6,7 +6,6 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-   BadRequestError,
    internalErrorToHttpError,
    MaterializationConflictError,
    PackageVersionError,
@@ -21,7 +20,8 @@ import type { EnvironmentStore } from "./environment_store";
 import { MaterializationService } from "./materialization_service";
 import { Package } from "./package";
 import {
-   REBUILDING_TABLES_KEY,
+   SUPERSEDED_TABLES_KEY,
+   ServingReader,
    storageBindingResolverFor,
 } from "./versions/materialization_scope";
 
@@ -434,20 +434,29 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
       const versions = env.getVersionService()!;
-      // The archive takes the version's lock first; the run queues behind it.
+      // Hold the archive's write, which it makes holding the version's lock;
+      // the run queues behind that lock.
       let unlock!: () => void;
-      const held = versions.withVersionLock(
-         PKG,
-         "1.0.0",
-         () => new Promise<void>((resolve) => (unlock = resolve)),
+      const gate = new Promise<void>((resolve) => (unlock = resolve));
+      let reached!: () => void;
+      const writing = new Promise<void>((resolve) => (reached = resolve));
+      const write = repo.setVersionArchiveStatus.bind(repo);
+      const spy = spyOn(repo, "setVersionArchiveStatus").mockImplementation(
+         async (...args: Parameters<typeof repo.setVersionArchiveStatus>) => {
+            reached();
+            await gate;
+            return write(...args);
+         },
       );
+      const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
+      await writing;
       const creating = service.createMaterialization(ENV, PKG, {
          versionId: "1.0.0",
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
-      await repo.setVersionArchiveStatus(ENV_ID, PKG, "1.0.0", "archive");
       unlock();
-      await held;
+      await archiving;
+      spy.mockRestore();
       expect(await refusal(creating)).toEqual({
          status: 410,
          reason: "VERSION_ARCHIVED",
@@ -486,10 +495,11 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
 
-      const refused = await service
-         .createMaterialization(ENV, PKG, { versionId: "1.0.0" })
-         .catch((err: unknown) => err);
-      expect(refused).toBeInstanceOf(BadRequestError);
+      expect(
+         await refusal(
+            service.createMaterialization(ENV, PKG, { versionId: "1.0.0" }),
+         ),
+      ).toEqual({ status: 400, reason: "VERSION_NOT_LATEST" });
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
 
       const latest = await build({});
@@ -579,7 +589,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          env as unknown as {
             storageBindingResolver: (
                p: string,
-               o: string | undefined,
+               r: ServingReader,
             ) => Promise<unknown>;
          }
       ).storageBindingResolver;
@@ -588,8 +598,8 @@ describe('scope "package": the versions share the package\'s tables', () => {
       let held = false;
       let reached!: () => void;
       const reading = new Promise<void>((resolve) => (reached = resolve));
-      env.setStorageBindingResolver(async (packageName, owned) => {
-         const entries = await resolve(packageName, owned);
+      env.setStorageBindingResolver(async (packageName, reader) => {
+         const entries = await resolve(packageName, reader);
          if (!held) {
             held = true;
             reached();
@@ -625,7 +635,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
 
    it("a run that fails after it starts rebuilding leaves the shared tables unbound for every version", async () => {
       await publish("1.0.0", 1, "package");
-      await build({});
+      const first = await build({});
       await tamper("summary", 101);
       await publish("2.0.0", 1, "package"); // same definition: it binds
       expect(await answerOf("1.0.0")).toBe(101);
@@ -640,7 +650,12 @@ describe('scope "package": the versions share the package\'s tables', () => {
       const failed = await build({ forceRefresh: true });
       failing.mockRestore();
       expect(failed.status).toBe("FAILED");
-      expect(failed.metadata?.[REBUILDING_TABLES_KEY]).toEqual(["summary"]);
+      expect(failed.metadata?.writesTables).toEqual(["summary"]);
+      expect(
+         (await repo.getMaterializationById(first.id))?.metadata?.[
+            SUPERSEDED_TABLES_KEY
+         ],
+      ).toEqual(["summary"]);
 
       // `summary` may hold anything now: no version reads it.
       expect(await answerOf("1.0.0")).toBe(1);
@@ -654,6 +669,177 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await build({ forceRefresh: true });
       await tamper("summary", 111);
       expect(await answerOf("2.0.0")).toBe(111);
+   });
+
+   it("deleting the run that rebuilt a shared table never brings back an older version's binding to it", async () => {
+      await publish("1.0.0", 1, "package");
+      await build({});
+      await publish("2.0.0", 2, "package");
+      const latestRun = await build({});
+      await tamper("summary", 202);
+      expect(await answerOf("1.0.0")).toBe(1);
+
+      // `summary` still holds what 2.0.0's definition built; 1.0.0's run
+      // still names it.
+      await service.deleteMaterialization(ENV, PKG, latestRun.id);
+      expect(await answerOf("1.0.0")).toBe(1);
+
+      env = await newEnvironment();
+      service = newService(env);
+      expect(await answerOf("1.0.0")).toBe(1);
+   });
+
+   it("deleting a run that failed mid-rebuild never brings back an older version's binding", async () => {
+      await publish("1.0.0", 1, "package");
+      await build({});
+      await publish("2.0.0", 2, "package");
+      const failing = spyOn(
+         service as unknown as {
+            executeInstructedBuild: () => Promise<unknown>;
+         },
+         "executeInstructedBuild",
+      ).mockRejectedValue(new Error("warehouse went away mid-build"));
+      const failed = await build({});
+      failing.mockRestore();
+      expect(failed.status).toBe("FAILED");
+      // Say it got as far as rebuilding `summary` from 2.0.0's definition.
+      await tamper("summary", 202);
+
+      await service.deleteMaterialization(ENV, PKG, failed.id);
+      expect(await answerOf("1.0.0")).toBe(1);
+      env = await newEnvironment();
+      service = newService(env);
+      expect(await answerOf("1.0.0")).toBe(1);
+   });
+
+   it("a version that cannot be rebound before a rebuild is unloaded, and reads live once it loads again", async () => {
+      await publish("1.0.0", 1, "package");
+      await build({});
+      await tamper("summary", 101);
+      expect(await answerOf("1.0.0")).toBe(101);
+      await publish("2.0.0", 2, "package");
+
+      const v1 = await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      const failing = spyOn(v1, "reloadAllModels").mockRejectedValue(
+         new Error("worker pool unavailable"),
+      );
+      await build({});
+      failing.mockRestore();
+      await tamper("summary", 202);
+
+      expect(env.getVersionService()!.cache.isLoaded(PKG, "1.0.0")).toBe(false);
+      expect(await answerOf("1.0.0")).toBe(1);
+   });
+
+   it("a run of another version with instructions never becomes what latest reads", async () => {
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      await build({});
+      await tamper("summary", 202);
+      expect(await answerOf("2.0.0")).toBe(202);
+
+      // 1.0.0's own build, into a table its caller names, committing last.
+      const plan = (
+         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources)[0];
+      await build({
+         versionId: "1.0.0",
+         buildInstructions: [
+            {
+               sourceID: source.sourceID,
+               sourceEntityId: source.sourceEntityId,
+               physicalTableName: "summary_v1_host",
+               realization: "COPY",
+            },
+         ] as never,
+      });
+
+      env = await newEnvironment();
+      service = newService(env);
+      expect(await answerOf("2.0.0")).toBe(202);
+   });
+
+   it("never lets two runs write one table at once, nor a run with instructions write the shared tables", async () => {
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      await build({});
+      const instruct = async (versionId: string, physicalTableName: string) => {
+         const plan = (
+            await env.getPackage(PKG, false, { versionId })
+         ).getBuildPlan()!;
+         const source = Object.values(plan.sources)[0];
+         return service.createMaterialization(ENV, PKG, {
+            versionId,
+            buildInstructions: [
+               {
+                  sourceID: source.sourceID,
+                  sourceEntityId: source.sourceEntityId,
+                  physicalTableName,
+                  realization: "COPY",
+               },
+            ] as never,
+         });
+      };
+
+      const shared = await instruct("1.0.0", "summary")
+         .then(() => undefined)
+         .catch((err: unknown) => err);
+      expect(shared).toBeInstanceOf(MaterializationConflictError);
+
+      const release = holdRuns();
+      try {
+         const first = await instruct("1.0.0", "host_table");
+         const second = await instruct("2.0.0", "host_table")
+            .then(() => undefined)
+            .catch((err: unknown) => err);
+         expect(second).toBeInstanceOf(MaterializationConflictError);
+         expect((second as Error).message).toContain(first.id);
+         release();
+         expect((await settled(first.id)).status).toBe("MANIFEST_FILE_READY");
+      } finally {
+         release();
+      }
+      // Once it has settled, the table is free again.
+      const later = await instruct("2.0.0", "host_table");
+      expect((await settled(later.id)).status).toBe("MANIFEST_FILE_READY");
+   });
+
+   it("a version bound to a host manifest is left to the host by every rebind", async () => {
+      // The host's manifest names no tables: a version bound to it serves live.
+      const fetchManifest = spyOn(
+         Environment.prototype as unknown as {
+            fetchManifestEntriesWithTimeout: () => Promise<unknown>;
+         },
+         "fetchManifestEntriesWithTimeout",
+      ).mockResolvedValue({});
+      try {
+         const location = writePackage("1.0.0", 1, "package");
+         await env.getVersionService()!.publish(
+            PKG,
+            async (stagingPath) => {
+               await fs.promises.cp(location, stagingPath, { recursive: true });
+            },
+            {
+               sourceLocation: location,
+               promotion: "on-publish",
+               manifestLocation: "gs://bucket/manifest.json",
+            },
+         );
+         await publish("2.0.0", 1, "package"); // the same definition
+         await build({});
+         await tamper("summary", 111);
+         expect(await answerOf("2.0.0")).toBe(111);
+         // Neither the post-build rebind nor a restart's load binds it from the
+         // local store.
+         expect(await answerOf("1.0.0")).toBe(1);
+         env = await newEnvironment();
+         service = newService(env);
+         expect(await answerOf("1.0.0")).toBe(1);
+         expect(await answerOf("2.0.0")).toBe(111);
+      } finally {
+         fetchManifest.mockRestore();
+      }
    });
 
    it("one auto-run per package, while a run with instructions builds a version beside it", async () => {
@@ -775,6 +961,14 @@ describe("naming a version on the materialization routes", () => {
          ).toEqual(expected);
       }
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+   });
+
+   it("lists every run of a versioned package that has no latest yet", async () => {
+      await publish("1.0.0", 1, "version", "explicit");
+      const run = await build({ versionId: "1.0.0" });
+      expect(
+         (await service.listMaterializations(ENV, PKG)).map((m) => m.id),
+      ).toEqual([run.id]);
    });
 
    it("refuses a versionId on a package that has no versions", async () => {
