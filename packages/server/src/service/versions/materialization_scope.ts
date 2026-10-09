@@ -80,7 +80,8 @@ export const SUPERSEDED_TABLES_KEY = "supersededTables";
 /**
  * Where a published version's run records the tables it writes, once they are
  * known: at its start for a run with instructions, before it builds for an
- * auto-run of shared tables. Two active runs never write one table.
+ * auto-run, whether its tables are shared or its version's own. Two active
+ * runs never write one table.
  */
 export const WRITES_TABLES_KEY = "writesTables";
 

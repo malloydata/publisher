@@ -1734,6 +1734,19 @@ export class MaterializationService {
                packageName,
                versionId,
             );
+         } else if (versionId !== undefined && instructions.length > 0) {
+            // An auto-run of a `scope: version` version builds tables of its
+            // own, named for the version. It claims them all the same: the
+            // claim, not the naming, keeps another active run off them, since
+            // a run with instructions may name any table. No other run reads
+            // them, so nothing is superseded or rebound.
+            await this.claimTables(
+               environmentId,
+               packageName,
+               id,
+               instructions,
+               { supersede: false },
+            );
          }
 
          const {
@@ -1956,17 +1969,19 @@ export class MaterializationService {
    }
 
    /**
-    * Before an auto-run of a `scope: package` version rebuilds the shared
-    * tables in `instructions`: refuse them if another active run writes one,
-    * record them as this run's (WRITES_TABLES_KEY), and mark every other
-    * run's entries for them superseded (SUPERSEDED_TABLES_KEY), all under the
-    * package's table lock.
+    * Before an auto-run of a version builds the tables in `instructions`:
+    * refuse them if another active run writes one, and record them as this
+    * run's (WRITES_TABLES_KEY), under the package's table lock. For the
+    * shared tables of a `scope: package` version (`supersede`), also mark
+    * every other run's entries for them superseded (SUPERSEDED_TABLES_KEY),
+    * in the same lock hold.
     */
    private async claimTables(
       environmentId: string,
       packageName: string,
       id: string,
       instructions: BuildInstruction[],
+      { supersede }: { supersede: boolean } = { supersede: true },
    ): Promise<void> {
       const tables = [...new Set(instructions.map((i) => i.physicalTableName))];
       await this.tableLockFor(environmentId, packageName).runExclusive(
@@ -1985,6 +2000,7 @@ export class MaterializationService {
                   [WRITES_TABLES_KEY]: tables,
                },
             });
+            if (!supersede) return;
             await this.markSuperseded(
                environmentId,
                packageName,
