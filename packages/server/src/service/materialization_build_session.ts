@@ -8,7 +8,13 @@ import {
    type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   readdirSync,
+   rmSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
@@ -1430,13 +1436,19 @@ export async function listStorageTables(params: {
          );
          await attachDuckLakeReadOnly(session, destinationName, cfg);
       } else {
-         const dbPath = destinationDatabasePath(
-            environmentPath,
-            destinationName,
-         );
-         if (!existsSync(dbPath)) {
+         // Existence is read off the destinations directory, which the
+         // environment determines, rather than by stat-ing a path built from the
+         // request: the name is only ever compared, never used to reach the
+         // filesystem before the attach.
+         const destinationRoot = storageDestinationRoot(environmentPath);
+         const fileName = `${destinationName}.duckdb`;
+         if (
+            !existsSync(destinationRoot) ||
+            !readdirSync(destinationRoot).includes(fileName)
+         ) {
             return [];
          }
+         const dbPath = path.join(destinationRoot, fileName);
          await session.runSQL(
             `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)} (READ_ONLY)`,
          );
