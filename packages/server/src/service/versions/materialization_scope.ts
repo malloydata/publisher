@@ -133,14 +133,27 @@ export function newestServingEntries(
    }
    if (!newest?.manifest?.entries) return {};
    const superseded = new Set(
-      tableNamesIn(newest.metadata, SUPERSEDED_TABLES_KEY),
+      tableNamesIn(newest.metadata, SUPERSEDED_TABLES_KEY).map(tableIdentity),
    );
    if (superseded.size === 0) return newest.manifest.entries;
    return Object.fromEntries(
       Object.entries(newest.manifest.entries).filter(
-         ([, entry]) => !superseded.has(entry.physicalTableName),
+         ([, entry]) => !superseded.has(tableIdentity(entry.physicalTableName)),
       ),
    );
+}
+
+/**
+ * What a physical table name names, for telling whether two runs write the
+ * same table: its last segment, unquoted, without letter case. Two names a
+ * warehouse may read as one table (`summary` and `SUMMARY` in DuckDB, or
+ * `main.summary` and `summary`) get one identity. It can also give two
+ * distinct tables one (`a.t` and `b.t`), which only ever makes a run refuse
+ * or a version serve live: the safe direction.
+ */
+export function tableIdentity(physicalTableName: string): string {
+   const segments = physicalTableName.split(".");
+   return segments[segments.length - 1].replace(/["`[\]]/g, "").toLowerCase();
 }
 
 /**

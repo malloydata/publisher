@@ -1266,9 +1266,13 @@ export class EnvironmentStore {
             logger.warn("Skipping package with undefined name");
             continue;
          }
-         if (await this.isVersionedPackage(environment, pkg.name)) continue;
-
-         await this.addPackage(pkg, environmentId, repository);
+         const name = pkg.name;
+         // Under the package's lock, so a first versioned publish (which
+         // takes it) cannot commit between the check and the write.
+         await environment.withPackageLock(name, async () => {
+            if (await this.isVersionedPackage(environment, name)) return;
+            await this.addPackage(pkg, environmentId, repository);
+         });
       }
    }
 

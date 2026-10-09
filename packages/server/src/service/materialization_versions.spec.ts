@@ -6,6 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+   BadRequestError,
    internalErrorToHttpError,
    MaterializationConflictError,
    PackageVersionError,
@@ -936,11 +937,67 @@ describe('scope "package": the versions share the package\'s tables', () => {
       await tamper("host_t", 202);
       expect(await answerOf("2.0.0")).toBe(202);
 
-      // 1.0.0's caller names the same table, from 1.0.0's definition.
+      // 1.0.0's caller names the same table, from 1.0.0's definition: 2.0.0,
+      // loaded and bound to it, serves live at once, and after a restart.
       expect((await instruct("1.0.0")).status).toBe("MANIFEST_FILE_READY");
+      expect(await answerOf("2.0.0")).toBe(2);
       env = await newEnvironment();
       service = newService(env);
       expect(await answerOf("2.0.0")).toBe(2);
+   });
+
+   it("reads two spellings of one table as one table", async () => {
+      await publish("1.0.0", 1, "package");
+      await publish("2.0.0", 2, "package");
+      await build({});
+      const plan = (
+         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources)[0];
+      const instruct = (physicalTableName: string) =>
+         service
+            .createMaterialization(ENV, PKG, {
+               versionId: "1.0.0",
+               buildInstructions: [
+                  {
+                     sourceID: source.sourceID,
+                     sourceEntityId: source.sourceEntityId,
+                     physicalTableName,
+                     realization: "COPY",
+                  },
+               ] as never,
+            })
+            .catch((err: unknown) => err);
+      // DuckDB reads both as the shared `summary`.
+      for (const name of ["SUMMARY", "main.summary", '"summary"']) {
+         expect(await instruct(name)).toBeInstanceOf(
+            MaterializationConflictError,
+         );
+      }
+   });
+
+   it("refuses one table named twice in one run's instructions", async () => {
+      await publish("1.0.0", 1, "package");
+      const plan = (
+         await env.getPackage(PKG, false, { versionId: "1.0.0" })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources)[0];
+      const instruction = {
+         sourceID: source.sourceID,
+         sourceEntityId: source.sourceEntityId,
+         realization: "COPY",
+      };
+      const refused = await service
+         .createMaterialization(ENV, PKG, {
+            versionId: "1.0.0",
+            buildInstructions: [
+               { ...instruction, physicalTableName: "twice" },
+               { ...instruction, physicalTableName: "TWICE" },
+            ] as never,
+         })
+         .catch((err: unknown) => err);
+      expect(refused).toBeInstanceOf(BadRequestError);
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 
    it("defers unloading a version whose rebind fails while a build of it runs, and retries a busy one", async () => {
@@ -960,19 +1017,61 @@ describe('scope "package": the versions share the package\'s tables', () => {
       ).toBe(false);
       expect([calls, cache.isLoaded(PKG, "1.0.0")]).toEqual([3, true]);
 
-      // A failure while a build of it runs: unloaded once the build settles.
+      // A failure while a build of it runs: out of service at once (the
+      // next read loads it afresh), while the copy the build holds keeps its
+      // connections until the build settles.
+      const held = cache.peek(PKG, "1.0.0")!;
+      // Released through the connection drain, which closes it later.
+      const retire = spyOn(
+         env as unknown as {
+            retireConnectionGeneration: (
+               label: string,
+               close: () => unknown,
+            ) => void;
+         },
+         "retireConnectionGeneration",
+      );
       const release = env.registerVersionBuild(PKG, "1.0.0");
       expect(
          await env.rebindVersionFromStore(PKG, "1.0.0", async () => {
             throw new Error("store unreachable");
          }),
       ).toBe(true);
-      expect(cache.isLoaded(PKG, "1.0.0")).toBe(true);
+      expect(cache.isLoaded(PKG, "1.0.0")).toBe(false);
+      expect(await answerOf("1.0.0")).toBe(1);
+      expect(cache.peek(PKG, "1.0.0")).not.toBe(held);
+      const retiredFor = () =>
+         retire.mock.calls.filter(([label]) => label.includes("version 1.0.0"));
+      expect(retiredFor()).toEqual([]);
       release();
+      expect(retiredFor()).toHaveLength(1);
+      retire.mockRestore();
+   });
+
+   it("waits out a busy rebind without holding the version's lock", async () => {
+      await publish("1.0.0", 1, "package");
+      await env.getPackage(PKG, false, { versionId: "1.0.0" });
+      let failed!: () => void;
+      const firstFailure = new Promise<void>((resolve) => (failed = resolve));
+      let calls = 0;
+      const rebinding = env.rebindVersionFromStore(PKG, "1.0.0", async () => {
+         calls += 1;
+         if (calls === 1) {
+            failed();
+            throw new ServiceUnavailableError("busy");
+         }
+         return {};
+      });
+      await firstFailure;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The retry waits at least 500ms; the lock is free meanwhile.
+      const started = Date.now();
       await env
          .getVersionService()!
          .withVersionLock(PKG, "1.0.0", async () => {});
-      expect(cache.isLoaded(PKG, "1.0.0")).toBe(false);
+      expect(Date.now() - started).toBeLessThan(300);
+      expect(await rebinding).toBe(false);
+      expect(calls).toBe(2);
    });
 
    it("one auto-run per package, while a run with instructions builds a version beside it", async () => {

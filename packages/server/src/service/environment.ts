@@ -2468,19 +2468,21 @@ export class Environment {
             return;
          }
          this.versionBuilds.delete(k);
-         // A rebind that failed while the build ran left this to now.
-         if (this.pendingVersionEvictions.delete(k)) {
-            const versions = this.versionService;
-            void versions?.withVersionLock(packageName, versionId, async () => {
-               versions.cache.evict(packageName, versionId);
-            });
+         // Copies taken out of service while the build ran (see
+         // takeOutOfService): the build is done with them now.
+         for (const copy of this.pendingVersionReleases.get(k) ?? []) {
+            this.retireConnectionGeneration(
+               `package ${packageName} version ${versionId}`,
+               () => copy.getMalloyConfig().shutdown("close"),
+            );
          }
+         this.pendingVersionReleases.delete(k);
       };
    }
 
-   // Versions whose rebind failed while a build of theirs ran: unloaded once
-   // the build settles, not under it (see rebindVersionFromStore).
-   private readonly pendingVersionEvictions = new Set<string>();
+   // Loaded copies of a version taken out of service while a build of it ran,
+   // released once the build settles (see takeOutOfService).
+   private readonly pendingVersionReleases = new Map<string, Package[]>();
 
    /** A loaded version, without loading it. */
    public peekVersion(
@@ -2942,13 +2944,14 @@ export class Environment {
     * `onlyIfMoved` skips a bind when the store says what this version last
     * bound from it. A version bound to a host manifest is the host's.
     *
-    * A version whose rebind fails is unloaded: it would otherwise keep a
-    * binding the store no longer vouches for, possibly a table being rebuilt
-    * from another definition. It loads again, from the store, when next read.
-    * A failure that says to retry (503: the compile workers are busy) is
-    * retried first, and a version with a build of its own running is unloaded
-    * once that build settles rather than under it. Returns whether the rebind
-    * failed.
+    * A version whose rebind fails is taken out of service at once: it would
+    * otherwise keep a binding the store no longer vouches for, possibly a
+    * table being rebuilt from another definition. It loads again, from the
+    * store, when next read. A failure that says to retry (503: the compile
+    * workers are busy) is retried first, waiting outside the lock. A version
+    * with a build of its own running is taken out of the cache too, but its
+    * connections, which that build is using, are released only once the
+    * build settles. Returns whether the rebind failed.
     */
    public async rebindVersionFromStore(
       packageName: string,
@@ -2960,14 +2963,16 @@ export class Environment {
       if (!versions) return false;
       let unloaded: "now" | "after its build" | undefined;
       try {
-         await this.trackPackageLoad(packageName, () =>
-            this.withLoadedVersion(
-               packageName,
-               versionId,
-               "rebind it from the store",
-               async (pkg) => {
-                  if (pkg.getPackageMetadata().manifestLocation) return;
-                  for (let attempt = 1; ; attempt++) {
+         for (let attempt = 1; ; attempt++) {
+            const outcome = await this.trackPackageLoad(packageName, () =>
+               this.withLoadedVersion(
+                  packageName,
+                  versionId,
+                  "rebind it from the store",
+                  async (pkg): Promise<"done" | "retry"> => {
+                     if (pkg.getPackageMetadata().manifestLocation) {
+                        return "done";
+                     }
                      try {
                         const entries = await read(servingReaderOf(pkg));
                         const signature = JSON.stringify(entries);
@@ -2975,7 +2980,7 @@ export class Environment {
                            options.onlyIfMoved &&
                            this.storeBindingReads.get(pkg) === signature
                         ) {
-                           return;
+                           return "done";
                         }
                         const { tableNameManifest, storageEntries } =
                            splitManifestEntries(
@@ -2992,38 +2997,38 @@ export class Environment {
                            pkg.bindStorageServeBindings(storageEntries);
                         }
                         this.storeBindingReads.set(pkg, signature);
-                        return;
+                        return "done";
                      } catch (error) {
                         if (
                            error instanceof ServiceUnavailableError &&
                            attempt < REBIND_ATTEMPTS
                         ) {
-                           await new Promise((resolve) =>
-                              setTimeout(resolve, REBIND_RETRY_MS * attempt),
-                           );
-                           continue;
+                           return "retry";
                         }
-                        const k = `${packageName}@${versionId}`;
-                        if (this.versionBuilds.has(k)) {
-                           this.pendingVersionEvictions.add(k);
-                           unloaded = "after its build";
-                        } else {
-                           versions.cache.evict(packageName, versionId);
-                           unloaded = "now";
-                        }
+                        unloaded = this.takeOutOfService(
+                           packageName,
+                           versionId,
+                        );
                         throw error;
                      }
-                  }
-               },
-            ),
-         );
-         return false;
+                  },
+               ),
+            );
+            if (outcome !== "retry") return false;
+            // Waited out of the lock, so the version's other changes go on.
+            await new Promise((resolve) =>
+               setTimeout(
+                  resolve,
+                  REBIND_RETRY_MS * attempt + Math.random() * REBIND_RETRY_MS,
+               ),
+            );
+         }
       } catch (error) {
          logger.warn(
             unloaded === "now"
                ? "Unloaded a version whose serve bindings could not be re-read; it loads again from the store when next read"
                : unloaded === "after its build"
-                 ? "A version's serve bindings could not be re-read while a build of it runs; it is unloaded once that build settles"
+                 ? "Took a version whose serve bindings could not be re-read out of service; it loads again from the store when next read, and the copy its running build holds is released once that build settles"
                  : "Could not rebind a version's serve bindings",
             {
                packageName,
@@ -3033,6 +3038,31 @@ export class Environment {
          );
          return true;
       }
+   }
+
+   /**
+    * Take a loaded version out of service now. Unloaded outright, unless a
+    * build of it is running: then it leaves the cache now (the next read
+    * loads it afresh) and the copy the build holds is released once the
+    * build settles (see registerVersionBuild).
+    */
+   private takeOutOfService(
+      packageName: string,
+      versionId: string,
+   ): "now" | "after its build" {
+      const versions = this.versionService!;
+      const k = `${packageName}@${versionId}`;
+      if (!this.versionBuilds.has(k)) {
+         versions.cache.evict(packageName, versionId);
+         return "now";
+      }
+      const detached = versions.cache.detach(packageName, versionId);
+      if (detached) {
+         const held = this.pendingVersionReleases.get(k) ?? [];
+         held.push(detached);
+         this.pendingVersionReleases.set(k, held);
+      }
+      return "after its build";
    }
 
    /** Rebind a loaded version to a build manifest, or revert it to live. */

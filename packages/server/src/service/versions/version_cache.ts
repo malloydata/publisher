@@ -117,6 +117,21 @@ export class VersionCache<T> {
       this.hooks.release(packageName, versionId, value);
    }
 
+   /**
+    * Take a version out of the cache without releasing it: the next read
+    * loads it afresh, while whoever still holds this copy (a build of it)
+    * goes on using it. The caller releases what this returns. A load in
+    * flight for it is overtaken, as by an evict.
+    */
+   detach(packageName: string, versionId: string): T | undefined {
+      const k = key(packageName, versionId);
+      this.generations.set(k, (this.generations.get(k) ?? 0) + 1);
+      this.loading.delete(k);
+      const value = this.loaded.get(k);
+      this.loaded.delete(k);
+      return value;
+   }
+
    /** Evict every version of every package, loaded or loading. */
    evictAll(): void {
       const keys = new Set([...this.loaded.keys(), ...this.loading.keys()]);

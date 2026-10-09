@@ -500,10 +500,10 @@ export class PackageController {
     * `description`.
     *
     * A body that echoes the package back is accepted, because clients send
-    * whole objects: read-only fields are ignored, and every other field may
-    * carry the value latest has now (an empty list, an empty object, null and
-    * absent all count as the same). Only a value that would change latest's
-    * content is refused, with 409 PACKAGE_IS_VERSIONED.
+    * whole objects: read-only fields and unset ones are ignored, and every
+    * other field may carry the value latest has now (see changedFields). Only
+    * a value that would change latest's content is refused, with 409
+    * PACKAGE_IS_VERSIONED.
     */
    private async updateVersionedPackage(
       environment: Environment,
@@ -550,6 +550,7 @@ export class PackageController {
       // with none goes on reading as its latest version's.
       if (
          typeof fields.description === "string" &&
+         fields.description !== "" &&
          fields.description !== current.description
       ) {
          await versions.setPackageDescription(packageName, fields.description);

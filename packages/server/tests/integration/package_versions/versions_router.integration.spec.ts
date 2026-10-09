@@ -358,6 +358,56 @@ describe("versions routes", () => {
       ]);
    });
 
+   it("PATCH accepts a generated Java client's rebind of a version that has explores", async () => {
+      const name = "indexed";
+      const dir = path.join(root, "indexed-1.0.0");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name, version: "1.0.0" }),
+      );
+      fs.writeFileSync(
+         path.join(dir, "model.malloy"),
+         'source: numbers is duckdb.sql("SELECT 1 AS answer")\n',
+      );
+      fs.writeFileSync(
+         path.join(dir, "index.malloy"),
+         'import "model.malloy"\n',
+      );
+      const published = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name, location: dir }),
+         },
+      );
+      expect(published.status).toBe(200);
+      const api = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${name}`;
+      const read = (await (await fetch(api)).json()) as { explores?: string[] };
+      expect(read.explores?.length).toBeGreaterThan(0);
+
+      // Every optional list starts empty in that client, and goes out as [].
+      const rebind = await fetch(api, {
+         method: "PATCH",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({
+            name,
+            location: dir,
+            manifestLocation: null,
+            explores: [],
+            exploresWarnings: [],
+            warnings: [],
+            storageServeBindings: [],
+            scope: "package",
+         }),
+      });
+      expect([
+         rebind.status,
+         ((await rebind.json()) as { reason?: string }).reason,
+      ]).toEqual([200, undefined]);
+   });
+
    it("PATCH refuses a description that is not text, and a manifest that is not gs:// or s3://", async () => {
       for (const body of [
          { description: 7 },

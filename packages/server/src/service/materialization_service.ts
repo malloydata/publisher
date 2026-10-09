@@ -94,6 +94,7 @@ import {
    ownedVersionOf,
    ServingReader,
    SUPERSEDED_TABLES_KEY,
+   tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
    versionedTableName,
@@ -1365,6 +1366,20 @@ export class MaterializationService {
             options.ledger,
             options.reseed ?? false,
          );
+         if (version !== null) {
+            // One table, two writers in one run: it would hold the last
+            // one's rows under both definitions.
+            const seen = new Set<string>();
+            for (const i of buildInstructions) {
+               const table = tableIdentity(i.physicalTableName);
+               if (seen.has(table)) {
+                  throw new BadRequestError(
+                     `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,
+                  );
+               }
+               seen.add(table);
+            }
+         }
       }
 
       // The slot the run holds while it is active. An auto-run of a `scope:
@@ -1425,17 +1440,6 @@ export class MaterializationService {
                tableNamesIn(metadata, WRITES_TABLES_KEY),
                undefined,
                true,
-            );
-            // A version's run with instructions may rebuild a table another
-            // version's run built from another definition: that entry no
-            // longer says what the table holds (see markSuperseded). Marked
-            // before the run is recorded, so nothing it records is left
-            // behind if the marking fails.
-            await this.markSuperseded(
-               environmentId,
-               packageName,
-               "",
-               buildInstructions,
             );
          }
 
@@ -1698,18 +1702,32 @@ export class MaterializationService {
          // tables will no longer hold what the older entries say. Then every
          // other loaded version is rebound, so none reads rows this run's
          // definition builds (a version that cannot be rebound is unloaded).
+         // A version's run with instructions, likewise: its tables were
+         // claimed when it was created, and another version's run may have
+         // built one of them from another definition.
          if (
-            !orchestrated &&
             versionId !== undefined &&
-            owned === undefined &&
-            instructions.length > 0
+            instructions.length > 0 &&
+            (orchestrated || owned === undefined)
          ) {
-            await this.claimTables(
-               environmentId,
-               packageName,
-               id,
-               instructions,
-            );
+            if (orchestrated) {
+               await this.tableLockFor(environmentId, packageName).runExclusive(
+                  () =>
+                     this.markSuperseded(
+                        environmentId,
+                        packageName,
+                        id,
+                        instructions,
+                     ),
+               );
+            } else {
+               await this.claimTables(
+                  environmentId,
+                  packageName,
+                  id,
+                  instructions,
+               );
+            }
             markedShared = true;
             await this.rebindLoadedVersions(
                environmentName,
@@ -1798,17 +1816,17 @@ export class MaterializationService {
                entries,
                versionId,
             );
-            if (markedShared && versionId !== undefined) {
-               // The tables are the package's, so every other loaded version
-               // is rebound to this run too: each binds only what its own
-               // definition built, and serves live what this run rebuilt from
-               // a different one (see Package.bindStorageServeBindings).
-               await this.rebindLoadedVersions(
-                  environmentName,
-                  packageName,
-                  versionId,
-               );
-            }
+         }
+         if (markedShared && versionId !== undefined) {
+            // Every other loaded version is rebound to this run too: each
+            // binds only what its own definition built, and serves live what
+            // this run rebuilt from a different one (see
+            // Package.bindStorageServeBindings).
+            await this.rebindLoadedVersions(
+               environmentName,
+               packageName,
+               versionId,
+            );
          }
 
          recordSourcesOutcome("built", sourcesBuilt, mode);
@@ -1891,7 +1909,8 @@ export class MaterializationService {
       excludeId: string | undefined,
       instructed: boolean,
    ): Promise<void> {
-      const wanted = new Set(tables);
+      // Compared by what a name names (see tableIdentity), not its spelling.
+      const wanted = new Set(tables.map(tableIdentity));
       if (wanted.size === 0) return;
       const runs = await this.repository.listMaterializations(
          environmentId,
@@ -1903,7 +1922,7 @@ export class MaterializationService {
             continue;
          }
          const clash = tableNamesIn(m.metadata, WRITES_TABLES_KEY).find((t) =>
-            wanted.has(t),
+            wanted.has(tableIdentity(t)),
          );
          if (clash !== undefined) {
             throw new MaterializationConflictError(
@@ -1913,13 +1932,14 @@ export class MaterializationService {
       }
       if (!instructed) return;
       // Every committed run the package's versions share: neither one
-      // version's own nor a caller's instructed run. Runs from before the
-      // package's first versioned publish count, and `latest` may serve them.
+      // version's own nor one version's instructed run. Runs from before the
+      // package's first versioned publish count, instructed ones included:
+      // every version may serve them.
       const shared = runs
          .filter(
             (m) =>
-               m.metadata?.mode !== "orchestrated" &&
                !isVersionOwnedRun(m) &&
+               (m.metadata?.mode !== "orchestrated" || m.version === null) &&
                m.status === "MANIFEST_FILE_READY",
          )
          .flatMap((m) =>
@@ -1927,7 +1947,7 @@ export class MaterializationService {
                (e) => e.physicalTableName,
             ),
          );
-      const clash = shared.find((t) => wanted.has(t));
+      const clash = shared.find((t) => wanted.has(tableIdentity(t)));
       if (clash !== undefined) {
          throw new MaterializationConflictError(
             `Table ${clash} is one the versions of package ${packageName} share, which only an auto-run of its latest version rebuilds; name tables of your own in buildInstructions.`,
@@ -1989,28 +2009,29 @@ export class MaterializationService {
       id: string,
       instructions: BuildInstruction[],
    ): Promise<void> {
+      // Keyed by what a name names (see tableIdentity), not its spelling.
       const rebuilt = new Map<string, Set<string>>();
       for (const i of instructions) {
-         const addresses =
-            rebuilt.get(i.physicalTableName) ?? new Set<string>();
+         const table = tableIdentity(i.physicalTableName);
+         const addresses = rebuilt.get(table) ?? new Set<string>();
          addresses.add(i.sourceEntityId);
-         rebuilt.set(i.physicalTableName, addresses);
+         rebuilt.set(table, addresses);
       }
       for (const m of await this.repository.listMaterializations(
          environmentId,
          packageName,
       )) {
          if (m.id === id) continue;
-         const already = new Set(
-            tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY),
-         );
+         const marked = tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY);
+         const already = new Set(marked.map(tableIdentity));
          const stale = Object.values(m.manifest?.entries ?? {})
             .filter((e) => {
-               const addresses = rebuilt.get(e.physicalTableName);
+               const table = tableIdentity(e.physicalTableName);
+               const addresses = rebuilt.get(table);
                return (
                   addresses !== undefined &&
                   !addresses.has(e.sourceEntityId) &&
-                  !already.has(e.physicalTableName)
+                  !already.has(table)
                );
             })
             .map((e) => e.physicalTableName);
@@ -2019,7 +2040,7 @@ export class MaterializationService {
             await this.repository.updateMaterialization(m.id, {
                metadata: {
                   ...(m.metadata ?? {}),
-                  [SUPERSEDED_TABLES_KEY]: [...new Set([...already, ...stale])],
+                  [SUPERSEDED_TABLES_KEY]: [...new Set([...marked, ...stale])],
                },
             });
          } catch (err) {

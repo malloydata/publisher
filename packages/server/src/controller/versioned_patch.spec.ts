@@ -55,8 +55,11 @@ describe("changedFields", () => {
       ]);
    });
 
-   it("refuses an empty list or object that would clear what latest has", () => {
-      expect(changed({ explores: [] })).toEqual(["explores"]);
+   it("reads a top-level empty list as unset, as a generated Java client sends one", () => {
+      expect(changed({ explores: [], warnings: [] })).toEqual([]);
+   });
+
+   it("refuses an empty object, or an emptied field inside one, that would clear what latest has", () => {
       expect(changed({ queryMetadata: {} })).toEqual(["queryMetadata"]);
       expect(changed({ materialization: { schedule: null } })).toEqual([
          "materialization",

@@ -39,9 +39,20 @@ export const READ_ONLY_PACKAGE_FIELDS = new Set([
 /** The spec's defaults: a generated client sends them for a field it was never given. */
 const PACKAGE_FIELD_DEFAULTS: Record<string, unknown> = { scope: "package" };
 
-/** Null, absent, or an empty string: a top-level field a client left unset. */
+/**
+ * A top-level field a client left unset: null, absent, an empty string, or an
+ * empty list. A client generated with defaults starts every optional list
+ * empty and sends it so (Java's okhttp-gson does), so at the top level `[]`
+ * cannot be told from "not given". An empty object is not unset: no
+ * generated client sends one for a field it was never given.
+ */
 function isUnset(value: unknown): boolean {
-   return value === undefined || value === null || value === "";
+   return (
+      value === undefined ||
+      value === null ||
+      value === "" ||
+      (Array.isArray(value) && value.length === 0)
+   );
 }
 
 /** Nothing in it: null, absent, an empty list, or an object of nothing. */
@@ -57,8 +68,8 @@ function isEmpty(value: unknown): boolean {
 /**
  * Whether `sent` says only what `current` already is. An object is compared
  * on the fields it names, since a client generated from an older spec leaves
- * out the fields it does not know; an empty list or object, and a null inside
- * an object, mean empty, so they echo only an empty value.
+ * out the fields it does not know; below the top level an empty list or
+ * object, and a null, mean empty, so they echo only an empty value.
  */
 export function echoes(sent: unknown, current: unknown): boolean {
    if (isEmpty(sent)) return isEmpty(current);
@@ -83,7 +94,8 @@ export function echoes(sent: unknown, current: unknown): boolean {
 /**
  * The fields of a PATCH body that would change the package's `latest`
  * version, described now as `current`. Ignored: the fields the PATCH applies,
- * read-only fields, and a field left unset. `name` must be the package's, and
+ * read-only fields, and a field left unset (see isUnset). `name` must be the
+ * package's, and
  * `location` the one `latest` was published from. Any other field must echo
  * `latest`'s value (see echoes), or the spec's default for a field `latest`
  * leaves unset.
