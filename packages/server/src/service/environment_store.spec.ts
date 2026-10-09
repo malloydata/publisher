@@ -1758,6 +1758,36 @@ describe("EnvironmentStore Service", () => {
       },
    );
 
+   it("fails initialization on a versioning setting outside its set", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ packageVersioning: "yes", environments: [] }),
+      );
+      const fromFile = new EnvironmentStore(serverRootPath);
+      await fromFile.finishedInitialization;
+      expect((await fromFile.getStatus()).initError).toContain(
+         '"packageVersioning" in publisher.config.json must be one of off | on',
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ environments: [] }),
+      );
+      const saved = process.env.PUBLISHER_VERSION_PROMOTION;
+      process.env.PUBLISHER_VERSION_PROMOTION = "manual";
+      try {
+         const fromEnv = new EnvironmentStore(serverRootPath);
+         await fromEnv.finishedInitialization;
+         expect((await fromEnv.getStatus()).initError).toContain(
+            "PUBLISHER_VERSION_PROMOTION must be one of on-publish | explicit",
+         );
+      } finally {
+         if (saved === undefined)
+            delete process.env.PUBLISHER_VERSION_PROMOTION;
+         else process.env.PUBLISHER_VERSION_PROMOTION = saved;
+      }
+   });
+
    it("omits initError when initialization succeeds", async () => {
       await environmentStore.finishedInitialization;
       const status = await environmentStore.getStatus();

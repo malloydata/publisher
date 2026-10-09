@@ -164,8 +164,46 @@ export type PublisherConfig = {
    theme?: Theme;
    mcp?: McpConfig;
    retrieval?: RetrievalConfig;
+   packageVersioning?: PackageVersioningMode;
+   versionPromotion?: VersionPromotionMode;
    environments: Environment[];
 };
+
+/**
+ * Whether a publish (`POST .../packages` with a `location`) creates an
+ * immutable, numbered version of the package, read from the package's own
+ * `publisher.json` `version`, or replaces its single unversioned slot as before.
+ *
+ *  - `off` (default): every package is one unversioned slot. Nothing about the
+ *    server changes, which is what lets this ship dormant.
+ *  - `on`: a publish with a `location` is a versioned publish. A package loaded
+ *    from config, from a plain directory, or mounted by watch mode stays
+ *    unversioned either way.
+ *
+ * It decides how a PUBLISH is read, never how a read resolves: a package that
+ * has versions serves them whatever this says, so turning it off cannot strand
+ * one.
+ */
+export type PackageVersioningMode = "off" | "on";
+
+/**
+ * Who moves a package's `latest` version.
+ *
+ *  - `on-publish` (default): a publish makes the new version `latest` unless a
+ *    higher version already is.
+ *  - `explicit`: a publish never moves it; only `PUT .../packages/{name}/latest`
+ *    does. For an orchestrator that decides when a version is ready to serve.
+ */
+export type VersionPromotionMode = "on-publish" | "explicit";
+
+const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
+   "off",
+   "on",
+];
+const VERSION_PROMOTION_MODES: readonly VersionPromotionMode[] = [
+   "on-publish",
+   "explicit",
+];
 
 export type ProcessedEnvironment = {
    name: string;
@@ -1237,19 +1275,12 @@ const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
  * so a typo can't silently leave the fleet in a surprising mode. Case-insensitive,
  * like the sibling `PERSIST_COLLISION_ENFORCE`.
  */
-export const getPersistStorageMode = (): PersistStorageMode => {
-   const raw = process.env.PERSIST_STORAGE_MODE;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
-      return value as PersistStorageMode;
-   }
-   throw new Error(
-      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
-         " | ",
-      )} (got ${JSON.stringify(raw)})`,
-   );
-};
+export const getPersistStorageMode = (): PersistStorageMode =>
+   parseModeSetting(
+      process.env.PERSIST_STORAGE_MODE,
+      "PERSIST_STORAGE_MODE",
+      PERSIST_STORAGE_MODES,
+   ) ?? "off";
 
 /**
  * Whether a within-package persist-target COLLISION (two distinct persist
@@ -1550,14 +1581,106 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
          : undefined,
    );
 
+   const settings =
+      processedConfig && typeof processedConfig === "object"
+         ? (processedConfig as Record<string, unknown>)
+         : {};
+   const packageVersioning = parseModeSetting(
+      settings.packageVersioning,
+      `"packageVersioning" in ${PUBLISHER_CONFIG_NAME}`,
+      PACKAGE_VERSIONING_MODES,
+   );
+   const versionPromotion = parseModeSetting(
+      settings.versionPromotion,
+      `"versionPromotion" in ${PUBLISHER_CONFIG_NAME}`,
+      VERSION_PROMOTION_MODES,
+   );
+
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
+      ...(packageVersioning ? { packageVersioning } : {}),
+      ...(versionPromotion ? { versionPromotion } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * One of a closed set of modes, or undefined when unset (absent, null, or
+ * blank). Matched case-insensitively. A value outside the set throws, naming
+ * where it came from and what is allowed: a typo must not leave a server in a
+ * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
+ * `packageVersioning` and `versionPromotion`.
+ */
+function parseModeSetting<T extends string>(
+   raw: unknown,
+   where: string,
+   allowed: readonly T[],
+): T | undefined {
+   if (raw === undefined || raw === null) return undefined;
+   if (typeof raw === "string") {
+      const value = raw.trim().toLowerCase();
+      if (value === "") return undefined;
+      if ((allowed as readonly string[]).includes(value)) return value as T;
+   }
+   throw new Error(
+      `${where} must be one of ${allowed.join(" | ")} (got ${JSON.stringify(raw)})`,
+   );
+}
+
+/**
+ * The server's {@link PackageVersioningMode}: `PUBLISHER_PACKAGE_VERSIONING`
+ * when set, otherwise `packageVersioning` in publisher.config.json, otherwise
+ * `off`. Read at call time, like the PERSIST_* knobs, so a test can switch it.
+ */
+export const getPackageVersioningMode = (
+   serverRoot: string,
+): PackageVersioningMode =>
+   parseModeSetting(
+      process.env.PUBLISHER_PACKAGE_VERSIONING,
+      "PUBLISHER_PACKAGE_VERSIONING",
+      PACKAGE_VERSIONING_MODES,
+   ) ??
+   readConfigMode(serverRoot, (config) => config.packageVersioning) ??
+   "off";
+
+/**
+ * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when
+ * set, otherwise `versionPromotion` in publisher.config.json, otherwise
+ * `on-publish`.
+ */
+export const getVersionPromotionMode = (
+   serverRoot: string,
+): VersionPromotionMode =>
+   parseModeSetting(
+      process.env.PUBLISHER_VERSION_PROMOTION,
+      "PUBLISHER_VERSION_PROMOTION",
+      VERSION_PROMOTION_MODES,
+   ) ??
+   readConfigMode(serverRoot, (config) => config.versionPromotion) ??
+   "on-publish";
+
+function readConfigMode<T>(
+   serverRoot: string,
+   pick: (config: PublisherConfig) => T | undefined,
+): T | undefined {
+   try {
+      return pick(getPublisherConfig(serverRoot));
+   } catch (error) {
+      // A file that cannot be parsed has no setting to give, and is reported
+      // where the config is loaded, the same split getSemanticIndexMaxEntities
+      // makes. An invalid mode value is a different error and still throws.
+      if (
+         error instanceof Error &&
+         error.message.startsWith("Failed to parse ")
+      ) {
+         return undefined;
+      }
+      throw error;
+   }
+}
 
 /**
  * Read the `mcp` block. Like `theme`, a bad field is warned about and dropped,

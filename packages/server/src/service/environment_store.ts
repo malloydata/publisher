@@ -13,9 +13,11 @@ import { simpleGit, type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
+   getPackageVersioningMode,
    getProcessedPublisherConfig,
    getPublisherConfigDir,
    getUnresolvedPublisherConfigPath,
+   getVersionPromotionMode,
    isMcpIncludeHiddenFilesAndSources,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -664,6 +666,12 @@ export class EnvironmentStore {
 
       try {
          await this.storageManager.initialize(reInit);
+
+         // Read both versioning settings now, so a value outside the set, from
+         // the environment or the config file, fails initialization naming the
+         // setting, rather than surfacing at the first publish that reads it.
+         getPackageVersioningMode(this.serverRootPath);
+         getVersionPromotionMode(this.serverRootPath);
 
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
