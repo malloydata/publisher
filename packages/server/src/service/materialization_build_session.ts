@@ -8,7 +8,7 @@ import {
    type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
@@ -35,6 +35,7 @@ import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
    applySessionResourceLimits,
+   attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
    federateSourceForPassthrough,
@@ -1352,9 +1353,9 @@ export function dropStorageTableSql(
  * destination — see {@link createIsolatedBuildSession}). Mirrors
  * {@link buildSourceIntoStorage}'s lifecycle: attach read-write → drop → dispose.
  *
- * Only the recorded physical table (`physicalTableName`) is dropped — a
- * destination-aware drop of a name the publisher recorded building, never a
- * catalog scan — so GC can never take out a table it did not create.
+ * Exactly one named table is dropped, never a pattern or a scan, so the caller
+ * decides what goes: the publisher's own cleanup paths pass a name it recorded
+ * building, and an orchestrator that owns table lifecycle passes one it assigned.
  */
 export async function dropStorageTable(params: {
    destinationName: string;
@@ -1394,6 +1395,171 @@ export async function dropStorageTable(params: {
    }
 }
 
+/**
+ * The tables in one schema of a `storage=` destination, in name order.
+ *
+ * Read-only: it runs on its own isolated instance like {@link dropStorageTable},
+ * but attaches the catalog the way the serve path does, since listing never
+ * needs to write. A plain DuckDB destination whose database file does not exist
+ * yet has, by construction, no tables — it is reported empty rather than created
+ * by the act of looking.
+ */
+export async function listStorageTables(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   schemaName: string;
+   environmentPath: string;
+}): Promise<string[]> {
+   const {
+      destinationName,
+      destinationConnection,
+      schemaName,
+      environmentPath,
+   } = params;
+   assertSupportedDestination(destinationName, destinationConnection);
+
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `list_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      if (destinationConnection.type === "ducklake") {
+         const cfg = requireDuckLakeConfig(
+            destinationName,
+            destinationConnection,
+         );
+         await attachDuckLakeReadOnly(session, destinationName, cfg);
+      } else {
+         const dbPath = destinationDatabasePath(
+            environmentPath,
+            destinationName,
+         );
+         if (!existsSync(dbPath)) {
+            return [];
+         }
+         await session.runSQL(
+            `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)} (READ_ONLY)`,
+         );
+      }
+      const rows = resultRows(
+         await session.runSQL(
+            `SELECT table_name FROM duckdb_tables() ` +
+               `WHERE database_name = '${escapeSQL(destinationName)}' ` +
+               `AND schema_name = '${escapeSQL(schemaName)}' ` +
+               `ORDER BY table_name`,
+         ),
+      );
+      return rows.map((row) => String(row.table_name));
+   } finally {
+      await dispose();
+   }
+}
+
+/** What one storage file cleanup reclaimed. */
+export interface StorageFileCleanupResult {
+   expiredSnapshots: number;
+   deletedFiles: number;
+}
+
+/**
+ * Reclaim object-storage bytes in a DuckLake destination.
+ *
+ * Dropping a DuckLake table only retires it in the catalog: its data files stay
+ * in storage for as long as any snapshot still references them, which is every
+ * snapshot from the table's creation to its drop. Two catalog calls reclaim them,
+ * in this order:
+ *
+ *  1. `ducklake_expire_snapshots(older_than)` — forgets snapshots older than the
+ *     cutoff (never the latest), and schedules for deletion the files only those
+ *     snapshots referenced. Snapshots kept are what time travel and recovery can
+ *     still read, so this cutoff is the recovery window for a dropped table.
+ *  2. `ducklake_cleanup_old_files(older_than)` — deletes files that were
+ *     scheduled for deletion before the cutoff. The age is measured from when
+ *     step 1 scheduled the file, so it protects a reader still scanning a file
+ *     from a snapshot that has just been expired.
+ *
+ * Deliberately NOT `CHECKPOINT` and NOT `ducklake_delete_orphaned_files`: both
+ * delete files the catalog does not track, which includes another catalog's live
+ * files when two catalogs share a data path, and a concurrent build's files that
+ * are written but not yet committed. Every file the two calls above delete is
+ * one this catalog itself recorded and then retired.
+ *
+ * Read-write, on an isolated instance, like {@link dropStorageTable}. Only a
+ * DuckLake destination keeps retired files around this way, so any other type is
+ * refused.
+ */
+export async function cleanupStorageFiles(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   snapshotsOlderThan: Date;
+   filesOlderThan: Date;
+}): Promise<StorageFileCleanupResult> {
+   const {
+      destinationName,
+      destinationConnection,
+      snapshotsOlderThan,
+      filesOlderThan,
+   } = params;
+   if (destinationConnection.type !== "ducklake") {
+      throw new BadRequestError(
+         `Storage destination '${destinationName}' is type ` +
+            `'${destinationConnection.type ?? ""}'; file cleanup applies only to ` +
+            `'ducklake' destinations.`,
+      );
+   }
+   const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
+
+   const { session, dispose, workDir } = createIsolatedBuildSession(
+      `cleanup_${destinationName}`,
+   );
+   try {
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
+      await attachDuckLakeReadWrite(session, destinationName, cfg);
+      const catalog = escapeSQL(destinationName);
+      const expired = resultRows(
+         await session.runSQL(
+            `CALL ducklake_expire_snapshots('${catalog}', older_than => ` +
+               `TIMESTAMPTZ '${snapshotsOlderThan.toISOString()}')`,
+         ),
+      );
+      const deleted = resultRows(
+         await session.runSQL(
+            `CALL ducklake_cleanup_old_files('${catalog}', older_than => ` +
+               `TIMESTAMPTZ '${filesOlderThan.toISOString()}')`,
+         ),
+      );
+      return { expiredSnapshots: expired.length, deletedFiles: deleted.length };
+   } finally {
+      await dispose();
+   }
+}
+
+/** A DuckLake destination's catalog config, or a clean 400 when it has none. */
+function requireDuckLakeConfig(
+   destinationName: string,
+   destinationConnection: ApiConnection,
+): components["schemas"]["DucklakeConnection"] {
+   const cfg = destinationConnection.ducklakeConnection;
+   if (!cfg) {
+      throw new BadRequestError(
+         `Storage destination '${destinationName}' is type 'ducklake' but ` +
+            `has no ducklakeConnection config.`,
+      );
+   }
+   return cfg;
+}
+
+/** Where a plain DuckDB destination's database file lives. */
+function destinationDatabasePath(
+   environmentPath: string,
+   destinationName: string,
+): string {
+   return path.join(
+      storageDestinationRoot(environmentPath),
+      `${destinationName}.duckdb`,
+   );
+}
+
 /** Attach the destination connection read-write on the build session. */
 async function attachDestinationReadWrite(
    session: DuckDBConnection,
@@ -1402,13 +1568,7 @@ async function attachDestinationReadWrite(
    environmentPath: string,
 ): Promise<void> {
    if (destinationConnection.type === "ducklake") {
-      const cfg = destinationConnection.ducklakeConnection;
-      if (!cfg) {
-         throw new BadRequestError(
-            `Storage destination '${destinationName}' is type 'ducklake' but ` +
-               `has no ducklakeConnection config.`,
-         );
-      }
+      const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
       await attachDuckLakeReadWrite(session, destinationName, cfg);
       return;
    }
@@ -1418,9 +1578,8 @@ async function attachDestinationReadWrite(
    // collide with a connection of the same name. The directory is created here
    // because a build can be the first thing that ever touches it: on a worker
    // that has not served this destination, nothing else has made it yet.
-   const destinationRoot = storageDestinationRoot(environmentPath);
-   mkdirSync(destinationRoot, { recursive: true });
-   const dbPath = path.join(destinationRoot, `${destinationName}.duckdb`);
+   mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
+   const dbPath = destinationDatabasePath(environmentPath, destinationName);
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)}`,
    );

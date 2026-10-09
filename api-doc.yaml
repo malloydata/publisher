@@ -81,6 +81,11 @@ tags:
     description: Real-time file watching for development workflows
   - name: materializations
     description: Package-level materializations for persisting Malloy sources
+  - name: storage-destinations
+    description: |
+      Table lifecycle inside an environment's storage destinations, for an
+      orchestrator that assigns its own physical table names and so owns their
+      garbage collection
 
 paths:
   /status:
@@ -2822,6 +2827,120 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables:
+    get:
+      tags:
+        - storage-destinations
+      operationId: list-storage-destination-tables
+      summary: List tables in a storage destination
+      description: |
+        Lists the tables in one schema of a storage destination, in name order.
+        Storage destinations are never reachable through the connection routes, so
+        this is how an orchestrator finds tables it has lost track of. A DuckLake
+        destination is attached read-only for the listing.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+      responses:
+        "200":
+          description: The tables in the schema
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorageTable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
+    delete:
+      tags:
+        - storage-destinations
+      operationId: delete-storage-destination-table
+      summary: Drop a table from a storage destination
+      description: |
+        Drops one named table from a storage destination. Idempotent: a table that
+        does not exist answers 204 as well, so a retried drop is free.
+
+        For a DuckLake destination this retires the table in the catalog; its data
+        files stay in storage until a file cleanup reclaims them (see
+        `create-storage-destination-file-cleanup`), which is also the window in
+        which the table can still be read at an earlier snapshot.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+        - name: tableName
+          in: path
+          required: true
+          description: Name of the table
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "204":
+          description: The table is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/fileCleanups:
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-file-cleanup
+      summary: Reclaim storage behind dropped tables in a DuckLake destination
+      description: |
+        Reclaims the object-storage bytes that dropped and rewritten tables leave
+        behind in a DuckLake destination. Runs, in order:
+
+        1. `ducklake_expire_snapshots(older_than => snapshotsOlderThan)` — forgets
+           snapshots older than the cutoff (never the latest) and schedules for
+           deletion the files only they referenced. Snapshots that remain are what
+           time travel can still read, so this cutoff is the recovery window for a
+           dropped table.
+        2. `ducklake_cleanup_old_files(older_than => filesOlderThan)` — deletes the
+           files scheduled for deletion before the cutoff. The age counts from when
+           step 1 scheduled the file, so this protects readers still scanning a
+           file from a snapshot that was just expired.
+
+        Only files the catalog itself recorded and then retired are deleted. It
+        does not run `CHECKPOINT` or `ducklake_delete_orphaned_files`, which also
+        delete untracked files — another catalog's, when two share a data path, or
+        a concurrent build's not-yet-committed output.
+
+        Synchronous. Refused with 400 for a destination that is not DuckLake.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageFileCleanupRequest"
+      responses:
+        "201":
+          description: The cleanup ran; what it reclaimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageFileCleanup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   responses:
     BadRequest:
@@ -2967,6 +3086,57 @@ components:
       type: string
       pattern: "^[a-zA-Z0-9_-]+$"
       description: Standard identifier pattern for resource names
+
+    StorageTable:
+      type: object
+      description: A table in a storage destination
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Table name, unqualified
+
+    StorageFileCleanupRequest:
+      type: object
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Expire snapshots older than this. Sets how long a dropped table stays
+            recoverable.
+        filesOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Delete files scheduled for deletion before this. Must outlast the
+            longest query reading the destination.
+
+    StorageFileCleanup:
+      type: object
+      description: What one file cleanup reclaimed
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+        - expiredSnapshots
+        - deletedFiles
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+        filesOlderThan:
+          type: string
+          format: date-time
+        expiredSnapshots:
+          type: integer
+          description: Snapshots this cleanup expired
+        deletedFiles:
+          type: integer
+          description: Data and delete files this cleanup removed from storage
 
     VersionIdPattern:
       type: string
@@ -7930,6 +8100,22 @@ components:
       description: Name of the package
       schema:
         type: string
+    destinationName:
+      name: destinationName
+      in: path
+      required: true
+      description: Name of a storage destination configured on the environment
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
+    storageSchemaName:
+      name: schemaName
+      in: path
+      required: true
+      description: |
+        Schema within the storage destination. A table built from a bare
+        physical name lives in `main`.
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
     materializationId:
       name: materializationId
       in: path

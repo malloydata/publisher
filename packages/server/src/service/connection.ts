@@ -1145,6 +1145,19 @@ async function attachDuckLake(
 }
 
 /**
+ * Read-only DuckLake attach on a caller-owned session — the same attach the live
+ * user-facing connection makes, for an operator path that only needs to look
+ * (listing a storage destination's tables) and so should not take write access.
+ */
+export async function attachDuckLakeReadOnly(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+): Promise<void> {
+   await attachDuckLake(connection, dbName, ducklakeConfig);
+}
+
+/**
  * Read-WRITE DuckLake attach for a materialization build. Identical to the
  * read-only user-facing attach except the catalog is writable, so a build-scoped
  * session can `CREATE TABLE ... AS` into it. Least privilege: this variant is

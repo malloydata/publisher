@@ -47,6 +47,63 @@ export class Rest {
       return `${this.baseUrl}/api/v0/environments/${this.env}/packages/${pkg}${suffix}`;
    }
 
+   private destinationUrl(dest: string, suffix = ""): string {
+      return `${this.baseUrl}/api/v0/environments/${this.env}/storageDestinations/${dest}${suffix}`;
+   }
+
+   /** `GET …/storageDestinations/{dest}/schemas/{schema}/tables` — table names. */
+   async listDestinationTables(
+      dest: string,
+      schema: string,
+   ): Promise<string[]> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables`),
+      );
+      if (!res.ok)
+         throw new Error(
+            `listDestinationTables ${dest}.${schema} ${res.status}: ${await res.text()}`,
+         );
+      const rows = (await res.json()) as { name: string }[];
+      return rows.map((r) => r.name);
+   }
+
+   /** `DELETE …/storageDestinations/{dest}/schemas/{schema}/tables/{table}`. */
+   async dropDestinationTable(
+      dest: string,
+      schema: string,
+      table: string,
+   ): Promise<number> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables/${table}`),
+         { method: "DELETE" },
+      );
+      if (!res.ok)
+         throw new Error(
+            `dropDestinationTable ${dest}.${schema}.${table} ${res.status}: ${await res.text()}`,
+         );
+      return res.status;
+   }
+
+   /** `POST …/storageDestinations/{dest}/fileCleanups` — what it reclaimed. */
+   async createFileCleanup(
+      dest: string,
+      body: { snapshotsOlderThan: string; filesOlderThan: string },
+   ): Promise<{ expiredSnapshots: number; deletedFiles: number }> {
+      const res = await fetch(this.destinationUrl(dest, "/fileCleanups"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(body),
+      });
+      if (res.status !== 201)
+         throw new Error(
+            `createFileCleanup ${dest} ${res.status}: ${await res.text()}`,
+         );
+      return (await res.json()) as {
+         expiredSnapshots: number;
+         deletedFiles: number;
+      };
+   }
+
    async status(): Promise<{
       operationalState?: string;
       loadErrors?: unknown;

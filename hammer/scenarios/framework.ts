@@ -119,6 +119,13 @@ export interface ScenarioContext extends ServerControl {
     */
    operatorSql(conn: string, sql: string): Promise<Record<string, string>[]>;
    /**
+    * The tables that still have data files on disk in a DuckLake destination's
+    * storage, read straight from the directory the destination writes to. What
+    * the catalog says is one question; whether the bytes are actually gone is
+    * another, and only this answers it.
+    */
+   storedTables(conn: string, schema: string): string[];
+   /**
     * Act as the orchestrator's manifest store: write a build manifest
     * (`{ entries }`) to a local file and return a `file://` URI the publisher can
     * fetch. The caller PATCHes the package's `manifestLocation` to this URI so
