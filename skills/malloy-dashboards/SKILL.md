@@ -36,9 +36,10 @@ endpoint named beside it.
    404 for a file off the surface) or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
    dashboard; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
-   If the package root holds an `index.malloy` (every scaffolded package does), a tile reads only the
-   sources that file exports. A source the dashboard file declares on top of an exported one works;
-   one on top of a hidden source does not. See "Read the lint" for the warning you get otherwise.
+   If the package root holds an `index.malloy` (every scaffolded package does), a tile and a filter
+   `suggest` read only the sources that file exports. A source the dashboard file declares on top of
+   an exported one works; one on top of a hidden source does not. See "Read the lint" for the warning
+   you get otherwise.
 2. **PICK THE VIEWS TO SHOW.** A dashboard is `## artifact { tiles=[…] }` naming existing views, so
    this is the design step: which views, how wide each sits, what each is called.
 3. **DECLARE THE GIVENS** the dashboard will filter by, in the dashboard file itself, with their
@@ -94,10 +95,10 @@ out by Publisher into the grid `# dashboard { columns=N }` names.
 ```malloy
 ##! experimental.givens
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state"] } dashboard { columns=12 }
-import { order_items, products } from '../storefront.malloy'
+import { order_items } from '../storefront.malloy'
 
 // The controls, declared here: the tags are each one's control contract.
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
@@ -121,6 +122,15 @@ source: overview is order_items extend {
   view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 }
 ```
+
+**A `suggest` reads only a source the package serves.** With an `index.malloy`, that is a source it
+exports, both for `source=` and for the source a `query=` reads. Importing a source into the dashboard
+is not enough: `suggest { source=products … }` over an unexported `products` compiles, then answers
+404 when the page asks for options, and the picker says "Could not load the options for this
+control". When the values live on a joined source, suggest from the exported source and name the
+join: `suggest { source=order_items dimension="products.category" }`. The package warnings name each
+suggest that breaks this (`… suggests from products, which index.malloy doesn't export, so its list
+will be empty`). Fix every one before you publish.
 
 Model-level because there is no query of its own to hang a `#` tag on, and model-level for a second
 reason: tiles run as separate queries, which is the only way a page can span unrelated sources. A
@@ -275,8 +285,9 @@ chart cell is capped and a table cell hugs its rows.
   convention) or imported. Malloy's given namespace is per-file. A given the file cannot see gets
   no control and cannot be sent to it, even when a `where:` that references it lives up an import
   chain. And a given declared here does not drive a `where:` in the model: bind on the tiles.
-- **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
-  means the dashboard imports `products`.
+- **A suggest's source or query has to resolve in the dashboard file too, and read a served source.**
+  `suggest { source=order_items … }` means the dashboard imports `order_items`, and `index.malloy`,
+  when the package has one, exports it.
 - **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
   out depends on what follows. If the continuation is not valid Malloy you get a compile error. If it
   happens to be, an `import` say, the file compiles clean, quietly stops being a dashboard and
@@ -297,7 +308,7 @@ The tags on the declaration are the control contract:
 ```malloy
 ##! experimental.givens
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
@@ -426,6 +437,9 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 - `to=self, but no model in this package declares a given "X"`: the clicked value has nowhere to go.
 - `given "X" suggests options from source "y", which this file does not define`: the dropdown will
   be empty, so import it.
+- `Filter X on dashboard d suggests from y, which index.malloy doesn't export, so its list will be
+  empty`: suggest from an exported source instead (a joined `dimension=` reaches `y`'s fields), or
+  export `y`. See "A tile over a hidden source answers 404" below.
 - `filters by given "X", which this file does not import, so no control is shown for it`: the trap
   under "Importing a given is what makes it bindable", which the lint now names for you, with the file
   to fix.

@@ -252,7 +252,7 @@ it just cannot add to it. Either way the tags on the declaration are its control
 ```malloy
 ##! experimental.givens
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
@@ -395,9 +395,9 @@ the results out:
 ```malloy
 ##! experimental.givens
 ## artifact { title="Seasonality" tiles=["seasonal -> revenue_trend", "seasonal -> by_season"] } dashboard { columns=12 }
-import { order_items, products } from '../storefront.malloy'
+import { order_items } from '../storefront.malloy'
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 ```
 
