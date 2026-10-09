@@ -86,7 +86,7 @@ A `versionId` on a static file pins only a version the package has; anything els
 
 `PATCH …/packages/{pkg}` is deprecated. On a versioned package it keeps working for the changes that are not content, for clients that rebind through it:
 
-- `manifestLocation` binds the package's `latest` version, as `PUT …/versions/{latest}/manifest` would.
+- A `manifestLocation` URI binds the package's `latest` version, as `PUT …/versions/{latest}/manifest` would. A null or empty one is unset, like any other field sent back unset, so it leaves the binding as it is; to serve `latest` live, clear its binding with `PUT …/versions/{latest}/manifest`.
 - `description` sets the package's own description. It reads back on the package and in listings; with none set, a package reads as its `latest` version's description, and a description that only echoes what the package reads as now sets nothing. A package that was unversioned gives up the description its old tree had at its first versioned publish. Each version keeps its own.
 
 Clients send whole objects, so a body that echoes the package back is accepted: read-only fields are ignored, a field sent as null or left out is unset, and a field that carries what `latest` has now is not a change. An object is compared on the fields it names, so a client generated from an older spec is not refused for leaving one out. At the top level an empty list counts as unset, since generated clients send one for every list they were never given; an empty object, or an emptied field inside one, means empty and echoes only a field `latest` has nothing in. A field that would change `latest`'s content is refused with 409 `PACKAGE_IS_VERSIONED`: publish a new version instead.

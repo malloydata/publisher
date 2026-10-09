@@ -495,9 +495,9 @@ export class PackageController {
     * PATCH on a package that has published versions. Deprecated: a version's
     * content is immutable, so the only changes kept are the ones that are not
     * content, for callers that rebind through this route: `manifestLocation`
-    * (bound to the package's `latest` version, as
-    * `PUT .../versions/{latest}/manifest` would) and the package's
-    * `description`.
+    * (a URI is bound to the package's `latest` version, as
+    * `PUT .../versions/{latest}/manifest` would bind it; a null leaves the
+    * binding as it is) and the package's `description`.
     *
     * A body that echoes the package back is accepted, because clients send
     * whole objects: read-only fields and unset ones are ignored, and every
@@ -555,12 +555,16 @@ export class PackageController {
       ) {
          await versions.setPackageDescription(packageName, fields.description);
       }
-      const loaded =
-         manifestLocation !== undefined
-            ? await versions.setManifest(packageName, latest, manifestLocation)
-            : await environment.getPackage(packageName, false, {
-                 versionId: latest,
-              });
+      // Only a manifest URI rebinds. A null or empty one is unset, as every
+      // other field a client sends back unset is, and as it is on a publish:
+      // a generated client serializes a field it was never given as null,
+      // which would otherwise turn latest back to serving live. Clearing a
+      // binding is PUT .../versions/{version}/manifest's.
+      const loaded = manifestLocation
+         ? await versions.setManifest(packageName, latest, manifestLocation)
+         : await environment.getPackage(packageName, false, {
+              versionId: latest,
+           });
       return environment.describePackage(loaded);
    }
 

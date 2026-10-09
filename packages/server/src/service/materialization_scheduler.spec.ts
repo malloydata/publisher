@@ -1,8 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { MaterializationConflictError } from "../errors";
+import { logger } from "../logger";
 import type { CronEvaluator } from "./cron_evaluator";
 import type { EnvironmentStore } from "./environment_store";
 import type { MaterializationService } from "./materialization_service";
@@ -420,6 +421,39 @@ describe("MaterializationScheduler: published versions", () => {
       await sched.tick(t0);
       await sched.tick(dueLater);
       expect(service.calls).toEqual([]);
+   });
+
+   it("warns once when a version's publisher.json cannot be read, and again after it was read", async () => {
+      // A publish checked that file, so not reading it means the tree is
+      // missing on disk. The version stays in the sweep, so the warning is
+      // not repeated every tick.
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const service = fakeService();
+         const v1 = fakeVersion("1.0.0", null);
+         const sched = versionScheduler([v1], service);
+         const unreadable = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("cannot be read"),
+            );
+         await sched.tick(t0);
+         await sched.tick(dueLater);
+         expect(service.calls).toEqual([]);
+         expect(unreadable()).toHaveLength(1);
+         expect(unreadable()[0][1]).toEqual({
+            environmentName: "env1",
+            packageName: "v",
+            versionId: "1.0.0",
+         });
+
+         v1.manifest = scheduled();
+         await sched.tick(dueLater + 1);
+         v1.manifest = null;
+         await sched.tick(dueLater + 2);
+         expect(unreadable()).toHaveLength(2);
+      } finally {
+         warn.mockRestore();
+      }
    });
 
    it("leaves a package with no versions to the package sweep", async () => {

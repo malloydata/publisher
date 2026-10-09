@@ -30,7 +30,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 - `publisher.json` must declare a `version`, a semantic version such as `1.2.0` or `1.2.0-rc.1`. Without one the publish answers 400 `MANIFEST_VERSION_MISSING`; one that is not a semantic version answers 400 `MANIFEST_VERSION_INVALID`. Packages scaffolded from now on start at `0.1.0`.
 - Publishing a version again with the same content answers 200 and writes nothing. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same name to update it, bump `version` instead.**
 - A versioned package no longer changes in place: `?reload=true` (and MCP `reload_package`) returns it as it is (`mode: "unchanged"`), and model, dashboard and notebook writes, and an unversioned publish over it, answer 409 `PACKAGE_IS_VERSIONED`. Iterate with watch mode, then publish.
-- `PATCH …/packages/{pkg}` is deprecated. On a versioned package it still rebinds `latest`'s `manifestLocation` and sets the package's `description`, and accepts the package sent back whole; a change to content answers 409.
+- `PATCH …/packages/{pkg}` is deprecated. On a versioned package it still rebinds `latest`'s `manifestLocation` (a null or empty one leaves the binding as it is; clear it with `PUT …/versions/{version}/manifest`) and sets the package's `description`, and accepts the package sent back whole; a change to content answers 409.
 - `manifestLocation` on a versioned publish, on that PATCH, and on the new manifest route must be a `gs://` or `s3://` URI (400 otherwise).
 
 A package loaded from `publisher.config.json`, or registered from a directory with no `location`, has no versions and behaves as before.
