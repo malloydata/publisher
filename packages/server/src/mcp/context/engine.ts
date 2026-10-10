@@ -516,7 +516,18 @@ function judgeFailure(uri: string, error: unknown, stages: StageRow[]) {
 export function connectTrace(index: FcjIndex, connected: ConnectResult) {
    const describe = (key: string) => {
       const node = index.catalog.nodes.get(key)!;
-      return { id: node.id, key, routes: routesOf(index.catalog, node) };
+      // A folded copy shown in a cluster is also the field it copies.
+      const rep = node.copyOf
+         ? index.catalog.nodes.get(node.copyOf)
+         : undefined;
+      return {
+         id: node.id,
+         key,
+         routes: [
+            ...routesOf(index.catalog, node),
+            ...(rep ? [rep.id, ...routesOf(index.catalog, rep)] : []),
+         ],
+      };
    };
    return {
       considered: connected.considered.map((s) => ({
