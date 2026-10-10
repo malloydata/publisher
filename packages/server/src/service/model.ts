@@ -4829,6 +4829,9 @@ export class Model {
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result: Malloy.Result }[]
          | undefined;
+      model.preparedPreaggregateCompanion = data.preaggregateCompanion as
+         | { modelDef?: ModelDef }
+         | undefined;
       return model;
    }
 
@@ -6005,6 +6008,21 @@ export class Model {
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
+      // The worker compiles the companion alongside the model, against the
+      // same manifest (see SerializedModel.preaggregateCompanion), so the first
+      // build after hydration loads it rather than compiling it here. Taken
+      // once: a later rebuild compiles against whatever is bound then.
+      const prepared = this.preparedPreaggregateCompanion;
+      this.preparedPreaggregateCompanion = undefined;
+      if (prepared) {
+         this.preaggregateServeMaterializer = prepared.modelDef
+            ? makeHydrationRuntime(
+                 malloyConfig,
+                 buildManifest,
+              )._loadModelFromModelDef(prepared.modelDef)
+            : undefined;
+         return;
+      }
       const synthesized = await tryCompileSynthesizedPreaggregation({
          packagePath,
          modelPath: this.modelPath,
@@ -6017,6 +6035,12 @@ export class Model {
       });
       this.preaggregateServeMaterializer = synthesized?.materializer;
    }
+
+   /**
+    * The pre-aggregation companion the package-load worker compiled for this
+    * model, held until {@link buildPreaggregateServeModel} reads it.
+    */
+   private preparedPreaggregateCompanion: { modelDef?: ModelDef } | undefined;
 
    /**
     * Compile-time renderer-tag validation, run on the main thread.

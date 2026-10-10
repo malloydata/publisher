@@ -505,36 +505,28 @@ export function recordAttributionSkipped(
 export function recordEligibilityRefused(
    reason: EligibilityRefusalReason,
 ): void {
-   if (eligibilityRefusalCapture) {
-      eligibilityRefusalCapture[reason] =
-         (eligibilityRefusalCapture[reason] ?? 0) + 1;
+   const counts = eligibilityRefusalSink?.();
+   if (counts) {
+      counts[reason] = (counts[reason] ?? 0) + 1;
       return;
    }
    eligibilityRefusedCounter().add(1, { reason });
 }
 
-let eligibilityRefusalCapture:
-   | Partial<Record<EligibilityRefusalReason, number>>
+let eligibilityRefusalSink:
+   | (() => Partial<Record<EligibilityRefusalReason, number>> | undefined)
    | undefined;
 
 /**
- * Count eligibility refusals instead of recording them, until the returned
- * function is called; it returns the counts. The package-load worker derives
- * build plans on a thread whose meter is a no-op, so it hands the counts back
- * for the main thread to record. Not reentrant: the worker runs one job at a
- * time.
+ * Route eligibility refusals to the counts `sink` returns instead of the
+ * meter, whenever it returns any. The package-load worker derives build plans
+ * on a thread whose meter is a no-op, so it counts each job's refusals in that
+ * job's own context and hands them back for the main thread to record.
  */
-export function captureEligibilityRefusals(): () => Partial<
-   Record<EligibilityRefusalReason, number>
-> {
-   const counts: Partial<Record<EligibilityRefusalReason, number>> = {};
-   eligibilityRefusalCapture = counts;
-   return () => {
-      if (eligibilityRefusalCapture === counts) {
-         eligibilityRefusalCapture = undefined;
-      }
-      return counts;
-   };
+export function setEligibilityRefusalSink(
+   sink: () => Partial<Record<EligibilityRefusalReason, number>> | undefined,
+): void {
+   eligibilityRefusalSink = sink;
 }
 
 /**

@@ -17,15 +17,13 @@
  * their total serialized size within a byte budget: an entry count would let a
  * few very wide tables take an unbounded share of the worker's heap. Keys are
  * built by the caller and must name everything the schema depends on: the
- * environment, the connection instance, and the table path or SQL.
- * Freshness follows Malloy's own connection cache: an entry older than the
- * request's `refreshTimestamp` is a miss.
+ * environment, the connection instance, and the table path or SQL. Entries
+ * never go stale on their own, as in Malloy's connection cache, which only
+ * refetches when a request carries a `refreshTimestamp`; the caller sends
+ * those requests to the main thread instead of reading them from here.
  */
 export class SchemaCache<T> {
-   private readonly entries = new Map<
-      string,
-      { value: T; timestamp: number; bytes: number }
-   >();
+   private readonly entries = new Map<string, { value: T; bytes: number }>();
    private readonly inFlight = new Map<string, Promise<T | undefined>>();
    private totalBytes = 0;
    private hitCount = 0;
@@ -40,16 +38,9 @@ export class SchemaCache<T> {
          JSON.stringify(value)?.length ?? 0,
    ) {}
 
-   get(key: string, refreshTimestamp?: number): T | undefined {
+   get(key: string): T | undefined {
       const entry = this.entries.get(key);
       if (!entry) return undefined;
-      if (
-         refreshTimestamp !== undefined &&
-         refreshTimestamp > entry.timestamp
-      ) {
-         this.delete(key);
-         return undefined;
-      }
       // Re-insert so iteration order is least-recently-used first.
       this.entries.delete(key);
       this.entries.set(key, entry);
@@ -57,13 +48,13 @@ export class SchemaCache<T> {
       return entry.value;
    }
 
-   set(key: string, value: T, timestamp: number): void {
+   set(key: string, value: T): void {
       this.delete(key);
       if (this.maxBytes <= 0) return;
       const bytes = this.sizeOf(value);
       // One entry larger than the whole budget would evict everything else.
       if (bytes > this.maxBytes) return;
-      this.entries.set(key, { value, timestamp, bytes });
+      this.entries.set(key, { value, bytes });
       this.totalBytes += bytes;
       while (this.totalBytes > this.maxBytes) {
          const oldest = this.entries.keys().next().value;

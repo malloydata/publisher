@@ -1074,11 +1074,6 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       }
    });
 
-   // NB: kept last in this describe — swapping the singleton for a
-   // pre-shutdown pool also tears down the shared `pool` (the swap
-   // implementation shuts down the outgoing singleton). Subsequent
-   // tests in this describe would see a dead pool. afterAll only
-   // resets the singleton to null, so this is safe at the tail.
    it(
       "derives the build plan in the worker, identical to the main-thread computation",
       async () => {
@@ -1270,6 +1265,74 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
       { timeout: 60000 },
    );
 
+   it("logs what the worker logged through this thread's logger", async () => {
+      writeManifest();
+      // A malformed `#@ persist` tag is reported while the worker collects the
+      // plan, a log call that runs in the worker.
+      fs.writeFileSync(
+         path.join(tempDir, "malformed.malloy"),
+         `##! experimental.persistence
+source: base is duckdb.sql("select 1 as a")
+#@ persist name="t" (
+source: t is base -> { group_by: a }
+`,
+      );
+      const logSpy = spyOn(logger, "log");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            logSpy.mock.calls.some((call) => {
+               const [level, message, meta] = call as unknown[];
+               return (
+                  level === "warn" &&
+                  message === "Persist annotation issue" &&
+                  (meta as { modelPath?: string } | undefined)?.modelPath ===
+                     "malformed.malloy"
+               );
+            }),
+         ).toBe(true);
+      } finally {
+         logSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
+   it("hydrates the pre-aggregation companion the worker compiled, without compiling it here", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `##! experimental { persistence composite_sources }
+
+source: orders is duckdb.sql("""
+  SELECT 1 AS order_id, 10 AS amount, 'A' AS category
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+      );
+      const { Model } = await import("./model");
+      const runtimeSpy = spyOn(Model, "getModelRuntime");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("orders.malloy") as unknown as {
+            preaggregateServeMaterializer?: unknown;
+         };
+         expect(model.preaggregateServeMaterializer).toBeDefined();
+         expect(runtimeSpy).not.toHaveBeenCalled();
+      } finally {
+         runtimeSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
+   // NB: kept last in this describe — swapping the singleton for a
+   // pre-shutdown pool also tears down the shared `pool` (the swap
+   // implementation shuts down the outgoing singleton). Subsequent
+   // tests in this describe would see a dead pool. afterAll only
+   // resets the singleton to null, so this is safe at the tail.
    it("rewraps pool-infrastructure failures as ServiceUnavailableError (HTTP 503)", async () => {
       writeManifest();
       fs.writeFileSync(

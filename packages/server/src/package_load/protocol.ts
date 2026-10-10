@@ -146,6 +146,20 @@ export interface LoadPackageRequest {
     * manifest has rewritten.
     */
    computeBuildPlan?: boolean;
+   /**
+    * How long into the job the worker keeps doing the work it takes on for
+    * the main thread (the build plan, render-tag results, pre-aggregation
+    * companions). Past it, the rest is left to the main thread, so a slow
+    * package degrades to the main-thread path rather than having its load
+    * fail on the pool's job timeout. A share of that timeout.
+    */
+   mainThreadWorkBudgetMs: number;
+   /**
+    * Compile each model's pre-aggregation companion for the main thread to
+    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
+    * that serve the package; a compile preview does not serve it.
+    */
+   withPreaggregateCompanions?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -238,6 +252,14 @@ export interface SerializedModel {
     * Wire-typed `unknown` like `modelDef`: each is a `Malloy.Result`.
     */
    renderTagResults?: { label: string; result: unknown }[];
+   /**
+    * This model's synthesized pre-aggregation companion, compiled against the
+    * same build manifest as the model, for the main thread to hydrate rather
+    * than compile (see Model.buildPreaggregateServeModel). `{}` when the model
+    * has no companion or it failed to compile; absent when the worker did not
+    * attempt it, in which case the main thread compiles it.
+    */
+   preaggregateCompanion?: { modelDef?: unknown };
 }
 
 export interface SerializedNotebookCell {
@@ -310,8 +332,25 @@ export interface LoadPackageResult {
        */
       schemaCacheHits?: number;
    };
-   /** Present when the request set `computeBuildPlan`. */
+   /**
+    * Present when the request set `computeBuildPlan` and the worker derived
+    * the plan before its soft deadline (see `jobTimeoutMs`).
+    */
    buildPlan?: WorkerBuildPlan;
+   /** What the job logged, for the main thread to log (see WorkerLogEntry). */
+   logs?: WorkerLogEntry[];
+}
+
+/**
+ * A log call made while a job ran in the worker. The worker's logger writes
+ * only to its own stdout, outside the main thread's OpenTelemetry log
+ * pipeline, so a job's log calls are captured and sent back with its result
+ * for the main thread to log.
+ */
+export interface WorkerLogEntry {
+   level: "error" | "warn" | "info" | "debug";
+   message: string;
+   meta?: Record<string, unknown>;
 }
 
 /**
@@ -330,12 +369,20 @@ export type WorkerBuildPlan =
         /** Eligibility refusals counted while deriving it, by reason. */
         eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      }
-   | { ok: false; error: string; durationMs: number };
+   | {
+        ok: false;
+        error: string;
+        durationMs: number;
+        /** Refusals counted before the derivation failed. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     };
 
 export interface LoadPackageError {
    type: "load-package-error";
    requestId: string;
    error: SerializedError;
+   /** What the job logged before it failed (see WorkerLogEntry). */
+   logs?: WorkerLogEntry[];
 }
 
 /**

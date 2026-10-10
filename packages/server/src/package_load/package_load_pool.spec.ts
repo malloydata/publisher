@@ -30,8 +30,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+   DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
    PackageLoadPool,
    __setPackageLoadPoolForTests,
+   getPackageLoadSchemaCacheBytes,
    getPackageLoadWorkerCount,
 } from "./package_load_pool";
 
@@ -79,6 +81,44 @@ describe("getPackageLoadWorkerCount", () => {
 // ──────────────────────────────────────────────────────────────────────
 // PackageLoadPool constructor validation
 // ──────────────────────────────────────────────────────────────────────
+
+describe("getPackageLoadSchemaCacheBytes", () => {
+   const original = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+   afterEach(() => {
+      if (original === undefined) {
+         delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+      } else {
+         process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = original;
+      }
+   });
+
+   it("takes the default when unset or empty, as a chart rendering an empty value leaves it", () => {
+      delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+      expect(getPackageLoadSchemaCacheBytes()).toBe(
+         DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
+      );
+      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = " ";
+      expect(getPackageLoadSchemaCacheBytes()).toBe(
+         DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
+      );
+   });
+
+   it("honors 0, which disables the cache, and other byte counts", () => {
+      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      expect(getPackageLoadSchemaCacheBytes()).toBe(0);
+      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "1048576";
+      expect(getPackageLoadSchemaCacheBytes()).toBe(1048576);
+   });
+
+   it("refuses a value that is not a byte count rather than ignoring it", () => {
+      for (const raw of ["16MiB", "-1", "1.5", "lots"]) {
+         process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = raw;
+         expect(() => getPackageLoadSchemaCacheBytes()).toThrow(
+            /PACKAGE_LOAD_SCHEMA_CACHE_BYTES/,
+         );
+      }
+   });
+});
 
 describe("PackageLoadPool constructor", () => {
    it("throws when maxWorkers is 0", () => {
@@ -240,6 +280,87 @@ describe("PackageLoadPool (real worker)", () => {
 // PackageLoadPool — shutdown rejects new submissions
 // Separate describe so the shutdown doesn't poison the shared pool above.
 // ──────────────────────────────────────────────────────────────────────
+
+describe("PackageLoadPool (main-thread work budget)", () => {
+   let tempDir: string;
+   beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-budget-"));
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg" }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `##! experimental { persistence composite_sources }
+
+source: orders is duckdb.sql("""
+  SELECT 1 AS order_id, 10 AS amount, 'A' AS category
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+  # bar_chart
+  view: by_category is { group_by: category; aggregate: total }
+}
+
+#@ persist name="by_category_table"
+source: by_category_table is orders -> by_category
+`,
+      );
+   });
+   afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+   });
+
+   async function loadWith(budget?: number) {
+      const pool = new PackageLoadPool(
+         1,
+         undefined,
+         budget === undefined ? {} : { mainThreadWorkBudgetMs: budget },
+      );
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
+      );
+      try {
+         return await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            computeBuildPlan: true,
+            withPreaggregateCompanions: true,
+         });
+      } finally {
+         await pool.shutdown();
+         await duckdb.close();
+      }
+   }
+
+   it("does the main thread's work within the budget", async () => {
+      const outcome = await loadWith();
+      expect(outcome.buildPlan?.ok).toBe(true);
+      expect(outcome.models[0].renderTagResults?.length).toBe(1);
+      // The render-tag check reads the schema, not the SQL.
+      expect(outcome.models[0].renderTagResults?.[0].result).not.toHaveProperty(
+         "sql",
+      );
+      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
+   });
+
+   it("leaves the main thread's work to it past the budget, and the load still succeeds", async () => {
+      const outcome = await loadWith(0);
+      expect(outcome.models[0].compilationError).toBeUndefined();
+      expect(outcome.buildPlan).toBeUndefined();
+      expect(outcome.models[0].renderTagResults).toBeUndefined();
+      expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
+   });
+});
 
 describe("PackageLoadPool (dispatch)", () => {
    it("spreads a burst of loads across workers that are still starting", async () => {

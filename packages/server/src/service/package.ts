@@ -1103,6 +1103,7 @@ export class Package {
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
+            withPreaggregateCompanions: true,
          })
          .catch((err: unknown) => {
             // Compile errors surface in-band via
@@ -1263,15 +1264,18 @@ export class Package {
       try {
          const buildPlanStart = Date.now();
          const workerPlan = outcome.buildPlan;
-         if (workerPlan && !workerPlan.ok) {
-            throw new Error(workerPlan.error);
-         }
+         // Before a failed plan throws: the main-thread derivation recorded
+         // each refusal as it went, so one that failed part-way had already
+         // counted its refusals.
          for (const [reason, count] of Object.entries(
             workerPlan?.eligibilityRefused ?? {},
          )) {
             for (let i = 0; i < (count ?? 0); i++) {
                recordEligibilityRefused(reason as EligibilityRefusalReason);
             }
+         }
+         if (workerPlan && !workerPlan.ok) {
+            throw new Error(workerPlan.error);
          }
          for (const connectionName of workerPlan?.digestSkipped ?? []) {
             recordConnectionDigestSkipped();
@@ -2891,6 +2895,7 @@ export class Package {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
+            withPreaggregateCompanions: true,
          });
       } catch (err) {
          const realError =
