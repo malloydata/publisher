@@ -490,6 +490,36 @@ on reload (and a reload that changes nothing keeps the warm index):
 An unknown key is an error that names the valid keys, and the package is not served until it is
 fixed (HTTP 424, like any unusable publisher.json).
 
+### Find, connect, judge (`engine: "fcj"`, experimental)
+
+`"engine": "fcj"` answers this package's ranked get_context calls with a second search engine
+(`packages/server/src/mcp/context/`); listings and every package without the key keep the shipped one.
+It builds its own index at load (a catalog of the package, derived search text per field, a value
+index of `#(index)` dimensions) and answers in three steps: per target, the best candidates of the
+whole package; the few sources whose joins reach what the targets ask for together; one LLM call per
+such source group to pick what to return. The response adds `clusters`, `coverage` and
+`unresolved_targets` beside `sources`. Its knobs are in `fcj`, all optional:
+
+| Key                    | Default | Meaning                                                                                   |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `fcj.perTarget`        | `30`    | Candidates kept per target after the first step.                                          |
+| `fcj.hopDiscount`      | `0.9`   | Score multiplier per join hop when a field is seen from another source.                   |
+| `fcj.coverFraction`    | `0.5`   | A source answers a target when its best candidate is at least this share of the best.     |
+| `fcj.measureWeight`    | `1.5`   | Weight of a measure target when sources are compared.                                     |
+| `fcj.maxClusters`      | `3`     | Most source groups (and so LLM calls) per request.                                        |
+| `fcj.clusterTopK`      | `10`    | Fields kept per target inside one group.                                                  |
+| `fcj.reachDepth`       | `3`     | Deepest join chain a group follows.                                                       |
+| `fcj.keyword`          | `true`  | Rank by keyword (BM25) beside embedding closeness.                                        |
+| `fcj.values`           | `true`  | Use the value index.                                                                      |
+| `fcj.valueCap`         | `50000` | Most values indexed per dimension, the most frequent kept.                                |
+| `fcj.questions`        | `auto`  | Index-time questions written by the LLM. As for `refine.enabled`.                         |
+| `fcj.docParts`         | `auto`  | Index-time split of long docs by the LLM; by rules otherwise. As for `refine.enabled`.    |
+| `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
+
+`prompts.judge`, `prompts.docParts` and `prompts.questions` replace those steps' instructions. Stored
+values never leave the process below the `full` egress preset: the judge is told that a value matched,
+not which one.
+
 ### Keyphrases
 
 A keyphrase is a short search phrase for an entity (at most about twelve words), the way a person
