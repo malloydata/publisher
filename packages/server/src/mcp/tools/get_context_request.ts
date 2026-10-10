@@ -78,6 +78,13 @@ export const convergedContextShape = {
                .describe(
                   'Plain-English description of what you need, e.g. "the total revenue". Omit or null to enumerate this type instead of ranking it.',
                ),
+            example_values: z
+               .array(z.string().max(200))
+               .max(20)
+               .nullish()
+               .describe(
+                  'For a dimension or dimensional_value target: the literal values the user named, as typed (e.g. ["cancelled"]). The server looks them up among stored values to find the dimension that holds them.',
+               ),
          }),
       )
       .min(1)
@@ -167,8 +174,19 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    const valueSearches: ResolvedValueSearch[] = [];
    const valuesOn = getDimensionValueSettings().enabled;
    let textlessValueTargets = 0;
+   const exampleValues = new Map<number, string[]>();
 
    params.search_targets.forEach((target, targetIndex) => {
+      const examples = (target.example_values ?? [])
+         .map((v) => v.trim())
+         .filter(Boolean);
+      if (
+         examples.length > 0 &&
+         (target.target_type === "dimension" ||
+            target.target_type === "dimensional_value")
+      ) {
+         exampleValues.set(targetIndex, examples);
+      }
       if (target.target_type === "dimensional_value" && valuesOn) {
          // Answered by the values stage, which reads the data through the
          // query path; it selects no indexed entity kind. A target with no
@@ -217,6 +235,7 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       ...(textlessValueTargets > 0 ? { textlessValueTargets } : {}),
       ...(params.givens ? { givens: params.givens } : {}),
       ...(params.filter_params ? { filterParams: params.filter_params } : {}),
+      ...(exampleValues.size > 0 ? { exampleValues } : {}),
       listingOnly,
       // Pinning an entity by name turns code on, even over an explicit
       // `include_code: false`, matching the hosted retrieval API.

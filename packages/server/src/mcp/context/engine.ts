@@ -16,17 +16,18 @@
  * `full` adds what each stage kept and why.
  */
 
-import { embeddingConfigured } from "../../service/embedding_provider";
+import {
+   EMBEDDING_QUERY_TIMEOUT_MS,
+   embeddingConfigured,
+} from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { fcjSettingsOf } from "../../service/package_retrieval";
-import { EMBEDDING_QUERY_TIMEOUT_MS } from "../../service/embedding_provider";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../../providers/active";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
 import {
    projectEntity,
-   toSourceResults,
    type PackageIndex,
    type ResolvedRequest,
    type ResultEntity,
@@ -42,6 +43,7 @@ import {
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
 import { judge, type JudgeVerdict } from "./judge";
+import { FCJ_MAX_CHARS, respond } from "./respond";
 import { routesOf } from "./routes";
 import { toUnit } from "./vectors";
 
@@ -243,15 +245,21 @@ export async function runFcjQuery(args: {
          },
       );
    }
-   const found = find({
+   const found = withPinnedDimensions(
       index,
-      targets,
-      queries,
-      perTarget: settings.perTarget,
-      keyword: settings.keyword,
-      values: settings.values,
+      find({
+         index,
+         targets,
+         queries,
+         perTarget: settings.perTarget,
+         keyword: settings.keyword,
+         values: settings.values,
+         allow,
+      }),
+      request,
       allow,
-   });
+   );
+   const gatedWarning = gatedValueWarning(index, request, targets, allow);
    stages.push({
       name: "find",
       status: "ran",
@@ -330,55 +338,50 @@ export async function runFcjQuery(args: {
    }
 
    started = performance.now();
-   const rows: ResultEntity[] = [];
-   const searchTexts = new Map(targets.map((t) => [t.index, t.text]));
-   for (const verdict of verdicts) {
-      const cluster = connected.clusters.find(
-         (c) => c.home === verdict.cluster,
-      )!;
-      for (const pick of verdict.picks) {
-         for (const key of pick.keys) {
-            const node = index.catalog.nodes.get(key)!;
-            const score =
-               cluster.candidates.get(pick.target)?.find((c) => c.key === key)
-                  ?.score ?? 0;
-            rows.push(
-               resultRowOf(
-                  node,
-                  request,
-                  score,
-                  new Map([[pick.target, score]]),
-               ),
-            );
-         }
-      }
-   }
-   const sources = toSourceResults(
-      rows,
-      pkgIndex.sourceContext,
-      request.environmentName,
-      request.packageName,
-      searchTexts,
-      request.includeCode,
-      pkgIndex.droppedSources,
-   );
+   const answer = await respond({
+      index,
+      request,
+      pkgIndex,
+      connected,
+      verdicts,
+      targets,
+      environmentStore,
+   });
    stages.push({
       name: "respond",
       status: "ran",
       ms: Math.round(performance.now() - started),
-      in: rows.length,
-      out: sources.length,
+      in: verdicts.reduce((n, v) => n + v.picks.length, 0),
+      out: answer.sources.length,
       llm_calls: 0,
       tokens: { input: 0, output: 0 },
    });
+   const warnings = [
+      ...args.warnings,
+      ...(gatedWarning ? [gatedWarning] : []),
+      ...answer.warnings,
+      ...(answer.budgetDropped > 0
+         ? [
+              `${answer.budgetDropped} source card(s) were dropped to keep the response under ${FCJ_MAX_CHARS} characters. Narrow the request with scopes.`,
+           ]
+         : []),
+      ...(answer.unresolved_targets.length > 0
+         ? [
+              `No source in this package answered ${answer.unresolved_targets.length} target(s); see unresolved_targets. Rephrase them, ask the user, or answer without them.`,
+           ]
+         : []),
+   ];
    return jsonResource(uri, {
-      sources,
+      sources: answer.sources,
       ranking: "relevance" as const,
-      total_available: sources.length,
-      returned: sources.length,
+      total_available: answer.sources.length + answer.budgetDropped,
+      returned: answer.sources.length,
       retrieval: "semantic",
       engine: "fcj",
-      ...(args.warnings.length > 0 ? { warnings: args.warnings } : {}),
+      clusters: answer.clusters,
+      ...(answer.coverage ? { coverage: answer.coverage } : {}),
+      unresolved_targets: answer.unresolved_targets,
+      ...(warnings.length > 0 ? { warnings } : {}),
       ...(traceMode !== "none"
          ? { retrieval_trace: { engine: "fcj", stages } }
          : {}),
@@ -404,6 +407,58 @@ export async function runFcjQuery(args: {
            }
          : {}),
    });
+}
+
+/**
+ * The column-known value search: a `dimensional_value` target on a request
+ * whose scope pins one dimension (`scopes[].entity_name`) is that dimension,
+ * whether or not the value index holds its values. A gated source's values
+ * are never in the index, so this is the only way its dimension becomes a
+ * candidate; respond then reads its values through the query path with the
+ * caller's givens.
+ */
+export function withPinnedDimensions(
+   index: FcjIndex,
+   found: FindResult[],
+   request: ResolvedRequest,
+   allow: (node: CatalogNode) => boolean,
+): FindResult[] {
+   if (!request.entityName) return found;
+   return found.map((r) => {
+      if (r.target.type !== "dimensional_value" || r.candidates.length > 0) {
+         return r;
+      }
+      const pinned = [...index.catalog.nodes.values()].filter(
+         (n) => n.kind === "dimension" && !n.joinPath && allow(n),
+      );
+      return {
+         ...r,
+         candidates: pinned.map((n) => ({
+            key: n.key,
+            score: 1 / 61,
+            ranks: {},
+         })),
+      };
+   });
+}
+
+/**
+ * The warning when a value target was searched without a pinned dimension
+ * and the scope holds gated sources: their values were not searched.
+ */
+export function gatedValueWarning(
+   index: FcjIndex,
+   request: ResolvedRequest,
+   targets: readonly FindTarget[],
+   allow: (node: CatalogNode) => boolean,
+): string | undefined {
+   if (request.entityName) return undefined;
+   if (!targets.some((t) => t.type === "dimensional_value")) return undefined;
+   const gated = [...index.catalog.sources.values()]
+      .filter((s) => s.gated && allow(s.node))
+      .map((s) => s.name);
+   if (gated.length === 0) return undefined;
+   return `The values of ${gated.length} source(s) with an access gate were not searched (${gated.slice(0, 5).join(", ")}${gated.length > 5 ? ", ..." : ""}). To search one, scope the target to its dimension (scopes[].source and entity_name) and send the givens its gate needs.`;
 }
 
 /** Candidates a cluster returns per covered target when no judge picks. */
