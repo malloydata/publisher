@@ -4,9 +4,10 @@
   python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
   # the model directory comes from [model] repo in the set's eval.toml
 
-One agent per `owner: model` cluster, each holding `skill:eval-improve`, each
-producing at most one smallest edit with probe receipts. Appends one `candidate`
-event per cluster to the run's `events.jsonl`.
+One agent per fixable cluster (`owner: model` or `owner: package-skill`), each
+holding `skill:eval-improve`, each producing at most one smallest edit with
+probe receipts. Appends one `candidate` event per cluster to the run's
+`events.jsonl`.
 
 THIS SCRIPT CONTAINS NO MODELING DOCTRINE
 
@@ -74,10 +75,8 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-RELOAD = """curl -s -m 60 -X POST "{mcp_url}" \\
-  -H "Content-Type: application/json" \\
-  -H "Accept: application/json, text/event-stream" \\
-  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"reload_package","arguments":{{"environmentName":"{environment}","packageName":"{package}"}}}}}}' \\
+# REST, not MCP: an MCP reply escapes its inner JSON, so grepping it for the sha matches nothing.
+RELOAD = """curl -s -m 60 "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" \\
   | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
 
 SYNC_SCRIPT = """#!/bin/bash
@@ -111,7 +110,8 @@ MAKING YOUR EDIT REACH THE SERVER
 
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
 If that value does not change, your edit did NOT reach the server and every
-probe you run afterwards is testing the old model.
+probe you run afterwards is testing the old model. This covers a package skill
+under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 
@@ -259,7 +259,8 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         return {**json.loads(out.read_text()), "_cached": True}
     d.mkdir(parents=True, exist_ok=True)
 
-    reload_cmd = RELOAD.format(mcp_url=a.mcp_url, environment=a.environment,
+    reload_cmd = RELOAD.format(rest_url=a.rest_url.rstrip("/"),
+                               environment=a.environment,
                                package=a.package)
     sync = ""
     if not a.watch_mode:
@@ -347,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
     ap.add_argument("--mcp-url", default=None)
+    ap.add_argument("--rest-url", default="http://localhost:4000",
+                    help="REST base; the reload receipt is read from here, "
+                         "because the MCP reply double-encodes its JSON")
     # No built-in port: a fixed default once named the server holding the
     # model under test, which cannot verify its own goldens. The fallback is
     # the [truth] section of the set's eval.toml. With neither, the value
@@ -439,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         if e.get("kind") == "issue_status":
             status[e["issue_id"]] = e["status"]
     issues = [e for e in events if e.get("kind") == "issue"
-              and e.get("owner") == "model"
+              and e.get("owner") in ("model", "package-skill")
               and status.get(e["issue_id"]) == "open"]
     if a.only:
         want = {x.strip() for x in a.only.split(",")}

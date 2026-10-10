@@ -22,6 +22,7 @@ import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DashboardController } from "./controller/dashboard.controller";
+import { SkillController } from "./controller/skill.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -420,6 +421,7 @@ environmentStore.setPackageLoadedHook((environmentName, pkg) =>
 );
 const packageController = new PackageController(environmentStore);
 const dashboardController = new DashboardController(environmentStore);
+const skillController = new SkillController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -1779,6 +1781,84 @@ app.get(
                req.params.packageName,
                modelPath,
                { includeHiddenFilesAndSources },
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// The skill name can carry a slash (`<skill>/<stem>` for a reference file), so
+// the parameter is a wildcard rather than :skillName. Express would otherwise
+// route `revenue-rules/margin` to nothing.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listSkills(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getSkill(
+               req.params.environmentName,
+               req.params.packageName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listAgents(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getAgent(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
             ),
          );
       } catch (error) {

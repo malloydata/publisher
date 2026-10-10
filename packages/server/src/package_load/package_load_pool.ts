@@ -250,6 +250,8 @@ export interface LoadPackageOutcome {
       manifestWarnings?: string[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
+      /** See {@link LoadPackageResult.packageMetadata.agents}. */
+      agents?: unknown;
    };
    replacementMatchedExisting?: boolean;
    models: Array<

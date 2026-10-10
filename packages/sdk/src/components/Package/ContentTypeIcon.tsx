@@ -10,14 +10,15 @@ export type ContentType =
    | "data"
    | "materialization"
    | "dataApp"
-   | "dashboard";
+   | "dashboard"
+   | "agent";
 
 /**
  * The backplate color behind each icon. One per content type and no repeats: on
- * a page that lists all six, a shared color reads as a shared kind, and the
+ * a page that lists all seven, a shared color reads as a shared kind, and the
  * glyphs are small enough that color does most of the telling apart.
  *
- * Six hues from `PALETTE`, spaced far enough apart to survive being 18px of
+ * Seven hues from `PALETTE`, spaced far enough apart to survive being 18px of
  * white on a 32px plate, and disjoint from the three `SURFACE_TINT` uses so a
  * colour means one kind of thing everywhere in the Console.
  *
@@ -32,6 +33,7 @@ export const CONTENT_TINT: Record<ContentType, string> = {
    dataApp: PALETTE.pink,
    data: PALETTE.lime,
    materialization: PALETTE.amber,
+   agent: PALETTE.red,
 };
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
@@ -90,6 +92,7 @@ const CONTENT_GLYPH: Record<ContentType, () => React.ReactElement> = {
    materialization: StackPath,
    dataApp: BrowserWindowPath,
    dashboard: DashboardGridPath,
+   agent: PersonPath,
 };
 
 /** File outline with a folded top-right corner and three chart bars inside. */
@@ -158,6 +161,16 @@ function DashboardGridPath() {
          <path d="M3.5 9.5 H20.5" />
          <path d="M12 9.5 V20.5" />
          <path d="M12 15 H20.5" />
+      </>
+   );
+}
+
+/** A head and shoulders: someone who works with the package. */
+function PersonPath() {
+   return (
+      <>
+         <circle cx="12" cy="8" r="3.5" />
+         <path d="M5 20 a7 7 0 0 1 14 0" />
       </>
    );
 }

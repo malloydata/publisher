@@ -94,7 +94,7 @@ READ_ONLY = (*NO_EDITS, *NO_SHELL)
 CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z_-]+)`\s*\|", re.M)
 COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
-OWNERS = ("model", "retrieval", "agent-skill", "dataset")
+OWNERS = ("model", "package-skill", "retrieval", "agent-skill", "dataset")
 SUFFICIENCY = ("sufficient", "insufficient", "unknown")
 SEVERITY = ("low", "medium", "high")
 
@@ -1108,11 +1108,18 @@ def main(argv: list[str] | None = None) -> int:
     if invalid:
         print(f"{len(invalid)} broke the skill's vocabulary "
               f"(see `_invalid` in diagnoses.jsonl)")
+    # Both owners are fixable in the model repo, so both are what improve may
+    # touch. Counted separately because they license different edits and the
+    # acceptance check treats them differently.
+    fixable = ("model", "package-skill")
     actionable = sum(len(c.get("qids", []))
                      for c in clusters.get("clusters", [])
-                     if c.get("owner") == "model")
-    print(f"{actionable} cases sit behind a model-owned cluster "
-          f"(the only ones eval-improve may touch)")
+                     if c.get("owner") in fixable)
+    by_owner = ", ".join(
+        f"{o}: {sum(len(c.get('qids', [])) for c in clusters.get('clusters', []) if c.get('owner') == o)}"
+        for o in fixable)
+    print(f"{actionable} cases sit behind a cluster eval-improve may touch "
+          f"({by_owner})")
     print(f"cost ${spend:.2f}")
     return 0
 

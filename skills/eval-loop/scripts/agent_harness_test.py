@@ -165,12 +165,23 @@ class TheAnswerersMcpSurface(unittest.TestCase):
             tuple(t.split("__")[-1] for t in rb.ANSWER_TOOLS),
             rb.HOSTED_TOOLS_DEFAULT)
 
+    def test_the_tool_arm_is_the_default_plus_get_skill(self):
+        for mode, extra in (("tool", ["get_skill"]), ("install", []),
+                            ("off", [])):
+            with self.subTest(mode=mode):
+                a = argparse.Namespace(target="local", package_skills=mode)
+                self.assertEqual(
+                    [t.split("__")[-1] for t in rb.answer_tools(a)],
+                    list(rb.HOSTED_TOOLS_DEFAULT) + extra)
+                denied = {t.split("__")[-1] for t in rb.answer_denied(a)}
+                self.assertEqual("get_skill" in denied, mode != "tool")
+
     def test_the_lists_partition_the_publisher_surface(self):
         # The alarm for the one weakness of an enumerated deny-list: a tool
         # Publisher gains later is offered to the answerer unless it is placed
         # on one side or the other, and this is what says so out loud.
         placed = {t.split("__")[-1] for t in
-                  (*rb.ANSWER_TOOLS, *rb.ANSWER_DENIED)}
+                  (*rb.ANSWER_TOOLS, *rb.TOOL_ARM_TOOLS, *rb.ANSWER_DENIED)}
         self.assertEqual(placed, set(rb.PUBLISHER_MCP_TOOLS),
                          "every Publisher MCP tool must be either allowed to "
                          "the answerer or explicitly denied; an unplaced one "

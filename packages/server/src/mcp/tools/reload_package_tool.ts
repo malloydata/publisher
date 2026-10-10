@@ -44,7 +44,9 @@ ${RELOAD_FAILURE_IS_SAFE} Running compile_model at scope "package" first is the 
 Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. A hard compile error returns an error payload instead.
+
+sourceContentSha is the receipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. Unchanged across the reload means your edit never reached the server. servedRevision moves either way.`;
 
 /**
  * Registers the reload_package MCP tool: recompiles a package from its
@@ -94,6 +96,13 @@ export function registerReloadPackageTool(
                // these apart otherwise, and only one of them keeps their work.
                mode,
                name: pkg.name,
+               // A reload succeeds whether or not it saw the caller's edit; an unchanged sha is the only signal.
+               ...(pkg.sourceContentSha !== undefined && {
+                  sourceContentSha: pkg.sourceContentSha,
+               }),
+               ...(pkg.servedRevision !== undefined && {
+                  servedRevision: pkg.servedRevision,
+               }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,
                }),

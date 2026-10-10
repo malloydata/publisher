@@ -114,6 +114,11 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
                 "mcp__publisher__search_malloy_docs")
 
+# Granted on top of ANSWER_TOOLS only to the `--package-skills=tool` arm, and
+# denied everywhere else, so the one divergence from the hosted default is
+# explicit and local to that arm.
+TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
+
 # Publisher tools the answerer must NOT hold. `--allowedTools` grants
 # permission, it does not restrict availability, so the four above were the
 # allow list while all EIGHT of this server's tools were offered. Two of the
@@ -126,7 +131,9 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
 #   reload_package          recompiles the package mid-attempt, so the model
 #                           under measurement is not the one the run pinned.
 #
-#   compile_model           authoring surface, per ANSWER_TOOLS above.
+#   compile_model           authoring surface.
+#   get_agent               adopting a package agent changes who is answering;
+#                           the run measures the model, not a persona.
 #
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
@@ -135,6 +142,7 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
 # or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
 # verified 2026-09-08.
 ANSWER_DENIED = ("mcp__publisher__compile_model",
+                 "mcp__publisher__get_agent",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
@@ -148,8 +156,9 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # side it belongs on. Read from `get_status`/`tools/list` on a running server
 # when this needs re-checking; the authority is the server's registration, and
 # a mismatch here is a decision, not a lint.
-PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
-                       "get_status", "list_packages", "reload_package",
+PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_agent",
+                       "get_context", "get_skill", "get_status",
+                       "list_packages", "reload_package",
                        "search_database_schema", "search_malloy_docs")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
@@ -183,7 +192,8 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
                          entity_ids, search_terms, target_shapes)
-from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
+from publisher_rest import (package_identity, package_skill_names,  # noqa: E402
+                            served_model_path, served_package_dir, try_query)
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
     summarise)
@@ -2161,7 +2171,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # the cwd, so `Read` reaches the doctrine and never the eval set.
         if a.answerer_skills:
             work = str(build_workspace(a.answerer_skills, a.roots,
-                                       mcp_url=None, prefix=f"ans-{qid}-"))
+                                       mcp_url=None, prefix=f"ans-{qid}-",
+                                       package_skills_dir=a.package_skills_dir))
         else:
             work = tempfile.mkdtemp(prefix=f"ans-{qid}-")
         mcp = os.path.join(work, "mcp.json")
@@ -2180,12 +2191,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         t0 = time.time()
         events = claude(
             prompt, work, a.model, mcp=mcp,
-            tools=a.hosted_tools if platform else ANSWER_TOOLS,
+            tools=answer_tools(a),
             # Only the local arm: the hosted server's tool surface belongs to
             # the platform, so there is no complement here to enumerate. That
             # arm is covered by `isolation_breaches`, which RECORDS whatever it
             # was granted rather than pretending to have denied it.
-            denied=() if platform else ANSWER_DENIED,
+            denied=answer_denied(a),
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
@@ -2296,7 +2307,10 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # recorded as a breach.
                         if name == "Skill":
                             sk = (c.get("input") or {}).get("skill")
-                            if sk and sk not in (a.answerer_skills or []):
+                            # A package skill this run installed is under test, not a stray.
+                            in_scope = (list(a.answerer_skills or [])
+                                        + list(a.package_skill_names or []))
+                            if sk and sk not in in_scope:
                                 foreign_skills.append(sk)
                             elif sk:
                                 used_skills.append(sk)
@@ -2408,7 +2422,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
         "breaches": isolation_breaches(
-            events, a.hosted_tools if a.target == "platform" else ANSWER_TOOLS)
+            events, answer_tools(a))
         + path_breaches(events, a.set_dir)
         + [f"invoked a skill outside the manifest: {sk}"
            for sk in sorted(set(foreign_skills))],
@@ -3044,6 +3058,94 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_package_skills(a: argparse.Namespace) -> None:
+    """Settle --package-skills against what the server actually serves.
+
+    The mode is a claim about the answerer's environment, and its parts live in
+    different places: the flag, the files in the model repo, and whether the
+    package under test ships them at all. A run that asked
+    for one arm and measured another is worse than a run that refused, because
+    the label on the result is wrong and nothing downstream can tell.
+
+    So each mode is checked, not assumed:
+
+    - `install`: the package must have a skills/ directory to copy. Nothing to
+      copy means this arm is silently the `off` arm.
+    - `tool`: the server must be serving the package's skills, or the answerer
+      has nothing to fetch and this arm is silently the `off` arm too.
+    - `off`: the served package must hold no skills, or the answerer can reach
+      guidance the baseline is supposed to exclude. Point --package at a copy
+      of the package without skills/.
+
+    Sets `package_skills_dir` (the tree to install, or None) and
+    `package_skills_sha` (a content hash pinned on the run, so two runs
+    differing only in guidance are distinguishable in the ledger).
+    """
+    a.package_skills_dir = None
+    a.package_skills_sha = None
+    # Directory names of the package skills this run INSTALLS. The answerer
+    # addresses a skill by that name, and the provenance check below needs to
+    # tell one this run put there deliberately from one of the CLI's own.
+    a.package_skill_names: list[str] = []
+
+    # The SERVED copy, not the working tree. The `tool` arm fetches what the
+    # server holds, so installing those same bytes is what makes the two arms
+    # differ only in delivery -- which is the whole comparison. An explicit
+    # --package-skills-dir wins, for a server whose tree is not local.
+    local = None
+    if a.package_skills_dir_override:
+        # Checked here rather than left to build_workspace: this resolver runs
+        # before the first spawn precisely so a mistyped path stops the run at
+        # second zero instead of after it has started answering.
+        override = pathlib.Path(a.package_skills_dir_override)
+        if not override.is_dir():
+            raise SystemExit(
+                f"--package-skills-dir {override} is not a directory.")
+        local = override
+    elif a.target != "platform":
+        pkg_dir = served_package_dir(a.publisher, a.environment, a.package)
+        if pkg_dir is not None and (pkg_dir / "skills").is_dir():
+            local = pkg_dir / "skills"
+    served = package_skill_names(a.publisher, a.environment, a.package)
+
+    if a.package_skills == "install":
+        if local is None:
+            raise SystemExit(
+                "--package-skills=install, but no skills/ directory was found "
+                "for the package. Installing nothing measures the 'off' arm "
+                "under the 'install' label. Pass --package-skills-dir, or pick "
+                "another mode.")
+        a.package_skills_dir = local
+        a.package_skill_names = sorted(
+            c.name for c in local.iterdir()
+            if c.is_dir() and not c.name.startswith("."))
+    elif a.package_skills == "tool":
+        if not served:
+            raise SystemExit(
+                "--package-skills=tool, but the server serves no package "
+                f"skills for {a.environment}/{a.package}. The answerer would "
+                "have nothing to fetch, so this would measure the 'off' arm "
+                "under the 'tool' label. Check the package ships skills/.")
+    elif a.package_skills == "off":
+        if served:
+            raise SystemExit(
+                "--package-skills=off, but the server IS serving package "
+                f"skills for {a.environment}/{a.package}: "
+                f"{', '.join(served)}. The answerer could fetch them with "
+                "get_skill, so this is not a baseline. Serve a copy of the "
+                "package without skills/.")
+
+    if local is not None:
+        h = hashlib.sha256()
+        for f in sorted(local.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(local)).encode())
+                h.update(b"\0")
+                h.update(f.read_bytes())
+                h.update(b"\0")
+        a.package_skills_sha = h.hexdigest()
+
+
 def resolve_config(a: argparse.Namespace) -> config.Config:
     """Fill every unset server, name and path from the set's eval.toml.
 
@@ -3122,6 +3224,24 @@ def attempt_event(c: dict[str, Any], att: dict[str, Any], phase: str | None,
         transcriptPath=att["transcriptPath"])
 
 
+def answer_tools(a: argparse.Namespace) -> tuple[str, ...]:
+    """What the answerer is granted: the hosted tools, or Publisher's four."""
+    if a.target == "platform":
+        return tuple(a.hosted_tools)
+    return ANSWER_TOOLS + (TOOL_ARM_TOOLS if _tool_arm(a) else ())
+
+
+def _tool_arm(a: argparse.Namespace) -> bool:
+    # getattr: tests build this Namespace by hand.
+    return getattr(a, "package_skills", "off") == "tool"
+
+
+def answer_denied(a: argparse.Namespace) -> tuple[str, ...]:
+    if a.target == "platform":
+        return ()
+    return ANSWER_DENIED + (() if _tool_arm(a) else TOOL_ARM_TOOLS)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
@@ -3183,6 +3303,23 @@ def main(argv: list[str] | None = None) -> int:
                          "last two are both --target platform. Default: "
                          "from [model] mcp_port in eval.toml, else "
                          f"{LOCAL_MCP_URL}")
+    ap.add_argument("--package-skills", choices=("install", "tool", "off"),
+                    default="tool",
+                    help="how the package's own skills reach the answerer. "
+                         "install = copied into its workspace, so they load "
+                         "like any other skill. tool = not installed; the "
+                         "answerer must call get_skill, which is what a real "
+                         "agent against this server does. off = the served package "
+                         "ships none (serve a copy without skills/), the "
+                         "baseline arm. "
+                         "The default is `tool` because it is the unmodified "
+                         "product behaviour.")
+    ap.add_argument("--package-skills-dir", dest="package_skills_dir_override",
+                    default=None,
+                    help="the skills/ tree to install for --package-skills="
+                         "install. Defaults to the served package's own, which "
+                         "is what the `tool` arm would fetch; pass this only "
+                         "when the served tree is not reachable locally.")
     ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
                          "final query so the judge sees rows rather than prose. "
@@ -3511,6 +3648,7 @@ def main(argv: list[str] | None = None) -> int:
               "(--truth-publisher); goldens are taken as they stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
+    resolve_package_skills(a)
     set_meta = {}
     if (a.set_dir / "set.json").exists():
         set_meta = json.loads((a.set_dir / "set.json").read_text())
@@ -3728,6 +3866,8 @@ def main(argv: list[str] | None = None) -> int:
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
         harnessVersion=ledger.skills_git_sha(),
+        packageSkillsMode=a.package_skills,
+        packageSkillsSha=a.package_skills_sha,
         answererManifest=a.answerer_manifest if a.answerer_skills else None,
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],

@@ -1,5 +1,15 @@
 {
   "name": "storefront",
   "version": "1.0.0",
-  "description": "A small but complete ecommerce semantic model — joins, measures, and dashboards over local DuckDB data."
+  "description": "A small but complete ecommerce semantic model — joins, measures, and dashboards over local DuckDB data.",
+  "agents": {
+    "analyst": {
+      "description": "Answers revenue and order questions using the storefront house conventions",
+      "instructions": "agents/analyst/instructions.md",
+      "skills": ["agents/analyst/skills"],
+      "schedules": [
+        { "cron": "0 13 * * MON", "task": "agents/analyst/tasks/weekly-report.md" }
+      ]
+    }
+  }
 }
