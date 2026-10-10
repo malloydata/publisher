@@ -56,6 +56,8 @@ import { resolveLlmStages } from "./get_context_stage_settings";
 import { valuesStage } from "./get_context_values";
 import { getDimensionValueSettings } from "../../retrieval_config";
 import { lexicalRetriever, semanticRetriever } from "./get_context_retrievers";
+import { engineOf } from "../../service/package_retrieval";
+import { runFcjQuery, type TraceMode } from "../context/engine";
 import type { PackageIndex, ResolvedRequest } from "./get_context_types";
 import { indexSettingsOf } from "./index_settings";
 import { getPackageIndex, sourceContextKey } from "./package_entities";
@@ -245,8 +247,10 @@ async function runContextQuery(
    resolved: ResolvedRequest,
    environmentStore: EnvironmentStore,
    extraWarnings: string[] = [],
-   traceSummary = false,
+   traceMode: TraceMode = "none",
 ): Promise<ReturnType<typeof jsonResource>> {
+   // The shipped engine's trace answers to `summary` only, as it always has.
+   const traceSummary = traceMode === "summary";
    const { environmentName, packageName, sourceName } = resolved;
    logger.debug("[MCP Tool getContext] Retrieving context", {
       environmentName,
@@ -334,6 +338,19 @@ async function runContextQuery(
 
    // Tier 3: nothing to rank -> enumerate what the targets name.
    if (request.listingOnly) return runListing(ctx, uri);
+
+   // A package that opted into find, connect, judge answers every ranked
+   // request there; see ../context/engine.ts. Listings stay above.
+   if (engineOf(pkgIndex.pkg.getRetrievalSettings?.()) === "fcj") {
+      return runFcjQuery({
+         request,
+         environmentStore,
+         pkgIndex,
+         uri,
+         warnings: ctx.warnings,
+         traceMode,
+      });
+   }
 
    // Tier 4. With an embedding provider configured, ranking is ONLY semantic:
    // a still-building index answers "indexing" and an unusable one an error,
@@ -510,10 +527,14 @@ interface RequestExtra {
  */
 export const TRACE_HEADER = "x-publisher-retrieval-trace";
 
-function wantsTrace(extra: RequestExtra | undefined): boolean {
+/**
+ * The trace the request asked for. `summary` is the shipped block; `full` is
+ * read by the fcj engine only, which adds what each stage kept.
+ */
+function traceModeOf(extra: RequestExtra | undefined): TraceMode {
    const raw = extra?.requestInfo?.headers?.[TRACE_HEADER];
-   const value = Array.isArray(raw) ? raw[0] : raw;
-   return value?.trim().toLowerCase() === "summary";
+   const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase();
+   return value === "summary" || value === "full" ? value : "none";
 }
 
 /**
@@ -561,7 +582,7 @@ export function registerGetContextTool(
             request,
             environmentStore,
             unsupportedTargetWarnings(request),
-            wantsTrace(extra),
+            traceModeOf(extra),
          );
       },
    );
