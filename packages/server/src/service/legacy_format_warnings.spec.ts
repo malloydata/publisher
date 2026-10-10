@@ -90,11 +90,17 @@ describe("warnings for content on a deprecated format", () => {
       return pkg.getPackageMetadata().warnings ?? [];
    }
 
-   it("reports each .malloynb, and each #(filter) source once however many models import it", async () => {
+   const filterWarnings = <T extends { message?: string }>(
+      found: readonly T[],
+   ) => found.filter((w) => w.message?.includes("#(filter)"));
+
+   it("reports each .malloynb, and each #(filter) declaration once, in the file that declares it", async () => {
       write("models/filtered.malloy", FILTERED_MODEL);
+      // An importer (aliasing the source, too) and an `extend` of the filtered
+      // source resolve its filter but declare none: neither is reported.
       write(
          "models/uses.malloy",
-         `import "filtered.malloy"\n\nquery: q is filtered -> { aggregate: n }\n`,
+         `import { f is filtered } from "filtered.malloy"\n\nsource: east is f extend { where: region = 'east' }\n\nquery: q is east -> { aggregate: n }\n`,
       );
       write(
          "README.malloynb",
@@ -111,15 +117,28 @@ describe("warnings for content on a deprecated format", () => {
             "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy notebook under notebooks/.",
       });
 
-      const filters = found.filter((w) => w.message?.includes("#(filter)"));
+      const filters = filterWarnings(found);
       expect(filters).toHaveLength(1);
       expect(filters[0]).toMatchObject({
+         model: "models/filtered.malloy",
          subject: "filtered",
          severity: "warn",
       });
       expect(filters[0].message).toContain(
          "Source filtered uses deprecated #(filter) annotations. Replace them with given: runtime parameters",
       );
+   });
+
+   it("reports two same-named filtered sources once each, naming each file", async () => {
+      write("models/a.malloy", FILTERED_MODEL);
+      write("models/b.malloy", FILTERED_MODEL);
+
+      const filters = filterWarnings(await warnings());
+
+      expect(filters.map((w) => [w.model, w.subject])).toEqual([
+         ["models/a.malloy", "filtered"],
+         ["models/b.malloy", "filtered"],
+      ]);
    });
 
    it("reports nothing for a package on givens and .malloy notebooks", async () => {

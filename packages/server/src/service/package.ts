@@ -34,6 +34,7 @@ import {
 } from "./package_retrieval";
 import {
    API_PREFIX,
+   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -145,8 +146,6 @@ type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-const GIVENS_DOCS_URL =
-   "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -2580,40 +2579,6 @@ export class Package {
     * models are skipped — nobody browses them, so an empty surface there is
     * just normal plumbing.
     */
-   /**
-    * One warning per `.malloynb` notebook, and one per source that declares
-    * deprecated `#(filter)` annotations. A filtered source is reported once,
-    * by name (`subject`), however many models import it: every importer's
-    * compile resolves it, and a row per importer would repeat one fix.
-    */
-   public legacyFormatWarnings(): ApiPackageWarning[] {
-      const warnings: ApiPackageWarning[] = [];
-      const filtered = new Set<string>();
-      for (const [modelPath, model] of this.models) {
-         if (modelPath.toLowerCase().endsWith(NOTEBOOK_FILE_SUFFIX)) {
-            warnings.push({
-               model: modelPath,
-               severity: "warn",
-               message:
-                  `${modelPath} is a .malloynb notebook, a deprecated format. ` +
-                  `Convert it to a .malloy notebook under notebooks/.`,
-            });
-         }
-         for (const name of model.deprecatedFilterSourceNames())
-            filtered.add(name);
-      }
-      for (const name of [...filtered].sort()) {
-         warnings.push({
-            subject: name,
-            severity: "warn",
-            message:
-               `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
-               `with given: runtime parameters (see ${GIVENS_DOCS_URL}).`,
-         });
-      }
-      return warnings;
-   }
-
    public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
       const warnings: Array<{ model: string; message: string }> = [];
@@ -2640,6 +2605,41 @@ export class Package {
          }
       }
       return warnings;
+   }
+
+   /**
+    * One warning per `.malloynb` notebook, and one per source a file declares
+    * deprecated `#(filter)` annotations on, naming that file (`model`) and the
+    * source (`subject`). A source that only inherits a filter (an `extend`) or
+    * arrives by import is not reported: the fix is in the declaring file, which
+    * is reported once (`Model.declaredFilterSourceNames`). Hidden models are
+    * reported too: a filter there is still deprecated syntax to migrate.
+    */
+   public legacyFormatWarnings(): ApiPackageWarning[] {
+      const notebooks: ApiPackageWarning[] = [];
+      const filters: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            notebooks.push({
+               model: modelPath,
+               severity: "warn",
+               message:
+                  `${modelPath} is a .malloynb notebook, a deprecated format. ` +
+                  `Convert it to a .malloy notebook under notebooks/.`,
+            });
+         }
+         for (const name of model.declaredFilterSourceNames()) {
+            filters.push({
+               model: modelPath,
+               subject: name,
+               severity: "warn",
+               message:
+                  `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
+                  `with given: runtime parameters (see ${GIVENS_DOCS_URL}).`,
+            });
+         }
+      }
+      return [...notebooks, ...filters];
    }
 
    /**

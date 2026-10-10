@@ -3487,6 +3487,11 @@ components:
             (the reader could not read a served notebook's cells). The rest are
             `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
             block that never closes, and similar).
+            Deprecated-format findings, all `warn`: each `.malloynb` notebook
+            (`model` is its path), and each source a file declares deprecated
+            `#(filter)` annotations on (`model` is that file, `subject` the
+            source; a source that only inherits or imports a filter is not
+            reported). Both still load and run.
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
