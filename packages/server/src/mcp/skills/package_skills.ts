@@ -97,15 +97,17 @@ export function readSkillsDir(
 
    let realRoot: string;
    let entries: fs.Dirent[];
+   let escapes: boolean;
    try {
       realRoot = fs.realpathSync(packagePath);
       if (!fs.statSync(root).isDirectory()) return { skills, files, warnings };
+      escapes = stepsOutside(path.relative(realRoot, fs.realpathSync(root)));
       entries = fs.readdirSync(root, { withFileTypes: true });
    } catch {
-      // No skills directory is the common case, not a problem to report.
+      // No skills directory is the common case, and one that vanishes mid-load is the same.
       return { skills, files, warnings };
    }
-   if (stepsOutside(path.relative(realRoot, fs.realpathSync(root)))) {
+   if (escapes) {
       warnings.push(
          `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
       );

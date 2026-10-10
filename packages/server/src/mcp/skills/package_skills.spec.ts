@@ -48,6 +48,15 @@ describe("readSkillsDir", () => {
       });
    });
 
+   it("returns nothing, and no warning, when skills/ is a dangling link", () => {
+      fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
+      expect(readSkillsDir(pkg)).toEqual({
+         skills: [],
+         files: [],
+         warnings: [],
+      });
+   });
+
    describe("files that leave the package", () => {
       let outside: string;
 
