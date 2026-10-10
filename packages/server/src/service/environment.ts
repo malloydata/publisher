@@ -984,6 +984,7 @@ export class Environment {
                outcome = await getPackageLoadPool().loadPackage({
                   packagePath,
                   packageName,
+                  environmentName: this.environmentName,
                   malloyConfig: pkg.getMalloyConfig(),
                   defaultConnectionName: "duckdb",
                   buildManifest: boundManifestEntries,

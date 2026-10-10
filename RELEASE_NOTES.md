@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Loading a package no longer holds the server's event loop while it compiles
+
+Loading a package with large models could stop the server answering anything, health probes included, for tens of seconds. The package-load worker compiled the models, and then the main thread compiled them again: to derive the persist build plan, to give the render-tag check a result schema for every annotated query and view, and to build each model's `#@ preaggregate` companion. Several versions of such a package loading together, as on a restart, ran these back to back on the one thread, long enough to fail a Kubernetes liveness probe.
+
+- The load worker derives the build plan, prepares the render-tag queries and compiles the pre-aggregation companions alongside the compile it already runs. The main thread only runs the renderer's check over the prepared results and loads the compiled companions. The plan, and the warnings a load reports, are unchanged.
+- What the load worker logs is now logged by the main thread, so it reaches the OpenTelemetry log export along with everything else.
+- Each load worker keeps the table and SQL schemas it has fetched, so a model's repeated and later requests for the same table no longer round-trip through the main thread. `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` bounds their serialized size (default 16 MiB per worker, a few times that in heap; `0` disables it; a value that is not a byte count stops the server from starting). Entries are scoped per environment and per connection instance, so editing a connection drops them, as it already drops the schemas Malloy caches on the connection.
+- A burst of loads is spread across all `PACKAGE_LOAD_WORKERS` workers. Before, every load that arrived while the first worker was still starting ran on that worker, concurrently.
+- `/health`, `/health/liveness` and `/health/readiness` answer ahead of the rate limiter and static-file serving.
+
+A load worker does this work only within the first three quarters of `PACKAGE_LOAD_JOB_TIMEOUT_MS`. Past that, it leaves the rest to the main thread, which does it as before, so a slow package degrades instead of having its load fail on the timeout. The workers use more CPU per load than before and the main thread correspondingly less. `publisher_materialization_build_plan_compute_duration_ms` gains a `computed_in` label, `worker` or `main_thread`, since the two measure different work.
+
 ## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
 When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.

@@ -7,6 +7,7 @@ import type {
    BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
+   Model as MalloyModel,
    ModelDef,
    ModelMaterializer,
    PersistSource,
@@ -15,12 +16,8 @@ import type {
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
 import { MaterializationEligibilityError } from "../errors";
-import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
-import {
-   recordConnectionDigestSkipped,
-   recordEligibilityRefused,
-} from "../materialization_metrics";
+import { recordEligibilityRefused } from "../materialization_metrics";
 import { errMessage } from "../utils";
 import {
    createGateClassificationDeps,
@@ -39,8 +36,12 @@ import {
    assertMaterializationEligible,
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
-import { Model } from "./model";
-import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+
+import {
+   tryCompileSynthesizedPreaggregation,
+   type SynthesizedPreaggregation,
+   type SynthesizedRuntimeFactory,
+} from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
 import {
    classifyDynamicTerms,
@@ -878,190 +879,232 @@ export async function classifyPersistSourceGate(
    }
 }
 
-export async function compilePackageBuildPlan(
-   pkg: BuildPlanPackage,
-   signal?: AbortSignal,
-): Promise<CompiledBuildPlan> {
-   const allGraphs: MalloyBuildGraph[] = [];
-   const allSources: Record<string, PersistSource> = {};
-   const sourceModelPaths: Record<string, string> = {};
-   const droppedPersistSources: { name: string; modelPath: string }[] = [];
-   const preaggregatePlans: Record<string, RollupPlan> = {};
-   const sourceGateOutcomes: Record<string, PersistSourceGateOutcome> = {};
+/**
+ * The per-model pieces of a package build plan, accumulated over its models
+ * in model order. {@link compilePackageBuildPlan} fills one on the main
+ * thread; the package-load worker fills one from the models it already
+ * compiled, so a load does not compile the package a second time.
+ */
+export interface BuildPlanParts {
+   graphs: MalloyBuildGraph[];
+   sources: Record<string, PersistSource>;
+   sourceModelPaths: Record<string, string>;
+   droppedPersistSources: { name: string; modelPath: string }[];
+   preaggregatePlans: Record<string, RollupPlan>;
+   sourceGateOutcomes: Record<string, PersistSourceGateOutcome>;
+}
 
-   for (const modelPath of pkg.getModelPaths()) {
-      // Only `.malloy` models declare persist sources. Skip `.malloynb`
-      // notebooks: getModel() parses a model file as a flat model and throws on
-      // the notebook's `>>>` cell delimiter, which would abort the entire
-      // package build plan and silently drop every persist source in it.
-      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
-      if (signal?.aborted) throw new Error("Build cancelled");
+export function emptyBuildPlanParts(): BuildPlanParts {
+   return {
+      graphs: [],
+      sources: {},
+      sourceModelPaths: {},
+      droppedPersistSources: [],
+      preaggregatePlans: {},
+      sourceGateOutcomes: {},
+   };
+}
 
-      const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
-         pkg.getPackagePath(),
-         modelPath,
-         pkg.getMalloyConfig(),
+/**
+ * Append `from` to `into`, as if `from`'s model had been collected into `into`
+ * directly. Merging per-model parts in model order gives the same parts as
+ * collecting the models into one, in that order.
+ */
+export function mergeBuildPlanParts(
+   into: BuildPlanParts,
+   from: BuildPlanParts,
+): void {
+   into.graphs.push(...from.graphs);
+   Object.assign(into.sources, from.sources);
+   Object.assign(into.sourceModelPaths, from.sourceModelPaths);
+   into.droppedPersistSources.push(...from.droppedPersistSources);
+   Object.assign(into.preaggregatePlans, from.preaggregatePlans);
+   Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+}
+
+/**
+ * Add one compiled `.malloy` model's build graphs, persist sources, dropped
+ * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
+ * must be the one that compiled `malloyModel` (gate classification grafts
+ * probes onto it). `getRuntime` builds the runtime a synthesized
+ * pre-aggregation model compiles in.
+ *
+ * Imports nothing from `./model`: the package-load worker runs this, and the
+ * renderer `./model` loads must not enter that isolate.
+ */
+export async function collectModelBuildPlan(
+   parts: BuildPlanParts,
+   args: {
+      modelPath: string;
+      packagePath: string;
+      materializer: ModelMaterializer;
+      malloyModel: MalloyModel;
+      getRuntime: SynthesizedRuntimeFactory;
+      /**
+       * The model's pre-aggregation companion when the caller already compiled
+       * it, or null when it has none; compiled here when absent.
+       */
+      synthesized?: SynthesizedPreaggregation | null;
+   },
+): Promise<void> {
+   const { modelPath, packagePath, materializer, malloyModel, getRuntime } =
+      args;
+   // Pre-aggregation, at the build-plan seam. Runs BEFORE the two early `return`s
+   // below on purpose: a model can declare `#@ preaggregate` while having no
+   // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
+   // flag, and in both cases the annotation should still produce a rollup —
+   // the SYNTHESIZED model declares the flags it needs and is the only thing
+   // holding a persist source. Skipping here would make a valid annotation a
+   // silent no-op, which the publish gate exists to prevent.
+   const synthesized =
+      args.synthesized !== undefined
+         ? args.synthesized
+         : await tryCompileSynthesizedPreaggregation({
+              packagePath,
+              modelPath,
+              getRuntime,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              contents: (malloyModel as any)._modelDef?.contents ?? {},
+           });
+   if (synthesized) {
+      const rollupPlan = synthesized.model.getBuildPlan();
+      const rollupNames = new Set(
+         synthesized.plans.map((p) => p.rollupSourceName),
       );
-      // Held onto (rather than chained straight into `.getModel()`) because
-      // the gate classification below needs the SAME live materializer that
-      // compiled this model — see `classifyPersistSourceGate`'s doc.
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
-      const malloyModel = await materializer.getModel();
-
-      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
-      // below on purpose: a model can declare `#@ preaggregate` while having no
-      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
-      // flag, and in both cases the annotation should still produce a rollup —
-      // the SYNTHESIZED model declares the flags it needs and is the only thing
-      // holding a persist source. Skipping here would make a valid annotation a
-      // silent no-op, which the publish gate exists to prevent.
-      const synthesized = await tryCompileSynthesizedPreaggregation({
-         packagePath: pkg.getPackagePath(),
-         modelPath,
-         malloyConfig: pkg.getMalloyConfig(),
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         contents: (malloyModel as any)._modelDef?.contents ?? {},
-      });
-      if (synthesized) {
-         const rollupPlan = synthesized.model.getBuildPlan();
-         const rollupNames = new Set(
-            synthesized.plans.map((p) => p.rollupSourceName),
-         );
-         // Graphs wholesale, because they carry the dependency edges: when the
-         // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
-         // it, and pruning that would let a rollup build before the table it
-         // reads exists.
-         allGraphs.push(...rollupPlan.graphs);
-         // Sources: only the rollups. The synthesized model imports the
-         // author's, so a persist source declared there also appears in this
-         // plan — but under the SAME sourceID, since a sourceID embeds the
-         // model that DECLARES a source rather than the one importing it. The
-         // normal path below adds those from the author's own plan, so leaving
-         // them out here avoids re-deriving an identical entry.
-         const planByName = new Map(
-            synthesized.plans.map((p) => [p.rollupSourceName, p]),
-         );
-         // Lazily built on the first rollup source: same reasoning as the
-         // author-model loop below.
-         let rollupClassificationCtx:
-            | { modelDef: ModelDef; deps: GateClassificationDeps }
-            | undefined;
-         for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
-            if (!rollupNames.has(source.name)) continue;
-            allSources[sourceID] = source;
-            // The AUTHOR's model path, not the synthesized one: a rollup is
-            // declared by no file, and the model carrying the annotations is
-            // where someone would go to change it (see api-doc's
-            // PersistSourcePlan.modelPath).
-            sourceModelPaths[sourceID] = modelPath;
-            const rollup = planByName.get(source.name);
-            if (rollup) preaggregatePlans[sourceID] = rollup;
-            if (!rollupClassificationCtx) {
-               const rollupGivens = Array.from(
-                  synthesized.model.givens.values(),
-               ) as unknown as MalloyGiven[];
-               rollupClassificationCtx = {
-                  modelDef: synthesized.model._modelDef,
-                  deps: createGateClassificationDeps(
-                     rollupGivens.map(malloyGivenToApi),
-                     `${modelPath}#preaggregate`,
-                  ),
-               };
-            }
-            sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-               source,
-               rollupClassificationCtx.modelDef,
-               synthesized.materializer,
-               rollupClassificationCtx.deps,
-               `${modelPath}#preaggregate`,
-            );
-         }
-      }
-
-      // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
-      // on any model that lacks the flag — it does NOT return empty. So a
-      // header-less non-persist model in the package (e.g. an imported base
-      // model that only defines raw sources) would abort the entire package
-      // build plan, silently dropping every persist source in every other
-      // model. Mirror Malloy's own guard and skip such models: without the flag
-      // a model cannot carry a functioning persist source anyway. Models that
-      // DO have the flag but declare no persist source return empty graphs and
-      // are skipped by the `graphs.length === 0` check below.
-      const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
-      if (!modelTag.has("experimental", "persistence")) continue;
-
-      const buildPlan = malloyModel.getBuildPlan();
-      for (const msg of buildPlan.tagParseLog) {
-         logger.warn("Persist annotation issue", {
-            modelPath,
-            message: msg.message,
-            severity: msg.severity,
-         });
-      }
-
-      // Detect `#@ persist` sources the plan didn't recognize (see
-      // detectDroppedPersistSources). Runs BEFORE the empty-graphs `continue`, so
-      // a model whose ONLY persist source is a dropped shape is still caught.
-      const recognizedNames = new Set(
-         Object.values(buildPlan.sources).map((s) => s.name),
+      // Graphs wholesale, because they carry the dependency edges: when the
+      // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
+      // it, and pruning that would let a rollup build before the table it
+      // reads exists.
+      parts.graphs.push(...rollupPlan.graphs);
+      // Sources: only the rollups. The synthesized model imports the
+      // author's, so a persist source declared there also appears in this
+      // plan — but under the SAME sourceID, since a sourceID embeds the
+      // model that DECLARES a source rather than the one importing it. The
+      // normal path below adds those from the author's own plan, so leaving
+      // them out here avoids re-deriving an identical entry.
+      const planByName = new Map(
+         synthesized.plans.map((p) => [p.rollupSourceName, p]),
       );
-      for (const name of detectDroppedPersistSources(
-         malloyModel,
-         recognizedNames,
-      )) {
-         droppedPersistSources.push({ name, modelPath });
-      }
-
-      if (buildPlan.graphs.length === 0) continue;
-
-      allGraphs.push(...buildPlan.graphs);
-      // Lazily built on the first persist source: avoids reading
-      // `malloyModel.givens`/`._modelDef` for a model that declares none (a
-      // model can have the persistence flag and yet build no persist source).
-      let classificationCtx:
+      // Lazily built on the first rollup source: same reasoning as the
+      // author-model loop below.
+      let rollupClassificationCtx:
          | { modelDef: ModelDef; deps: GateClassificationDeps }
          | undefined;
-      for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
-         allSources[sourceID] = source;
-         sourceModelPaths[sourceID] = modelPath;
-         if (!classificationCtx) {
-            const givens = Array.from(
-               malloyModel.givens.values(),
+      for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
+         if (!rollupNames.has(source.name)) continue;
+         parts.sources[sourceID] = source;
+         // The AUTHOR's model path, not the synthesized one: a rollup is
+         // declared by no file, and the model carrying the annotations is
+         // where someone would go to change it (see api-doc's
+         // PersistSourcePlan.modelPath).
+         parts.sourceModelPaths[sourceID] = modelPath;
+         const rollup = planByName.get(source.name);
+         if (rollup) parts.preaggregatePlans[sourceID] = rollup;
+         if (!rollupClassificationCtx) {
+            const rollupGivens = Array.from(
+               synthesized.model.givens.values(),
             ) as unknown as MalloyGiven[];
-            classificationCtx = {
-               modelDef: malloyModel._modelDef,
+            rollupClassificationCtx = {
+               modelDef: synthesized.model._modelDef,
                deps: createGateClassificationDeps(
-                  givens.map(malloyGivenToApi),
-                  modelPath,
+                  rollupGivens.map(malloyGivenToApi),
+                  `${modelPath}#preaggregate`,
                ),
             };
          }
-         sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
+         parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
             source,
-            classificationCtx.modelDef,
-            materializer,
-            classificationCtx.deps,
-            modelPath,
+            rollupClassificationCtx.modelDef,
+            synthesized.materializer,
+            rollupClassificationCtx.deps,
+            `${modelPath}#preaggregate`,
          );
       }
    }
 
-   const connections = await resolvePackageConnections(
-      pkg,
-      allGraphs.map((g) => g.connectionName),
+   // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
+   // on any model that lacks the flag — it does NOT return empty. So a
+   // header-less non-persist model in the package (e.g. an imported base
+   // model that only defines raw sources) would abort the entire package
+   // build plan, silently dropping every persist source in every other
+   // model. Mirror Malloy's own guard and skip such models: without the flag
+   // a model cannot carry a functioning persist source anyway. Models that
+   // DO have the flag but declare no persist source return empty graphs and
+   // are skipped by the `graphs.length === 0` check below.
+   const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
+   if (!modelTag.has("experimental", "persistence")) return;
+
+   const buildPlan = malloyModel.getBuildPlan();
+   for (const msg of buildPlan.tagParseLog) {
+      logger.warn("Persist annotation issue", {
+         modelPath,
+         message: msg.message,
+         severity: msg.severity,
+      });
+   }
+
+   // Detect `#@ persist` sources the plan didn't recognize (see
+   // detectDroppedPersistSources). Runs BEFORE the empty-graphs `return`, so
+   // a model whose ONLY persist source is a dropped shape is still caught.
+   const recognizedNames = new Set(
+      Object.values(buildPlan.sources).map((s) => s.name),
    );
+   for (const name of detectDroppedPersistSources(
+      malloyModel,
+      recognizedNames,
+   )) {
+      parts.droppedPersistSources.push({ name, modelPath });
+   }
+
+   if (buildPlan.graphs.length === 0) return;
+
+   parts.graphs.push(...buildPlan.graphs);
+   // Lazily built on the first persist source: avoids reading
+   // `malloyModel.givens`/`._modelDef` for a model that declares none (a
+   // model can have the persistence flag and yet build no persist source).
+   let classificationCtx:
+      | { modelDef: ModelDef; deps: GateClassificationDeps }
+      | undefined;
+   for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
+      parts.sources[sourceID] = source;
+      parts.sourceModelPaths[sourceID] = modelPath;
+      if (!classificationCtx) {
+         const givens = Array.from(
+            malloyModel.givens.values(),
+         ) as unknown as MalloyGiven[];
+         classificationCtx = {
+            modelDef: malloyModel._modelDef,
+            deps: createGateClassificationDeps(
+               givens.map(malloyGivenToApi),
+               modelPath,
+            ),
+         };
+      }
+      parts.sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
+         source,
+         classificationCtx.modelDef,
+         materializer,
+         classificationCtx.deps,
+         modelPath,
+      );
+   }
+}
+
+/**
+ * Digest each connection the graphs build on. A connection that does not
+ * resolve is reported through `onSkipped` and left out, so its sources'
+ * entity ids are computed without a digest.
+ */
+export async function resolveConnectionDigests(
+   connections: Map<string, { getDigest(): string | Promise<string> }>,
+   graphs: MalloyBuildGraph[],
+   onSkipped: (connectionName: string) => void,
+): Promise<Record<string, string>> {
    const connectionDigests: Record<string, string> = {};
-   for (const graph of allGraphs) {
+   for (const graph of graphs) {
       const conn = connections.get(graph.connectionName);
       if (!conn) {
-         // The connection failed to resolve (already warned in
-         // resolvePackageConnections). Its sourceEntityIds will be computed
-         // without a digest, so surface it as a discrete correctness signal
-         // rather than skipping silently.
-         recordConnectionDigestSkipped();
-         logger.warn("Skipping connection digest; connection did not resolve", {
-            connectionName: graph.connectionName,
-         });
+         onSkipped(graph.connectionName);
          continue;
       }
       if (!connectionDigests[graph.connectionName]) {
@@ -1071,17 +1114,7 @@ export async function compilePackageBuildPlan(
          connectionDigests[graph.connectionName] = await conn.getDigest();
       }
    }
-
-   return {
-      graphs: allGraphs,
-      sources: allSources,
-      connectionDigests,
-      connections,
-      sourceModelPaths,
-      droppedPersistSources,
-      preaggregatePlans,
-      sourceGateOutcomes,
-   };
+   return connectionDigests;
 }
 
 /** Project the Malloy build plan into the trimmed wire BuildPlan. */
@@ -1314,24 +1347,24 @@ export function deriveBuildPlan(
    return { graphs: wireGraphs, sources: wireSources, refusedSources };
 }
 
-/**
- * Compile and project a package's build plan (null when the package declares no
- * materializable persist source), plus any `#@ persist` sources that were
- * silently dropped from the plan (see {@link detectDroppedPersistSources}) so
- * the caller can surface a load-time warning. A deterministic property of the
- * compiled package; feeds the read-only `Package.buildPlan` field.
- */
-export async function computePackageBuildPlan(
-   pkg: BuildPlanPackage,
-   signal?: AbortSignal,
-): Promise<{
+/** What a package load keeps from its build plan. */
+export interface BuildPlanOutcome {
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
-}> {
-   const compiled = await compilePackageBuildPlan(pkg, signal);
+}
+
+/**
+ * Project a compiled build plan into what a package load keeps. Reads the
+ * connection digests, never the live connections, so it runs the same in the
+ * package-load worker as on the main thread.
+ */
+export function deriveBuildPlanOutcome(
+   compiled: Omit<CompiledBuildPlan, "connections">,
+   materializationConfig: WirePackageMaterialization | null,
+): BuildPlanOutcome {
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,
@@ -1345,7 +1378,7 @@ export async function computePackageBuildPlan(
               compiled.connectionDigests,
               undefined,
               compiled.sourceModelPaths,
-              pkg.getMaterializationConfig?.() ?? null,
+              materializationConfig,
               {
                  preaggregatePlans: compiled.preaggregatePlans,
                  sourceGateOutcomes: compiled.sourceGateOutcomes,
@@ -1470,7 +1503,7 @@ export type ColocatedSourceEligibility = {
 };
 
 function collectColocatedSourceEligibility(
-   compiled: CompiledBuildPlan,
+   compiled: Omit<CompiledBuildPlan, "connections">,
 ): ColocatedSourceEligibility {
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};

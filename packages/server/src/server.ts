@@ -297,6 +297,11 @@ app.use(httpMetricsMiddleware);
 // true of everything except the responses one middleware happens to answer
 // early, and the next early-answering middleware may not be JSON.
 app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+// Health endpoints (Kubernetes liveness/readiness) before every middleware a
+// probe does not need: the rate limiter exempts them anyway, and static-file
+// serving would stat the filesystem first. A liveness probe that queues behind
+// a busy event loop should cost nothing more once it runs.
+registerHealthEndpoints(app);
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
@@ -966,10 +971,6 @@ app.use(
 
 // Set body-parser JSON limit to 1Mb (default: 100kb)
 app.use(bodyParser.json({ limit: "1mb" }));
-
-// Register health check endpoints on main app:
-// - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
-registerHealthEndpoints(app);
 
 // Register Prometheus metrics endpoint
 try {

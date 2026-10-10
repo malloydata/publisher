@@ -102,6 +102,7 @@ import type {
    SchemaForSqlResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
+   WorkerLogEntry,
    SerializedModel,
    WorkerToMainMessage,
 } from "./protocol";
@@ -135,6 +136,30 @@ export function getPackageLoadWorkerCount(): number {
    return parsed;
 }
 
+/** Default for {@link getPackageLoadSchemaCacheBytes}. */
+export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Serialized bytes of schema each package-load worker caches across loads
+ * (`PACKAGE_LOAD_SCHEMA_CACHE_BYTES`; see `schema_cache.ts`). Unset or empty
+ * takes the default, and 0 disables the cache; anything else that is not a
+ * non-negative integer refuses to start, rather than silently disabling the
+ * cache or ignoring the setting.
+ */
+export function getPackageLoadSchemaCacheBytes(): number {
+   const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+   if (raw === undefined || raw.trim() === "") {
+      return DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+   }
+   const parsed = Number(raw.trim());
+   if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(
+         `PACKAGE_LOAD_SCHEMA_CACHE_BYTES must be a non-negative integer number of bytes (got ${JSON.stringify(raw)}).`,
+      );
+   }
+   return parsed;
+}
+
 /**
  * Wall-clock cap for a single load-package job. If a worker hangs we
  * don't want to leak a Promise forever. Twice the K8s liveness
@@ -149,6 +174,14 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
    if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
    return parsed;
 })();
+
+/**
+ * The share of a job's timeout the worker spends on work it does for the main
+ * thread before leaving the rest to it (see
+ * LoadPackageRequest.mainThreadWorkBudgetMs). The remainder is headroom for
+ * the compile to finish.
+ */
+const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
 /**
  * How long a freshly-spawned worker has to send its `ready` handshake.
@@ -203,6 +236,8 @@ export interface PackageLoadUrlReader {
 export interface LoadPackageJob {
    packagePath: string;
    packageName: string;
+   /** See {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
    /**
     * The live MalloyConfig. We don't ship it across the worker
     * boundary; we hold it on the main side and answer the worker's
@@ -221,6 +256,10 @@ export interface LoadPackageJob {
    replacement?: { modelPath: string; source: string };
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
+   /** See {@link LoadPackageRequest.computeBuildPlan}. */
+   computeBuildPlan?: boolean;
+   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
+   withPreaggregateCompanions?: boolean;
 }
 
 /**
@@ -261,6 +300,8 @@ export interface LoadPackageOutcome {
    loadDurationMs: number;
    /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
    timings: LoadPackageResult["timings"];
+   /** See {@link LoadPackageResult.buildPlan}. */
+   buildPlan?: LoadPackageResult["buildPlan"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -303,8 +344,17 @@ export class PackageLoadPool {
    private nextJobId = 0;
    private shuttingDown = false;
    private readonly workerScript: URL;
+   private readonly schemaCacheBytes: number;
+   private readonly mainThreadWorkBudgetMs: number;
 
-   constructor(maxWorkers: number, workerScript?: URL) {
+   constructor(
+      maxWorkers: number,
+      workerScript?: URL,
+      options: {
+         /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
+         mainThreadWorkBudgetMs?: number;
+      } = {},
+   ) {
       if (!Number.isFinite(maxWorkers) || maxWorkers < 1) {
          throw new Error(
             `PackageLoadPool requires maxWorkers >= 1 (got ${maxWorkers}). ` +
@@ -314,6 +364,10 @@ export class PackageLoadPool {
       }
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
+      this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
+      this.mainThreadWorkBudgetMs =
+         options.mainThreadWorkBudgetMs ??
+         MAIN_THREAD_WORK_BUDGET_SHARE * PACKAGE_LOAD_JOB_TIMEOUT_MS;
    }
 
    get size(): number {
@@ -415,19 +469,24 @@ export class PackageLoadPool {
       pw: PoolWorker,
       qj: QueuedJob,
    ): Promise<void> {
+      // Reserve the worker before waiting for it to become ready. A spawned
+      // worker takes a moment to start, and until the job is in `inFlight`
+      // the dispatcher sees it as idle, so every job of a burst would land on
+      // the first worker spawned and run there concurrently.
+      this.nextJobId += 1;
+      const jobId = `job-${this.nextJobId}`;
+      pw.inFlight.add(jobId);
       try {
          await pw.ready;
       } catch (err) {
          // Spawn failed; this worker is dead. Reject this job and
          // try the next queued one — a different worker may already
          // be alive, or `findIdleOrSpawnable` will lazily spawn one.
+         pw.inFlight.delete(jobId);
          qj.reject(err as Error);
          this.tryDispatch();
          return;
       }
-
-      this.nextJobId += 1;
-      const jobId = `job-${this.nextJobId}`;
 
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
@@ -449,20 +508,19 @@ export class PackageLoadPool {
          timeout,
       });
 
-      // Register inFlight BEFORE postMessage so the next concurrent
-      // dispatcher pass sees this worker as busy (fixes Sha-Bang #1's
-      // 4/1 skew where simultaneous callers all tiebreak to alive[0]).
-      pw.inFlight.add(jobId);
-
       const message: LoadPackageRequest = {
          type: "load-package",
          requestId: jobId,
          packagePath: qj.request.packagePath,
          packageName: qj.request.packageName,
+         environmentName: qj.request.environmentName,
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
          collectProblems: qj.request.collectProblems,
+         computeBuildPlan: qj.request.computeBuildPlan,
+         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
    }
@@ -501,6 +559,7 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
+         workerData: { schemaCacheBytes: this.schemaCacheBytes },
       });
 
       let readyResolve!: () => void;
@@ -627,6 +686,7 @@ export class PackageLoadPool {
    }
 
    private completeJob(pw: PoolWorker, msg: LoadPackageResult): void {
+      replayWorkerLogs(msg.logs);
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
@@ -637,6 +697,7 @@ export class PackageLoadPool {
    }
 
    private errorJob(pw: PoolWorker, msg: LoadPackageError): void {
+      replayWorkerLogs(msg.logs);
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
@@ -688,6 +749,7 @@ export class PackageLoadPool {
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
                      : msg.connectionName,
+               generation: connectionGeneration(conn),
             },
          });
       } catch (error) {
@@ -845,6 +907,30 @@ function buildFetchOptions(options: {
    return out;
 }
 
+const connectionGenerations = new WeakMap<object, number>();
+let lastConnectionGeneration = 0;
+
+/** A number unique to `conn`'s instance (see ConnectionMetadata.generation). */
+function connectionGeneration(conn: object): number {
+   let generation = connectionGenerations.get(conn);
+   if (generation === undefined) {
+      lastConnectionGeneration += 1;
+      generation = lastConnectionGeneration;
+      connectionGenerations.set(conn, generation);
+   }
+   return generation;
+}
+
+/**
+ * Log what a job logged in the worker, on this thread, whose logger reaches
+ * the OpenTelemetry log pipeline (see WorkerLogEntry).
+ */
+function replayWorkerLogs(logs: WorkerLogEntry[] | undefined): void {
+   for (const entry of logs ?? []) {
+      logger.log(entry.level, entry.message, entry.meta ?? {});
+   }
+}
+
 /**
  * Hydrate the wire-typed serialized model fields back into their
  * full Malloy types. Cheap (one pass, no copy); `filterMap` is
@@ -862,6 +948,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       })),
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
+      buildPlan: result.buildPlan,
    };
 }
 

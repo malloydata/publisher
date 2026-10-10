@@ -74,6 +74,8 @@
  * fail-closed deny, with no test naming the reason.
  */
 
+import type { EligibilityRefusalReason } from "../materialization_metrics";
+import type { BuildPlanOutcome } from "../service/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -98,6 +100,14 @@ export interface ConnectionMetadata {
    name: string;
    dialectName: string;
    digest: string;
+   /**
+    * Identifies the main thread's connection instance. A connection edit
+    * replaces the instance, and with it the schemas Malloy cached on it, so
+    * the worker keys its own schema cache on this to drop them at the same
+    * moment. The digest alone does not change on an edit that keeps the
+    * configuration, nor for a connection with a configured fingerprint.
+    */
+   generation: number;
 }
 
 export interface LoadPackageRequest {
@@ -107,6 +117,11 @@ export interface LoadPackageRequest {
    packagePath: string;
    /** Logical package name (used in metric labels + log fields). */
    packageName: string;
+   /**
+    * The environment the package loads into. Scopes the worker's schema
+    * cache, so environments never share schemas.
+    */
+   environmentName: string;
    /**
     * Default connection name (passed verbatim to the worker; today
     * always `"duckdb"` for embedded packages, but kept configurable
@@ -124,6 +139,27 @@ export interface LoadPackageRequest {
    replacement?: { modelPath: string; source: string };
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
+   /**
+    * Derive the package's persist build plan from this compile and return it
+    * as `LoadPackageResult.buildPlan`. Only meaningful without a
+    * `buildManifest`: the plan describes the canonical build, not SQL a bound
+    * manifest has rewritten.
+    */
+   computeBuildPlan?: boolean;
+   /**
+    * How long into the job the worker keeps doing the work it takes on for
+    * the main thread (the build plan, render-tag results, pre-aggregation
+    * companions). Past it, the rest is left to the main thread, so a slow
+    * package degrades to the main-thread path rather than having its load
+    * fail on the pool's job timeout. A share of that timeout.
+    */
+   mainThreadWorkBudgetMs: number;
+   /**
+    * Compile each model's pre-aggregation companion for the main thread to
+    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
+    * that serve the package; a compile preview does not serve it.
+    */
+   withPreaggregateCompanions?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -205,6 +241,25 @@ export interface SerializedModel {
     * constructed.
     */
    authorizeWarnings?: string[];
+   /**
+    * The compiled result of each render-tag target (see `renderTagTargets`),
+    * prepared compile-only alongside the model's compile, for the main thread
+    * to run the renderer's tag validation over. The renderer cannot load in
+    * the worker, but preparing these queries is the expensive part, and on
+    * the main thread it blocks the event loop. A target that fails to
+    * prepare is left out, as the main thread would skip it. Absent when the
+    * worker did not prepare them; the main thread then prepares them itself.
+    * Wire-typed `unknown` like `modelDef`: each is a `Malloy.Result`.
+    */
+   renderTagResults?: { label: string; result: unknown }[];
+   /**
+    * This model's synthesized pre-aggregation companion, compiled against the
+    * same build manifest as the model, for the main thread to hydrate rather
+    * than compile (see Model.buildPreaggregateServeModel). `{}` when the model
+    * has no companion or it failed to compile; absent when the worker did not
+    * attempt it, in which case the main thread compiles it.
+    */
+   preaggregateCompanion?: { modelDef?: unknown };
 }
 
 export interface SerializedNotebookCell {
@@ -271,13 +326,63 @@ export interface LoadPackageResult {
       schemaFetchDurationMs: number;
       /** Number of proxied connection schema fetches the load drove. */
       schemaFetchCount: number;
+      /**
+       * Schema requests the worker answered from its own cache, without a
+       * round trip to the main thread. Counted over the compile region.
+       */
+      schemaCacheHits?: number;
    };
+   /**
+    * Present when the request set `computeBuildPlan` and the worker derived
+    * the plan before its soft deadline (see `jobTimeoutMs`).
+    */
+   buildPlan?: WorkerBuildPlan;
+   /** What the job logged, for the main thread to log (see WorkerLogEntry). */
+   logs?: WorkerLogEntry[];
 }
+
+/**
+ * A log call made while a job ran in the worker. The worker's logger writes
+ * only to its own stdout, outside the main thread's OpenTelemetry log
+ * pipeline, so a job's log calls are captured and sent back with its result
+ * for the main thread to log.
+ */
+export interface WorkerLogEntry {
+   level: "error" | "warn" | "info" | "debug";
+   message: string;
+   meta?: Record<string, unknown>;
+}
+
+/**
+ * The package build plan the worker derived from the models it compiled, so
+ * the main thread does not compile the package a second time to get it.
+ * `durationMs` is the worker time spent deriving it. A failure carries the
+ * message the main thread reports; it fails the plan, not the load.
+ */
+export type WorkerBuildPlan =
+   | {
+        ok: true;
+        outcome: BuildPlanOutcome;
+        durationMs: number;
+        /** Connections whose digest could not be read (see resolveConnectionDigests). */
+        digestSkipped: string[];
+        /** Eligibility refusals counted while deriving it, by reason. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     }
+   | {
+        ok: false;
+        error: string;
+        durationMs: number;
+        /** Refusals counted before the derivation failed. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     };
 
 export interface LoadPackageError {
    type: "load-package-error";
    requestId: string;
    error: SerializedError;
+   /** What the job logged before it failed (see WorkerLogEntry). */
+   logs?: WorkerLogEntry[];
 }
 
 /**

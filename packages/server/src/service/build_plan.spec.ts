@@ -12,9 +12,7 @@ import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
    type BuildPlanPackage,
-   compilePackageBuildPlan,
    computeSourceEntityId,
-   computePackageBuildPlan,
    deriveAnnotationFields,
    deriveBuildPlan,
    flattenDependsOn,
@@ -24,6 +22,10 @@ import {
    resolveQueryMetadata,
    resolvePackageConnections,
 } from "./build_plan";
+import {
+   compilePackageBuildPlan,
+   computePackageBuildPlan,
+} from "./build_plan_compile";
 import { MaterializationEligibilityError } from "../errors";
 import {
    compilePersistSources,
