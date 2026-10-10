@@ -42,7 +42,9 @@ export interface FcjIndexFixture extends FcjFixture {
    close: () => Promise<void>;
 }
 
-export async function buildFcjIndexFixture(): Promise<FcjIndexFixture> {
+export async function buildFcjIndexFixture(
+   settings = DEFAULT_FCJ_SETTINGS,
+): Promise<FcjIndexFixture> {
    const fixture = await compileFcjFixture();
    const { db, close } = await openTempDb(createCatalogTables);
    const index = await buildFcjIndex({
@@ -51,7 +53,7 @@ export async function buildFcjIndexFixture(): Promise<FcjIndexFixture> {
       provider: stubEmbeddingProvider(),
       environmentName: "env",
       packageName: "fixture",
-      settings: DEFAULT_FCJ_SETTINGS,
+      settings,
       valueRead: { environmentStore: {} as never, fetcher: fcjValueFetcher },
    });
    return { ...fixture, index, close };

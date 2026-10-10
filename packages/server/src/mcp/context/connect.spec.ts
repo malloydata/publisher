@@ -45,7 +45,9 @@ function run(
    return connect({ index: f.index, found, queries, settings, allow });
 }
 
-const CONTENDERS_OFF: Array<[string, string[]]> = [["cities@travel.malloy", []]];
+const CONTENDERS_OFF: Array<[string, string[]]> = [
+   ["cities@travel.malloy", []],
+];
 const CONTENDERS_ON: Array<[string, string[]]> = [
    [
       "cities@travel.malloy",
@@ -204,5 +206,40 @@ describe("connect", () => {
       expect(on.clusters.map((c) => [c.home, c.contenders])).toEqual(
          CONTENDERS_ON,
       );
+   });
+
+   it("with the provisional collapseCopies, an extension's copy is not a second home", async () => {
+      const folded = await buildFcjIndexFixture({
+         ...DEFAULT_FCJ_SETTINGS,
+         collapseCopies: true,
+      });
+      try {
+         const targets = [t(0, "measure", "net sales")];
+         const queries = new Map([[0, toUnit(embedText("net sales"))]]);
+         const found = find({
+            index: folded.index,
+            targets,
+            queries,
+            perTarget: 30,
+            keyword: true,
+            values: true,
+            allow: () => true,
+         });
+         expect(
+            found[0].candidates.some((c) => c.key.includes("orders_public@")),
+         ).toBe(false);
+         const out = connect({
+            index: folded.index,
+            found,
+            queries,
+            settings: DEFAULT_FCJ_SETTINGS,
+            allow: () => true,
+         });
+         expect(out.clusters.map((c) => [c.home, c.twins])).toEqual([
+            ["orders@shop.malloy", []],
+         ]);
+      } finally {
+         await folded.close();
+      }
    });
 });

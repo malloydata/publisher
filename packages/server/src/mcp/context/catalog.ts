@@ -65,6 +65,14 @@ export interface CatalogNode {
    uses: string[];
    /** A dimension tagged `#(index)`: its values may be indexed. */
    indexed: boolean;
+   /**
+    * With `collapseCopies`: the node this one is an unchanged copy of (a field
+    * an extension inherits keeps its parent's compiled definition). A copy is
+    * never searched; it is the same field under another source's name.
+    */
+   copyOf?: string;
+   /** With `collapseCopies`: the copies of this node in extensions, by key. */
+   copies?: string[];
    /** One shipped entity per model path, in `modelPaths` order. */
    entities: Entity[];
 }
@@ -115,6 +123,8 @@ export interface CatalogReport {
    gatedSources: number;
    /** Field references an expression makes that resolve to no catalog node. */
    unresolvedReferences: number;
+   /** With `collapseCopies`: nodes folded into the field they copy. */
+   copiesFolded: number;
 }
 
 export interface Catalog {
@@ -143,6 +153,12 @@ export interface CatalogInput {
    /** Per (model path, source): whether a gate is in force. */
    gatedByContext: ReadonlyMap<string, boolean>;
    models: readonly CatalogModel[];
+   /**
+    * PROVISIONAL, a diagnostic of the connect rule (`retrieval.fcj.collapseCopies`).
+    * Fold a field an extension inherits unchanged into the field where it is
+    * defined, so an extension competes only with the fields it adds.
+    */
+   collapseCopies?: boolean;
 }
 
 /** `name` or `as`, whichever the compiled entry is known by. */
@@ -150,12 +166,48 @@ function activeName(v: { name?: string; as?: string }): string | undefined {
    return v.as ?? v.name;
 }
 
+interface CompiledLocation {
+   url?: string;
+   range?: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+   };
+}
+
 interface CompiledSource {
    name?: string;
    as?: string;
    sourceID?: string;
    extends?: string;
-   fields?: Array<{ name?: string; as?: string; e?: unknown }>;
+   location?: CompiledLocation;
+   fields?: Array<{
+      name?: string;
+      as?: string;
+      e?: unknown;
+      location?: CompiledLocation;
+   }>;
+}
+
+/** A location as one comparable string, or undefined when the compiler gave none. */
+function locationKey(loc: CompiledLocation | undefined): string | undefined {
+   if (!loc?.url || !loc.range) return undefined;
+   const { start, end } = loc.range;
+   return `${loc.url}#${start.line}:${start.character}-${end.line}:${end.character}`;
+}
+
+/** Whether `inner` lies inside `outer`, in the same file. */
+function contains(outer: CompiledLocation, inner: CompiledLocation): boolean {
+   if (!outer.url || outer.url !== inner.url || !outer.range || !inner.range) {
+      return false;
+   }
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return (
+      before(outer.range.start, inner.range.start) &&
+      before(inner.range.end, outer.range.end)
+   );
 }
 
 function compiledSource(
@@ -402,6 +454,10 @@ export function buildCatalog(input: CatalogInput): Catalog {
       return hop ? fieldNode(hop.to, path[path.length - 1]) : undefined;
    };
    const seenSource = new Set<string>();
+   // Where each node's definition is, and where each source's own definition
+   // is, for collapseCopies.
+   const definitionAt = new Map<string, CompiledLocation>();
+   const sourceAt = new Map<string, CompiledLocation>();
    for (const model of input.models) {
       for (const raw of model.sourceInfos) {
          const info = raw as {
@@ -434,9 +490,16 @@ export function buildCatalog(input: CatalogInput): Catalog {
             }
          }
          const compiled = compiledSource(model.modelDef, info.name);
+         if (compiled?.location) sourceAt.set(sourceKey, compiled.location);
          for (const f of compiled?.fields ?? []) {
             const name = activeName(f);
-            if (!name || !f.e) continue;
+            if (!name) continue;
+            const located =
+               fieldNode(sourceKey, name) ??
+               nodes.get(nodeKeyOf("view", sourceKey, name));
+            if (located && f.location)
+               definitionAt.set(located.key, f.location);
+            if (!f.e) continue;
             const node = fieldNode(sourceKey, name);
             if (!node) continue;
             for (const path of referencedPaths(f.e)) {
@@ -454,6 +517,37 @@ export function buildCatalog(input: CatalogInput): Catalog {
                node.dependsOn.push(target.key);
                edges.push({ kind: "depends", from: node.key, to: target.key });
             }
+         }
+      }
+   }
+
+   // 5. With collapseCopies, fold each unchanged inherited copy into the node
+   // of the source whose own definition holds the field's definition.
+   let copiesFolded = 0;
+   if (input.collapseCopies) {
+      const groups = new Map<string, CatalogNode[]>();
+      for (const node of nodes.values()) {
+         if (node.kind === "source" || node.joinPath) continue;
+         const at = locationKey(definitionAt.get(node.key));
+         if (!at) continue;
+         const key = `${node.kind}\u0000${node.name}\u0000${at}`;
+         const list = groups.get(key) ?? [];
+         list.push(node);
+         groups.set(key, list);
+      }
+      for (const list of groups.values()) {
+         if (list.length < 2) continue;
+         const at = definitionAt.get(list[0].key)!;
+         const definer = list.find((n) => {
+            const own = sourceAt.get(n.sourceKey);
+            return own ? contains(own, at) : false;
+         });
+         if (!definer) continue;
+         for (const n of list) {
+            if (n === definer) continue;
+            n.copyOf = definer.key;
+            (definer.copies ??= []).push(n.key);
+            copiesFolded += 1;
          }
       }
    }
@@ -485,6 +579,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          indexedDimensions: [...nodes.values()].filter((n) => n.indexed).length,
          gatedSources: [...sources.values()].filter((s) => s.gated).length,
          unresolvedReferences: unresolved,
+         copiesFolded,
       },
    };
 }

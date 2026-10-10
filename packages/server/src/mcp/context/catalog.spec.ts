@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import { compileFcjFixture, openTempDb } from "../../test_helpers/fcj_fixture";
 import type { Catalog } from "./catalog";
-import { referencedPaths } from "./catalog";
+import { buildCatalog, catalogInputOf, referencedPaths } from "./catalog";
 import { catalogReportLine, saveCatalog } from "./catalog_store";
 import { derivedText, DERIVED_TEXT_MAX_WORDS } from "./derived_text";
 import { reachOf } from "./reach";
@@ -33,6 +33,7 @@ describe("catalog", () => {
          indexedDimensions: 2,
          gatedSources: 0,
          unresolvedReferences: 3,
+         copiesFolded: 0,
       });
    });
 
@@ -106,6 +107,31 @@ describe("catalog", () => {
             },
          }),
       ).toEqual([["sales"], ["customer", "region"]]);
+   });
+
+   it("with collapseCopies, folds an extension's inherited fields into the fields they copy", async () => {
+      const { pkgIndex } = await compileFcjFixture();
+      const folded = buildCatalog({
+         ...(await catalogInputOf(pkgIndex)),
+         collapseCopies: true,
+      });
+      expect(folded.report.copiesFolded).toBe(8);
+      const copies = [...folded.nodes.values()]
+         .filter((n) => n.copyOf)
+         .map((n) => [n.key, n.copyOf]);
+      expect(copies).toContainEqual([
+         "measure:orders_public@shop.malloy:net_sales",
+         "measure:orders@shop.malloy:net_sales",
+      ]);
+      expect(copies).toContainEqual([
+         "dimension:orders_public@shop.malloy:start_date",
+         "dimension:orders@shop.malloy:start_date",
+      ]);
+      // Only extensions fold: races, orders and flights each define their own start_date.
+      expect(copies.every(([k]) => k!.includes("orders_public@"))).toBe(true);
+      expect(
+         folded.nodes.get("measure:orders@shop.malloy:sales")!.copies,
+      ).toEqual(["measure:orders_public@shop.malloy:sales"]);
    });
 });
 

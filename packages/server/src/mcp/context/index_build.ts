@@ -146,7 +146,12 @@ export async function buildFcjIndex(args: {
 }): Promise<FcjIndex> {
    const started = Date.now();
    const { db, environmentName, packageName, settings } = args;
-   const catalog = buildCatalog(await catalogInputOf(args.pkgIndex));
+   const catalog = buildCatalog({
+      ...(await catalogInputOf(args.pkgIndex)),
+      collapseCopies: settings.collapseCopies,
+   });
+   // A folded copy is never searched, so it gets no row and no keyword text.
+   const searched = [...catalog.nodes.values()].filter((n) => !n.copyOf);
 
    // Summaries: any model path of the source may carry the stored row.
    const summaries = new Map<string, string>();
@@ -206,7 +211,7 @@ export async function buildFcjIndex(args: {
    // Questions.
    const questions = new Map<string, string[]>();
    const qLlm = llmFor(settings.questions);
-   const questionNodes = [...catalog.nodes.values()].filter(wantsQuestions);
+   const questionNodes = searched.filter(wantsQuestions);
    let questionReport: FcjBuildReport["questions"] = {
       nodes: questionNodes.length,
       written: 0,
@@ -250,7 +255,7 @@ export async function buildFcjIndex(args: {
 
    // Vectors.
    const rows: VectorRow[] = [];
-   for (const node of catalog.nodes.values()) {
+   for (const node of searched) {
       rows.push({
          node: node.key,
          facet: "derived",
@@ -333,7 +338,7 @@ export async function buildFcjIndex(args: {
 
    // Keyword index, over the same texts.
    const keyword = new KeywordIndex(
-      [...catalog.nodes.values()].map((node) => ({
+      searched.map((node) => ({
          key: node.key,
          text: [
             derived.get(node.key) ?? "",
