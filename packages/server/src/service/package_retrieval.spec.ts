@@ -7,7 +7,10 @@ import * as os from "os";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
 import {
+   DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
+   engineOf,
+   fcjSettingsOf,
    assertRequiredStagesAvailable,
    parsePackageRetrieval,
    readPackageRetrieval,
@@ -54,6 +57,53 @@ describe("publisher.json retrieval block", () => {
       );
    });
 
+   it("reads the engine switch and the fcj knobs, defaulting each unset knob", () => {
+      expect(engineOf(undefined)).toBe("legacy");
+      const parsed = parsePackageRetrieval({
+         engine: "fcj",
+         fcj: { perTarget: 50, judge: false },
+      });
+      expect(parsed.engine).toBe("fcj");
+      expect(parsed.fcj).toEqual({
+         ...DEFAULT_FCJ_SETTINGS,
+         perTarget: 50,
+         judge: false,
+      });
+      expect(fcjSettingsOf(undefined)).toEqual(DEFAULT_FCJ_SETTINGS);
+      expect(DEFAULT_FCJ_SETTINGS).toEqual({
+         perTarget: 30,
+         hopDiscount: 0.9,
+         coverFraction: 0.5,
+         measureWeight: 1.5,
+         maxClusters: 3,
+         clusterTopK: 10,
+         reachDepth: 3,
+         keyword: true,
+         questions: "auto",
+         docParts: "auto",
+         values: true,
+         valueCap: 50_000,
+         judge: "auto",
+      });
+   });
+
+   it("rejects a bad engine or knob with the range and a fix", () => {
+      expect(() => parsePackageRetrieval({ engine: "new" })).toThrow(
+         'Invalid publisher.json retrieval.engine: expected one of legacy, fcj, got "new". Fix: "engine": "legacy" (the shipped search) or "fcj" (find, connect, judge).',
+      );
+      expect(() =>
+         parsePackageRetrieval({ fcj: { coverFraction: 1.5 } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.fcj.coverFraction: expected a number from 0 to 1, got 1.5. Fix: "coverFraction": 0.5',
+      );
+      expect(() => parsePackageRetrieval({ fcj: { perTarget: 2.5 } })).toThrow(
+         'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
+      );
+      expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge.",
+      );
+   });
+
    it("an unknown key is an error that names the valid keys, so a typo or a later release's key is not silently ignored", () => {
       let error: unknown;
       try {
@@ -63,12 +113,12 @@ describe("publisher.json retrieval block", () => {
       }
       expect(error).toBeInstanceOf(PackageManifestError);
       expect((error as Error).message).toBe(
-         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts.",
+         "Invalid publisher.json retrieval: unknown key 'rephrase'. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts, engine, fcj.",
       );
       expect(() =>
          parsePackageRetrieval({ prompts: { rephrase: "p.md" } }),
       ).toThrow(
-         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank, sourceMatch, sourceSummary.",
+         "retrieval.prompts: unknown key 'rephrase'. Valid keys: keyphrase, refine, rerank, sourceMatch, sourceSummary, judge, docParts, questions.",
       );
    });
 });

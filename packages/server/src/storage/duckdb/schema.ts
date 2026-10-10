@@ -215,6 +215,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    await createEntityEmbeddingsTable(db);
    await createEntityKeyphrasesTable(db);
    await createSourceSummariesTable(db);
+   await createCatalogTables(db);
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
@@ -708,6 +709,44 @@ export async function createSourceSummariesTable(
   `);
 }
 
+/**
+ * The find, connect, judge engine's catalog (see mcp/context/catalog.ts): one
+ * row per node and per edge of a package, rewritten whole when the package
+ * loads. The engine searches its in-memory copy; these rows are what an
+ * operator reads to see what the catalog holds.
+ *
+ * Additive: new tables, nothing existing is altered. Losing them costs only a
+ * rebuild on the next load.
+ */
+export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_nodes (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      entity_id VARCHAR NOT NULL,
+      kind VARCHAR NOT NULL,
+      source_key VARCHAR NOT NULL,
+      name VARCHAR NOT NULL,
+      model_paths VARCHAR NOT NULL,
+      derived_text VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key)
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_edges (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      kind VARCHAR NOT NULL,
+      from_key VARCHAR NOT NULL,
+      to_key VARCHAR NOT NULL,
+      path VARCHAR NOT NULL,
+      PRIMARY KEY (environment_name, package_name, kind, from_key, to_key, path)
+    )
+  `);
+}
+
 // Tables in the pre-rename `projects` schema, children first so DROP order
 // satisfies foreign keys. Removable once no store predates the rename.
 const LEGACY_TABLES_DROP_ORDER = [
@@ -752,6 +791,8 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "entity_embeddings",
       "entity_keyphrases",
       "source_summaries",
+      "catalog_nodes",
+      "catalog_edges",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

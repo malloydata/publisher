@@ -1001,7 +1001,7 @@ run: mid_ungated -> { aggregate: c }`,
       [
          "an unknown retrieval key",
          JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
-         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts\./,
+         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts, engine, fcj\./,
       ],
       [
          "an invalid retrieval.refine.minLevel",
