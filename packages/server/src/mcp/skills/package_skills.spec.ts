@@ -227,13 +227,17 @@ describe("readSkillsDir", () => {
       fs.rmSync(outsideDir, { recursive: true, force: true });
    });
 
-   it("does not read a skill file that is not a regular file", () => {
-      fs.mkdirSync(path.join(pkg, "skills", "pipe"), { recursive: true });
-      execFileSync("mkfifo", [path.join(pkg, "skills", "pipe", "SKILL.md")]);
-      const { skills, warnings } = readSkillsDir(pkg);
-      expect(skills).toEqual([]);
-      expect(warnings[0]).toContain("not a regular file");
-   });
+   // Git Bash's mkfifo makes an MSYS pipe that native Windows reads block on.
+   it.skipIf(process.platform === "win32")(
+      "does not read a skill file that is not a regular file",
+      () => {
+         fs.mkdirSync(path.join(pkg, "skills", "pipe"), { recursive: true });
+         execFileSync("mkfifo", [path.join(pkg, "skills", "pipe", "SKILL.md")]);
+         const { skills, warnings } = readSkillsDir(pkg);
+         expect(skills).toEqual([]);
+         expect(warnings[0]).toContain("not a regular file");
+      },
+   );
 
    it("does not drop a skill for being named credible-*", () => {
       // That exclusion is a rule about this repo's gitignored install target,
