@@ -160,6 +160,7 @@ describe("PackageLoadPool (real worker)", () => {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
             packageName: "pkg",
+            environmentName: "env",
             malloyConfig,
             defaultConnectionName: "duckdb",
          });
@@ -192,6 +193,7 @@ describe("PackageLoadPool (real worker)", () => {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
             packageName: "pkg",
+            environmentName: "env",
             malloyConfig,
             defaultConnectionName: "duckdb",
          });
@@ -222,6 +224,7 @@ describe("PackageLoadPool (real worker)", () => {
          const outcome = await pool.loadPackage({
             packagePath: tempDir,
             packageName: "pkg",
+            environmentName: "env",
             malloyConfig,
             defaultConnectionName: "duckdb",
          });
@@ -251,6 +254,7 @@ describe("PackageLoadPool (dispatch)", () => {
                pool.loadPackage({
                   packagePath: `/nowhere/pkg-${n}`,
                   packageName: `pkg-${n}`,
+                  environmentName: "env",
                   malloyConfig: new MalloyConfig({ connections: {} }),
                   defaultConnectionName: "duckdb",
                }),
@@ -275,6 +279,7 @@ describe("PackageLoadPool (shutdown)", () => {
          pool.loadPackage({
             packagePath: "/tmp/nowhere",
             packageName: "nowhere",
+            environmentName: "env",
             malloyConfig: new MalloyConfig({ connections: {} }),
             defaultConnectionName: "duckdb",
          }),

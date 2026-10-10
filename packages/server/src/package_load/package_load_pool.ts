@@ -204,7 +204,7 @@ export interface LoadPackageJob {
    packagePath: string;
    packageName: string;
    /** See {@link LoadPackageRequest.environmentName}. */
-   environmentName?: string;
+   environmentName: string;
    /**
     * The live MalloyConfig. We don't ship it across the worker
     * boundary; we hold it on the main side and answer the worker's
@@ -696,6 +696,7 @@ export class PackageLoadPool {
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
                      : msg.connectionName,
+               generation: connectionGeneration(conn),
             },
          });
       } catch (error) {
@@ -859,6 +860,20 @@ function buildFetchOptions(options: {
  * deliberately left as the wire array — `Model.fromSerialized`
  * rebuilds the `Map` lazily for the models it actually uses.
  */
+const connectionGenerations = new WeakMap<object, number>();
+let lastConnectionGeneration = 0;
+
+/** A number unique to `conn`'s instance (see ConnectionMetadata.generation). */
+function connectionGeneration(conn: object): number {
+   let generation = connectionGenerations.get(conn);
+   if (generation === undefined) {
+      lastConnectionGeneration += 1;
+      generation = lastConnectionGeneration;
+      connectionGenerations.set(conn, generation);
+   }
+   return generation;
+}
+
 function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
    return {
       packageMetadata: result.packageMetadata,

@@ -100,6 +100,14 @@ export interface ConnectionMetadata {
    name: string;
    dialectName: string;
    digest: string;
+   /**
+    * Identifies the main thread's connection instance. A connection edit
+    * replaces the instance, and with it the schemas Malloy cached on it, so
+    * the worker keys its own schema cache on this to drop them at the same
+    * moment. The digest alone does not change on an edit that keeps the
+    * configuration, nor for a connection with a configured fingerprint.
+    */
+   generation: number;
 }
 
 export interface LoadPackageRequest {
@@ -113,7 +121,7 @@ export interface LoadPackageRequest {
     * The environment the package loads into. Scopes the worker's schema
     * cache, so environments never share schemas.
     */
-   environmentName?: string;
+   environmentName: string;
    /**
     * Default connection name (passed verbatim to the worker; today
     * always `"duckdb"` for embedded packages, but kept configurable

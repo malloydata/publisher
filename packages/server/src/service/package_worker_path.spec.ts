@@ -1229,8 +1229,28 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
             await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
             await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
             await Package.create(`${token}-b`, "pkg", tempDir, malloyConfig);
+            // A connection edit swaps in a new instance with the same name and
+            // configuration, so the same digest; Malloy's schema cache on the
+            // old instance is gone, and the worker's entries must go with it.
+            const edited = new DuckDBConnection("warehouse", ":memory:");
+            await edited.runSQL(
+               `create table if not exists ${token} as select 1 as a`,
+            );
+            const editedConfig = new MalloyConfig({ connections: {} });
+            editedConfig.wrapConnections(
+               () =>
+                  new FixedConnectionMap(
+                     new Map([["warehouse", edited]]),
+                     "warehouse",
+                  ),
+            );
+            try {
+               await Package.create(`${token}-a`, "pkg", tempDir, editedConfig);
+            } finally {
+               await edited.close();
+            }
 
-            const [first, second, otherEnvironment] = timings;
+            const [first, second, otherEnvironment, afterEdit] = timings;
             // Two models ask for the same table and the same SQL; the first
             // load fetches each once and answers the other request from the
             // fetch already under way.
@@ -1241,6 +1261,7 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
             // Another environment's connection of the same name and digest
             // fetches for itself.
             expect(otherEnvironment.schemaFetchCount).toBe(2);
+            expect(afterEdit.schemaFetchCount).toBe(2);
          } finally {
             spy.mockRestore();
             await duckdb.close();

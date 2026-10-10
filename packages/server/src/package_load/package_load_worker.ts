@@ -236,17 +236,20 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Schemas this worker has fetched through the main thread, kept across loads.
- * Sized by PACKAGE_LOAD_SCHEMA_CACHE_ENTRIES (0 disables it). See SchemaCache.
+ * Schemas this worker has fetched through the main thread, kept across loads
+ * within PACKAGE_LOAD_SCHEMA_CACHE_BYTES of serialized schema (0 disables it).
+ * A 50-model package's 37 tables come to 61 KB, the widest (108 columns) to
+ * 6.8 KB, so the default holds a few thousand typical tables per worker. Heap
+ * use is a few times the serialized size. See SchemaCache.
  */
-const DEFAULT_SCHEMA_CACHE_ENTRIES = 5000;
+const DEFAULT_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
 const schemaCache = new SchemaCache<TableSourceDef | SQLSourceDef>(
    ((): number => {
-      const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_ENTRIES;
+      const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
       const parsed = raw === undefined ? NaN : Number(raw);
       return Number.isInteger(parsed) && parsed >= 0
          ? parsed
-         : DEFAULT_SCHEMA_CACHE_ENTRIES;
+         : DEFAULT_SCHEMA_CACHE_BYTES;
    })(),
 );
 
@@ -269,8 +272,14 @@ class ProxyConnection {
       this.jobId = jobId;
       // The environment is part of the key, not only the digest: a digest can
       // be a configured fingerprint, and two environments' connections must
-      // never share what one of them can see.
-      this.cacheScope = [environmentScope, this.name, this.digest].join("\0");
+      // never share what one of them can see. The generation retires the
+      // entries when the main thread replaces the connection.
+      this.cacheScope = [
+         environmentScope,
+         this.name,
+         this.digest,
+         metadata.generation,
+      ].join("\0");
    }
 
    getDigest(): string {
@@ -333,6 +342,7 @@ class ProxyConnection {
       for (const [key, tablePath, pending] of joined) {
          const schema = await pending;
          if (schema) {
+            schemaCache.noteJoinedHit();
             cached[key] = schema as TableSourceDef;
          } else {
             unanswered[key] = tablePath;
@@ -396,7 +406,10 @@ class ProxyConnection {
       if (hit) return { structDef: hit as SQLSourceDef };
       if (options.refreshTimestamp === undefined) {
          const pending = await schemaCache.joinInFlight(cacheKey);
-         if (pending) return { structDef: pending as SQLSourceDef };
+         if (pending) {
+            schemaCache.noteJoinedHit();
+            return { structDef: pending as SQLSourceDef };
+         }
       }
       const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
       schemaCache.trackInFlight(
@@ -574,7 +587,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                   const proxy = new ProxyConnection(
                      response.metadata,
                      job.requestId,
-                     job.environmentName ?? path.dirname(job.packagePath),
+                     job.environmentName,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
