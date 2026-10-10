@@ -267,6 +267,12 @@ export interface ResolvedRequest {
    givens?: Record<string, unknown>;
    /** Filter parameter values; read by value lookups for sources with required filters. */
    filterParams?: Record<string, string | string[]>;
+   /**
+    * Literals the caller extracted for a dimension or value target, by target
+    * index (`search_targets[].example_values`). Read by the fcj engine's value
+    * index only.
+    */
+   exampleValues?: Map<number, string[]>;
    /** True when no target carried search text: enumerate, do not rank. */
    listingOnly: boolean;
    /** Serialize each entity's Malloy expression as `code`. */
