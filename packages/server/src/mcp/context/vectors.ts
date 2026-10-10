@@ -23,6 +23,7 @@
 
 import type { EmbeddingModel } from "../../providers/types";
 import {
+   DEFAULT_EMBEDDING_RETRY,
    EMBEDDING_BATCH_TIMEOUT_MS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
@@ -156,6 +157,9 @@ export async function syncVectors(args: {
       const out = await provider.embedBatch(
          batch.map(([, r]) => prefix + r.input),
          EMBEDDING_BATCH_TIMEOUT_MS,
+         // The shipped sync's ladder: a 500 or a 429 from the vendor is retried with
+         // backoff, not a failed build.
+         DEFAULT_EMBEDDING_RETRY,
       );
       const now = new Date().toISOString();
       const params: unknown[] = [];
