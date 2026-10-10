@@ -39,6 +39,7 @@ import {
 
 import {
    tryCompileSynthesizedPreaggregation,
+   type SynthesizedPreaggregation,
    type SynthesizedRuntimeFactory,
 } from "./preaggregation_compile";
 import type { RollupPlan } from "./preaggregation_synthesis";
@@ -905,6 +906,23 @@ export function emptyBuildPlanParts(): BuildPlanParts {
 }
 
 /**
+ * Append `from` to `into`, as if `from`'s model had been collected into `into`
+ * directly. Merging per-model parts in model order gives the same parts as
+ * collecting the models into one, in that order.
+ */
+export function mergeBuildPlanParts(
+   into: BuildPlanParts,
+   from: BuildPlanParts,
+): void {
+   into.graphs.push(...from.graphs);
+   Object.assign(into.sources, from.sources);
+   Object.assign(into.sourceModelPaths, from.sourceModelPaths);
+   into.droppedPersistSources.push(...from.droppedPersistSources);
+   Object.assign(into.preaggregatePlans, from.preaggregatePlans);
+   Object.assign(into.sourceGateOutcomes, from.sourceGateOutcomes);
+}
+
+/**
  * Add one compiled `.malloy` model's build graphs, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
  * must be the one that compiled `malloyModel` (gate classification grafts
@@ -922,6 +940,11 @@ export async function collectModelBuildPlan(
       materializer: ModelMaterializer;
       malloyModel: MalloyModel;
       getRuntime: SynthesizedRuntimeFactory;
+      /**
+       * The model's pre-aggregation companion when the caller already compiled
+       * it, or null when it has none; compiled here when absent.
+       */
+      synthesized?: SynthesizedPreaggregation | null;
    },
 ): Promise<void> {
    const { modelPath, packagePath, materializer, malloyModel, getRuntime } =
@@ -933,13 +956,16 @@ export async function collectModelBuildPlan(
    // the SYNTHESIZED model declares the flags it needs and is the only thing
    // holding a persist source. Skipping here would make a valid annotation a
    // silent no-op, which the publish gate exists to prevent.
-   const synthesized = await tryCompileSynthesizedPreaggregation({
-      packagePath,
-      modelPath,
-      getRuntime,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      contents: (malloyModel as any)._modelDef?.contents ?? {},
-   });
+   const synthesized =
+      args.synthesized !== undefined
+         ? args.synthesized
+         : await tryCompileSynthesizedPreaggregation({
+              packagePath,
+              modelPath,
+              getRuntime,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              contents: (malloyModel as any)._modelDef?.contents ?? {},
+           });
    if (synthesized) {
       const rollupPlan = synthesized.model.getBuildPlan();
       const rollupNames = new Set(
@@ -1321,13 +1347,6 @@ export function deriveBuildPlan(
    return { graphs: wireGraphs, sources: wireSources, refusedSources };
 }
 
-/**
- * Compile and project a package's build plan (null when the package declares no
- * materializable persist source), plus any `#@ persist` sources that were
- * silently dropped from the plan (see {@link detectDroppedPersistSources}) so
- * the caller can surface a load-time warning. A deterministic property of the
- * compiled package; feeds the read-only `Package.buildPlan` field.
- */
 /** What a package load keeps from its build plan. */
 export interface BuildPlanOutcome {
    plan: BuildPlan | null;

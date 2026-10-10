@@ -93,6 +93,13 @@ export async function compilePackageBuildPlan(
    };
 }
 
+/**
+ * Compile and project a package's build plan (null when the package declares no
+ * materializable persist source), plus any `#@ persist` sources that were
+ * silently dropped from the plan (see `detectDroppedPersistSources` in build_plan.ts) so
+ * the caller can surface a load-time warning. A deterministic property of the
+ * compiled package; feeds the read-only `Package.buildPlan` field.
+ */
 export async function computePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
