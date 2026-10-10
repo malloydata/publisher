@@ -780,6 +780,21 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       PRIMARY KEY (environment_name, package_name, node_key, facet)
     )
   `);
+   // The engine's value index (mcp/context/values_index.ts): stored values of
+   // `#(index)` dimensions on ungated sources, and value lists from docs.
+   // Rewritten at each load; the engine searches its in-memory copy.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_values (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dimension_key VARCHAR NOT NULL,
+      value VARCHAR NOT NULL,
+      normalized VARCHAR NOT NULL,
+      count BIGINT NOT NULL,
+      origin VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
 }
 
 // Tables in the pre-rename `projects` schema, children first so DROP order
@@ -831,6 +846,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "doc_parts",
       "node_questions",
       "catalog_embeddings",
+      "dimension_values",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));
