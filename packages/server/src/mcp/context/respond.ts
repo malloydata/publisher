@@ -7,12 +7,14 @@
  *
  * `sources[]` is built from the judge's picks with the shipped card builder,
  * so a caller that reads cards keeps working. A pick on the home source (or a
- * twin) is on its own card. A pick on a source the home reaches by joins is
+ * twin) is on its own card. A field on a source the home reaches by joins is
  * presented on the home's card under every route the home has to it
  * (`origin.region_name` and `arrival.region_name` are two answers, not one),
  * each with a fixed sentence saying the field is seen through a left join.
  * Picking one route would pick a population; listing them leaves that choice
- * to the reader, who has the question.
+ * to the reader, who has the question. A picked source is always its own
+ * card, joined or not: it is a second source the caller can query, and its
+ * doc describes it, not the home.
  *
  * Values matched in the value index ride under their dimension as `values[]`,
  * on its own card only, never on a joined copy. A `dimensional_value` target
@@ -286,8 +288,8 @@ export async function respond(args: {
 }
 
 /**
- * Where one pick goes: its own card when it is on the home or a twin, or the
- * home's card under each route the home has to it.
+ * Where one pick goes: its own card when it is a source or is on the home or
+ * a twin, or the home's card under each route the home has to it.
  */
 async function place(
    args: Parameters<typeof respond>[0],
@@ -303,7 +305,10 @@ async function place(
    const owner = index.catalog.sources.get(node.sourceKey)!;
    // Routes are the home's own: a field a twin reaches is shown on its own card.
    const entry = cluster.homeReach.get(node.sourceKey);
+   // A source row under the home's name would be read as the home card
+   // itself, and its doc would replace the home's (toSourceResults).
    const own =
+      node.kind === "source" ||
       node.sourceKey === cluster.home ||
       cluster.twins.includes(node.sourceKey) ||
       cluster.contenders.includes(node.sourceKey) ||
