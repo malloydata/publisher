@@ -147,7 +147,7 @@ export function rankTarget(
 ): Omit<FindResult, "target"> & { all: Candidate[] } {
    const admitted = new Map<string, CatalogNode>();
    for (const node of index.catalog.nodes.values()) {
-      if (target.kinds.includes(node.kind) && allow(node))
+      if (target.kinds.includes(node.kind) && !node.copyOf && allow(node))
          admitted.set(node.key, node);
    }
    // A value target's phrase is the value; how close it is to a field's name

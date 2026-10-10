@@ -508,6 +508,7 @@ such source group to pick what to return. The response adds `clusters`, `coverag
 | `fcj.questions`        | `auto`  | Index-time questions written by the LLM. As for `refine.enabled`.                         |
 | `fcj.docParts`         | `auto`  | Index-time split of long docs by the LLM; by rules otherwise. As for `refine.enabled`.    |
 | `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
+| `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the field where it is defined; the extension competes only with the fields it adds. |
 | `fcj.contenderShare`   | `0`     | Provisional, off by default. A source scoring at least this share of the best source on the same targets joins its group (up to three), so the picking call chooses between near-tied sources. |
 
 `prompts.judge`, `prompts.docParts` and `prompts.questions` replace those steps' instructions. Stored

@@ -497,7 +497,11 @@ function extrasOf(
       )) {
          const node = index.catalog.nodes.get(c.key);
          for (const dep of node?.dependsOn ?? []) {
-            add(dep, `${node!.name} is computed from it`);
+            // A dependency on a folded copy is the field it copies.
+            add(
+               index.catalog.nodes.get(dep)?.copyOf ?? dep,
+               `${node!.name} is computed from it`,
+            );
          }
       }
    }
