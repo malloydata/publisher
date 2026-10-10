@@ -82,7 +82,17 @@ export function routeList(
    return out;
 }
 
-/** The ids of every route, for a trace. */
+/**
+ * The ids of every route, for a trace: the joins that reach the field, and,
+ * with `collapseCopies`, the field's copies in extensions and their routes,
+ * which are the same field under other names.
+ */
 export function routesOf(catalog: Catalog, node: CatalogNode): string[] {
-   return routeList(catalog, node).map((r) => r.id);
+   const out = routeList(catalog, node).map((r) => r.id);
+   for (const key of node.copies ?? []) {
+      const copy = catalog.nodes.get(key);
+      if (!copy) continue;
+      out.push(copy.id, ...routeList(catalog, copy).map((r) => r.id));
+   }
+   return out;
 }
