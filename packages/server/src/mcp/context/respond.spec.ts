@@ -6,7 +6,10 @@ import {
    DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
 } from "../../service/package_retrieval";
-import { FCJ_PAYMENTS_FILES } from "../../test_helpers/fcj_fixture";
+import {
+   FCJ_PAYMENTS_FILES,
+   FCJ_PEERS_FILES,
+} from "../../test_helpers/fcj_fixture";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
@@ -18,7 +21,7 @@ import { connect } from "./connect";
 import { gatedValueWarning, unjudged, withPinnedDimensions } from "./engine";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
 import type { JudgeVerdict } from "./judge";
-import { populationNote, respond } from "./respond";
+import { populationNote, queryGroups, respond } from "./respond";
 import { ValueIndex } from "./values_index";
 import { toUnit } from "./vectors";
 
@@ -303,7 +306,7 @@ describe("respond", () => {
       }
    });
 
-   it('with connect: "list", puts a pick on a source the home does not join on that source\'s card', async () => {
+   it('with connect: "list", puts each pick on its own source\'s card, and two sources no join links are two groups', async () => {
       const out = await answer(
          [
             t(0, "measure", "number of flights"),
@@ -328,8 +331,32 @@ describe("respond", () => {
          "measure:flights:flight_count",
          "measure:races:race_count",
       ]);
-      expect(out.clusters.length).toBe(1);
-      expect(out.coverage).toBeUndefined();
+      expect(out.clusters).toEqual([
+         {
+            query_from: { source: "flights", model_path: "travel.malloy" },
+            sources: [{ source: "flights", joins: [] }],
+            covers: [0],
+            picks: { 0: ["measure:flights:flight_count"] },
+         },
+         {
+            query_from: { source: "races", model_path: "reports.malloy" },
+            sources: [{ source: "races", joins: [] }],
+            covers: [1],
+            picks: { 1: ["measure:races:race_count"] },
+         },
+      ]);
+      expect(out.coverage).toEqual([
+         {
+            target_index: 0,
+            search_text: "number of flights",
+            clusters: [true, false],
+         },
+         {
+            target_index: 1,
+            search_text: "number of races",
+            clusters: [false, true],
+         },
+      ]);
       expect(out.unresolved_targets).toEqual([]);
    });
 
@@ -426,6 +453,189 @@ describe("respond, a picked source the home reaches by a join", () => {
                2: ["measure:payments:total_volume_eur"],
             },
          ],
+      ]);
+   });
+});
+
+describe('respond, connect: "list"', () => {
+   let p: FcjIndexFixture;
+   beforeAll(async () => {
+      p = await buildFcjIndexFixture(DEFAULT_FCJ_SETTINGS, FCJ_PEERS_FILES);
+   });
+   afterAll(async () => p.close());
+
+   it("puts a joined source's pick on its own card, and groups the picks one query can combine after the judge", async () => {
+      const targets = [
+         t(0, "measure", "total revenue"),
+         t(1, "dimension", "store city"),
+      ];
+      const out = await answer(
+         targets,
+         undefined,
+         () => true,
+         {
+            verdicts: [
+               {
+                  // The list's id: the owner of the measure's best candidate.
+                  cluster: "promotion_summary@retail.malloy",
+                  picks: [
+                     {
+                        target: 0,
+                        keys: [
+                           "measure:sales_lines@retail.malloy:total_revenue",
+                           "measure:promotion_summary@retail.malloy:total_revenue_lift",
+                        ],
+                     },
+                     {
+                        target: 1,
+                        keys: ["dimension:stores@retail.malloy:store_city"],
+                     },
+                  ],
+                  caveats: [
+                     "total_revenue_lift covers each promotion's window only.",
+                  ],
+               },
+            ],
+         },
+         p,
+         { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 3 },
+      );
+      // No home card: three sources, each holding only what was picked on it.
+      expect(
+         (out.sources as Card[]).map((c) => [
+            c.source_info.resource_id.source,
+            (c.entities ?? []).map((e) => e.entity_id),
+         ]),
+      ).toEqual([
+         ["sales_lines", ["measure:sales_lines:total_revenue"]],
+         [
+            "promotion_summary",
+            ["measure:promotion_summary:total_revenue_lift"],
+         ],
+         ["stores", ["dimension:stores:store_city"]],
+      ]);
+      expect(out.clusters).toEqual([
+         {
+            query_from: { source: "sales_lines", model_path: "retail.malloy" },
+            sources: [
+               { source: "sales_lines", joins: [] },
+               { source: "stores", joins: ["store"] },
+            ],
+            covers: [0, 1],
+            picks: {
+               0: ["measure:sales_lines:total_revenue"],
+               1: ["dimension:stores:store_city"],
+            },
+            caveats: [
+               "total_revenue_lift covers each promotion's window only.",
+            ],
+         },
+         {
+            query_from: {
+               source: "promotion_summary",
+               model_path: "retail.malloy",
+            },
+            sources: [{ source: "promotion_summary", joins: [] }],
+            covers: [0],
+            picks: { 0: ["measure:promotion_summary:total_revenue_lift"] },
+         },
+      ]);
+      expect(out.coverage).toEqual([
+         {
+            target_index: 0,
+            search_text: "total revenue",
+            clusters: [true, true],
+         },
+         {
+            target_index: 1,
+            search_text: "store city",
+            clusters: [true, false],
+         },
+      ]);
+   });
+
+   it("with no pick, returns no group and keeps the judge's caveats as warnings", async () => {
+      const targets = [t(0, "measure", "total revenue")];
+      const out = await answer(
+         targets,
+         undefined,
+         () => true,
+         {
+            verdicts: [
+               {
+                  cluster: "promotion_summary@retail.malloy",
+                  picks: [{ target: 0, keys: [] }],
+                  caveats: ["No listed source has revenue for August."],
+               },
+            ],
+         },
+         p,
+         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+      );
+      expect([out.sources, out.clusters, out.coverage, out.warnings]).toEqual([
+         [],
+         [],
+         undefined,
+         ["No listed source has revenue for August."],
+      ]);
+      expect(out.unresolved_targets).toEqual([
+         {
+            target_index: 0,
+            target_type: "measure",
+            search_text: "total revenue",
+         },
+      ]);
+   });
+});
+
+describe("queryGroups", () => {
+   const reach = (source: string, ...paths: string[][]) => ({
+      source,
+      hops: paths[0].length,
+      paths,
+   });
+
+   it("names an unpicked source when it is the one query that combines two picked ones", () => {
+      const peers = [
+         { source: "orders", reaches: [] },
+         { source: "products", reaches: [] },
+         {
+            source: "order_items",
+            reaches: [
+               reach("orders", ["order"]),
+               reach("products", ["product"]),
+            ],
+         },
+      ];
+      expect(queryGroups(peers, ["orders", "products"])).toEqual([
+         {
+            root: "order_items",
+            members: [
+               { source: "orders", paths: [["order"]] },
+               { source: "products", paths: [["product"]] },
+            ],
+         },
+      ]);
+      // An unpicked source that combines only one picked source is not a group.
+      expect(queryGroups(peers, ["orders"])).toEqual([
+         { root: "orders", members: [{ source: "orders", paths: [[]] }] },
+      ]);
+   });
+
+   it("prefers a picked root over an unpicked one that combines the same sources", () => {
+      const peers = [
+         { source: "hub", reaches: [reach("a", ["a"]), reach("b", ["b"])] },
+         { source: "a", reaches: [reach("b", ["to_b"])] },
+         { source: "b", reaches: [] },
+      ];
+      expect(queryGroups(peers, ["a", "b"])).toEqual([
+         {
+            root: "a",
+            members: [
+               { source: "a", paths: [[]] },
+               { source: "b", paths: [["to_b"]] },
+            ],
+         },
       ]);
    });
 });

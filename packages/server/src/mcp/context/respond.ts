@@ -25,6 +25,13 @@
  * judge's caveats), `coverage` (target by cluster, when there is more than
  * one cluster) and `unresolved_targets` (targets no cluster answered) are
  * this engine's own, and appear only on a package that opted into it.
+ *
+ * With the provisional `connect: "list"` there is no home. Every pick is on
+ * its own source's card, and `clusters` is read after the judge from the
+ * picks and the join reach (queryGroups): each entry is a source to query
+ * from, the picked sources one query from it can combine, and the targets
+ * they answer. `coverage` is then target by group. The judge's caveats ride
+ * on the first group; with no pick there is no group, and they are warnings.
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -44,7 +51,7 @@ import {
    type ResultEntity,
 } from "../tools/get_context_tool";
 import type { CatalogNode, CatalogSource } from "./catalog";
-import type { Cluster, ConnectResult } from "./connect";
+import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 import type { JudgeVerdict } from "./judge";
@@ -155,6 +162,8 @@ export async function respond(args: {
    };
 
    const clustersOut: unknown[] = [];
+   /** Per entry of clustersOut, the targets it covers. */
+   const groupCovers: number[][] = [];
    for (const verdict of verdicts) {
       const cluster = connected.clusters.find(
          (c) => c.home === verdict.cluster,
@@ -162,19 +171,23 @@ export async function respond(args: {
       if (!cluster) continue;
       const home = index.catalog.sources.get(cluster.home)!;
       const homePath = cardModelPath(home, request);
-      const homeRowKey = `${cluster.home}\u0000source`;
-      put(homeRowKey, {
-         ...projectEntity(
-            entityAt(home.node, homePath),
-            request.environmentName,
-            request.packageName,
-         ),
-         modelPath: homePath,
-         score: publish(
-            cluster.candidates.get(cluster.covers[0] ?? -1)?.[0]?.score ?? 0,
-         ),
-      });
+      // A list has no home card: a source's card holds what was picked on it.
+      if (!cluster.peers) {
+         put(`${cluster.home}\u0000source`, {
+            ...projectEntity(
+               entityAt(home.node, homePath),
+               request.environmentName,
+               request.packageName,
+            ),
+            modelPath: homePath,
+            score: publish(
+               cluster.candidates.get(cluster.covers[0] ?? -1)?.[0]?.score ?? 0,
+            ),
+         });
+      }
       const picksOut: Record<number, string[]> = {};
+      const placedOn: Array<{ target: number; source: string; id: string }> =
+         [];
       for (const pick of verdict.picks) {
          const target = targetOf.get(pick.target);
          for (const key of pick.keys) {
@@ -197,9 +210,55 @@ export async function respond(args: {
             for (const p of placed) {
                put(p.key, p.row, pick.target, score, pick.reason);
                (picksOut[pick.target] ??= []).push(p.id);
+               placedOn.push({
+                  target: pick.target,
+                  source: node.sourceKey,
+                  id: p.id,
+               });
             }
          }
       }
+      if (cluster.peers) {
+         const groups = queryGroups(
+            cluster.peers,
+            unique(placedOn.map((p) => p.source)),
+         );
+         groups.forEach((g, i) => {
+            const members = new Set(g.members.map((m) => m.source));
+            const picks: Record<number, string[]> = {};
+            for (const p of placedOn) {
+               if (members.has(p.source)) (picks[p.target] ??= []).push(p.id);
+            }
+            const covers = Object.keys(picks)
+               .map(Number)
+               .sort((a, b) => a - b);
+            groupCovers.push(covers);
+            const root = index.catalog.sources.get(g.root)!;
+            clustersOut.push({
+               query_from: {
+                  source: root.name,
+                  model_path: cardModelPath(root, request),
+               },
+               sources: g.members.map((m) => ({
+                  source: index.catalog.sources.get(m.source)?.name,
+                  joins: m.paths
+                     .filter((x) => x.length > 0)
+                     .map((x) => x.join(".")),
+               })),
+               covers,
+               picks,
+               // The caveats are the judge's, about the whole list: once.
+               ...(i === 0 && verdict.caveats.length > 0
+                  ? { caveats: verdict.caveats }
+                  : {}),
+            });
+         });
+         if (groups.length === 0 && verdict.caveats.length > 0) {
+            warnings.push(...verdict.caveats);
+         }
+         continue;
+      }
+      groupCovers.push(cluster.covers);
       clustersOut.push({
          home: { source: home.name, model_path: homePath },
          reach: [...cluster.reach.values()]
@@ -268,13 +327,11 @@ export async function respond(args: {
          search_text: t.text,
       }));
    const coverage =
-      connected.clusters.length > 1
+      groupCovers.length > 1
          ? targets.map((t) => ({
               target_index: t.index,
               search_text: t.text,
-              clusters: connected.clusters.map((c) =>
-                 c.covers.includes(t.index),
-              ),
+              clusters: groupCovers.map((c) => c.includes(t.index)),
            }))
          : undefined;
    return {
@@ -288,8 +345,9 @@ export async function respond(args: {
 }
 
 /**
- * Where one pick goes: its own card when it is a source or is on the home or
- * a twin, or the home's card under each route the home has to it.
+ * Where one pick goes: its own card when it is a source, is on the home or
+ * a twin, or is in a list; else the home's card under each route the home
+ * has to it.
  */
 async function place(
    args: Parameters<typeof respond>[0],
@@ -308,6 +366,7 @@ async function place(
    // A source row under the home's name would be read as the home card
    // itself, and its doc would replace the home's (toSourceResults).
    const own =
+      cluster.peers !== undefined ||
       node.kind === "source" ||
       node.sourceKey === cluster.home ||
       cluster.twins.includes(node.sourceKey) ||
@@ -370,6 +429,62 @@ async function place(
       });
    }
    return out;
+}
+
+function unique<T>(xs: readonly T[]): T[] {
+   return [...new Set(xs)];
+}
+
+/** One query a list's picks allow: a source to query from and the picked sources it combines. */
+export interface QueryGroup {
+   root: string;
+   /** The picked sources, the root first when it is picked, each with its join paths from the root (`[[]]` for the root). */
+   members: Array<{ source: string; paths: string[][] }>;
+}
+
+/**
+ * The groups of picked sources one query can combine. Every peer is a
+ * possible root: a query from it uses the picked sources its joins reach,
+ * itself included when picked. A root with no pick of its own is kept only
+ * when it combines two or more picked sources. A group whose picked sources
+ * all sit in a larger (or an earlier equal) group is dropped. Ties go to a
+ * picked root, then to the peer order. Most sources combined first. Pure.
+ */
+export function queryGroups(
+   peers: readonly PeerSource[],
+   picked: readonly string[],
+): QueryGroup[] {
+   const isPicked = new Set(picked);
+   const all = peers
+      .map((peer, order) => {
+         const members: QueryGroup["members"] = isPicked.has(peer.source)
+            ? [{ source: peer.source, paths: [[]] }]
+            : [];
+         for (const r of peer.reaches) {
+            if (isPicked.has(r.source) && r.source !== peer.source)
+               members.push({ source: r.source, paths: r.paths });
+         }
+         return { root: peer.source, members, order };
+      })
+      .filter(
+         (g) =>
+            g.members.length > 0 &&
+            (isPicked.has(g.root) || g.members.length >= 2),
+      )
+      .sort(
+         (a, b) =>
+            b.members.length - a.members.length ||
+            Number(isPicked.has(b.root)) - Number(isPicked.has(a.root)) ||
+            a.order - b.order,
+      );
+   const kept: typeof all = [];
+   for (const g of all) {
+      const covered = kept.some((k) =>
+         g.members.every((m) => k.members.some((x) => x.source === m.source)),
+      );
+      if (!covered) kept.push(g);
+   }
+   return kept.map(({ root, members }) => ({ root, members }));
 }
 
 /** The stored values a dimension pick carries for a value target. */
