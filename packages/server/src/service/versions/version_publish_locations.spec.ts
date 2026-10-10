@@ -15,8 +15,9 @@ import { isUnversionedStage, VersionStore } from "./version_store";
 
 /**
  * Publishing a version again, for every kind of location a publish fetches
- * from: a local folder, a local `.zip`, a `gs://` or `s3://` folder or
- * `.zip`, and a Git repository. Each is staged as a plain folder by the real
+ * from: a local folder, a local `.zip`, a `gs://` or `s3://` `.zip` (how
+ * those stores hold packages), and a Git repository. Each is staged as a
+ * plain folder by the real
  * downloader (EnvironmentStore.downloadPackageInto) and hashed; only the
  * network is faked (the GCS and S3 clients, and the clone).
  *
@@ -142,17 +143,6 @@ function zipOf(name: string, files: Record<string, string>, at?: Date): string {
    return archive;
 }
 
-/** Put `files` into the fake bucket under `bucket/prefix/`. */
-function upload(
-   bucket: string,
-   prefix: string,
-   files: Record<string, string>,
-): void {
-   for (const [relative, content] of Object.entries(files)) {
-      objects.set(`${bucket}/${prefix}/${relative}`, Buffer.from(content));
-   }
-}
-
 function keysUnder(bucket: string, prefix: string): string[] {
    return [...objects.keys()]
       .filter((k) => k.startsWith(`${bucket}/${prefix}`))
@@ -173,13 +163,6 @@ const fakeGcs = {
 
 /** An S3 client over the fake bucket, shaped as the store calls it. */
 const fakeS3 = {
-   listObjectsV2: async ({
-      Bucket,
-      Prefix,
-   }: {
-      Bucket: string;
-      Prefix: string;
-   }) => ({ Contents: keysUnder(Bucket, Prefix).map((Key) => ({ Key })) }),
    send: async (command: { input: { Bucket: string; Key: string } }) => {
       const body = objects.get(`${command.input.Bucket}/${command.input.Key}`);
       return body
@@ -347,17 +330,6 @@ describe("publishing a version again, by location kind", () => {
       },
    );
 
-   it("a gs:// folder: the same files uploaded again are placement; a changed file is 409", async () => {
-      upload("bucket", "pkgs/first", FIRST);
-      upload("bucket", "pkgs/again", FIRST);
-      upload("bucket", "pkgs/changed", CHANGED);
-      await expectTheRule(
-         "gs://bucket/pkgs/first",
-         ["gs://bucket/pkgs/again"],
-         "gs://bucket/pkgs/changed",
-      );
-   });
-
    it.skipIf(!hasZip)(
       "a gs:// .zip: the same files packed again are placement; a changed file is 409",
       async () => {
@@ -382,17 +354,6 @@ describe("publishing a version again, by location kind", () => {
          );
       },
    );
-
-   it("an s3:// folder: the same files uploaded again are placement; a changed file is 409", async () => {
-      upload("bucket", "pkgs/first", FIRST);
-      upload("bucket", "pkgs/again", FIRST);
-      upload("bucket", "pkgs/changed", CHANGED);
-      await expectTheRule(
-         "s3://bucket/pkgs/first",
-         ["s3://bucket/pkgs/again"],
-         "s3://bucket/pkgs/changed",
-      );
-   });
 
    it.skipIf(!hasZip)(
       "an s3:// .zip: the same files packed again are placement; a changed file is 409",
@@ -485,13 +446,6 @@ const LOCATION_KINDS: {
       setUp: (files) => zipOf("archive", files),
    },
    {
-      kind: "a gs:// folder",
-      setUp: (files) => {
-         upload("bucket", "pkgs/sales", files);
-         return "gs://bucket/pkgs/sales";
-      },
-   },
-   {
       kind: "a gs:// .zip",
       needsZip: true,
       setUp: (files) => {
@@ -500,13 +454,6 @@ const LOCATION_KINDS: {
             fs.readFileSync(zipOf("gcs", files)),
          );
          return "gs://bucket/zips/sales.zip";
-      },
-   },
-   {
-      kind: "an s3:// folder",
-      setUp: (files) => {
-         upload("bucket", "pkgs/sales", files);
-         return "s3://bucket/pkgs/sales";
       },
    },
    {

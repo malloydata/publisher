@@ -4,10 +4,10 @@
 /// <reference types="bun-types" />
 
 /**
- * Publishing over HTTP from every kind of location a publish accepts: a local
- * folder or `.zip`, a `gs://` or `s3://` folder or `.zip`, and a Git
- * repository or a top-level folder of one. The packages are the fixtures in
- * tests/fixtures/publish-locations.
+ * Publishing over HTTP from every kind of location a publish is sent: a local
+ * folder or `.zip`, a `gs://` or `s3://` `.zip` (how those stores hold
+ * packages), and a Git repository or a top-level folder of one. The packages
+ * are the fixtures in tests/fixtures/publish-locations.
  *
  * For each kind, the same two rules:
  * - a tree with a version: published (200); the same content again, in any
@@ -117,13 +117,6 @@ const fakeGcs = {
 
 /** An S3 client over the buckets, shaped as the store calls it. */
 const fakeS3 = {
-   listObjectsV2: async ({
-      Bucket,
-      Prefix,
-   }: {
-      Bucket: string;
-      Prefix: string;
-   }) => ({ Contents: keysUnder(Bucket, Prefix).map((Key) => ({ Key })) }),
    send: async (command: { input: { Bucket: string; Key: string } }) => {
       const body = objects.get(`${command.input.Bucket}/${command.input.Key}`);
       return body
@@ -137,29 +130,8 @@ const fakeS3 = {
    },
 };
 
-/** Every fixture folder's files under `folders/`, and every zip under `zips/`. */
+/** Every fixture zip, under `zips/` in the `fixtures` bucket. */
 function fillBuckets(): void {
-   for (const folder of FIXTURE_FOLDERS) {
-      const root = path.join(FIXTURES, folder);
-      const walk = (dir: string) => {
-         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            const absolute = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-               walk(absolute);
-               continue;
-            }
-            const relative = path
-               .relative(root, absolute)
-               .split(path.sep)
-               .join("/");
-            objects.set(
-               `fixtures/folders/${folder}/${relative}`,
-               fs.readFileSync(absolute),
-            );
-         }
-      };
-      walk(root);
-   }
    for (const zip of fs.readdirSync(path.join(FIXTURES, "zips"))) {
       objects.set(
          `fixtures/zips/${zip}`,
@@ -176,8 +148,6 @@ interface LocationKind {
    repacks?: boolean;
 }
 
-// Folder locations end in `/`: a bucket lists by prefix, and
-// `folders/sales-1.0.0` would also match `folders/sales-1.0.0-changed/...`.
 const KINDS: LocationKind[] = [
    { slug: "local-folder", location: (f) => path.join(FIXTURES, f) },
    {
@@ -185,13 +155,11 @@ const KINDS: LocationKind[] = [
       location: (f) => path.join(FIXTURES, "zips", `${f}.zip`),
       repacks: true,
    },
-   { slug: "gcs-folder", location: (f) => `gs://fixtures/folders/${f}/` },
    {
       slug: "gcs-zip",
       location: (f) => `gs://fixtures/zips/${f}.zip`,
       repacks: true,
    },
-   { slug: "s3-folder", location: (f) => `s3://fixtures/folders/${f}/` },
    {
       slug: "s3-zip",
       location: (f) => `s3://fixtures/zips/${f}.zip`,

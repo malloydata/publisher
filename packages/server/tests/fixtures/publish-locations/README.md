@@ -1,6 +1,6 @@
 # Publish-location fixtures
 
-Packages for `tests/integration/package_versions/publish_locations.integration.spec.ts`, which publishes each of them from every kind of location a publish accepts (a local folder or `.zip`, a `gs://` or `s3://` folder or `.zip`, and a Git repository or a folder of one) and checks what each publish answers.
+Packages for `tests/integration/package_versions/publish_locations.integration.spec.ts`, which publishes each of them from every kind of location a publish is sent (a local folder or `.zip`, a `gs://` or `s3://` `.zip`, and a Git repository or a folder of one) and checks what each publish answers.
 
 | Folder                      | `version` | `numbers -> which` answers | Used for                                       |
 | --------------------------- | --------- | -------------------------- | ---------------------------------------------- |
@@ -15,4 +15,4 @@ Packages for `tests/integration/package_versions/publish_locations.integration.s
 python3 packages/server/tests/fixtures/publish-locations/make_zips.py
 ```
 
-The test serves the folders and zips from in-memory GCS and S3 buckets and from a faked clone, so it needs no network or credentials.
+The test serves the zips from in-memory GCS and S3 buckets and the folders from a faked clone, so it needs no network or credentials.
