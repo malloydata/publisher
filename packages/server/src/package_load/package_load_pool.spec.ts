@@ -238,6 +238,34 @@ describe("PackageLoadPool (real worker)", () => {
 // Separate describe so the shutdown doesn't poison the shared pool above.
 // ──────────────────────────────────────────────────────────────────────
 
+describe("PackageLoadPool (dispatch)", () => {
+   it("spreads a burst of loads across workers that are still starting", async () => {
+      const pool = new PackageLoadPool(
+         3,
+         new URL("./test_fixtures/slow_ready_worker.ts", import.meta.url),
+      );
+      try {
+         const { MalloyConfig } = await import("@malloydata/malloy");
+         const outcomes = await Promise.all(
+            [1, 2, 3].map((n) =>
+               pool.loadPackage({
+                  packagePath: `/nowhere/pkg-${n}`,
+                  packageName: `pkg-${n}`,
+                  malloyConfig: new MalloyConfig({ connections: {} }),
+                  defaultConnectionName: "duckdb",
+               }),
+            ),
+         );
+         expect(pool.size).toBe(3);
+         expect(new Set(outcomes.map((o) => o.packageMetadata.name)).size).toBe(
+            3,
+         );
+      } finally {
+         await pool.shutdown();
+      }
+   });
+});
+
 describe("PackageLoadPool (shutdown)", () => {
    it("rejects loadPackage() after shutdown()", async () => {
       const { MalloyConfig } = await import("@malloydata/malloy");

@@ -421,19 +421,24 @@ export class PackageLoadPool {
       pw: PoolWorker,
       qj: QueuedJob,
    ): Promise<void> {
+      // Reserve the worker before waiting for it to become ready. A spawned
+      // worker takes a moment to start, and until the job is in `inFlight`
+      // the dispatcher sees it as idle, so every job of a burst would land on
+      // the first worker spawned and run there concurrently.
+      this.nextJobId += 1;
+      const jobId = `job-${this.nextJobId}`;
+      pw.inFlight.add(jobId);
       try {
          await pw.ready;
       } catch (err) {
          // Spawn failed; this worker is dead. Reject this job and
          // try the next queued one — a different worker may already
          // be alive, or `findIdleOrSpawnable` will lazily spawn one.
+         pw.inFlight.delete(jobId);
          qj.reject(err as Error);
          this.tryDispatch();
          return;
       }
-
-      this.nextJobId += 1;
-      const jobId = `job-${this.nextJobId}`;
 
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
@@ -454,11 +459,6 @@ export class PackageLoadPool {
          },
          timeout,
       });
-
-      // Register inFlight BEFORE postMessage so the next concurrent
-      // dispatcher pass sees this worker as busy (fixes Sha-Bang #1's
-      // 4/1 skew where simultaneous callers all tiebreak to alive[0]).
-      pw.inFlight.add(jobId);
 
       const message: LoadPackageRequest = {
          type: "load-package",
