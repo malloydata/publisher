@@ -2307,14 +2307,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # recorded as a breach.
                         if name == "Skill":
                             sk = (c.get("input") or {}).get("skill")
-                            # A skill the package ships and this run installed
-                            # is the thing under test, not a stray: it came
-                            # from the package, and run.json pins which tree it
-                            # came from (packageSkillsSha). Only the CLI's own
-                            # skills are foreign. Without this every answerer
-                            # that read a package guide was marked contaminated,
-                            # its verdict nulled, and the case dropped before
-                            # diagnosis -- so the arm could never be scored.
+                            # A package skill this run installed is under test, not a stray.
                             in_scope = (list(a.answerer_skills or [])
                                         + list(a.package_skill_names or []))
                             if sk and sk not in in_scope:

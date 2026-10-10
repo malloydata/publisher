@@ -75,12 +75,7 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-# Reload over REST, not MCP. An MCP tools/call reply is SSE wrapping a JSON
-# object whose content[].resource.text is ITSELF serialised JSON, so every inner
-# key arrives backslash-escaped (\"sourceContentSha\":\"...\") and a plain grep
-# for the unescaped form matches nothing. The failure is silent: the script
-# printed no sha, and "did the sha change" was unanswerable for every edit. The
-# REST package resource returns the same field as ordinary JSON.
+# REST, not MCP: an MCP reply escapes its inner JSON, so grepping it for the sha matches nothing.
 RELOAD = """curl -s -m 60 "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" \\
   | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
 

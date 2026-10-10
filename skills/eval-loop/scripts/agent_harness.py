@@ -400,12 +400,17 @@ def build_workspace(skills: Iterable[str],
                 f"directory named 'skills'. Anything wider risks copying the "
                 f"eval set into the answerer's workspace.")
         for child in sorted(package_skills_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith("."):
+            if (not child.is_dir() or child.is_symlink()
+                    or child.name.startswith(".")):
                 continue
             target = dest / child.name
             if target.exists():
                 shutil.rmtree(target)
-            shutil.copytree(child, target, symlinks=False)
+            # A link inside a skill could point at the eval set; copy none.
+            shutil.copytree(child, target, symlinks=True,
+                            ignore=lambda src, names: [
+                                n for n in names
+                                if (pathlib.Path(src) / n).is_symlink()])
     if mcp_url:
         (work / "mcp.json").write_text(json.dumps(
             {"mcpServers": {mcp_server: {"type": "http", "url": mcp_url}}}))

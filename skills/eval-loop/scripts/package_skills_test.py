@@ -81,6 +81,15 @@ class InstallPackageSkills(unittest.TestCase):
                  or p.name == "evals"]
         self.assertEqual(found, [], f"eval artefacts reached the workspace: {found}")
 
+    def test_does_not_follow_a_link_inside_a_skill_into_the_eval_set(self):
+        # skills/x/evals -> ../../evals would otherwise copy the goldens.
+        link = self.pkg_skills / "house-conventions" / "evals"
+        link.symlink_to(self.package / "evals", target_is_directory=True)
+        work = self.build(package_skills_dir=self.pkg_skills)
+        found = [str(p.relative_to(work)) for p in work.rglob("*")
+                 if p.name in ("cases.jsonl", "set.json", "evals")]
+        self.assertEqual(found, [], f"a link carried the eval set in: {found}")
+
     def test_refuses_a_directory_that_is_not_named_skills(self):
         # The guard is on the directory name rather than on its contents,
         # because "does this tree contain goldens" is a question that can be
