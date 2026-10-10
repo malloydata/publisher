@@ -59,6 +59,7 @@ export type ConnectSettings = Pick<
    | "reachDepth"
    | "keyword"
    | "values"
+   | "contenderShare"
 >;
 
 /** A source's case for being a home. */
@@ -97,6 +98,12 @@ export interface Cluster {
    newlyCovers: number[];
    /** Sources with the same answer under another name: same coverage, same fields. */
    twins: string[];
+   /**
+    * Sources that scored nearly as well on the same targets with other fields
+    * (only with the provisional `contenderShare` on). In the pool, so the
+    * judge sees them; their fields are shown on their own cards.
+    */
+   contenders: string[];
    /** Reach of the home (and the twins), by source key. */
    reach: Map<string, ReachEntry>;
    /** Reach of the home alone: the routes a field has from the home source. */
@@ -283,7 +290,12 @@ export function selectClusters(
    scores: readonly SourceScore[],
    settings: ConnectSettings,
 ): {
-   homes: Array<{ score: SourceScore; newlyCovers: number[]; twins: string[] }>;
+   homes: Array<{
+      score: SourceScore;
+      newlyCovers: number[];
+      twins: string[];
+      contenders: string[];
+   }>;
    unresolved: number[];
 } {
    const remaining = new Set(
@@ -293,6 +305,7 @@ export function selectClusters(
       score: SourceScore;
       newlyCovers: number[];
       twins: string[];
+      contenders: string[];
    }> = [];
    const taken = new Set<string>();
    while (remaining.size > 0 && homes.length < settings.maxClusters) {
@@ -305,9 +318,27 @@ export function selectClusters(
       if (!pick) break;
       const full = scores.find((s) => s.source === pick.source)!;
       const twins = twinsOf(index, full, scores).filter((t) => !taken.has(t));
-      homes.push({ score: full, newlyCovers: pick.covers, twins });
+      const contenders =
+         settings.contenderShare > 0
+            ? ranked
+                 .slice(1)
+                 .filter(
+                    (s) =>
+                       !twins.includes(s.source) &&
+                       s.score >= settings.contenderShare * pick.score &&
+                       pick.covers.every((t) => s.covers.includes(t)) &&
+                       // Not a source that only reaches the home's own fields.
+                       pick.covers.some(
+                          (t) => s.best.get(t)?.key !== pick.best.get(t)?.key,
+                       ),
+                 )
+                 .slice(0, MAX_CONTENDERS)
+                 .map((s) => s.source)
+            : [];
+      homes.push({ score: full, newlyCovers: pick.covers, twins, contenders });
       taken.add(pick.source);
       for (const t of twins) taken.add(t);
+      for (const c of contenders) taken.add(c);
       for (const t of pick.covers) remaining.delete(t);
    }
    const covered = new Set(homes.flatMap((h) => h.score.covers));
@@ -316,6 +347,9 @@ export function selectClusters(
       .filter((t) => !covered.has(t));
    return { homes, unresolved };
 }
+
+/** Most near-tied sources one cluster takes in (provisional `contenderShare`). */
+const MAX_CONTENDERS = 3;
 
 const DATE_TYPES = new Set(["date", "timestamp", "timestamptz"]);
 /** Most dates of the home source added for a period phrase. */
@@ -343,52 +377,55 @@ export function connect(args: {
    const reach = new ReachCache(index.catalog.joins, settings.reachDepth);
    const targets = found.map((r) => r.target);
 
-   const clusters: Cluster[] = homes.map(({ score, newlyCovers, twins }) => {
-      // The pool: every source in the reach of the home or a twin, with the
-      // fewest hops from either.
-      const pool = new Map<string, ReachEntry>();
-      for (const root of [score.source, ...twins]) {
-         for (const [k, e] of reach.of(root)) {
-            const prev = pool.get(k);
-            if (!prev || e.hops < prev.hops) pool.set(k, e);
+   const clusters: Cluster[] = homes.map(
+      ({ score, newlyCovers, twins, contenders }) => {
+         // The pool: every source in the reach of the home or a twin, with the
+         // fewest hops from either.
+         const pool = new Map<string, ReachEntry>();
+         for (const root of [score.source, ...twins, ...contenders]) {
+            for (const [k, e] of reach.of(root)) {
+               const prev = pool.get(k);
+               if (!prev || e.hops < prev.hops) pool.set(k, e);
+            }
          }
-      }
-      const inPool = (node: CatalogNode) =>
-         pool.has(node.sourceKey) && args.allow(node);
-      const candidates = new Map<number, ClusterCandidate[]>();
-      for (const target of targets) {
-         candidates.set(
-            target.index,
-            rankInCluster(
-               index,
-               target,
-               args.queries.get(target.index),
-               inPool,
-               pool,
-               settings,
-            ),
+         const inPool = (node: CatalogNode) =>
+            pool.has(node.sourceKey) && args.allow(node);
+         const candidates = new Map<number, ClusterCandidate[]>();
+         for (const target of targets) {
+            candidates.set(
+               target.index,
+               rankInCluster(
+                  index,
+                  target,
+                  args.queries.get(target.index),
+                  inPool,
+                  pool,
+                  settings,
+               ),
+            );
+         }
+         const extras = extrasOf(
+            index,
+            score.source,
+            pool,
+            candidates,
+            targets,
+            args.allow,
          );
-      }
-      const extras = extrasOf(
-         index,
-         score.source,
-         pool,
-         candidates,
-         targets,
-         args.allow,
-      );
-      return {
-         home: score.source,
-         score: score.score,
-         covers: score.covers,
-         newlyCovers,
-         twins,
-         reach: pool,
-         homeReach: reach.of(score.source),
-         candidates,
-         extras,
-      };
-   });
+         return {
+            home: score.source,
+            score: score.score,
+            covers: score.covers,
+            newlyCovers,
+            twins,
+            contenders,
+            reach: pool,
+            homeReach: reach.of(score.source),
+            candidates,
+            extras,
+         };
+      },
+   );
    return {
       clusters,
       unresolved,
