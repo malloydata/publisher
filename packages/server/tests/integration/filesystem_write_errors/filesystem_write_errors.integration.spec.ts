@@ -51,11 +51,7 @@ function writeTinyPackage(dir: string, name: string): void {
    mkdirSync(dir, { recursive: true });
    writeFileSync(
       path.join(dir, "publisher.json"),
-      JSON.stringify({
-         name,
-         version: "1.0.0",
-         description: "one-model DuckDB package",
-      }),
+      JSON.stringify({ name, description: "one-model DuckDB package" }),
    );
    writeFileSync(
       path.join(dir, "model.malloy"),

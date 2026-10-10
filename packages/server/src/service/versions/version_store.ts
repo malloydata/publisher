@@ -45,6 +45,29 @@ export interface StagedVersion {
    description: string | null;
 }
 
+/**
+ * A downloaded tree whose publisher.json declares no semantic version, kept
+ * staged so it can be installed in place, as a package with no versions.
+ */
+export interface UnversionedStage {
+   packageName: string;
+   stagingPath: string;
+   /** Why the tree is not a version: what a versioned publish refuses it with. */
+   reason: PackageVersionError;
+   /**
+    * Whether the tree has a publisher.json at all. One without is no package,
+    * and its install fails as it always has.
+    */
+   hasManifest: boolean;
+}
+
+/** Whether a stage is a tree that declares no semantic version. */
+export function isUnversionedStage(
+   stage: StagedVersion | UnversionedStage,
+): stage is UnversionedStage {
+   return "reason" in stage;
+}
+
 /** An unversioned tree held in `.legacy/` while a first versioned publish runs. */
 export interface LegacyTree {
    packageName: string;
@@ -88,6 +111,24 @@ export class VersionStore {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
    ): Promise<StagedVersion> {
+      const staged = await this.stageAny(packageName, downloader);
+      if (isUnversionedStage(staged)) {
+         await this.discard(staged);
+         throw staged.reason;
+      }
+      return staged;
+   }
+
+   /**
+    * Download into a fresh staging folder and read the version its
+    * publisher.json declares. A tree that declares no semantic version (none,
+    * one that is not semver, or no readable publisher.json) is kept staged
+    * and returned as such, for an install in place.
+    */
+   async stageAny(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+   ): Promise<StagedVersion | UnversionedStage> {
       assertSafePackageName(packageName);
       const stagingPath = safeJoinUnderRoot(
          this.environmentPath,
@@ -97,15 +138,27 @@ export class VersionStore {
       await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
       try {
          await downloader(stagingPath);
-         const { versionId, description } =
-            await readManifestVersion(stagingPath);
+         let manifest: Awaited<ReturnType<typeof readManifestVersion>>;
+         try {
+            manifest = await readManifestVersion(stagingPath);
+         } catch (err) {
+            if (!(err instanceof PackageVersionError)) throw err;
+            return {
+               packageName,
+               stagingPath,
+               reason: err,
+               hasManifest: await exists(
+                  path.join(stagingPath, PACKAGE_MANIFEST_NAME),
+               ),
+            };
+         }
          return {
             packageName,
             stagingPath,
-            versionId,
-            dirName: versionDirName(versionId),
+            versionId: manifest.versionId,
+            dirName: versionDirName(manifest.versionId),
             contentHash: await hashPackageTree(stagingPath),
-            description,
+            description: manifest.description,
          };
       } catch (err) {
          await removeQuietly(stagingPath);
@@ -114,7 +167,7 @@ export class VersionStore {
    }
 
    /** Remove a staged tree that will not be placed. */
-   async discard(staged: StagedVersion): Promise<void> {
+   async discard(staged: { stagingPath: string }): Promise<void> {
       await removeQuietly(this.within(STAGING_DIR_NAME, staged.stagingPath));
    }
 

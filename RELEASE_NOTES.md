@@ -23,17 +23,17 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — Packages published from a location are immutable versions
 
-`POST /api/v0/environments/{env}/packages` with a `location` now publishes an immutable **version** of the package, numbered by the `version` in its `publisher.json`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
+`POST /api/v0/environments/{env}/packages` with a `location` now publishes an immutable **version** of the package when its `publisher.json` declares a semantic `version`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
 
 **What changes for a publish from a location:**
 
-- `publisher.json` must declare a `version`, a semantic version such as `1.2.0` or `1.2.0-rc.1`. Without one the publish answers 400 `MANIFEST_VERSION_MISSING`; one that is not a semantic version answers 400 `MANIFEST_VERSION_INVALID`. Packages scaffolded from now on start at `0.1.0`.
-- Publishing a version again with the same content answers 200 and writes nothing. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same name to update it, bump `version` instead.**
+- Nothing, for a `publisher.json` with no `version`, or one that is not a semantic version such as `1.2.0` or `1.2.0-rc.1`: the package is installed in place as `latest`, replacing the previous publish, as before. The server logs a warning naming the package, since adding a `version` publishes immutable versions. Once a package has versions, such a publish answers 400 `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`.
+- With a `version`, publishing that version again with the same content answers 200 and writes nothing. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same version to update it, bump `version` instead.**
 - A versioned package no longer changes in place: `?reload=true` (and MCP `reload_package`) returns it as it is (`mode: "unchanged"`), and model, dashboard and notebook writes, and an unversioned publish over it, answer 409 `PACKAGE_IS_VERSIONED`. Iterate with watch mode, then publish.
 - `PATCH …/packages/{pkg}` is deprecated. On a versioned package it still rebinds `latest`'s `manifestLocation` and sets the package's `description`, and accepts the package sent back whole; a change to content answers 409.
 - `manifestLocation` on a versioned publish, on that PATCH, and on the new manifest route must be a `gs://` or `s3://` URI (400 otherwise).
 
-A package loaded from `publisher.config.json`, or registered from a directory with no `location`, has no versions and behaves as before.
+A package loaded from `publisher.config.json`, registered from a directory with no `location`, or published from a location without a semantic `version`, has no versions and behaves as before.
 
 **Reading a version.** Every route that reaches into a package takes `versionId` (queries in the body; materialization create in the body). These answered 501 before; now a version is served, an unknown one answers 404 `VERSION_NOT_FOUND`, an archived one 410 `VERSION_ARCHIVED`, and a malformed one 400 `VERSION_ID_INVALID`. An empty `versionId=` means no version. A package listing with a non-empty `versionId` answers 400 (it was 501). Responses carry `versionId` and `latestVersion`, data apps carry `versionId`, and `/status` lists every version each package holds and reports `packageVersioning: "on"` and `versionPromotion`.
 

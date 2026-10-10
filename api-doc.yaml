@@ -1452,12 +1452,15 @@ paths:
 
         ## Versioned publish
 
-        A request that carries a `location` publishes an immutable version of the package. The
-        request takes no version parameter: the version is the `version` field of the package's
-        own `publisher.json`, the way `npm publish` reads `package.json`, so bumping that field
-        is the release action.
+        A request that carries a `location` publishes an immutable version of the package when
+        the package's own `publisher.json` declares a semantic `version`. The request takes no
+        version parameter: the version is that field, the way `npm publish` reads
+        `package.json`, so bumping it is the release action.
 
-        - A `version` that is missing, or is not a semantic version, is refused with 400
+        - A `publisher.json` with no `version`, or one that is not a semantic version, publishes
+          the package as it always has: it is installed in place as `latest`, replacing the
+          previous publish, and has no versions. The server logs a warning that names the
+          package. A package that already has published versions refuses such a tree with 400
           (`reason` `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`).
         - Publishing a version the package already has, with different content, is refused with
           409 (`reason` `VERSION_CONFLICT`). The same content again succeeds and writes no
@@ -6886,10 +6889,10 @@ components:
             The package-version values let a caller tell "forgot to bump the
             version" from "the model is broken", which share a status code:
 
-              * MANIFEST_VERSION_MISSING (400): a versioned publish whose
-                publisher.json has no `version`.
-              * MANIFEST_VERSION_INVALID (400): its `version` is not a semantic
-                version.
+              * MANIFEST_VERSION_MISSING (400): a publish to a package that has
+                published versions, whose publisher.json has no `version`.
+              * MANIFEST_VERSION_INVALID (400): such a publish whose `version`
+                is not a semantic version.
               * VERSION_CONFLICT (409): that version is already published with
                 different content.
               * PACKAGE_IS_VERSIONED (409): the package has published versions,

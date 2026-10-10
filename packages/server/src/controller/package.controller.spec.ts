@@ -1,16 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "fs";
 import * as os from "os";
+import * as path from "path";
 import sinon from "sinon";
 
 import type { components } from "../api";
 import {
    BadRequestError,
    PackageAdmissionRefusedError,
+   PackageVersionError,
    ServiceUnavailableError,
 } from "../errors";
+import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
 
@@ -106,10 +110,72 @@ describe("PackageController.addPackage explores validation", () => {
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
 
-      expect(versions.publish.calledOnce).toBe(true);
-      expect(typeof versions.publish.firstCall.args[2].validate).toBe(
-         "function",
-      );
+      expect(versions.publishStagedVersion.calledOnce).toBe(true);
+      expect(
+         typeof versions.publishStagedVersion.firstCall.args[1].validate,
+      ).toBe("function");
+      expect(deletePackage.called).toBe(false);
+      expect(unloadPackage.called).toBe(false);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("location: validation runs inside installPackage's rollback window, not as a controller delete", async () => {
+      // For the location path the tree was freshly downloaded, so validation is
+      // delegated to installPackage (which rolls the swap back on failure). The
+      // controller passes a validator and does NOT call delete/unload itself.
+      const invalidMsg =
+         "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
+      const mockPackage = {
+         formatInvalidExplores: () => invalidMsg,
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      // installPackage mimics the real contract: invoke the validator and, if it
+      // returns a message, throw BadRequestError (after its internal rollback).
+      const installPackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               _downloader: unknown,
+               validate?: (pkg: unknown) => string | undefined,
+            ) => {
+               const msg = validate?.(mockPackage);
+               if (msg) throw new BadRequestError(msg);
+               return mockPackage;
+            },
+         );
+      const unloadPackage = sinon.stub().resolves(undefined);
+      const deletePackage = sinon.stub().resolves(undefined);
+      const environment = {
+         getVersionService: () => null,
+         installPackage,
+         unloadPackage,
+         deletePackage,
+      };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", {
+            name: "pkg",
+            description: "test",
+            location: "gs://bucket/pkg.zip",
+            explores: ["missing.malloy"],
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(typeof installPackage.firstCall.args[2]).toBe("function");
       expect(deletePackage.called).toBe(false);
       expect(unloadPackage.called).toBe(false);
       expect(addPackageToDatabase.called).toBe(false);
@@ -212,6 +278,52 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const environmentStore = {
          publisherConfigIsFrozen: false,
          serverRootPath: os.tmpdir(),
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", {
+            name: "pkg",
+            description: "test",
+            location: "gs://bucket/pkg.zip",
+         }),
+      ).rejects.toThrow(cronMsg);
+
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("location path: the persistence-policy gate runs inside installPackage's rollback window", async () => {
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const installPackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               _downloader: unknown,
+               validate?: (pkg: unknown) => string | undefined,
+            ) => {
+               const msg = validate?.(mockPackage);
+               if (msg) throw new BadRequestError(msg);
+               return mockPackage;
+            },
+         );
+      const environment = { getVersionService: () => null, installPackage };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
          getEnvironment,
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
@@ -768,8 +880,8 @@ describe("PackageController.addPackage manifestLocation", () => {
          manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
          description: "Sales",
       });
-      expect(versions.publish.firstCall.args[0]).toBe("pkg");
-      expect(versions.publish.firstCall.args[2]).toMatchObject({
+      expect(versions.stageForPublish.firstCall.args[0]).toBe("pkg");
+      expect(versions.publishStagedVersion.firstCall.args[1]).toMatchObject({
          sourceLocation: "gs://bucket/pkg___1.0.0.zip",
          manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
          description: "Sales",
@@ -781,7 +893,62 @@ describe("PackageController.addPackage manifestLocation", () => {
          location: "gs://bucket/pkg___1.0.0.zip",
          manifestLocation: null,
       });
-      expect(versions.publish.secondCall.args[2].manifestLocation).toBeNull();
+      expect(
+         versions.publishStagedVersion.secondCall.args[1].manifestLocation,
+      ).toBeNull();
+   });
+
+   it("a null manifestLocation is not forwarded into the install", async () => {
+      // A fresh install serves live already. Forwarded, a null would take the
+      // revert-to-live branch and recompile every model a second time inside
+      // the install's lock hold, and write `manifestLocation: null` to disk.
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const controller = addPackageController({ installPackage });
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: null,
+      });
+
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: { location: "gs://bucket/pkg___1.0.0.zip" },
+      });
+   });
+
+   it("a publish with a location binds the body's manifestLocation as part of the install", async () => {
+      // The downloaded tree's publisher.json does not carry the manifest the
+      // orchestrator computed, so the body is the only place it arrives. Left
+      // unapplied, the package came up unbound and was fully reloaded by the
+      // next drift check.
+      const installPackage = sinon.stub().resolves({
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      });
+      const environment = { getVersionService: () => null, installPackage };
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment: sinon.stub().resolves(environment),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+
+      await controller.addPackage("env", {
+         name: "pkg",
+         location: "gs://bucket/pkg___1.0.0.zip",
+         manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+      });
+
+      expect(installPackage.calledOnce).toBe(true);
+      expect(installPackage.firstCall.args[3]).toEqual({
+         update: {
+            location: "gs://bucket/pkg___1.0.0.zip",
+            manifestLocation: "gs://bucket/pkg___1.0.0.manifest.json",
+         },
+      });
    });
 
    it("an admission refusal is answered, not recorded as a load failure", async () => {
@@ -845,23 +1012,197 @@ describe("PackageController.addPackage manifestLocation", () => {
    });
 });
 
-/**
- * A version service whose publish runs the publish checks it is handed on
- * `loaded`, as the real one does before it records anything, and otherwise
- * answers with it.
- */
-function versionsPublishing(loaded: unknown, failWith?: Error) {
-   return {
-      isVersioned: async () => false,
-      publish: sinon
+describe("PackageController.addPackage with a tree that declares no semantic version", () => {
+   const installedPackage = {
+      formatInvalidExplores: () => "",
+      formatInvalidPersistencePolicy: () => "",
+      formatInvalidIncrementalPolicy: () => "",
+      formatInvalidPreaggregatePolicy: () => "",
+      formatPersistenceCollisionRejections: () => "",
+   };
+   let stagingRoot: string;
+
+   afterEach(() => {
+      sinon.restore();
+      fs.rmSync(stagingRoot, { recursive: true, force: true });
+   });
+
+   /**
+    * A version service whose download stages a real tree that declares no
+    * semantic version (`reason`), for a package with or without versions.
+    */
+   function unversionedStaging(
+      reason: PackageVersionError,
+      opts: { hasVersions?: boolean; hasManifest?: boolean } = {},
+   ) {
+      stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "unversioned-"));
+      const stagingPath = path.join(stagingRoot, "staged");
+      fs.mkdirSync(stagingPath);
+      fs.writeFileSync(
+         path.join(stagingPath, "model.malloy"),
+         "source: s is x",
+      );
+      return {
+         isVersioned: async () => opts.hasVersions ?? false,
+         stageForPublish: sinon.stub().resolves({
+            packageName: "pkg",
+            stagingPath,
+            reason,
+            hasManifest: opts.hasManifest ?? true,
+         }),
+         discardStage: sinon.stub().resolves(undefined),
+         publishStagedVersion: sinon.stub().rejects(new Error("not a version")),
+      };
+   }
+
+   function controllerWith(versions: object, installPackage: sinon.SinonStub) {
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         serverRootPath: os.tmpdir(),
+         getEnvironment: sinon.stub().resolves({
+            getVersionService: () => versions,
+            installPackage,
+         }),
+         addPackageToDatabase: sinon.stub().resolves(undefined),
+      } as unknown as EnvironmentStore;
+      return new PackageController(environmentStore);
+   }
+
+   it("installs it in place as before, from the one download, and warns that versions exist", async () => {
+      // Published as latest, replacing the package: what every publish from a
+      // location did before versions, with the install's own arguments. The
+      // tree the version check downloaded is the one installed.
+      const versions = unversionedStaging(
+         new PackageVersionError("MANIFEST_VERSION_MISSING", "no version"),
+      );
+      const installed: string[] = [];
+      const installPackage = sinon
          .stub()
          .callsFake(
             async (
                _name: string,
-               _downloader: unknown,
+               downloader: (stagingPath: string) => Promise<void>,
+            ) => {
+               const target = path.join(stagingRoot, "install");
+               await downloader(target);
+               installed.push(...fs.readdirSync(target));
+               return installedPackage;
+            },
+         );
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         await controllerWith(versions, installPackage).addPackage("env", {
+            name: "pkg",
+            location: "gs://bucket/pkg.zip",
+            manifestLocation: null,
+         });
+
+         expect(installPackage.calledOnce).toBe(true);
+         expect(installPackage.firstCall.args[3]).toEqual({
+            update: { location: "gs://bucket/pkg.zip" },
+         });
+         expect(installed).toEqual(["model.malloy"]);
+         expect(versions.publishStagedVersion.called).toBe(false);
+         expect(versions.discardStage.calledOnce).toBe(true);
+         const warned = (warn.mock.calls as unknown as unknown[][]).filter(
+            ([message]) =>
+               String(message).includes(
+                  "Publisher now supports package versioning",
+               ),
+         );
+         expect(warned).toHaveLength(1);
+         expect(String(warned[0][0])).toContain("pkg");
+         expect(warned[0][1]).toEqual({
+            packageName: "pkg",
+            reason: "MANIFEST_VERSION_MISSING",
+         });
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("refuses it for a package that has published versions, with what is missing", async () => {
+      // A versioned package is never installed in place, so the answer is the
+      // version the tree does not declare.
+      const versions = unversionedStaging(
+         new PackageVersionError("MANIFEST_VERSION_INVALID", "not semver"),
+         { hasVersions: true },
+      );
+      const installPackage = sinon.stub().resolves(installedPackage);
+      const refused = await controllerWith(versions, installPackage)
+         .addPackage("env", { name: "pkg", location: "/srv/pkg" })
+         .then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+      expect(refused).toBeInstanceOf(PackageVersionError);
+      expect((refused as PackageVersionError).reason).toBe(
+         "MANIFEST_VERSION_INVALID",
+      );
+      expect(installPackage.called).toBe(false);
+      expect(versions.discardStage.calledOnce).toBe(true);
+   });
+
+   it("hands a location with no publisher.json to the install without the versioning warning", async () => {
+      // No publisher.json is no package: the install fails as it always has,
+      // and a note about adding a version would point the wrong way.
+      const versions = unversionedStaging(
+         new PackageVersionError("MANIFEST_VERSION_MISSING", "no manifest"),
+         { hasManifest: false },
+      );
+      const installPackage = sinon
+         .stub()
+         .rejects(new BadRequestError("Package manifest does not exist."));
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         await expect(
+            controllerWith(versions, installPackage).addPackage("env", {
+               name: "pkg",
+               location: "/srv/missing",
+            }),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(installPackage.calledOnce).toBe(true);
+         expect(
+            (warn.mock.calls as unknown as unknown[][]).some(([message]) =>
+               String(message).includes("supports package versioning"),
+            ),
+         ).toBe(false);
+         expect(versions.discardStage.calledOnce).toBe(true);
+      } finally {
+         warn.mockRestore();
+      }
+   });
+});
+
+/**
+ * A version service whose staged tree declares version 1.0.0 (or whose
+ * staging fails with `failWith`), and whose publish of it runs the publish
+ * checks it is handed on `loaded`, as the real one does before it records
+ * anything, and otherwise answers with it.
+ */
+function versionsPublishing(loaded: unknown, failWith?: Error) {
+   const staged = {
+      packageName: "pkg",
+      stagingPath: "/staging/pkg",
+      versionId: "1.0.0",
+      dirName: "1.0.0",
+      contentHash: "0",
+      description: null,
+   };
+   return {
+      isVersioned: async () => false,
+      stageForPublish: sinon.stub().callsFake(async () => {
+         if (failWith) throw failWith;
+         return staged;
+      }),
+      discardStage: sinon.stub().resolves(undefined),
+      publishStagedVersion: sinon
+         .stub()
+         .callsFake(
+            async (
+               _staged: unknown,
                options: { validate?: (pkg: unknown) => string | undefined },
             ) => {
-               if (failWith) throw failWith;
                const msg = options.validate?.(loaded);
                if (msg) throw new BadRequestError(msg);
                return { loaded, version: {}, created: true };

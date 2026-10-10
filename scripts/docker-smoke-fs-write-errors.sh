@@ -222,12 +222,10 @@ write_config() {
 
 # A one-model DuckDB package: `seed` as a directory (readable is all a
 # directory location needs), `orders` as the zip the orchestrator uploads.
-# A version, because a publish from a location publishes the version its
-# publisher.json declares.
 mkdir -p "$work/src"
 for name in seed "$PKG"; do
    mkdir -p "$work/src/$name"
-   printf '{"name":"%s","version":"1.0.0","description":"one-model DuckDB package"}' "$name" \
+   printf '{"name":"%s","description":"one-model DuckDB package"}' "$name" \
       >"$work/src/$name/publisher.json"
    printf 'source: s is duckdb.sql("SELECT 1 AS x")\n' >"$work/src/$name/model.malloy"
 done

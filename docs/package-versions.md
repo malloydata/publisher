@@ -7,11 +7,13 @@ SPDX-License-Identifier: MIT
 
 A package published from a location is a series of immutable versions, each numbered by the `version` in its own `publisher.json`. Every published version keeps serving the content it was published with. A request names the version it wants with `versionId`, and a request that names none is served from the package's `latest`. Publishing a version, moving `latest` back to roll back, and archiving a version nobody uses any more are all API calls. None of them edits a version's files.
 
-A package registered from a directory without a location, or loaded from `publisher.config.json`, has no versions. It is the single mutable slot it has always been, and nothing on this page applies to it.
+A package registered from a directory without a location, loaded from `publisher.config.json`, or published from a location whose `publisher.json` declares no semantic `version`, has no versions. It is the single mutable slot it has always been, and nothing on this page applies to it.
 
 ## Publish a version
 
-`POST /api/v0/environments/{env}/packages` with a `location` publishes a version. The request takes no version: the version is the `version` field of the package's `publisher.json`, the way `npm publish` reads `package.json`, so bumping that field is the release. A package scaffolded with `npm create @malloy-publisher/malloy-package` starts at `0.1.0`.
+`POST /api/v0/environments/{env}/packages` with a `location` publishes a version when the package's `publisher.json` declares a semantic `version`. The request takes no version: the version is that field, the way `npm publish` reads `package.json`, so bumping it is the release.
+
+Without one, the publish works as it always has: the package is installed in place as `latest`, replacing the previous publish, and the server logs a warning that the package could be versioned. Add a `version` to start publishing immutable versions.
 
 ```bash
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
@@ -19,16 +21,16 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
   -d '{"name": "sales", "location": "/srv/packages/sales"}'
 ```
 
-| What you publish                                                | Answer                                                                                                                                                             |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A new version                                                   | 200. It is recorded, loaded and checked like any publish. A version that fails the checks is refused with 400, and the versions already published keep serving.    |
-| A version already published, with the same content              | 200, and nothing is written. Placing a version onto a server that already holds it is safe to retry. A `manifestLocation` on that request binds the version to it. |
-| A version already published, with different content             | 409 `VERSION_CONFLICT`. Bump the version.                                                                                                                          |
-| A version that differs from a published one only by letter case | 409 `VERSION_CONFLICT`: a case-insensitive filesystem cannot keep the two apart.                                                                                   |
-| No `version`, or one that is not a semantic version             | 400 `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`.                                                                                                      |
-| An archived version, again                                      | 410 `VERSION_ARCHIVED`. Unarchive it instead.                                                                                                                      |
-| Into a package watch mode mounts in place                       | 400. A watch mount is your source directory, which is never immutable.                                                                                             |
-| A `manifestLocation` that is not a `gs://` or `s3://` URI       | 400.                                                                                                                                                               |
+| What you publish                                                | Answer                                                                                                                                                                                          |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A new version                                                   | 200. It is recorded, loaded and checked like any publish. A version that fails the checks is refused with 400, and the versions already published keep serving.                                 |
+| A version already published, with the same content              | 200, and nothing is written. Placing a version onto a server that already holds it is safe to retry. A `manifestLocation` on that request binds the version to it.                              |
+| A version already published, with different content             | 409 `VERSION_CONFLICT`. Bump the version.                                                                                                                                                       |
+| A version that differs from a published one only by letter case | 409 `VERSION_CONFLICT`: a case-insensitive filesystem cannot keep the two apart.                                                                                                                |
+| No `version`, or one that is not a semantic version             | 200, installed in place as `latest` with no versions, as before; a warning is logged. A package that already has versions answers 400 `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`. |
+| An archived version, again                                      | 410 `VERSION_ARCHIVED`. Unarchive it instead.                                                                                                                                                   |
+| Into a package watch mode mounts in place                       | 400. A watch mount is your source directory, which is never immutable.                                                                                                                          |
+| A `manifestLocation` that is not a `gs://` or `s3://` URI       | 400.                                                                                                                                                                                            |
 
 "The same content" is a hash of the package tree: every file's path and bytes, and every symlink's target text, with `.git` skipped.
 

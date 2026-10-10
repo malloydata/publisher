@@ -19,7 +19,7 @@ import {
 } from "../../storage/DatabaseInterface";
 import { compareSemver, isSemver } from "./semver";
 import { VersionCache, VersionEvictedDuringLoadError } from "./version_cache";
-import { StagedVersion, VersionStore } from "./version_store";
+import { StagedVersion, UnversionedStage, VersionStore } from "./version_store";
 
 /** The registry calls the version rules use. */
 export type VersionRegistry = Pick<
@@ -356,15 +356,46 @@ export class VersionService<P = unknown> {
       const store = this.requireStore();
       // Before any path is built from it.
       assertSafePackageName(packageName);
-      if (await host.isWatchMounted(packageName)) {
-         throw new BadRequestError(
-            `Package ${packageName} is mounted for watch mode, which serves its source directory as it changes, so it cannot hold published versions. Publish it from another location, or start the server without watching it.`,
-         );
-      }
+      await this.refuseWatchMounted(packageName);
       host.admit(packageName, "publish a package version");
+      return this.publishStagedVersion(
+         await store.stage(packageName, downloader),
+         options,
+      );
+   }
 
-      const staged = await store.stage(packageName, downloader);
+   /**
+    * Download a tree for a publish and read the version its publisher.json
+    * declares. A tree that declares no semantic version comes back as an
+    * UnversionedStage, still staged: the caller installs it in place, as a
+    * package with no versions, or discards it (discardStage).
+    */
+   async stageForPublish(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+   ): Promise<StagedVersion | UnversionedStage> {
+      const host = this.requireHost();
+      // Before any path is built from it.
+      assertSafePackageName(packageName);
+      host.admit(packageName, "publish a package");
+      return this.requireStore().stageAny(packageName, downloader);
+   }
+
+   /** Remove a staged tree that will not be published or installed. */
+   async discardStage(stage: { stagingPath: string }): Promise<void> {
+      await this.requireStore().discard(stage);
+   }
+
+   /** Publish a staged version (from stageForPublish); the stage is consumed. */
+   async publishStagedVersion(
+      staged: StagedVersion,
+      options: PublishOptions<P>,
+   ): Promise<PublishResult<P>> {
+      const host = this.requireHost();
+      const store = this.requireStore();
+      const { packageName } = staged;
       try {
+         await this.refuseWatchMounted(packageName);
          if (await this.isVersioned(packageName)) {
             return await this.publishStaged(staged, options, false);
          }
@@ -379,6 +410,15 @@ export class VersionService<P = unknown> {
                packageName,
                error,
             }),
+         );
+      }
+   }
+
+   /** A watch-mounted package serves its own source directory: no versions. */
+   private async refuseWatchMounted(packageName: string): Promise<void> {
+      if (await this.requireHost().isWatchMounted(packageName)) {
+         throw new BadRequestError(
+            `Package ${packageName} is mounted for watch mode, which serves its source directory as it changes, so it cannot hold published versions. Publish it from another location, or start the server without watching it.`,
          );
       }
    }

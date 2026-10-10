@@ -1450,7 +1450,11 @@ export class MaterializationService {
                packageName,
                "PENDING",
                metadata,
-               { version, lockVersion },
+               // A version's run records its version and slot; a package with
+               // no versions passes neither, as before versions.
+               ...(version !== null || lockVersion !== undefined
+                  ? [{ version, lockVersion }]
+                  : []),
             );
          } catch (err) {
             if (err instanceof DuplicateActiveMaterializationError) {
