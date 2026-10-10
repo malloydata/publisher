@@ -140,6 +140,12 @@ export interface FcjSettings {
     * between near-tied sources instead of set cover keeping only the first.
     */
    contenderShare: number;
+   /**
+    * PROVISIONAL, off by default; a diagnostic of the connect rule. A field an
+    * extension inherits unchanged is folded into the field where it is
+    * defined, so an extension competes only with the fields it adds.
+    */
+   collapseCopies: boolean;
 }
 
 export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
@@ -157,6 +163,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    valueCap: 50_000,
    judge: "auto",
    contenderShare: 0,
+   collapseCopies: false,
 };
 
 export interface PackageRetrievalSettings {
@@ -463,6 +470,7 @@ function parseFcj(raw: unknown): FcjSettings {
       valueCap: int("valueCap", 1, 1_000_000),
       judge: parseEnabled(obj.judge, "retrieval.fcj.judge"),
       contenderShare: real("contenderShare", 0, 1),
+      collapseCopies: fcjBoolean(obj, "collapseCopies"),
    };
 }
 

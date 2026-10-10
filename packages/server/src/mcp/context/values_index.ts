@@ -397,7 +397,7 @@ export async function buildValueIndex(args: {
       ms: 0,
    };
    for (const node of args.catalog.nodes.values()) {
-      if (node.kind !== "dimension") continue;
+      if (node.kind !== "dimension" || node.copyOf) continue;
       for (const value of args.parts.get(node.key)?.values ?? []) {
          const normalized = normalizeText(value);
          if (!normalized) continue;
