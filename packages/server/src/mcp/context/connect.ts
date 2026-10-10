@@ -94,7 +94,19 @@ export interface ClusterExtra {
    reason: string;
 }
 
+/** With `connect: "list"`: one source the judge sees, as a peer of the others. */
+export interface PeerSource {
+   source: string;
+   /** The other peers a query from this source can use through its joins, fewest hops first. */
+   reaches: ReachEntry[];
+}
+
 export interface Cluster {
+   /**
+    * The source the cluster is built around. With `connect: "list"` it is
+    * only the group's id and the trace's anchor (the owner of the first
+    * measure target's best candidate): no source is preferred there.
+    */
    home: string;
    score: number;
    /** Every target this cluster covers. */
@@ -110,12 +122,12 @@ export interface Cluster {
     */
    contenders: string[];
    /**
-    * With `connect: "list"` only: sources holding candidates that the home's
-    * joins do not reach. In the pool at 0 hops, their fields on their own
-    * cards. Empty for a cluster.
+    * With `connect: "list"` only: every source holding a candidate or an
+    * extra, in order of first appearance, each with the other peers its joins
+    * reach. Every field is on its own source's card. Absent for a cluster.
     */
-   listed: string[];
-   /** Reach of the home (and the twins, contenders and listed sources), by source key. */
+   peers?: PeerSource[];
+   /** Reach of the home (and the twins and contenders), by source key; in list mode, the peers at 0 hops. */
    reach: Map<string, ReachEntry>;
    /** Reach of the home alone: the routes a field has from the home source. */
    homeReach: Map<string, ReachEntry>;
@@ -456,6 +468,7 @@ export function connect(args: {
          const extras = extrasOf(
             index,
             score.source,
+            [score.source],
             pool,
             candidates,
             targets,
@@ -468,7 +481,6 @@ export function connect(args: {
             newlyCovers,
             twins,
             contenders,
-            listed: [],
             reach: pool,
             homeReach: reach.of(score.source),
             candidates,
@@ -487,11 +499,10 @@ export function connect(args: {
  * PROVISIONAL (`connect: "list"`): one group with no cluster filter. Every
  * target gets the find stage's own top `listTopK`, in find order but grouped
  * by owning source (sources in the order of their best candidate for that
- * target), so the judge still sees which fields share a source. The home,
- * which the structural extras and the response's card are built around, is
- * the owner of the first measure target's best candidate, else of the first
- * target's. A source the home's joins reach keeps its routes; any other
- * source is `listed`, its fields on their own cards.
+ * target), so the judge still sees which fields share a source. Every source
+ * holding a candidate or an extra is a peer: none is a home, every field is
+ * on its own source's card, and each peer carries the other peers its joins
+ * reach, so the judge can tell which picks one query can combine.
  *
  * `rank` is the candidate's find-stage rank and `score` its fused score, with
  * no hop discount: nothing is rescored.
@@ -507,37 +518,60 @@ function connectList(args: Parameters<typeof connect>[0]): ConnectResult {
       .map((r) => r.target.index);
    if (!anchor) return { clusters: [], unresolved, considered: [] };
    const ownerOf = (key: string) => index.catalog.nodes.get(key)!.sourceKey;
-   const home = ownerOf(anchor.candidates[0].key);
-   const homeReach = new ReachCache(
-      index.catalog.joins,
-      settings.reachDepth,
-   ).of(home);
-   const pool = new Map(homeReach);
-   const listed: string[] = [];
+   const pool = new Map<string, ReachEntry>();
+   const admit = (source: string) => {
+      if (!pool.has(source)) pool.set(source, { source, hops: 0, paths: [[]] });
+   };
    const byRank = new Map<number, ClusterCandidate[]>();
    for (const r of found) {
       byRank.set(
          r.target.index,
          r.candidates.slice(0, settings.listTopK).map((c, i) => {
-            const owner = ownerOf(c.key);
-            if (!pool.has(owner)) {
-               pool.set(owner, { source: owner, hops: 0, paths: [[]] });
-               listed.push(owner);
-            }
+            admit(ownerOf(c.key));
             return {
                key: c.key,
                score: c.score,
                rank: i + 1,
-               hops: homeReach.get(owner)?.hops ?? 0,
+               hops: 0,
                found: c,
             };
          }),
       );
    }
    const targets = found.map((r) => r.target);
+   // A period's dates come from the sources of every measure target's best
+   // three candidates (the first target's, with no measure), so no single
+   // source frames the list.
+   const dateSources: string[] = [];
+   const measures = withCandidates.filter((r) => r.target.type === "measure");
+   for (const r of measures.length > 0 ? measures : [anchor]) {
+      for (const c of (byRank.get(r.target.index) ?? []).slice(
+         0,
+         MEASURES_WITH_DEPENDENCIES,
+      )) {
+         const owner = ownerOf(c.key);
+         if (!dateSources.includes(owner)) dateSources.push(owner);
+      }
+   }
    // The extras read the lists in rank order: a measure's inputs are those
    // of the best three measures, wherever they sit.
-   const extras = extrasOf(index, home, pool, byRank, targets, args.allow);
+   const extras = extrasOf(
+      index,
+      undefined,
+      dateSources,
+      pool,
+      byRank,
+      targets,
+      args.allow,
+   );
+   for (const e of extras) admit(ownerOf(e.key));
+   const reach = new ReachCache(index.catalog.joins, settings.reachDepth);
+   const peers: PeerSource[] = [...pool.keys()].map((source) => ({
+      source,
+      reaches: [...reach.of(source).values()].filter(
+         (r) => r.hops > 0 && pool.has(r.source),
+      ),
+   }));
    const candidates = new Map<number, ClusterCandidate[]>();
    for (const [t, list] of byRank) {
       const order = new Map<string, number>();
@@ -557,18 +591,19 @@ function connectList(args: Parameters<typeof connect>[0]): ConnectResult {
    const covers = withCandidates
       .map((r) => r.target.index)
       .sort((a, b) => a - b);
+   const id = ownerOf(anchor.candidates[0].key);
    return {
       clusters: [
          {
-            home,
+            home: id,
             score: 0,
             covers,
             newlyCovers: covers,
             twins: [],
             contenders: [],
-            listed,
+            peers,
             reach: pool,
-            homeReach,
+            homeReach: new Map([[id, pool.get(id)!]]),
             candidates,
             extras,
          },
@@ -630,9 +665,15 @@ function rankInCluster(
       .map((c, i) => ({ ...c, rank: i + 1 }));
 }
 
+/**
+ * `home` is the cluster's home, whose source node is an extra; a list has
+ * none. `dateSources` are the sources whose dates are added when a target
+ * names a period: the home in a cluster, the best measures' sources in a list.
+ */
 function extrasOf(
    index: FcjIndex,
-   home: string,
+   home: string | undefined,
+   dateSources: readonly string[],
    pool: ReadonlyMap<string, ReachEntry>,
    candidates: ReadonlyMap<number, ClusterCandidate[]>,
    targets: readonly FindTarget[],
@@ -650,7 +691,8 @@ function extrasOf(
       seen.add(key);
       extras.push({ key, reason });
    };
-   const homeSource = index.catalog.sources.get(home);
+   const homeSource =
+      home === undefined ? undefined : index.catalog.sources.get(home);
    if (homeSource) add(homeSource.node.key, "the home source");
    // A chosen measure's dependencies: the fields it is computed from.
    for (const t of targets) {
@@ -669,16 +711,24 @@ function extrasOf(
          }
       }
    }
-   // The home's dates when a target names a period.
-   if (targets.some((t) => mentionsPeriod(t.text)) && homeSource) {
-      const dates = homeSource.fields
-         .map((k) => index.catalog.nodes.get(k)!)
-         .filter(
-            (n) => n.kind === "dimension" && DATE_TYPES.has(n.dataType ?? ""),
-         )
-         .slice(0, MAX_DATE_EXTRAS);
-      for (const d of dates)
-         add(d.key, "a date of the home source, and a target names a period");
+   // The date sources' dates when a target names a period.
+   if (targets.some((t) => mentionsPeriod(t.text))) {
+      for (const key of dateSources) {
+         const source = index.catalog.sources.get(key);
+         if (!source) continue;
+         const reason =
+            key === home
+               ? "a date of the home source, and a target names a period"
+               : `a date of ${source.name}, and a target names a period`;
+         const dates = source.fields
+            .map((k) => index.catalog.nodes.get(k)!)
+            .filter(
+               (n) =>
+                  n.kind === "dimension" && DATE_TYPES.has(n.dataType ?? ""),
+            )
+            .slice(0, MAX_DATE_EXTRAS);
+         for (const d of dates) add(d.key, reason);
+      }
    }
    // Views that use two or more of the chosen fields.
    let views = 0;
