@@ -22,6 +22,7 @@
 
 import type { ChatModel, EmbeddingModel } from "../../providers/types";
 import type { FcjSettings } from "../../service/package_retrieval";
+import type { EnvironmentStore } from "../../service/environment_store";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { logger } from "../../logger";
 import { humanizeName } from "../tools/embedding_index";
@@ -51,6 +52,12 @@ import {
    resolveQuestions,
    wantsQuestions,
 } from "./questions";
+import {
+   buildValueIndex,
+   ValueIndex,
+   type IndexValueFetcher,
+   type ValueBuildReport,
+} from "./values_index";
 import { syncVectors, type Facet, type VectorRow } from "./vectors";
 
 /** What the build did, for the load log and the index-status endpoint. */
@@ -82,7 +89,7 @@ export interface FcjBuildReport {
       skipped?: string;
    };
    keywordDocs: number;
-   values?: unknown;
+   values: ValueBuildReport | { skipped: string };
    ms: number;
 }
 
@@ -97,6 +104,8 @@ export interface FcjIndex {
    /** Embedding rows by node key, unit length. Empty with no provider. */
    vectors: Map<string, Facet[]>;
    keyword: KeywordIndex;
+   /** Stored values of `#(index)` dimensions and doc value lists. */
+   values: ValueIndex;
    /** One-line summary by source key, when stored. */
    summaries: Map<string, string>;
    /** The provider the vectors were made with; null when there is none. */
@@ -128,6 +137,11 @@ export async function buildFcjIndex(args: {
    llm?: FcjLlm;
    /** Stored source summaries by summaryKey(modelPath, source); see source_summaries.ts. */
    storedSummaries?: ReadonlyMap<string, StoredSourceSummary>;
+   /** Where `#(index)` dimensions are read from; absent: doc value lists only. */
+   valueRead?: {
+      environmentStore: EnvironmentStore;
+      fetcher?: IndexValueFetcher;
+   };
    shouldStop?: () => boolean;
 }): Promise<FcjIndex> {
    const started = Date.now();
@@ -288,6 +302,35 @@ export async function buildFcjIndex(args: {
       };
    }
 
+   // Value index.
+   let values = new ValueIndex([]);
+   let valueReport: FcjBuildReport["values"] = {
+      skipped: "retrieval.fcj.values is false",
+   };
+   if (settings.values) {
+      const built = await buildValueIndex({
+         catalog,
+         parts,
+         cap: settings.valueCap,
+         db,
+         ...(args.valueRead
+            ? {
+                 read: {
+                    environmentStore: args.valueRead.environmentStore,
+                    environmentName,
+                    packageName,
+                    ...(args.valueRead.fetcher
+                       ? { fetcher: args.valueRead.fetcher }
+                       : {}),
+                 },
+              }
+            : {}),
+         ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+      });
+      values = built.index;
+      valueReport = built.report;
+   }
+
    // Keyword index, over the same texts.
    const keyword = new KeywordIndex(
       [...catalog.nodes.values()].map((node) => ({
@@ -341,6 +384,7 @@ export async function buildFcjIndex(args: {
       questions: questionReport,
       vectors: vectorReport,
       keywordDocs: keyword.size,
+      values: valueReport,
       ms: Date.now() - started,
    };
    logger.info("[get_context fcj] Built the search index", {
@@ -356,6 +400,7 @@ export async function buildFcjIndex(args: {
       questions,
       vectors,
       keyword,
+      values,
       summaries,
       provider: args.provider,
       report,
