@@ -30,6 +30,15 @@ Omit `height` and the frame auto-sizes. The embedded page measures its real cont
 
 Do not rely on `body { min-height: 100vh }` to drive the frame height. The runtime deliberately measures the content's bottom edge, not the viewport, to avoid a grow-forever loop.
 
+## Inside the frame there is no viewport
+
+The host scrolls; the frame does not. Inside an auto-sized frame `window.innerHeight` is the whole document, `window.scrollY` stays 0, and `position: fixed` means the top of the document rather than the top of the reader's screen. Two consequences, both invisible when the page is opened directly:
+
+- **The frame must never become scrollable.** Anything whose box reaches past the content's bottom edge (a sentinel, an absolutely positioned helper, an overlay) is scrollable overflow: the document grows past the height the host sized, and the reader's first wheel turns scroll the app inside its frame before the host moves. Keep every added element within the content, and when embedded set `html { overflow: hidden }` so every wheel turn goes to the host.
+- **Anything that floats over the page needs placing.** A drawer, a compare tray, a toast: built with `position: fixed` it opens at the top of the document, far above the reader, and focusing it scrolls the host page up to meet it. `reference/overlays.md` is the recipe: track the slice of the page the reader can see, place one clipped layer over it, contain its scroll, and focus without scrolling.
+
+Test embedded, not just standalone: the Publisher console renders a package's app at `/<env>/<package>/data-apps/<path>`, which exercises the same resize contract a host does (`reference/verification-harness.md`).
+
 ## Auth
 
 - Same-origin or same-tenant: pass no token. The browser's cookies authenticate the iframe.
