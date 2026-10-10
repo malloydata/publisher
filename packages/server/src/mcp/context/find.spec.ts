@@ -68,14 +68,14 @@ describe("find", () => {
          "dimension:orders_public@shop.malloy:start_date",
          "dimension:orders@shop.malloy:start_date",
       ]);
-      expect(r.candidates.length).toBe(29);
+      expect(r.candidates.length).toBe(30);
       expect(r.candidates[0].ranks).toEqual({ close: 1, keyword: 1 });
    });
 
    it("lets a value nominate a dimension: Denver puts both city and arrives_at on the list", () => {
       const [r] = run([target(2, "dimension", "flights to Denver")]);
       expect(r.valuePhrases).toEqual(["Denver"]);
-      expect(r.lists).toEqual({ close: 29, keyword: 6, value: 2 });
+      expect(r.lists).toEqual({ close: 30, keyword: 6, value: 2 });
       const arrives = r.candidates[0];
       expect(arrives.key).toBe("dimension:flights@travel.malloy:arrives_at");
       expect(arrives.ranks).toEqual({ close: 5, keyword: 1, value: 2 });

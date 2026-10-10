@@ -242,4 +242,48 @@ describe("connect", () => {
          await folded.close();
       }
    });
+
+   it("with the provisional collapseCopies, an extension wins when its own field counts and reaches the inherited one", async () => {
+      const folded = await buildFcjIndexFixture({
+         ...DEFAULT_FCJ_SETTINGS,
+         collapseCopies: true,
+      });
+      try {
+         const targets = [
+            t(0, "measure", "net sales"),
+            t(1, "dimension", "sold through a reseller"),
+         ];
+         const queries = new Map(
+            targets.map((x) => [x.index, toUnit(embedText(x.text))]),
+         );
+         const found = find({
+            index: folded.index,
+            targets,
+            queries,
+            perTarget: 30,
+            keyword: true,
+            values: true,
+            allow: () => true,
+         });
+         const out = connect({
+            index: folded.index,
+            found,
+            queries,
+            settings: DEFAULT_FCJ_SETTINGS,
+            allow: () => true,
+         });
+         expect(out.clusters.map((c) => [c.home, c.covers])).toEqual([
+            ["orders_public@shop.malloy", [0, 1]],
+         ]);
+         // The inherited measure is shown under the extension's own name.
+         expect(out.clusters[0].candidates.get(0)![0].key).toBe(
+            "measure:orders_public@shop.malloy:net_sales",
+         );
+         expect(out.clusters[0].candidates.get(1)![0].key).toBe(
+            "dimension:orders_public@shop.malloy:is_reseller",
+         );
+      } finally {
+         await folded.close();
+      }
+   });
 });
