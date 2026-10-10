@@ -31,6 +31,7 @@
     "malloy-publish",
     "malloy-queries",
     "malloy-review",
+    "malloy-run-agent",
     "malloy-source-unreachable"
   ],
   "supporting": [],

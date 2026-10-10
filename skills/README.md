@@ -42,7 +42,7 @@ Two rules make it work:
 ## Shared vs Publisher-specific
 
 - **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-analysis-report`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill), plus `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
+- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, `malloy-run-agent` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill), plus `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills
 
