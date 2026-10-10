@@ -97,6 +97,20 @@ class InstallPackageSkills(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.build(package_skills_dir=self.package)
 
+    def test_refuses_a_skills_link_that_points_at_the_eval_set(self):
+        shutil.rmtree(self.pkg_skills)
+        self.pkg_skills.symlink_to(self.package / "evals", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.build(package_skills_dir=self.pkg_skills)
+
+    def test_refuses_a_skills_link_even_when_it_resolves_to_a_skills_dir(self):
+        real = self.tmp / "elsewhere" / "skills"
+        write_skill(real, "x")
+        shutil.rmtree(self.pkg_skills)
+        self.pkg_skills.symlink_to(real, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.build(package_skills_dir=self.pkg_skills)
+
     def test_refuses_a_missing_directory_rather_than_installing_nothing(self):
         with self.assertRaises(FileNotFoundError):
             self.build(package_skills_dir=self.package / "skills-typo")
@@ -134,15 +148,23 @@ class ResolveArm(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.pkg_skills = self.tmp / "pkg" / "skills"
         write_skill(self.pkg_skills, "house", "OURS")
-        self._real = rb.package_skill_names
-        self.addCleanup(setattr, rb, "package_skill_names", self._real)
+        # Stub the HTTP layer: nothing here may reach a network.
+        self.served_dir = None
+        for name, fake in (
+                ("package_skill_names", lambda *a, **k: self.served_names),
+                ("served_package_dir", lambda *a, **k: self.served_dir)):
+            real = getattr(rb, name)
+            setattr(rb, name, fake)
+            self.addCleanup(setattr, rb, name, real)
+        self.served_names: list[str] = []
 
     def serve(self, names: list[str]) -> None:
-        rb.package_skill_names = lambda *a, **k: names
+        self.served_names = names
 
     def args(self, mode: str, override=None) -> argparse.Namespace:
         return argparse.Namespace(
             package_skills=mode, target="local", publisher="http://x",
+            no_answerer_skills=False,
             environment="env", package="pkg",
             package_skills_dir_override=str(override) if override else None)
 
@@ -169,9 +191,52 @@ class ResolveArm(unittest.TestCase):
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(a)
 
-    def test_tool_refuses_when_the_server_serves_none(self):
-        # Otherwise the answerer has nothing to fetch and this is the off arm.
+    def test_tool_with_no_package_skills_is_recorded_as_off(self):
+        # get_skill is denied under `off`, so that is what the run measures.
         self.serve([])
+        a = self.args("tool")
+        rb.resolve_package_skills(a)
+        self.assertEqual(a.package_skills, "off")
+        self.assertNotIn(rb.TOOL_ARM_TOOLS[0], rb.answer_tools(a))
+        self.assertIn(rb.TOOL_ARM_TOOLS[0], rb.answer_denied(a))
+
+    def test_install_with_no_answerer_skills_is_fatal(self):
+        self.serve(["house"])
+        a = self.args("install", self.pkg_skills)
+        a.no_answerer_skills = True
+        with self.assertRaises(SystemExit):
+            rb.resolve_package_skills(a)
+
+    def test_a_replay_carries_the_prior_run_and_resolves_nothing(self):
+        # Prior run was install; the server and files have since changed.
+        self.serve([])
+        a = self.args("tool")
+        rb.resolve_package_skills(a, {"packageSkillsMode": "install",
+                                      "packageSkillsSha": "abc"})
+        self.assertEqual((a.package_skills, a.package_skills_sha),
+                         ("install", "abc"))
+        self.assertIsNone(a.package_skills_dir)
+
+    def test_a_replay_of_a_run_that_recorded_nothing_records_nothing(self):
+        a = self.args("tool")
+        rb.resolve_package_skills(a, {})
+        self.assertIsNone(a.package_skills)
+        self.assertIsNone(a.package_skills_sha)
+
+    def test_a_platform_run_records_null_without_probing(self):
+        def boom(*a, **k):
+            raise AssertionError("probed the REST API")
+        rb.package_skill_names = boom
+        a = self.args("tool")
+        a.target = "platform"
+        rb.resolve_package_skills(a)
+        self.assertIsNone(a.package_skills)
+
+    def test_refuses_a_served_skills_dir_that_is_a_link(self):
+        pkg = self.tmp / "served"
+        (pkg / "evals").mkdir(parents=True)
+        (pkg / "skills").symlink_to(pkg / "evals", target_is_directory=True)
+        self.served_dir = pkg
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))
 

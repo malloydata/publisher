@@ -160,7 +160,7 @@ def served_package_dir(base: str, environment: str,
             if proj.get("name") == environment and proj.get("location"):
                 p = pathlib.Path(proj["location"]) / package
                 return p if p.is_dir() else None
-    except Exception:            # noqa: BLE001 - absence is reported, not fatal
+    except (OSError, ValueError):   # unreachable or non-JSON: absence is reported
         return None
     return None
 
@@ -180,7 +180,7 @@ def package_skill_names(base: str, environment: str, package: str) -> list[str]:
             base,
             f"api/v0/environments/{urllib.parse.quote(environment)}"
             f"/packages/{urllib.parse.quote(package)}/skills")
-    except Exception:                                   # noqa: BLE001
+    except (OSError, ValueError):                       # unreachable or non-JSON
         return []
     return sorted(r["name"] for r in rows
                   if isinstance(r, dict) and r.get("origin") == "package"

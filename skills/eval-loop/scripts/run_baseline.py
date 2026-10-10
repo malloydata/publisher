@@ -2614,13 +2614,15 @@ def prior_judge_cost(out: pathlib.Path) -> float | None:
     Must be read BEFORE `run_config` rewrites run.json. Read afterwards it is
     always None, which is the version of this that silently does nothing.
     """
-    f = out / "run.json"
-    if not f.exists():
-        return None
+    return prior_run_json(out).get("judgeCostUsd")
+
+
+def prior_run_json(out: pathlib.Path) -> dict[str, Any]:
+    """The run.json already in this directory, or {} when absent or unreadable."""
     try:
-        return json.loads(f.read_text()).get("judgeCostUsd")
+        return json.loads((out / "run.json").read_text())
     except (json.JSONDecodeError, OSError):
-        return None
+        return {}
 
 
 def carry_judge_cost(judge_cost: float,
@@ -3058,7 +3060,8 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
-def resolve_package_skills(a: argparse.Namespace) -> None:
+def resolve_package_skills(a: argparse.Namespace,
+                           prior: dict[str, Any] | None = None) -> None:
     """Settle --package-skills against what the server actually serves.
 
     The mode is a claim about the answerer's environment, and its parts live in
@@ -3077,6 +3080,14 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
       guidance the baseline is supposed to exclude. Point --package at a copy
       of the package without skills/.
 
+    A run that spawns no answerer (`--rebuild`, `--rejudge`, `--from`, signalled
+    by a non-None `prior`) resolves nothing: it carries the prior run's recorded
+    mode and sha, since the files and the server may have moved since. A
+    platform run records null: the hosted workspace's skills are not reachable
+    from here. A package that ships no skills under the default `tool` mode is
+    recorded as `off` (the answerer is denied get_skill, so that is what it
+    measures) rather than refused.
+
     Sets `package_skills_dir` (the tree to install, or None) and
     `package_skills_sha` (a content hash pinned on the run, so two runs
     differing only in guidance are distinguishable in the ledger).
@@ -3087,6 +3098,19 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
     # addresses a skill by that name, and the provenance check below needs to
     # tell one this run put there deliberately from one of the CLI's own.
     a.package_skill_names: list[str] = []
+
+    if prior is not None:
+        a.package_skills = prior.get("packageSkillsMode")
+        a.package_skills_sha = prior.get("packageSkillsSha")
+        return
+    if a.target == "platform":
+        a.package_skills = None
+        return
+    if a.package_skills == "install" and a.no_answerer_skills:
+        raise SystemExit(
+            "--package-skills=install with --no-answerer-skills installs "
+            "nothing, so the run would be labelled install while measuring "
+            "the 'off' arm. Drop one of the two.")
 
     # The SERVED copy, not the working tree. The `tool` arm fetches what the
     # server holds, so installing those same bytes is what makes the two arms
@@ -3102,10 +3126,15 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
             raise SystemExit(
                 f"--package-skills-dir {override} is not a directory.")
         local = override
-    elif a.target != "platform":
+    else:
         pkg_dir = served_package_dir(a.publisher, a.environment, a.package)
-        if pkg_dir is not None and (pkg_dir / "skills").is_dir():
-            local = pkg_dir / "skills"
+        skills_dir = pkg_dir / "skills" if pkg_dir is not None else None
+        if skills_dir is not None and skills_dir.is_symlink():
+            raise SystemExit(
+                f"{skills_dir} is a link; refusing to read or install through "
+                f"it, since it can point at the eval set.")
+        if skills_dir is not None and skills_dir.is_dir():
+            local = skills_dir
     served = package_skill_names(a.publisher, a.environment, a.package)
 
     if a.package_skills == "install":
@@ -3121,11 +3150,10 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
             if c.is_dir() and not c.name.startswith("."))
     elif a.package_skills == "tool":
         if not served:
-            raise SystemExit(
-                "--package-skills=tool, but the server serves no package "
-                f"skills for {a.environment}/{a.package}. The answerer would "
-                "have nothing to fetch, so this would measure the 'off' arm "
-                "under the 'tool' label. Check the package ships skills/.")
+            print(f"  ! the server serves no package skills for "
+                  f"{a.environment}/{a.package}; recording packageSkillsMode "
+                  f"'off' (get_skill is denied) rather than 'tool'.")
+            a.package_skills = "off"
     elif a.package_skills == "off":
         if served:
             raise SystemExit(
@@ -3648,7 +3676,8 @@ def main(argv: list[str] | None = None) -> int:
               "(--truth-publisher); goldens are taken as they stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
-    resolve_package_skills(a)
+    resolve_package_skills(
+        a, prior_run_json(a.from_run or a.out) if answers_exist else None)
     set_meta = {}
     if (a.set_dir / "set.json").exists():
         set_meta = json.loads((a.set_dir / "set.json").read_text())
@@ -3845,8 +3874,8 @@ def main(argv: list[str] | None = None) -> int:
         # repair moves this without anyone remembering to bump anything.
         datasetSha=ledger.dataset_sha(a.set_dir),
         # What the SERVER says it served, taken rather than recomputed.
-        # packageSha covers every model path in the package, so an edit to an
-        # imported file moves it where a sha of the one --model-path does not.
+        # packageSha covers every model path, skill and agent in the package, so
+        # an edit to an imported file moves it where a sha of --model-path does not.
         packageSha=served_identity.get("sourceContentSha"),
         servedRevision=served_identity.get("servedRevision"),
         environment=a.environment, package=a.package,

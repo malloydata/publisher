@@ -247,5 +247,40 @@ class ClusterMembers(unittest.TestCase):
               "golden": [{"region": "West", "n": 3}],
               "rubric": "West has 3."}])
 
+class CandidateDiff(unittest.TestCase):
+    """A new file is part of the edit, and our own helper is not."""
+
+    def setUp(self):
+        self.repo = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+                    ["config", "user.name", "t"]):
+            subprocess.run(["git", *cmd], cwd=self.repo, check=True)
+        (self.repo / "m.malloy").write_text("source: a is x\n")
+        subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=self.repo, check=True)
+
+    def test_a_new_skills_file_is_in_the_patch_and_the_helper_is_not(self):
+        (self.repo / "skills" / "s").mkdir(parents=True)
+        (self.repo / "skills" / "s" / "SKILL.md").write_text("NEW GUIDE\n")
+        (self.repo / improve.SYNC_HELPER).write_text("#!/bin/bash\n")
+        (self.repo / "m.malloy").write_text("source: a is y\n")
+        diff = improve.candidate_diff(self.repo)
+        self.assertIn("NEW GUIDE", diff)
+        self.assertIn("source: a is y", diff)
+        self.assertNotIn(improve.SYNC_HELPER, diff)
+        self.assertIn("SKILL.md", improve.candidate_diff(self.repo, ("--stat",)))
+
+    def test_only_the_helper_is_an_empty_diff(self):
+        (self.repo / improve.SYNC_HELPER).write_text("#!/bin/bash\n")
+        self.assertEqual(improve.candidate_diff(self.repo).strip(), "")
+
+
+class Grants(unittest.TestCase):
+    def test_the_tools_the_skill_names_are_granted(self):
+        for t in ("get_skill", "get_status"):
+            self.assertIn(f"mcp__publisher__{t}", improve.IMPROVE_TOOLS)
+
+
 if __name__ == "__main__":
     unittest.main()

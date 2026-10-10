@@ -394,11 +394,14 @@ def build_workspace(skills: Iterable[str],
                 f"{package_skills_dir} is not a directory. Installing nothing "
                 f"would silently measure the 'off' arm under the 'install' "
                 f"label, so this is fatal.")
-        if package_skills_dir.name != "skills":
+        # A skills/ that is a link can point anywhere, `evals/` included, and
+        # still pass a name check on the unresolved path.
+        if (package_skills_dir.is_symlink()
+                or package_skills_dir.resolve().name != "skills"):
             raise ValueError(
-                f"refusing to install {package_skills_dir}: expected a "
-                f"directory named 'skills'. Anything wider risks copying the "
-                f"eval set into the answerer's workspace.")
+                f"refusing to install {package_skills_dir}: expected a real "
+                f"directory named 'skills', not a link. Anything wider risks "
+                f"copying the eval set into the answerer's workspace.")
         for child in sorted(package_skills_dir.iterdir()):
             if (not child.is_dir() or child.is_symlink()
                     or child.name.startswith(".")):

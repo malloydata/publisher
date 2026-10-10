@@ -72,6 +72,8 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "mcp__publisher__execute_query",
                  "mcp__publisher__compile_model",
                  "mcp__publisher__reload_package",
+                 "mcp__publisher__get_skill",
+                 "mcp__publisher__get_status",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
@@ -86,9 +88,29 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 """
 
 
+SYNC_HELPER = "sync_and_reload.sh"
+
+
 def git(args: list[str], cwd: pathlib.Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
                           text=True).stdout
+
+
+def candidate_diff(model_dir: pathlib.Path, extra: tuple[str, ...] = ()) -> str:
+    """The agent's edit: tracked changes plus new files, minus our own helper.
+
+    `git diff` alone omits untracked files, so a new skills/ file left an empty
+    patch that `git clean` then deleted. `--no-index` diffs each against
+    /dev/null without touching the index.
+    """
+    out = git(["diff", *extra, "--", "."], model_dir)
+    new = git(["ls-files", "--others", "--exclude-standard", "--", "."],
+              model_dir).splitlines()
+    for f in new:
+        if f != SYNC_HELPER:
+            out += git(["diff", "--no-index", *extra, "--", "/dev/null", f],
+                       model_dir)
+    return out
 
 
 # Thin on purpose: the cluster, the cases, the one operational fact the skill
@@ -269,7 +291,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         if served:
             sync = (f'rsync -a --delete --exclude .git '
                     f'"{a.model_dir.resolve()}/" "{served.resolve()}/"\n')
-    helper = a.model_dir / "sync_and_reload.sh"
+    helper = a.model_dir / SYNC_HELPER
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
@@ -299,9 +321,9 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         save_transcript=d / "improver.jsonl")
     (d / "improver.md").write_text(r.text)
 
-    diff = git(["diff", "--", "."], a.model_dir)
+    diff = candidate_diff(a.model_dir)
     (d / "edit.patch").write_text(diff)
-    stat = git(["diff", "--stat", "--", "."], a.model_dir).strip()
+    stat = candidate_diff(a.model_dir, ("--stat",)).strip()
 
     # While the edit is still in the tree: the mechanical half of Step 4. Only
     # catches drift and rubric sentences that contradict the model -- a golden
@@ -348,9 +370,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
     ap.add_argument("--mcp-url", default=None)
-    ap.add_argument("--rest-url", default="http://localhost:4000",
+    ap.add_argument("--rest-url", default=None,
                     help="REST base; the reload receipt is read from here, "
-                         "because the MCP reply double-encodes its JSON")
+                         "because the MCP reply double-encodes its JSON. "
+                         "Default: the [model] server in the set's eval.toml")
     # No built-in port: a fixed default once named the server holding the
     # model under test, which cannot verify its own goldens. The fallback is
     # the [truth] section of the set's eval.toml. With neither, the value
@@ -410,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                              "--environment")
     a.package = cfg.need(a.package, "model", "package", "--package")
     a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+    a.rest_url = a.rest_url or cfg.model_publisher()
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
@@ -454,13 +478,14 @@ def main(argv: list[str] | None = None) -> int:
     if a.limit is not None:
         issues = issues[:a.limit]
     if not issues:
-        print("no open model-owned issues; run diagnose.py first, or every "
-              "cluster is owned by retrieval, agent-skill, or dataset")
+        print("no open model- or package-skill-owned issues; run diagnose.py "
+              "first, or every cluster is owned by retrieval, agent-skill, "
+              "or dataset")
         return 0
 
     art = a.run / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
-    print(f"{len(issues)} model-owned clusters, agent {a.model}, "
+    print(f"{len(issues)} model/package-skill clusters, agent {a.model}, "
           f"{'isolated' if a.isolate else 'cumulative'}, "
           f"{'watch mode' if a.watch_mode else 'snapshot sync'}")
 
