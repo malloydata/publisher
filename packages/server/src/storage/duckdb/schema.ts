@@ -745,6 +745,41 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       PRIMARY KEY (environment_name, package_name, kind, from_key, to_key, path)
     )
   `);
+   // Index-time LLM output of the same engine (mcp/context/llm_cache.ts): a
+   // doc split into parts, and the questions written for a node. A row is
+   // reused only while its input, prompt and model hashes all match.
+   for (const table of ["doc_parts", "node_questions"]) {
+      await db.run(`
+    CREATE TABLE IF NOT EXISTS ${table} (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      item_key VARCHAR NOT NULL,
+      input_hash VARCHAR NOT NULL,
+      prompt_hash VARCHAR NOT NULL,
+      model VARCHAR NOT NULL,
+      output VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, item_key)
+    )
+  `);
+   }
+   // The engine's embedding rows: one per (node, facet), with the hash of the
+   // text that was embedded, so a sync re-embeds only what changed. Kept apart
+   // from entity_embeddings, whose sync deletes any row it did not write.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS catalog_embeddings (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      facet VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR NOT NULL,
+      dims INTEGER NOT NULL,
+      embedding FLOAT[] NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
 }
 
 // Tables in the pre-rename `projects` schema, children first so DROP order
@@ -793,6 +828,9 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "source_summaries",
       "catalog_nodes",
       "catalog_edges",
+      "doc_parts",
+      "node_questions",
+      "catalog_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));
