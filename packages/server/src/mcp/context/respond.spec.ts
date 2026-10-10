@@ -55,6 +55,7 @@ async function answer(
    allow: (n: CatalogNode) => boolean = () => true,
    extra: Partial<Parameters<typeof respond>[0]> = {},
    fx: FcjIndexFixture = f,
+   settings = DEFAULT_FCJ_SETTINGS,
 ) {
    const queries = new Map(
       targets.map((x) => [x.index, toUnit(embedText(x.text))]),
@@ -78,7 +79,7 @@ async function answer(
       index: fx.index,
       found,
       queries,
-      settings: DEFAULT_FCJ_SETTINGS,
+      settings,
       allow,
    });
    const verdicts: JudgeVerdict[] = pickFor
@@ -300,6 +301,36 @@ describe("respond", () => {
          cities.gated = false;
          f.index.values = values;
       }
+   });
+
+   it('with connect: "list", puts a pick on a source the home does not join on that source\'s card', async () => {
+      const out = await answer(
+         [
+            t(0, "measure", "number of flights"),
+            t(1, "measure", "number of races"),
+         ],
+         () => [
+            {
+               target: 0,
+               keys: ["measure:flights@travel.malloy:flight_count"],
+            },
+            { target: 1, keys: ["measure:races@reports.malloy:race_count"] },
+         ],
+         () => true,
+         {},
+         f,
+         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+      );
+      expect(
+         (out.sources as Card[]).map((c) => c.source_info.resource_id.source),
+      ).toEqual(["flights", "races"]);
+      expect(ids(out.sources)).toEqual([
+         "measure:flights:flight_count",
+         "measure:races:race_count",
+      ]);
+      expect(out.clusters.length).toBe(1);
+      expect(out.coverage).toBeUndefined();
+      expect(out.unresolved_targets).toEqual([]);
    });
 
    it("says which gated sources a value search with no pinned dimension skipped", () => {

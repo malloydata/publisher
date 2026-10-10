@@ -550,6 +550,7 @@ export function connectTrace(index: FcjIndex, connected: ConnectResult) {
          newly_covers: c.newlyCovers,
          twins: c.twins,
          contenders: c.contenders,
+         ...(c.listed.length > 0 ? { listed: c.listed } : {}),
          reach: [...c.reach.values()].map((r) => ({
             source: r.source,
             hops: r.hops,

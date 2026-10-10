@@ -86,7 +86,12 @@ describe("publisher.json retrieval block", () => {
          judge: "auto",
          contenderShare: 0,
          collapseCopies: false,
+         connect: "clusters",
+         listTopK: 15,
       });
+      expect(
+         parsePackageRetrieval({ fcj: { connect: "list", listTopK: 12 } }).fcj,
+      ).toEqual({ ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 12 });
    });
 
    it("rejects a bad engine or knob with the range and a fix", () => {
@@ -102,7 +107,13 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
       );
       expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
-         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies.",
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK.",
+      );
+      expect(() => parsePackageRetrieval({ fcj: { connect: "tree" } })).toThrow(
+         'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',
+      );
+      expect(() => parsePackageRetrieval({ fcj: { listTopK: 0 } })).toThrow(
+         'Invalid publisher.json retrieval.fcj.listTopK: expected an integer from 1 to 500, got 0. Fix: "listTopK": 15',
       );
    });
 
