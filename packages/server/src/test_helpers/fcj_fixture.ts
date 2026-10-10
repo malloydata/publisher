@@ -108,6 +108,12 @@ source: legs is duckdb.sql("select 1 as id, 1 as flight_id") extend {
  * row per payment) that reaches a dimension table (`merchants`, one row per
  * merchant) through the join `merchant_profile`. Both are documented, so a
  * card that carries the wrong one's doc says the wrong grain.
+ *
+ * The joins the catalog keeps as fields of their own: `networks`, a SQL table
+ * with a documented field added in the join, and `labelled`, which adds a
+ * field to `merchants` (`merchants extend {...}`). And two extensions of
+ * `payments`: `eur_payments` documents itself, `plain_payments` does not (the
+ * compiler then hands it its parent's notes as its own).
  */
 export const FCJ_PAYMENTS_FILES: Record<string, string> = {
    "payments.malloy": `
@@ -121,8 +127,28 @@ source: merchants is duckdb.sql("select 'm1' as merchant, 'R' as account_type") 
 source: payments is duckdb.sql("select 'm1' as merchant, 10.0 as eur_amount, 'VISA' as scheme") extend {
   #(doc) The merchant's account profile.
   join_one: merchant_profile is merchants on merchant_profile.merchant = merchant
+  #(doc) Card networks, one row per network. Join on the scheme code only.
+  join_one: networks is duckdb.sql("select 'VISA' as code, 'Visa' as label") extend {
+    #(doc) Network name as printed on the card.
+    dimension: network_name is label
+  } on networks.code = scheme
+  #(doc) Merchants with a display name.
+  join_one: labelled is merchants extend {
+    #(doc) Merchant name in capitals.
+    dimension: loud_name is upper(merchant)
+  } on labelled.merchant = merchant
   #(doc) Total transaction value in euros.
   measure: total_volume_eur is eur_amount.sum()
+}
+
+#(doc) Payments settled in euros. One row per payment.
+source: eur_payments is payments extend {
+  #(doc) Number of euro payments.
+  measure: eur_count is count()
+}
+
+source: plain_payments is payments extend {
+  dimension: is_large is eur_amount > 100
 }
 `,
 };
