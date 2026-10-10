@@ -208,6 +208,71 @@ describe("connect", () => {
       );
    });
 
+   it('with the provisional connect: "list", shows every target\'s find-stage top K grouped by source, with no cluster filter', () => {
+      const targets = [
+         t(0, "dimension", "start date in the month"),
+         t(1, "measure", "number of flights"),
+      ];
+      const out = run(targets, () => true, {
+         ...DEFAULT_FCJ_SETTINGS,
+         connect: "list",
+         listTopK: 6,
+      });
+      expect(out.clusters.length).toBe(1);
+      const c = out.clusters[0];
+      // The home is the owner of the measure target's best candidate.
+      expect([c.home, c.covers, c.twins, c.contenders]).toEqual([
+         "flights@travel.malloy",
+         [0, 1],
+         [],
+         [],
+      ]);
+      expect(c.listed).toEqual([
+         "orders@shop.malloy",
+         "races@reports.malloy",
+         "orders_public@shop.malloy",
+         "cities@travel.malloy",
+      ]);
+      // Find order, grouped by owning source: orders' two fields sit together.
+      expect(c.candidates.get(0)!.map((x) => [x.key, x.rank, x.hops])).toEqual([
+         ["dimension:flights@travel.malloy:start_date", 1, 0],
+         ["dimension:orders@shop.malloy:start_date", 2, 0],
+         ["dimension:orders@shop.malloy:customer_email", 5, 0],
+         ["dimension:races@reports.malloy:start_date", 3, 0],
+         ["dimension:orders_public@shop.malloy:start_date", 4, 0],
+         ["dimension:cities@travel.malloy:id", 6, 0],
+      ]);
+      // Scores are the find stage's own, not rescored.
+      const found = c.candidates.get(1)!.map((x) => x.score === x.found.score);
+      expect(found.every(Boolean)).toBe(true);
+      expect(c.extras).toEqual([
+         {
+            key: "source:flights@travel.malloy:flights",
+            reason: "the home source",
+         },
+      ]);
+      expect(out.unresolved).toEqual([]);
+      expect(out.considered).toEqual([]);
+   });
+
+   it('with connect: "list", keeps the routes of a source the home joins to', () => {
+      const out = run(
+         [
+            t(0, "dimension", "region name of the arrival airport"),
+            t(1, "measure", "number of flights"),
+         ],
+         () => true,
+         { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
+      );
+      const c = out.clusters[0];
+      expect(c.home).toBe("flights@travel.malloy");
+      const region = c.candidates
+         .get(0)!
+         .find((x) => x.key === "dimension:regions@travel.malloy:region_name")!;
+      expect(region.hops).toBe(2);
+      expect(c.listed.includes("regions@travel.malloy")).toBe(false);
+   });
+
    it("with the provisional collapseCopies, an extension's copy is not a second home", async () => {
       const folded = await buildFcjIndexFixture({
          ...DEFAULT_FCJ_SETTINGS,

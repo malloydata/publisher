@@ -146,7 +146,18 @@ export interface FcjSettings {
     * defined, so an extension competes only with the fields it adds.
     */
    collapseCopies: boolean;
+   /**
+    * PROVISIONAL, `clusters` by default. `list` skips the cluster filter: the
+    * judge sees every target's find-stage top `listTopK`, grouped by owning
+    * source, plus the structural extras. The baseline a connect rule must beat.
+    */
+   connect: FcjConnect;
+   /** With `connect: "list"`: find-stage candidates per target the judge sees. */
+   listTopK: number;
 }
+
+export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
+export type FcjConnect = (typeof FCJ_CONNECT_MODES)[number];
 
 export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    perTarget: 30,
@@ -164,6 +175,8 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    judge: "auto",
    contenderShare: 0,
    collapseCopies: false,
+   connect: "clusters",
+   listTopK: 15,
 };
 
 export interface PackageRetrievalSettings {
@@ -443,6 +456,17 @@ function fcjBoolean(
    return value as boolean;
 }
 
+function fcjConnect(obj: Record<string, unknown>): FcjConnect {
+   const value = obj.connect ?? DEFAULT_FCJ_SETTINGS.connect;
+   if (!(FCJ_CONNECT_MODES as readonly unknown[]).includes(value)) {
+      fail(
+         `Invalid publisher.json retrieval.fcj.connect: expected one of ${FCJ_CONNECT_MODES.join(", ")}, got ${describe(obj.connect)}. ` +
+            `Fix: "connect": "clusters" (source groups) or "list" (the find stage's top listTopK per target).`,
+      );
+   }
+   return value as FcjConnect;
+}
+
 function parseFcj(raw: unknown): FcjSettings {
    const obj = objectBlock(
       raw,
@@ -471,6 +495,8 @@ function parseFcj(raw: unknown): FcjSettings {
       judge: parseEnabled(obj.judge, "retrieval.fcj.judge"),
       contenderShare: real("contenderShare", 0, 1),
       collapseCopies: fcjBoolean(obj, "collapseCopies"),
+      connect: fcjConnect(obj),
+      listTopK: int("listTopK", 1, 500),
    };
 }
 

@@ -153,6 +153,13 @@ export function renderJudgePrompt(
             )}. Pick from the one that fits the question; say which in "caveats" when it is a close call.`,
       );
    }
+   if (cluster.listed.length > 0) {
+      lines.push(
+         `Other sources with candidates, which the home's joins do not reach: ${cluster.listed
+            .map((s) => index.catalog.sources.get(s)?.name ?? s)
+            .join(", ")}`,
+      );
+   }
    lines.push("", "<targets>");
    targets.forEach((t, i) => {
       const covered = cluster.covers.includes(t.index);
