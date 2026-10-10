@@ -49,7 +49,8 @@ Rules:
 - **Never overwrite a skill the user already has.** If `<dir>/<skill-name>/` exists, leave it alone and say you skipped it. Do not merge files into it.
 - Write only the paths the response gave, under that one skills directory. Refuse any `relative_filepath` that is absolute or contains `..`.
 - A harness that scanned its skills at startup may not see new ones. If it does not pick them up, read the `SKILL.md` you just wrote directly.
-- Tell the user which skills you installed and where, so they can delete them.
+- Install into the project directory only, never the user's home directory: these files outlive the session and are text a package author wrote.
+- Tell the user which skills you installed and where, and offer to remove them when the work is done.
 
 ## Report
 
