@@ -13,20 +13,32 @@
  * cache and copies the schema back. Caching here removes the round trip; it
  * changes nothing about when a schema is fetched from the warehouse.
  *
- * Entries outlive a load and are evicted least-recently-used first. Keys are
+ * Entries outlive a load and are evicted least-recently-used first, to keep
+ * their total serialized size within a byte budget: an entry count would let a
+ * few very wide tables take an unbounded share of the worker's heap. Keys are
  * built by the caller and must name everything the schema depends on: the
- * environment, the connection and its digest, and the table path or SQL.
+ * environment, the connection instance, and the table path or SQL.
  * Freshness follows Malloy's own connection cache: an entry older than the
  * request's `refreshTimestamp` is a miss.
  */
 export class SchemaCache<T> {
    private readonly entries = new Map<
       string,
-      { value: T; timestamp: number }
+      { value: T; timestamp: number; bytes: number }
    >();
+   private readonly inFlight = new Map<string, Promise<T | undefined>>();
+   private totalBytes = 0;
    private hitCount = 0;
 
-   constructor(private readonly maxEntries: number) {}
+   /**
+    * `maxBytes` bounds the summed `sizeOf` of the entries; 0 disables the
+    * cache. `sizeOf` is measured once, when an entry is stored.
+    */
+   constructor(
+      private readonly maxBytes: number,
+      private readonly sizeOf: (value: T) => number = (value) =>
+         JSON.stringify(value)?.length ?? 0,
+   ) {}
 
    get(key: string, refreshTimestamp?: number): T | undefined {
       const entry = this.entries.get(key);
@@ -35,7 +47,7 @@ export class SchemaCache<T> {
          refreshTimestamp !== undefined &&
          refreshTimestamp > entry.timestamp
       ) {
-         this.entries.delete(key);
+         this.delete(key);
          return undefined;
       }
       // Re-insert so iteration order is least-recently-used first.
@@ -46,18 +58,34 @@ export class SchemaCache<T> {
    }
 
    set(key: string, value: T, timestamp: number): void {
-      if (this.maxEntries <= 0) return;
-      this.entries.delete(key);
-      this.entries.set(key, { value, timestamp });
-      while (this.entries.size > this.maxEntries) {
+      this.delete(key);
+      if (this.maxBytes <= 0) return;
+      const bytes = this.sizeOf(value);
+      // One entry larger than the whole budget would evict everything else.
+      if (bytes > this.maxBytes) return;
+      this.entries.set(key, { value, timestamp, bytes });
+      this.totalBytes += bytes;
+      while (this.totalBytes > this.maxBytes) {
          const oldest = this.entries.keys().next().value;
          if (oldest === undefined) break;
-         this.entries.delete(oldest);
+         this.delete(oldest);
       }
+   }
+
+   private delete(key: string): void {
+      const entry = this.entries.get(key);
+      if (!entry) return;
+      this.entries.delete(key);
+      this.totalBytes -= entry.bytes;
    }
 
    get size(): number {
       return this.entries.size;
+   }
+
+   /** The summed size of the entries held, as measured by `sizeOf`. */
+   get bytes(): number {
+      return this.totalBytes;
    }
 
    /** Hits since the cache was created; callers diff it around a load. */
@@ -65,17 +93,18 @@ export class SchemaCache<T> {
       return this.hitCount;
    }
 
-   private readonly inFlight = new Map<string, Promise<T | undefined>>();
-
    /**
-    * The fetch already under way for `key`, if any. A caller that joins one
-    * is counted as a hit: it is answered without a request of its own. The
-    * promise resolves to undefined when that fetch did not produce `key`.
+    * The fetch already under way for `key`, if any. The promise resolves to
+    * undefined when that fetch did not produce `key`. A caller answered by it
+    * records that with {@link noteJoinedHit}.
     */
    joinInFlight(key: string): Promise<T | undefined> | undefined {
-      const pending = this.inFlight.get(key);
-      if (pending) this.hitCount += 1;
-      return pending;
+      return this.inFlight.get(key);
+   }
+
+   /** Count a request answered by a fetch it joined, as a hit. */
+   noteJoinedHit(): void {
+      this.hitCount += 1;
    }
 
    /**

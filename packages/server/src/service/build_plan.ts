@@ -926,7 +926,7 @@ export async function collectModelBuildPlan(
 ): Promise<void> {
    const { modelPath, packagePath, materializer, malloyModel, getRuntime } =
       args;
-   // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
+   // Pre-aggregation, at the build-plan seam. Runs BEFORE the two early `return`s
    // below on purpose: a model can declare `#@ preaggregate` while having no
    // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
    // flag, and in both cases the annotation should still produce a rollup —
@@ -1018,7 +1018,7 @@ export async function collectModelBuildPlan(
    }
 
    // Detect `#@ persist` sources the plan didn't recognize (see
-   // detectDroppedPersistSources). Runs BEFORE the empty-graphs `continue`, so
+   // detectDroppedPersistSources). Runs BEFORE the empty-graphs `return`, so
    // a model whose ONLY persist source is a dropped shape is still caught.
    const recognizedNames = new Set(
       Object.values(buildPlan.sources).map((s) => s.name),

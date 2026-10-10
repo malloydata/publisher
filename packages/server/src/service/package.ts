@@ -1518,6 +1518,7 @@ export class Package {
             }));
          recordBuildPlanComputeDuration(
             workerPlan ? workerPlan.durationMs : Date.now() - buildPlanStart,
+            workerPlan ? "worker" : "main_thread",
          );
       } catch (err) {
          recordBuildPlanComputeFailed();

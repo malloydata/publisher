@@ -353,12 +353,17 @@ export function recordIncrementalStep(
 }
 
 /**
- * Record the wall-clock cost of compiling a package's build plan
- * (`Package.buildPlan`). This recompiles models at load, so it is worth
- * tracking as a discrete cost separate from the build itself.
+ * Record the wall-clock cost of a package's build plan at load
+ * (`Package.buildPlan`). `computed_in` separates the two populations: `worker`
+ * is the package-load worker deriving it from the compile it already ran;
+ * `main_thread` is the fallback that compiles the package again on the event
+ * loop, which a load should no longer take.
  */
-export function recordBuildPlanComputeDuration(durationMs: number): void {
-   buildPlanComputeDuration().record(durationMs);
+export function recordBuildPlanComputeDuration(
+   durationMs: number,
+   computedIn: "worker" | "main_thread",
+): void {
+   buildPlanComputeDuration().record(durationMs, { computed_in: computedIn });
 }
 
 /**
