@@ -3,7 +3,11 @@
 
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createCatalogTables } from "../../storage/duckdb/schema";
-import { compileFcjFixture, openTempDb } from "../../test_helpers/fcj_fixture";
+import {
+   compileFcjFixture,
+   FCJ_PAYMENTS_FILES,
+   openTempDb,
+} from "../../test_helpers/fcj_fixture";
 import type { Catalog } from "./catalog";
 import { buildCatalog, catalogInputOf, referencedPaths } from "./catalog";
 import { catalogReportLine, saveCatalog } from "./catalog_store";
@@ -11,9 +15,11 @@ import { derivedText, DERIVED_TEXT_MAX_WORDS } from "./derived_text";
 import { reachOf } from "./reach";
 
 let catalog: Catalog;
+let payments: Catalog;
 
 beforeAll(async () => {
    ({ catalog } = await compileFcjFixture());
+   ({ catalog: payments } = await compileFcjFixture(FCJ_PAYMENTS_FILES, {}));
 });
 
 const plainText = (key: string) =>
@@ -21,6 +27,16 @@ const plainText = (key: string) =>
       catalog,
       whatOf: (n) => n.doc,
       summaryOf: () => undefined,
+   });
+
+const paymentsText = (
+   key: string,
+   summaryOf: (k: string) => string | undefined = () => undefined,
+) =>
+   derivedText(payments.nodes.get(key)!, {
+      catalog: payments,
+      whatOf: (n) => n.doc,
+      summaryOf,
    });
 
 describe("catalog", () => {
@@ -276,22 +292,95 @@ describe("derived text", () => {
       ).toBe("flights: Scheduled flights, one per departure.");
    });
 
-   it("pins a field of an inline-table join, path in words", () => {
-      const node = {
-         ...catalog.nodes.get("dimension:flights@travel.malloy:start_date")!,
-         name: "carrier.carrier_name",
-         joinPath: "carrier",
-         dependsOn: [],
-      };
+   it("pins a field of a SQL join: its own doc, then the path with the join's first sentence", () => {
       expect(
-         derivedText(node, {
-            catalog,
-            whatOf: (n) =>
-               n.name === "carrier.carrier_name" ? "Airline name" : n.doc,
-            summaryOf: () => undefined,
-         }),
+         paymentsText(
+            "dimension:payments@payments.malloy:networks.network_name",
+         ),
       ).toBe(
-         "carrier name, reached from flights through carrier: Airline name. In flights: One row per scheduled flight.",
+         "network name: Network name as printed on the card. Reached from payments through networks: Card networks, one row per network. In payments: One row per payment transaction.",
+      );
+      expect(
+         paymentsText("dimension:payments@payments.malloy:networks.code"),
+      ).toBe(
+         "code. Reached from payments through networks: Card networks, one row per network. In payments: One row per payment transaction.",
+      );
+   });
+
+   it("pins a field a join adds to a catalog source, with that source's line", () => {
+      const node = payments.nodes.get(
+         "dimension:payments@payments.malloy:labelled.loud_name",
+      )!;
+      expect(node.joinedSourceKey).toBe("merchants@payments.malloy");
+      expect(paymentsText(node.key)).toBe(
+         "loud name: Merchant name in capitals. Reached from payments through labelled: Merchants with a display name. From merchants: One row per merchant, 30 in all, carrying the account characteristics. In payments: One row per payment transaction.",
+      );
+      // A SQL join is made from no source.
+      expect(
+         payments.nodes.get("dimension:payments@payments.malloy:networks.code")!
+            .joinedSourceKey,
+      ).toBeUndefined();
+   });
+
+   it("gives an extension its own doc and a separate line for its parent, never a stored summary", () => {
+      const summaries = (k: string) =>
+         k === "payments@payments.malloy"
+            ? "Payments, one row each"
+            : k === "eur_payments@payments.malloy"
+              ? "A summary written from the parent's notes"
+              : undefined;
+      expect(
+         paymentsText(
+            "source:eur_payments@payments.malloy:eur_payments",
+            summaries,
+         ),
+      ).toBe(
+         "eur payments: Payments settled in euros. One row per payment. Extends payments: Payments, one row each.",
+      );
+      expect(
+         paymentsText(
+            "measure:eur_payments@payments.malloy:eur_count",
+            summaries,
+         ),
+      ).toBe(
+         "eur count: Number of euro payments. In eur payments: Payments settled in euros. Extends payments: Payments, one row each.",
+      );
+   });
+
+   it("does not let the parent's doc read as an undocumented extension's", () => {
+      const plain = payments.sources.get("plain_payments@payments.malloy")!;
+      // The compiler hands the extension its parent's notes as its own; the
+      // shipped entity carries them.
+      expect(plain.node.entities[0].doc).toBe(
+         "One row per payment transaction.",
+      );
+      expect(plain.node.doc).toBe("");
+      expect(plain.node.displayDoc).toBe("");
+      expect(paymentsText(plain.node.key)).toBe(
+         "plain payments. Extends payments: One row per payment transaction.",
+      );
+      expect(
+         paymentsText("dimension:plain_payments@payments.malloy:is_large"),
+      ).toBe(
+         "is large. Computed from eur amount. In plain payments. Extends payments: One row per payment transaction.",
+      );
+      // An extension that writes notes keeps exactly those.
+      expect(
+         payments.sources.get("eur_payments@payments.malloy")!.node.doc,
+      ).toBe("Payments settled in euros. One row per payment.");
+   });
+
+   it("caps the text after a joined field's own doc, so the cap cuts the context", () => {
+      const long = Array.from({ length: 110 }, (_, i) => `w${i}`).join(" ");
+      const key = "dimension:payments@payments.malloy:networks.network_name";
+      const text = derivedText(payments.nodes.get(key)!, {
+         catalog: payments,
+         whatOf: (n) => (n.key === key ? long : n.doc),
+         summaryOf: () => undefined,
+      });
+      expect(text.split(" ").length).toBe(DERIVED_TEXT_MAX_WORDS);
+      expect(text).toBe(
+         `network name: ${long}. Reached from payments through networks: Card networks, one`,
       );
    });
 

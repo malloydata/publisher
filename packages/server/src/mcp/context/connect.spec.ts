@@ -104,7 +104,7 @@ describe("connect", () => {
       ]);
       expect(homes(out)).toEqual([
          ["flights@travel.malloy", [2], []],
-         ["orders_public@shop.malloy", [0], ["orders@shop.malloy"]],
+         ["orders@shop.malloy", [0], ["orders_public@shop.malloy"]],
          ["races@reports.malloy", [1], []],
       ]);
       expect(keys(out, 2, 1)).toEqual([
@@ -115,11 +115,11 @@ describe("connect", () => {
    it("keeps a twin in the home's cluster instead of dropping it for being second", () => {
       const out = run([t(0, "measure", "net sales")]);
       expect(homes(out)).toEqual([
-         ["orders_public@shop.malloy", [0], ["orders@shop.malloy"]],
+         ["orders@shop.malloy", [0], ["orders_public@shop.malloy"]],
       ]);
       expect(keys(out, 0, 0).slice(0, 2)).toEqual([
-         "measure:orders_public@shop.malloy:net_sales",
          "measure:orders@shop.malloy:net_sales",
+         "measure:orders_public@shop.malloy:net_sales",
       ]);
    });
 

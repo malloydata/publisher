@@ -187,7 +187,7 @@ describe("judge reply", () => {
       });
       expect(verdicts.map((v) => v.cluster)).toEqual([
          "flights@travel.malloy",
-         "orders_public@shop.malloy",
+         "orders@shop.malloy",
          "races@reports.malloy",
       ]);
       // Three clusters, three calls, plus the one repair of the first reply.

@@ -222,8 +222,8 @@ describe("respond", () => {
                       {
                          target: 0,
                          keys: [
-                            "measure:orders_public@shop.malloy:sales",
                             "measure:orders@shop.malloy:sales",
+                            "measure:orders_public@shop.malloy:sales",
                          ],
                       },
                    ],
@@ -255,8 +255,8 @@ describe("respond", () => {
       // The twin's pick is on the twin's own card.
       expect(ids(out.sources)).toEqual([
          "measure:flights:flight_count",
-         "measure:orders_public:sales",
          "measure:orders:sales",
+         "measure:orders_public:sales",
       ]);
    });
 
@@ -360,7 +360,7 @@ describe("respond, a picked source the home reaches by a join", () => {
                keys: ["measure:payments@payments.malloy:total_volume_eur"],
             },
          ],
-         () => true,
+         (n) => n.source === "payments" || n.source === "merchants",
          {},
          p,
       );

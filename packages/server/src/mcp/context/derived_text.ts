@@ -7,21 +7,30 @@
  *
  * - a field: its name in words, the "what it is" part of its doc, and the
  *   name and one-line summary of its source;
- * - a field of an inline-table join: the same, plus the path in words
- *   ("region, reached from orders through customer");
+ * - a field of a join the catalog keeps as a field of its own (a raw table,
+ *   or fields the join adds): its own doc first, then the path in words with
+ *   the first sentence of the join's own doc ("Reached from orders through
+ *   customer: ..."), then the line of the source the join is made from when
+ *   that source is in the catalog;
  * - a field computed from other fields: the names and "what it is" of what it
  *   reads, so `net_sales is sales { where: is_fulfilled }` is found by
  *   "fulfilled" with no doc at all;
  * - a view: its doc and the fields it outputs;
  * - a source: its summary.
  *
+ * An extension's line is its own doc, never a stored summary (which may have
+ * been written from its parent's notes), and a separate "Extends <parent>"
+ * line carries the parent's, so the parent's doc never reads as the
+ * extension's.
+ *
  * Rules in a doc ("exclude test accounts") are not here: they are kept for the
  * judge and never embedded (see doc_parts.ts). The text is capped at
- * DERIVED_TEXT_MAX_WORDS so a long doc cannot make one row dominate the cost.
+ * DERIVED_TEXT_MAX_WORDS so a long doc cannot make one row dominate the cost;
+ * a node's own doc comes first, so the cap cuts its context, not its doc.
  */
 
 import { humanizeName } from "../tools/embedding_index";
-import type { Catalog, CatalogNode } from "./catalog";
+import { nodeKeyOf, type Catalog, type CatalogNode } from "./catalog";
 
 export const DERIVED_TEXT_MAX_WORDS = 120;
 
@@ -56,17 +65,61 @@ export function capWords(text: string, max: number): string {
    return parts.length <= max ? parts.join(" ") : parts.slice(0, max).join(" ");
 }
 
-/** The source's line: its summary, else the first sentence of its own doc. */
+/**
+ * The source's line: its summary, else the first sentence of its own doc. An
+ * extension's is always its own doc.
+ */
 function sourceLine(
    ctx: DerivedTextContext,
    sourceKey: string,
 ): string | undefined {
-   const summary = ctx.summaryOf(sourceKey);
-   if (summary) return summary;
    const source = ctx.catalog.sources.get(sourceKey);
+   const summary = source?.extendsKey ? undefined : ctx.summaryOf(sourceKey);
+   if (summary) return summary;
    if (!source) return undefined;
    const what = ctx.whatOf(source.node);
    return what ? firstSentence(what) : undefined;
+}
+
+/** `name: line`, or the name alone when there is no line. */
+function labelled(name: string, line: string | undefined): string {
+   return line ? `${name}: ${trimEnd(line)}` : name;
+}
+
+/** "Extends <parent>: <its line>" for an extension, else undefined. */
+function extendsLine(
+   ctx: DerivedTextContext,
+   sourceKey: string,
+): string | undefined {
+   const parentKey = ctx.catalog.sources.get(sourceKey)?.extendsKey;
+   const parent = parentKey ? ctx.catalog.sources.get(parentKey) : undefined;
+   if (!parent) return undefined;
+   return labelled(
+      `Extends ${words(parent.name)}`,
+      sourceLine(ctx, parent.key),
+   );
+}
+
+/**
+ * The join node a field of a join is reached through: the last hop of its
+ * path, declared on its own source or on the catalog source the rest of the
+ * path reaches. Undefined when that hop is on a raw table.
+ */
+function joinNodeOf(
+   catalog: Catalog,
+   node: CatalogNode,
+): CatalogNode | undefined {
+   const path = node.joinPath!.split(".");
+   const via =
+      path.length === 1
+         ? node.sourceKey
+         : catalog.joins
+              .get(node.sourceKey)
+              ?.find((h) => h.path.join(".") === path.slice(0, -1).join("."))
+              ?.to;
+   return via
+      ? catalog.nodes.get(nodeKeyOf("join", via, path[path.length - 1]))
+      : undefined;
 }
 
 export function derivedText(
@@ -76,20 +129,36 @@ export function derivedText(
    const parts: string[] = [];
    const what = trimEnd(ctx.whatOf(node));
    if (node.kind === "source") {
-      const line = ctx.summaryOf(node.sourceKey) ?? what;
-      parts.push(
-         line ? `${words(node.name)}: ${trimEnd(line)}` : words(node.name),
-      );
+      const own = ctx.catalog.sources.get(node.sourceKey)?.extendsKey
+         ? what
+         : (ctx.summaryOf(node.sourceKey) ?? what);
+      parts.push(labelled(words(node.name), own));
+      const ext = extendsLine(ctx, node.sourceKey);
+      if (ext) parts.push(ext);
       return finish(parts);
    }
    const leaf = node.joinPath
       ? node.name.slice(node.joinPath.length + 1)
       : node.name;
-   let head = words(leaf);
+   parts.push(labelled(words(leaf), what));
    if (node.joinPath) {
-      head += `, reached from ${words(node.source)} through ${words(node.joinPath)}`;
+      const join = joinNodeOf(ctx.catalog, node);
+      const joinWhat = join ? trimEnd(ctx.whatOf(join)) : "";
+      parts.push(
+         labelled(
+            `Reached from ${words(node.source)} through ${words(node.joinPath)}`,
+            joinWhat ? firstSentence(joinWhat) : undefined,
+         ),
+      );
+      const joined = node.joinedSourceKey
+         ? ctx.catalog.sources.get(node.joinedSourceKey)
+         : undefined;
+      if (joined) {
+         parts.push(
+            labelled(`From ${words(joined.name)}`, sourceLine(ctx, joined.key)),
+         );
+      }
    }
-   parts.push(what ? `${head}: ${what}` : head);
    const deps = node.dependsOn
       .map((k) => ctx.catalog.nodes.get(k))
       .filter((n): n is CatalogNode => n !== undefined);
@@ -109,12 +178,11 @@ export function derivedText(
    if (used.length > 0) {
       parts.push(`Uses ${used.map((u) => words(u.name)).join(", ")}`);
    }
-   const line = sourceLine(ctx, node.sourceKey);
    parts.push(
-      line
-         ? `In ${words(node.source)}: ${trimEnd(line)}`
-         : `In ${words(node.source)}`,
+      labelled(`In ${words(node.source)}`, sourceLine(ctx, node.sourceKey)),
    );
+   const ext = extendsLine(ctx, node.sourceKey);
+   if (ext) parts.push(ext);
    return finish(parts);
 }
 
