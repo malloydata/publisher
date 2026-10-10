@@ -63,14 +63,41 @@ export function readFileInside(
       if (!real.toLowerCase().endsWith(".md")) {
          return { problem: "resolves to a file that is not Markdown" };
       }
-      const { size } = fs.statSync(real);
-      if (size > maxBytes) {
-         return { problem: `is ${size} bytes, over the ${maxBytes} byte cap` };
+      const stat = fs.statSync(real);
+      // Reading a FIFO would block the main thread.
+      if (!stat.isFile()) {
+         return { problem: "resolves to something that is not a regular file" };
+      }
+      if (stat.size > maxBytes) {
+         return {
+            problem: `is ${stat.size} bytes, over the ${maxBytes} byte cap`,
+         };
       }
       return { text: fs.readFileSync(real, "utf8") };
    } catch (error) {
       return { problem: `cannot be read (${(error as Error).message})` };
    }
+}
+
+/** The skill's reference files, or none when `reference/` is a link out of the package. */
+function referenceFilesInside(
+   realRoot: string,
+   skillDir: string,
+   rel: string,
+   warnings: string[],
+): string[] {
+   try {
+      const real = fs.realpathSync(path.join(skillDir, "reference"));
+      if (stepsOutside(path.relative(realRoot, real))) {
+         warnings.push(
+            `Package skill reference directory '${rel}/reference' resolves outside the package through a link, so it is not served. Fix: copy the files into the package.`,
+         );
+         return [];
+      }
+   } catch {
+      return [];
+   }
+   return referenceFiles(skillDir);
 }
 
 /**
@@ -114,7 +141,6 @@ export function readSkillsDir(
       return { skills, files, warnings };
    }
 
-   const seen = new Map<string, string>();
    for (const entry of [...entries].sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
    )) {
@@ -146,19 +172,23 @@ export function readSkillsDir(
             `Package skill '${skill.name}' has no description in its frontmatter, so nothing tells a caller when to read it. Fix: add a one-line 'description:' to ${rel}/SKILL.md.`,
          );
       }
-      const previous = seen.get(skill.name);
-      if (previous) {
+      // The directory name is what callers install under, so it must be the name.
+      if (skill.name !== entry.name) {
          warnings.push(
-            `Package skills '${previous}' and '${entry.name}' both declare the name '${skill.name}'; only '${previous}' is served. Fix: give each skill a distinct 'name:'.`,
+            `Package skill '${rel}' declares the name '${skill.name}', which is not its directory name '${entry.name}', so it is not served. Fix: make 'name:' in ${rel}/SKILL.md equal '${entry.name}'.`,
          );
          continue;
       }
-      seen.set(skill.name, entry.name);
 
       const references: SkillEntry[] = [];
       const refFiles: PackageSkills["files"] = [];
       const served: string[] = [];
-      for (const file of referenceFiles(skillDir)) {
+      for (const file of referenceFilesInside(
+         realRoot,
+         skillDir,
+         rel,
+         warnings,
+      )) {
          const relative = `${rel}/reference/${file}`;
          const ref = readFileInside(
             realRoot,
@@ -260,13 +290,42 @@ function agentPath(value: unknown, what: string): string {
    return normalized;
 }
 
-/** True when a publisher.json sits in `dir` or, when `deep`, anywhere under it. */
-function holdsManifest(dir: string, deep: boolean): boolean {
+/** True when a publisher.json sits directly in `dir`, which must resolve inside the package. */
+function holdsManifest(realRoot: string, dir: string): boolean {
    try {
+      if (stepsOutside(path.relative(realRoot, fs.realpathSync(dir)))) {
+         return false;
+      }
       return fs
-         .readdirSync(dir, { recursive: deep })
+         .readdirSync(dir)
+         .some((f) => f.toLowerCase() === "publisher.json");
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * True when a publisher.json sits in a skills root, a skill directory under it,
+ * or its reference/: the only places a served file can be. It never walks
+ * deeper and never follows a link, so a link cannot make this scan the
+ * filesystem or report on files outside the package.
+ */
+function servedTreeHoldsManifest(realRoot: string, root: string): boolean {
+   if (holdsManifest(realRoot, root)) return true;
+   try {
+      if (stepsOutside(path.relative(realRoot, fs.realpathSync(root)))) {
+         return false;
+      }
+      return fs
+         .readdirSync(root, { withFileTypes: true })
          .some(
-            (f) => path.basename(String(f)).toLowerCase() === "publisher.json",
+            (e) =>
+               e.isDirectory() &&
+               (holdsManifest(realRoot, path.join(root, e.name)) ||
+                  holdsManifest(
+                     realRoot,
+                     path.join(root, e.name, "reference"),
+                  )),
          );
    } catch {
       return false;
@@ -291,7 +350,7 @@ function readAgentText(
       dir !== ".";
       dir = path.posix.dirname(dir)
    ) {
-      if (holdsManifest(path.join(packagePath, dir), false)) {
+      if (holdsManifest(realRoot, path.join(packagePath, dir))) {
          throw new AgentProblem(
             `${what} '${rel}' sits under a nested publisher.json at '${dir}'`,
          );
@@ -356,6 +415,7 @@ function readAgentSchedules(
 /** The agent's skill roots read into served files, sorted by relative path. */
 function readAgentSkills(
    packagePath: string,
+   realRoot: string,
    raw: unknown,
    paths: string[],
    warnings: string[],
@@ -377,7 +437,11 @@ function readAgentSkills(
          throw new AgentProblem(`skills directory '${root}' does not exist`);
       }
       for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
-         if (holdsManifest(path.join(packagePath, dir), dir === root)) {
+         const holds =
+            dir === root
+               ? servedTreeHoldsManifest(realRoot, path.join(packagePath, dir))
+               : holdsManifest(realRoot, path.join(packagePath, dir));
+         if (holds) {
             throw new AgentProblem(
                `skills directory '${root}' contains a nested publisher.json`,
             );
@@ -472,7 +536,13 @@ function readAgent(
       raw.schedules,
       paths,
    );
-   const skills = readAgentSkills(packagePath, raw.skills, paths, warnings);
+   const skills = readAgentSkills(
+      packagePath,
+      realRoot,
+      raw.skills,
+      paths,
+      warnings,
+   );
 
    const definitionSha = canonicalSha({
       name,

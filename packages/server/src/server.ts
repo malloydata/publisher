@@ -1820,9 +1820,8 @@ app.get(
             await skillController.getSkill(
                req.params.environmentName,
                req.params.packageName,
-               decodeURIComponent(
-                  (req.params as unknown as Record<string, string>)[0] ?? "",
-               ),
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
             ),
          );
       } catch (error) {

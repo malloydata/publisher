@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -144,7 +145,7 @@ describe("readSkillsDir", () => {
 
    it("reads a skill's frontmatter and body", () => {
       writeSkill(
-         "revenue",
+         "revenue-rules",
          "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n",
       );
       const { skills, files, warnings } = readSkillsDir(pkg);
@@ -153,7 +154,9 @@ describe("readSkillsDir", () => {
       expect(skills[0]!.name).toBe("revenue-rules");
       expect(skills[0]!.description).toBe("How revenue is defined here.");
       expect(skills[0]!.body).toBe("Use net_revenue, never gross.");
-      expect(files.map((f) => f.path)).toEqual(["skills/revenue/SKILL.md"]);
+      expect(files.map((f) => f.path)).toEqual([
+         "skills/revenue-rules/SKILL.md",
+      ]);
    });
 
    it("falls back to the directory name when frontmatter omits name", () => {
@@ -163,10 +166,10 @@ describe("readSkillsDir", () => {
 
    it("serves reference files as their own entries and points the body at them", () => {
       writeSkill(
-         "revenue",
+         "revenue-rules",
          "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n",
       );
-      writeReference("revenue", "margin.md", "# Margin\n\nDetail.\n");
+      writeReference("revenue-rules", "margin.md", "# Margin\n\nDetail.\n");
       const { skills, files } = readSkillsDir(pkg);
       expect(skills.map((s) => s.name)).toEqual([
          "revenue-rules",
@@ -178,8 +181,8 @@ describe("readSkillsDir", () => {
       expect(skills[0]!.body).toContain("revenue-rules/<name>");
       expect(skills[0]!.body).toContain("Available: margin.");
       expect(files.map((f) => f.path)).toEqual([
-         "skills/revenue/SKILL.md",
-         "skills/revenue/reference/margin.md",
+         "skills/revenue-rules/SKILL.md",
+         "skills/revenue-rules/reference/margin.md",
       ]);
    });
 
@@ -197,13 +200,39 @@ describe("readSkillsDir", () => {
       expect(readSkillsDir(pkg).warnings[0]).toContain("no description");
    });
 
-   it("keeps the first of two skills declaring the same name, and warns", () => {
-      writeSkill("a-dir", "---\nname: dupe\ndescription: first\n---\n\nA\n");
-      writeSkill("b-dir", "---\nname: dupe\ndescription: second\n---\n\nB\n");
+   it("does not serve a skill whose frontmatter name is not its directory name", () => {
+      writeSkill("a-dir", "---\nname: other\ndescription: d\n---\n\nA\n");
+      writeSkill("b-dir", "---\nname: b-dir\ndescription: d\n---\n\nB\n");
+      const { skills, files, warnings } = readSkillsDir(pkg);
+      expect(skills.map((s) => s.name)).toEqual(["b-dir"]);
+      expect(files.map((f) => f.path)).toEqual(["skills/b-dir/SKILL.md"]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("'other'");
+      expect(warnings[0]).toContain("Fix:");
+   });
+
+   it("does not list a reference/ directory that is a link out of the package", () => {
+      writeSkill("linked", "---\nname: linked\ndescription: d\n---\n\nbody\n");
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "pkg-ref-out-"));
+      fs.writeFileSync(path.join(outsideDir, "secret-name.md"), "SECRET");
+      fs.symlinkSync(
+         outsideDir,
+         path.join(pkg, "skills", "linked", "reference"),
+      );
+      const { skills, files, warnings } = readSkillsDir(pkg);
+      expect(skills.map((s) => s.name)).toEqual(["linked"]);
+      expect(files).toHaveLength(1);
+      expect(warnings.join("\n")).toContain("outside the package");
+      expect(warnings.join("\n")).not.toContain("secret-name");
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+   });
+
+   it("does not read a skill file that is not a regular file", () => {
+      fs.mkdirSync(path.join(pkg, "skills", "pipe"), { recursive: true });
+      execFileSync("mkfifo", [path.join(pkg, "skills", "pipe", "SKILL.md")]);
       const { skills, warnings } = readSkillsDir(pkg);
-      expect(skills).toHaveLength(1);
-      expect(skills[0]!.description).toBe("first");
-      expect(warnings[0]).toContain("'dupe'");
+      expect(skills).toEqual([]);
+      expect(warnings[0]).toContain("not a regular file");
    });
 
    it("does not drop a skill for being named credible-*", () => {

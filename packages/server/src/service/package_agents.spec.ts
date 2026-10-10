@@ -210,6 +210,31 @@ describe("package agents", () => {
       }
    });
 
+   // Raw text: JSON.stringify of this value overflows the stack, which is the point.
+   const writeDeepAgents = () => {
+      const n = 50_000;
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         `{"name":"pkg","agents":{"a":{"description":"d","instructions":"x.md","x-deep":${"[".repeat(n)}${"]".repeat(n)}}}}`,
+      );
+   };
+
+   it("serves a package whose agents value is nested past the stack", async () => {
+      writeDeepAgents();
+      const pkg = await load();
+      expect(pkg.listAgents()).toEqual([]);
+      expect(pkg.getSourceContentSha()).toMatch(/^[0-9a-f]{64}$/);
+   });
+
+   it("finishes a reload whose agents value is nested past the stack", async () => {
+      manifest({ agents: { analyst: analyst() } });
+      const pkg = await load();
+      writeDeepAgents();
+      await pkg.reloadAllModels({});
+      expect(pkg.listAgents()).toEqual([]);
+      expect(pkg.getSourceContentSha()).toMatch(/^[0-9a-f]{64}$/);
+   });
+
    describe("serving identity", () => {
       const shaOf = async () => (await load()).getSourceContentSha();
 

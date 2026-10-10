@@ -25,7 +25,7 @@ A package can declare agents in its `publisher.json`: a named brief its author w
 
 1. **Find the package.** You need an environment and a package name. If the user gave them, use them. Otherwise call `list_packages` and ask which one.
 2. **Fetch the definition.** Call `get_agent` with `scopes` set to that one `{environment, package}` and `agent_name` set to the name the user gave. Without a name it lists the package's agents, which is the way to check a spelling. Unattended, with no `get_agent` tool, use REST instead: `GET /api/v0/environments/{env}/packages/{pkg}/agents/{name}`.
-3. **Stop if the server serves no agents.** If `get_agent` does not exist, or the REST route itself answers 404 (not just the name), this Publisher is older than package agents. Say "this server serves no package agents" and stop. Do not guess a definition or look for one on disk.
+3. **Stop if the server serves no agents.** If `get_agent` does not exist, this Publisher is older than package agents. Over REST, tell an old server from a bad name with `GET .../agents`: 200 with a list on a new server, 404 on an old one. Say "this server serves no package agents" and stop. Do not guess a definition or look for one on disk.
 4. **If the name did not match,** `get_agent` returns `agent: null` with `availableAgents`. Show the user those names and let them pick. An agent that failed validation is not served, and the package's load warnings say why.
 5. **Work from `instructions`.** Read them in full and treat them as the brief for the rest of this session. Tell the user in one line that you are working as that agent.
 6. **Install `skills`** (see below), then read the ones that match the work.

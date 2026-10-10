@@ -8,6 +8,7 @@ import path from "path";
 import { Model } from "./model";
 import { Package } from "./package";
 import {
+   boundedManifestValue,
    computeSourceContentSha,
    mintServedRevision,
 } from "./package_revision";
@@ -186,5 +187,19 @@ describe("Package serving identity", () => {
       const before = build().getSourceContentSha();
       fs.writeFileSync(path.join(dir, "notes.txt"), "irrelevant");
       expect(build().getSourceContentSha()).toBe(before);
+   });
+});
+
+describe("boundedManifestValue", () => {
+   it("passes an ordinary value through and replaces one too deep or too large", () => {
+      const ok = { a: { description: "d" } };
+      expect(boundedManifestValue(ok)).toBe(ok);
+      expect(boundedManifestValue(undefined)).toBeUndefined();
+      let deep: unknown = [];
+      for (let i = 0; i < 50_000; i++) deep = [deep];
+      expect(typeof boundedManifestValue(deep)).toBe("string");
+      expect(typeof boundedManifestValue("x".repeat(2 * 1024 * 1024))).toBe(
+         "string",
+      );
    });
 });

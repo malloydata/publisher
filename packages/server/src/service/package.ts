@@ -458,6 +458,16 @@ export class Package {
       const agents = readPackageAgents(this.packagePath, this.rawAgents);
       this.packageAgents = agents.agents;
       this.packageAgentWarnings = agents.warnings;
+      let declaration: string | undefined;
+      try {
+         declaration =
+            this.rawAgents === undefined
+               ? undefined
+               : canonicalJson(this.rawAgents);
+      } catch {
+         // Reload must not stop between the model swap and the serve bindings.
+         declaration = "[unhashable]";
+      }
       this.sourceContentSha = computeSourceContentSha(
          this.packagePath,
          [
@@ -466,9 +476,7 @@ export class Package {
             ...agents.paths,
          ],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
-         this.rawAgents === undefined
-            ? undefined
-            : canonicalJson(this.rawAgents),
+         declaration,
       );
    }
 

@@ -336,6 +336,35 @@ describe("readPackageAgents", () => {
          expect(dropped({ analyst: entry })).toContain("publisher.json");
       });
 
+      it("does not walk a skills directory that is a link, so a publisher.json beyond it is not seen", () => {
+         const entry = analyst();
+         write(
+            "shared/conventions/SKILL.md",
+            "---\nname: conventions\ndescription: d\n---\nbody",
+         );
+         write("shared/conventions/assets/publisher.json", "{}");
+         fs.rmSync(path.join(pkg, "agents/analyst/skills"), {
+            recursive: true,
+         });
+         fs.symlinkSync(
+            path.join(pkg, "shared"),
+            path.join(pkg, "agents/analyst/skills"),
+         );
+         expect(read({ analyst: entry }).agents.has("analyst")).toBe(true);
+      });
+
+      it("does not say whether a publisher.json exists beyond a link out of the package", () => {
+         const entry = analyst();
+         fs.writeFileSync(path.join(outside, "publisher.json"), "{}");
+         fs.rmSync(path.join(pkg, "agents/analyst/skills"), {
+            recursive: true,
+         });
+         fs.symlinkSync(outside, path.join(pkg, "agents/analyst/skills"));
+         const warning = dropped({ analyst: entry });
+         expect(warning).toContain("outside the package");
+         expect(warning).not.toContain("nested");
+      });
+
       it("serves an agent at the package root next to the package's own publisher.json", () => {
          write("publisher.json", "{}");
          write("brief.md", "hello");
@@ -458,7 +487,7 @@ describe("readPackageAgents", () => {
          expect(afterInstructions).not.toBe(afterTask);
          write(
             "agents/analyst/skills/conventions/SKILL.md",
-            "---\nname: c\ndescription: d\n---\nz",
+            "---\nname: conventions\ndescription: d\n---\nz",
          );
          expect(sha({ analyst: entry })).not.toBe(afterInstructions);
       });

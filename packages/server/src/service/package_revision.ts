@@ -64,6 +64,27 @@ export function canonicalJson(value: unknown): string {
    );
 }
 
+/** A real `agents` declaration is a few KB; past this it is not read. */
+export const MANIFEST_AGENTS_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The value, or a marker string when it is too deep or too large to hash and
+ * to post across the worker boundary, where a stack overflow is not an
+ * author-facing error. The marker is not an object, so the agents reader
+ * answers it with its usual "must be an object" warning.
+ */
+export function boundedManifestValue(value: unknown): unknown {
+   try {
+      const text = canonicalJson(value);
+      if (text === undefined || text.length <= MANIFEST_AGENTS_MAX_BYTES) {
+         return value;
+      }
+   } catch {
+      // Too deep to serialize.
+   }
+   return "[unreadable: too deep or too large]";
+}
+
 export function canonicalSha(value: unknown): string {
    return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }

@@ -96,14 +96,7 @@ export function registerReloadPackageTool(
                // these apart otherwise, and only one of them keeps their work.
                mode,
                name: pkg.name,
-               // What the server is serving now that the reload has run. The
-               // reload reports success whether or not it saw the caller's
-               // edit: Publisher compiles a COPY under publisher_data/ unless
-               // the environment is watch-mounted, so an edit to the original
-               // source directory reloads cleanly and changes nothing. An
-               // unchanged sourceContentSha across the reload is the only
-               // signal that happened. servedRevision moves either way, which
-               // is why both are here rather than just the one.
+               // A reload succeeds whether or not it saw the caller's edit; an unchanged sha is the only signal.
                ...(pkg.sourceContentSha !== undefined && {
                   sourceContentSha: pkg.sourceContentSha,
                }),
