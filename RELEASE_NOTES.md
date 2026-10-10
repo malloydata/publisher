@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Loading a package no longer holds the server's event loop while it compiles
+
+Loading a package with large models could stop the server answering anything, health probes included, for tens of seconds. The package-load worker compiled the models, and then the main thread compiled them again: once to derive the persist build plan, and once more for every annotated query and view, to give the render-tag check a result schema. Several versions of such a package loading together, as on a restart, ran these back to back on the one thread, long enough to fail a Kubernetes liveness probe.
+
+- The load worker derives the build plan and prepares the render-tag queries from the compile it already ran. The main thread only runs the renderer's check over the prepared results. The plan, and the warnings a load reports, are unchanged.
+- Each load worker keeps the table and SQL schemas it has fetched, so a model's repeated and later requests for the same table no longer round-trip through the main thread. `PACKAGE_LOAD_SCHEMA_CACHE_ENTRIES` sizes it (default `5000`, `0` disables it). Entries are scoped per environment and connection.
+- A burst of loads is spread across all `PACKAGE_LOAD_WORKERS` workers. Before, every load that arrived while the first worker was still starting ran on that worker, concurrently.
+- `/health`, `/health/liveness` and `/health/readiness` answer ahead of the rate limiter and static-file serving.
+
+The work moved into the load workers counts toward `PACKAGE_LOAD_JOB_TIMEOUT_MS`, and the workers use more CPU per load than before; the main thread uses correspondingly less.
+
 ## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
 When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.
