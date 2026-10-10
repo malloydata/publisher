@@ -516,6 +516,8 @@ such source group to pick what to return. The response adds `clusters`, `coverag
 | `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
 | `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the field where it is defined; the extension competes only with the fields it adds. |
 | `fcj.contenderShare`   | `0`     | Provisional, off by default. A source scoring at least this share of the best source on the same targets joins its group (up to three), so the picking call chooses between near-tied sources. |
+| `fcj.connect`          | `clusters` | Provisional. `list` skips the source groups: one picking call sees every target's best `fcj.listTopK` candidates from the first step, grouped by source, plus the home source's extras (its dates for a period, a measure's inputs). The home is the source of the first measure target's best candidate. A baseline for comparing connect rules. |
+| `fcj.listTopK`         | `15`    | Provisional. With `fcj.connect: "list"`, candidates per target the picking call sees. |
 
 `prompts.judge`, `prompts.docParts` and `prompts.questions` replace those steps' instructions. Stored
 values never leave the process below the `full` egress preset: the judge is told that a value matched,
