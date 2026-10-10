@@ -46,6 +46,7 @@ import {
    getQueryMetadataMode,
 } from "../config";
 import {
+   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -153,6 +154,7 @@ import {
 } from "./gate_dimension";
 import {
    buildFilterClause,
+   FILTER_ANNOTATION_PREFIX,
    filterHasValue,
    FilterValidationError,
    injectFilterRefinement,
@@ -1121,7 +1123,7 @@ export class Model {
       // spamming for models that have already moved over.
       if (this.filterMap.size > 0) {
          logger.warn(
-            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see https://github.com/malloydata/publisher/blob/main/docs/givens.md`,
+            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
             {
                packageName,
                modelPath,
@@ -1129,6 +1131,39 @@ export class Model {
             },
          );
       }
+   }
+
+   /**
+    * The sources THIS file declares deprecated `#(filter)` annotations on: the
+    * annotation is written in this file, on the source's own statement. Unlike
+    * `filterMap`, which also holds every source that inherits a filter (an
+    * `extend` of a filtered source) and every filtered source an import brings
+    * in, this names each declaration exactly once, in the file to change.
+    */
+   public declaredFilterSourceNames(): string[] {
+      if (!this.modelDef) return [];
+      const ownFile = (url: string): boolean => {
+         try {
+            return decodeURIComponent(new URL(url).pathname).endsWith(
+               `/${this.modelPath}`,
+            );
+         } catch {
+            return false;
+         }
+      };
+      const names: string[] = [];
+      for (const entry of Object.values(this.modelDef.contents)) {
+         if (!isSourceDef(entry)) continue;
+         const own = entry.annotations?.blockNotes ?? [];
+         const declares = own.some(
+            (note) =>
+               note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
+               note.at !== undefined &&
+               ownFile(note.at.url),
+         );
+         if (declares) names.push(entry.as || entry.name);
+      }
+      return names.sort();
    }
 
    /**

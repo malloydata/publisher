@@ -25,9 +25,15 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 A package can now carry guidance for the agents that work with it. A `skills/` directory at the package root holds agent skills in the agentskills.io format, served next to the bundled ones by a new `get_skill` MCP tool and `GET .../packages/{pkg}/skills`; a package skill with the name of a bundled one replaces it for that package. An `agents` object in `publisher.json` declares named agents, each with a description, an instructions file, its own skills, and optional scheduled tasks. They are served by a new `get_agent` MCP tool and `GET .../packages/{pkg}/agents` and `.../agents/{name}`, listed on `Package.agents`, and shown in an Agents section on the package page.
 
+`get_agent` returns each skill file in full by default; `skills: "summary"` (REST `?skills=summary`) lists each file's name, description and size instead, and `skill_path` (REST `.../agents/{name}/skills/{path}`) reads one file with the same `source` pin.
+
 Publisher serves a definition and never runs one. A client adopts an agent by fetching it and following it in its own session, and the bundled `malloy-run-agent` skill does that when the user names an agent. A definition carries no tool, permission or hook setting: an agent entry with a key this server does not know (`tools`, `hooks` and the like included) is dropped, and a broken agent never fails the package, it is left out with a `Fix:` warning. Schedules are validated (5-field UTC cron, task file in the package) and shown, but nothing executes them yet.
 
 Two things to know when upgrading. `sourceContentSha` now also covers package skill files, the `agents` object, and every file an agent reads, so it moves on an edit to any of them (a `version` bump still does not move it). And the MCP surface grows from eight tools to ten; a client that pins the tool list will see `get_skill` and `get_agent` as new. A package without `skills/` or `agents` behaves exactly as before, and an older Publisher serves a package that has them without the extras.
+
+## [Unreleased] — Packages report `.malloynb` notebooks and `#(filter)` sources as warnings
+
+A package's `warnings` (`GET …/packages/{package}`) now include one advisory entry per `.malloynb` notebook (`model` is its path) and one per source that declares deprecated `#(filter)` annotations (`subject` is the source name, reported once however many models import it). Both carry `severity: "warn"`. Nothing else changes: such packages still load and run. Migrating is covered in [Coming from `#(filter)`](docs/givens.md#coming-from-filter).
 
 ## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 

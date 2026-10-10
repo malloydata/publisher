@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -21,6 +21,10 @@ const PACKAGE = path.resolve(
    "../../../../../examples/storefront",
 );
 const DOCUMENT = "dashboards/x.malloy";
+
+// Each test opens DuckDB and compiles the package from cold, which on a
+// Windows runner takes longer than bun's 5s default.
+setDefaultTimeout(30_000);
 
 async function loadPackage() {
    const { Runtime, isSourceDef, modelDefToModelInfo } = await import(

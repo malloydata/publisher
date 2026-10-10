@@ -321,6 +321,10 @@ link's values, and Reset discards those too.
 below. Existing `#(filter)` models still run, and this section is for migrating
 them.
 
+A package with a source that declares `#(filter)` lists that source in its
+package `warnings` (one warning per source), as it lists each `.malloynb`
+notebook, so a client can say on the package what is left to migrate.
+
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work

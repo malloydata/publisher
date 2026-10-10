@@ -34,6 +34,7 @@ import {
 } from "./package_retrieval";
 import {
    API_PREFIX,
+   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -1767,6 +1768,11 @@ export class Package {
          // shape this closes was a package reporting exploresWarnings: none
          // while listed files surfaced nothing (HANDOFF CR-5).
          ...this.emptyDiscoveryWarnings(),
+         // Content on a deprecated format: a `.malloynb` notebook, and a source
+         // declaring `#(filter)` annotations. Both still load and run, so this
+         // is advisory; it rides the API so a client can say so on the package
+         // rather than leave it to the server log.
+         ...this.legacyFormatWarnings(),
          // The whole surface failed to compile, so every model in the package
          // is refused by name. Rides the API for the same reason as the line
          // above, and more urgently: the 404s it causes name models that are
@@ -2767,6 +2773,41 @@ export class Package {
          }
       }
       return warnings;
+   }
+
+   /**
+    * One warning per `.malloynb` notebook, and one per source a file declares
+    * deprecated `#(filter)` annotations on, naming that file (`model`) and the
+    * source (`subject`). A source that only inherits a filter (an `extend`) or
+    * arrives by import is not reported: the fix is in the declaring file, which
+    * is reported once (`Model.declaredFilterSourceNames`). Hidden models are
+    * reported too: a filter there is still deprecated syntax to migrate.
+    */
+   public legacyFormatWarnings(): ApiPackageWarning[] {
+      const notebooks: ApiPackageWarning[] = [];
+      const filters: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            notebooks.push({
+               model: modelPath,
+               severity: "warn",
+               message:
+                  `${modelPath} is a .malloynb notebook, a deprecated format. ` +
+                  `Convert it to a .malloy notebook under notebooks/.`,
+            });
+         }
+         for (const name of model.declaredFilterSourceNames()) {
+            filters.push({
+               model: modelPath,
+               subject: name,
+               severity: "warn",
+               message:
+                  `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
+                  `with given: runtime parameters (see ${GIVENS_DOCS_URL}).`,
+            });
+         }
+      }
+      return [...notebooks, ...filters];
    }
 
    /**
