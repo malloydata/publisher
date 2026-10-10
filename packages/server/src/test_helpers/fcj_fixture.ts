@@ -52,6 +52,8 @@ source: orders is duckdb.sql("select 1 as id, 10.0 as amount, 'fulfilled' as sta
 #(doc) Orders without personal data.
 source: orders_public is orders extend {
   except: customer_email
+  #(doc) The order came through a reseller.
+  dimension: is_reseller is status = 'reseller'
 }
 `,
    "reports.malloy": `

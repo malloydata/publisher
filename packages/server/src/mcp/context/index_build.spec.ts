@@ -199,8 +199,8 @@ describe("index build", () => {
    it("embeds one derived row per node, and reuses every row on a rebuild", async () => {
       const first = await build();
       expect(first.report.vectors).toEqual({
-         rows: 50,
-         embedded: 50,
+         rows: 51,
+         embedded: 51,
          reused: 0,
          deleted: 0,
          charsEmbedded: first.report.vectors.charsEmbedded,
@@ -222,9 +222,9 @@ describe("index build", () => {
       ).toEqual(["Exclude test orders when summing."]);
       const second = await build();
       expect(second.report.vectors).toMatchObject({
-         rows: 50,
+         rows: 51,
          embedded: 0,
-         reused: 50,
+         reused: 51,
          deleted: 0,
       });
    });
@@ -254,14 +254,14 @@ describe("index build", () => {
          concurrency: 2,
          maxCallsPerSync: 100,
       });
-      // 29 dimensions + 7 measures + 2 views get questions; sources and joins do not.
+      // 30 dimensions + 7 measures + 2 views get questions; sources and joins do not.
       expect(index.report.questions).toEqual({
-         nodes: 38,
-         written: 38,
+         nodes: 39,
+         written: 39,
          reused: 0,
          missing: 0,
       });
-      expect(index.report.vectors.rows).toBe(50 + 38 * 3);
+      expect(index.report.vectors.rows).toBe(51 + 39 * 3);
       expect(
          index.vectors
             .get("measure:flights@travel.malloy:flight_count")

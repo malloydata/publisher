@@ -27,8 +27,8 @@ describe("catalog", () => {
    it("counts what the fixture declares", () => {
       expect(catalog.report).toEqual({
          sources: 8,
-         nodes: { source: 8, dimension: 29, measure: 7, view: 2, join: 4 },
-         edges: { contains: 42, joins: 4, extends: 1, depends: 8, uses: 4 },
+         nodes: { source: 8, dimension: 30, measure: 7, view: 2, join: 4 },
+         edges: { contains: 43, joins: 4, extends: 1, depends: 9, uses: 4 },
          multiFileNodes: 10,
          indexedDimensions: 2,
          gatedSources: 0,
@@ -205,8 +205,8 @@ describe("catalog store", () => {
          const edges = await db.all<{ n: number }>(
             "SELECT CAST(count(*) AS INTEGER) AS n FROM catalog_edges",
          );
-         expect(nodes[0].n).toBe(50);
-         expect(edges[0].n).toBe(59);
+         expect(nodes[0].n).toBe(51);
+         expect(edges[0].n).toBe(61);
          const row = await db.all<{
             model_paths: string;
             derived_text: string;
@@ -227,7 +227,7 @@ describe("catalog store", () => {
 
    it("formats the report as one line", () => {
       expect(catalogReportLine(catalog.report)).toBe(
-         "8 sources; nodes: 8 source, 29 dimension, 7 measure, 2 view, 4 join; edges: 42 contains, 4 joins, 1 extends, 8 depends, 4 uses; 10 nodes resolve in more than one file; 2 #(index) dimensions; 0 gated sources; 3 field references resolved to no node",
+         "8 sources; nodes: 8 source, 30 dimension, 7 measure, 2 view, 4 join; edges: 43 contains, 4 joins, 1 extends, 9 depends, 4 uses; 10 nodes resolve in more than one file; 2 #(index) dimensions; 0 gated sources; 3 field references resolved to no node",
       );
    });
 });

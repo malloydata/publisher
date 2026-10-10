@@ -121,6 +121,36 @@ export interface ConnectResult {
    considered: SourceScore[];
 }
 
+/**
+ * With `collapseCopies`, an extension still has every field it inherits, now
+ * folded into its parent's node. It reaches that node at this factor, a hair
+ * under a field of its own: a question answered entirely by inherited fields
+ * goes to the parent that defines them, and an extension wins only when its
+ * own fields count.
+ */
+export const INHERIT_DISCOUNT = 0.99;
+
+/**
+ * The sources that hold a node, with the factor each gets: its owner at 1,
+ * and, with `collapseCopies`, every source holding a folded copy of it at
+ * INHERIT_DISCOUNT.
+ */
+function holdersOf(
+   index: FcjIndex,
+   key: string,
+): Array<{ source: string; factor: number }> {
+   const node = index.catalog.nodes.get(key);
+   if (!node) return [];
+   const out = [{ source: node.sourceKey, factor: 1 }];
+   for (const copy of node.copies ?? []) {
+      const holder = index.catalog.nodes.get(copy)?.sourceKey;
+      if (holder && !out.some((h) => h.source === holder)) {
+         out.push({ source: holder, factor: INHERIT_DISCOUNT });
+      }
+   }
+   return out;
+}
+
 /** For each source, every source (itself included) whose reach holds it, with the hops. */
 function reachersOf(
    index: FcjIndex,
@@ -165,16 +195,16 @@ export function scoreSources(
       const t = r.target.index;
       for (const c of r.candidates) {
          globalBest.set(t, Math.max(globalBest.get(t) ?? 0, c.score));
-         const owner = index.catalog.nodes.get(c.key)?.sourceKey;
-         if (!owner) continue;
-         for (const { from, hops } of reachers.get(owner) ?? []) {
-            if (!admitSource(from)) continue;
-            const s = c.score * settings.hopDiscount ** hops;
-            const m = bySource.get(from) ?? new Map();
-            const prev = m.get(t);
-            if (!prev || s > prev.score)
-               m.set(t, { key: c.key, score: s, hops });
-            bySource.set(from, m);
+         for (const holder of holdersOf(index, c.key)) {
+            for (const { from, hops } of reachers.get(holder.source) ?? []) {
+               if (!admitSource(from)) continue;
+               const s = c.score * holder.factor * settings.hopDiscount ** hops;
+               const m = bySource.get(from) ?? new Map();
+               const prev = m.get(t);
+               if (!prev || s > prev.score)
+                  m.set(t, { key: c.key, score: s, hops });
+               bySource.set(from, m);
+            }
          }
       }
    }
@@ -388,8 +418,15 @@ export function connect(args: {
                if (!prev || e.hops < prev.hops) pool.set(k, e);
             }
          }
+         // A folded node is in the pool when a source of the pool holds a copy
+         // of it; it is then ranked under that copy, the name the pool's
+         // sources know it by.
          const inPool = (node: CatalogNode) =>
-            pool.has(node.sourceKey) && args.allow(node);
+            args.allow(node) &&
+            (pool.has(node.sourceKey) ||
+               (node.copies ?? []).some((k) =>
+                  pool.has(index.catalog.nodes.get(k)?.sourceKey ?? ""),
+               ));
          const candidates = new Map<number, ClusterCandidate[]>();
          for (const target of targets) {
             candidates.set(
@@ -448,11 +485,30 @@ function rankInCluster(
    });
    return ranked.all
       .map((c) => {
-         const owner = index.catalog.nodes.get(c.key)!.sourceKey;
+         const node = index.catalog.nodes.get(c.key)!;
+         let key = c.key;
+         let factor = 1;
+         if (!pool.has(node.sourceKey)) {
+            // Held only through a copy: rank the copy nearest the home.
+            const copies = (node.copies ?? [])
+               .map((k) => index.catalog.nodes.get(k)!)
+               .filter((n) => pool.has(n.sourceKey))
+               .sort(
+                  (a, b) =>
+                     (pool.get(a.sourceKey)?.hops ?? 0) -
+                        (pool.get(b.sourceKey)?.hops ?? 0) ||
+                     (a.key < b.key ? -1 : 1),
+               );
+            if (copies[0]) {
+               key = copies[0].key;
+               factor = INHERIT_DISCOUNT;
+            }
+         }
+         const owner = index.catalog.nodes.get(key)!.sourceKey;
          const hops = pool.get(owner)?.hops ?? 0;
          return {
-            key: c.key,
-            score: c.score * settings.hopDiscount ** hops,
+            key,
+            score: c.score * factor * settings.hopDiscount ** hops,
             hops,
             found: c,
             rank: 0,
