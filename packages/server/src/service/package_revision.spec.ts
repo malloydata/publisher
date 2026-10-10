@@ -101,8 +101,8 @@ describe("Package serving identity", () => {
       fs.rmSync(dir, { recursive: true, force: true });
    });
 
-   const build = () =>
-      new Package(
+   const build = () => {
+      const pkg = new Package(
          "env",
          "pkg",
          dir,
@@ -124,6 +124,9 @@ describe("Package serving identity", () => {
             ],
          ]),
       );
+      pkg.refreshServingIdentity();
+      return pkg;
+   };
 
    it("reaches the API payload, which is where every caller reads it", () => {
       const metadata = build().getPackageMetadata();

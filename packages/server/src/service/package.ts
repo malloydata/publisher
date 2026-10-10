@@ -62,7 +62,10 @@ import {
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
-import { readPackageSkills } from "../mcp/skills/package_skills";
+import {
+   PACKAGE_SKILLS_DIR,
+   readSkillsDir,
+} from "../mcp/skills/package_skills";
 import {
    computeSourceContentSha,
    mintServedRevision,
@@ -376,7 +379,6 @@ export class Package {
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       this.applySiblingModelResolverToModels();
-      this.refreshServingIdentity();
    }
 
    public getServedRevision(): string {
@@ -402,13 +404,15 @@ export class Package {
     * the paths, so the set that is served and the set that is hashed are the
     * same set.
     *
-    * Call after anything that changes which files are served or what they
-    * contain; a reload that leaves the bytes identical still mints a new
+    * Not run by the constructor: {@link lintWorkerOutcome} builds a throwaway
+    * Package per package-scope compile and has no use for it. {@link create}
+    * and {@link reloadAllModels} call it. Call after anything that changes which
+    * files are served or what they contain; a reload that leaves the bytes identical still mints a new
     * revision, and correctly leaves the sha alone.
     */
-   private refreshServingIdentity(): void {
+   public refreshServingIdentity(): void {
       this.servedRevision = mintServedRevision();
-      const skills = readPackageSkills(this.packagePath);
+      const skills = readSkillsDir(this.packagePath, PACKAGE_SKILLS_DIR);
       this.packageSkills = skills.skills;
       this.packageSkillWarnings = skills.warnings;
       this.sourceContentSha = computeSourceContentSha(this.packagePath, [
@@ -1300,6 +1304,7 @@ export class Package {
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
       pkg.wireFreshnessResolvers();
+      pkg.refreshServingIdentity();
 
       // Compute the persist build plan off the live (unbound) models, before the
       // caller binds any configured manifest, so the surfaced plan reflects the

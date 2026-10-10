@@ -169,10 +169,8 @@ def package_skill_names(base: str, environment: str, package: str) -> list[str]:
     """Skills the server says this package ships, or [] if it ships none.
 
     Read from the server rather than from the working tree, because those are
-    two different questions: a host serves a COPY of the package, and the
-    deployment can withhold package skills entirely
-    (`PUBLISHER_PACKAGE_SKILLS=off`). What the answerer can actually reach is
-    what this returns.
+    two different questions: a host serves a COPY of the package. What the
+    answerer can actually reach is what this returns.
 
     An unreachable or older server returns [] rather than raising: the caller
     decides whether "the server serves none" contradicts what it asked for.

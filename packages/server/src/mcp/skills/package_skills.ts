@@ -10,6 +10,7 @@ import {
    referencePointer,
    type SkillEntry,
 } from "./build_skills_bundle";
+import { stepsOutside } from "../../service/package_retrieval";
 
 /** The directory a package keeps its own agent skills in. */
 export const PACKAGE_SKILLS_DIR = "skills";
@@ -37,34 +38,70 @@ export interface PackageSkills {
    warnings: string[];
 }
 
+/** Largest single skill file served. A markdown guide never needs more. */
+export const PACKAGE_SKILL_FILE_MAX_BYTES = 256 * 1024;
+
 /**
- * Read the skills a package ships, from `<package>/skills/<name>/SKILL.md`
- * plus that skill's optional `reference/*.md`.
+ * A file's text, or why it cannot be served. The real path must sit inside the
+ * real package root: a symlink in a package can point anywhere, and this text
+ * is returned over unauthenticated MCP and REST.
+ */
+export function readFileInside(
+   realRoot: string,
+   file: string,
+   maxBytes: number,
+): { text: string } | { problem: string } {
+   try {
+      const real = fs.realpathSync(file);
+      if (stepsOutside(path.relative(realRoot, real))) {
+         return { problem: "resolves outside the package through a link" };
+      }
+      const { size } = fs.statSync(real);
+      if (size > maxBytes) {
+         return { problem: `is ${size} bytes, over the ${maxBytes} byte cap` };
+      }
+      return { text: fs.readFileSync(real, "utf8") };
+   } catch (error) {
+      return { problem: `cannot be read (${(error as Error).message})` };
+   }
+}
+
+/**
+ * Read the skills under `<package>/<dirRel>/<name>/SKILL.md` plus each skill's
+ * optional `reference/*.md`. The package's own `skills/` and an agent's skill
+ * roots are both read through here.
  *
  * Parsing is shared with the repo's own skills (`parseSkill`, `parseReference`)
  * so one definition decides what a SKILL.md means. Selection deliberately is
  * NOT shared: `buildSkills` gates on `manifests/publisher-local.json`, which
  * answers "what does this server ship" and has no counterpart in a package. A
- * package ships what it contains, and the absence of a manifest is why this
- * cannot simply call `buildSkills`.
- *
- * The repo's `credible-*` exclusion is likewise not applied. That rule exists
- * because those directories are a gitignored local install target inside this
- * repo; a customer's package has no such convention, and silently dropping a
- * skill because of its name would be a trap.
+ * package ships what it contains, and the repo's `credible-*` exclusion is
+ * likewise not applied: it exists for a gitignored install target inside this
+ * repo, and silently dropping a customer's skill by name would be a trap.
  */
-export function readPackageSkills(packagePath: string): PackageSkills {
-   const root = path.join(packagePath, PACKAGE_SKILLS_DIR);
+export function readSkillsDir(
+   packagePath: string,
+   dirRel: string = PACKAGE_SKILLS_DIR,
+): PackageSkills {
+   const root = path.join(packagePath, dirRel);
    const skills: SkillEntry[] = [];
    const paths: string[] = [];
    const warnings: string[] = [];
 
+   let realRoot: string;
    let entries: fs.Dirent[];
    try {
+      realRoot = fs.realpathSync(packagePath);
       if (!fs.statSync(root).isDirectory()) return { skills, paths, warnings };
       entries = fs.readdirSync(root, { withFileTypes: true });
    } catch {
-      // No skills/ directory is the common case, not a problem to report.
+      // No skills directory is the common case, not a problem to report.
+      return { skills, paths, warnings };
+   }
+   if (stepsOutside(path.relative(realRoot, fs.realpathSync(root)))) {
+      warnings.push(
+         `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
+      );
       return { skills, paths, warnings };
    }
 
@@ -72,25 +109,32 @@ export function readPackageSkills(packagePath: string): PackageSkills {
    for (const entry of [...entries].sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
    )) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (entry.name.startsWith(".")) continue;
       const skillDir = path.join(root, entry.name);
-      const skillFile = path.join(skillDir, "SKILL.md");
-      let raw: string;
       try {
-         raw = fs.readFileSync(skillFile, "utf8");
+         if (!fs.statSync(skillDir).isDirectory()) continue;
       } catch {
+         continue;
+      }
+      const rel = `${dirRel}/${entry.name}`;
+      const read = readFileInside(
+         realRoot,
+         path.join(skillDir, "SKILL.md"),
+         PACKAGE_SKILL_FILE_MAX_BYTES,
+      );
+      if ("problem" in read) {
          warnings.push(
-            `Package skill directory '${PACKAGE_SKILLS_DIR}/${entry.name}' has no readable SKILL.md, so it is not served. Fix: add ${PACKAGE_SKILLS_DIR}/${entry.name}/SKILL.md, or remove the directory.`,
+            `Package skill '${rel}/SKILL.md' ${read.problem}, so it is not served. Fix: add a readable SKILL.md inside the package, or remove the directory.`,
          );
          continue;
       }
 
-      const skill = parseSkill(raw, entry.name);
+      const skill = parseSkill(read.text, entry.name);
       if (!skill.description) {
          // The description is what a caller reads before deciding to fetch the
          // body, so a skill without one is invisible in every listing.
          warnings.push(
-            `Package skill '${skill.name}' has no description in its frontmatter, so nothing tells a caller when to read it. Fix: add a one-line 'description:' to ${PACKAGE_SKILLS_DIR}/${entry.name}/SKILL.md.`,
+            `Package skill '${skill.name}' has no description in its frontmatter, so nothing tells a caller when to read it. Fix: add a one-line 'description:' to ${rel}/SKILL.md.`,
          );
       }
       const previous = seen.get(skill.name);
@@ -103,32 +147,31 @@ export function readPackageSkills(packagePath: string): PackageSkills {
       seen.set(skill.name, entry.name);
 
       const refFiles = referenceFiles(skillDir);
-      if (refFiles.length > 0) {
-         skill.body = `${skill.body}\n\n${referencePointer(skill.name, refFiles)}`;
-      }
-      skills.push(skill);
-      paths.push(`${PACKAGE_SKILLS_DIR}/${entry.name}/SKILL.md`);
-
+      const references: SkillEntry[] = [];
+      const refPaths: string[] = [];
+      const served: string[] = [];
       for (const file of refFiles) {
-         const relative = `${PACKAGE_SKILLS_DIR}/${entry.name}/reference/${file}`;
-         try {
-            skills.push(
-               parseReference(
-                  fs.readFileSync(
-                     path.join(skillDir, "reference", file),
-                     "utf8",
-                  ),
-                  skill.name,
-                  file,
-               ),
-            );
-            paths.push(relative);
-         } catch {
+         const relative = `${rel}/reference/${file}`;
+         const ref = readFileInside(
+            realRoot,
+            path.join(skillDir, "reference", file),
+            PACKAGE_SKILL_FILE_MAX_BYTES,
+         );
+         if ("problem" in ref) {
             warnings.push(
-               `Package skill reference '${relative}' could not be read, so it is not served.`,
+               `Package skill reference '${relative}' ${ref.problem}, so it is not served.`,
             );
+            continue;
          }
+         references.push(parseReference(ref.text, skill.name, file));
+         refPaths.push(relative);
+         served.push(file);
       }
+      if (references.length > 0) {
+         skill.body = `${skill.body}\n\n${referencePointer(skill.name, served)}`;
+      }
+      skills.push(skill, ...references);
+      paths.push(`${rel}/SKILL.md`, ...refPaths);
    }
 
    return { skills, paths, warnings };

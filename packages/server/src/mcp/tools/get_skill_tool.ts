@@ -3,7 +3,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { getPackageSkillsMode } from "../../config";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { type ErrorDetails } from "../error_messages";
@@ -103,7 +102,7 @@ export function registerGetSkillTool(
 
          try {
             let resolved = resolveSkills(bundledSkills, []);
-            if (scope && getPackageSkillsMode() === "on") {
+            if (scope) {
                const environment = await environmentStore.getEnvironment(
                   scope.environment,
                   false,

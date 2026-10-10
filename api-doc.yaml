@@ -2049,8 +2049,7 @@ paths:
         the pointer at the end of its parent's body.
 
         The REST half of the `get_skill` MCP tool, for callers running
-        unattended. Under `PUBLISHER_PACKAGE_SKILLS=off` the package's own
-        skills are withheld and only the bundled set is listed.
+        unattended.
       parameters:
         - name: environmentName
           in: path
@@ -2094,8 +2093,7 @@ paths:
         there; a reference file is addressed as `<skill>/<stem>` and must be
         URL-encoded.
 
-        404 when no skill of that name is in force, which includes the case
-        where the package ships one but `PUBLISHER_PACKAGE_SKILLS=off`.
+        404 when no skill of that name is in force.
       parameters:
         - name: environmentName
           in: path

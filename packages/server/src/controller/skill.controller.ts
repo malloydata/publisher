@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { getPackageSkillsMode } from "../config";
 import { SkillNotFoundError } from "../errors";
 import skillsBundle from "../mcp/skills/skills_bundle.json";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
@@ -39,12 +38,7 @@ export class SkillController {
          false,
       );
       const p = await environment.getPackage(packageName, false);
-      // `off` means the deployment's own harness installs skills and does not
-      // want the server offering a second copy, so the package's set is
-      // withheld here exactly as it is on the MCP tool.
-      const packageSkills =
-         getPackageSkillsMode() === "on" ? p.listSkills() : [];
-      return resolveSkills(BUNDLED_SKILLS, packageSkills);
+      return resolveSkills(BUNDLED_SKILLS, p.listSkills());
    }
 
    /** Name, description and origin for every skill in force for the package. */
