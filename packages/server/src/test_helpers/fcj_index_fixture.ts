@@ -42,10 +42,14 @@ export interface FcjIndexFixture extends FcjFixture {
    close: () => Promise<void>;
 }
 
+/** `files` replaces the default fixture (and its imports) with other model files. */
 export async function buildFcjIndexFixture(
    settings = DEFAULT_FCJ_SETTINGS,
+   files?: Record<string, string>,
 ): Promise<FcjIndexFixture> {
-   const fixture = await compileFcjFixture();
+   const fixture = files
+      ? await compileFcjFixture(files, {})
+      : await compileFcjFixture();
    const { db, close } = await openTempDb(createCatalogTables);
    const index = await buildFcjIndex({
       pkgIndex: fixture.pkgIndex,

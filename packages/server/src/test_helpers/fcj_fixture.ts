@@ -103,6 +103,30 @@ source: legs is duckdb.sql("select 1 as id, 1 as flight_id") extend {
 `,
 };
 
+/**
+ * The shape of a fee question over payments: a fact table (`payments`, one
+ * row per payment) that reaches a dimension table (`merchants`, one row per
+ * merchant) through the join `merchant_profile`. Both are documented, so a
+ * card that carries the wrong one's doc says the wrong grain.
+ */
+export const FCJ_PAYMENTS_FILES: Record<string, string> = {
+   "payments.malloy": `
+#(doc) One row per merchant, 30 in all, carrying the account characteristics.
+source: merchants is duckdb.sql("select 'm1' as merchant, 'R' as account_type") extend {
+  #(doc) Account type code: R retail, D digital.
+  dimension: account_kind is account_type
+}
+
+#(doc) One row per payment transaction.
+source: payments is duckdb.sql("select 'm1' as merchant, 10.0 as eur_amount, 'VISA' as scheme") extend {
+  #(doc) The merchant's account profile.
+  join_one: merchant_profile is merchants on merchant_profile.merchant = merchant
+  #(doc) Total transaction value in euros.
+  measure: total_volume_eur is eur_amount.sum()
+}
+`,
+};
+
 /** A throwaway DuckDB file, with `create` run on it, and its cleanup. */
 export async function openTempDb(
    create: (db: DuckDBConnection) => Promise<void>,
