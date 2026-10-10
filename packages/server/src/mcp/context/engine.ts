@@ -550,7 +550,15 @@ export function connectTrace(index: FcjIndex, connected: ConnectResult) {
          newly_covers: c.newlyCovers,
          twins: c.twins,
          contenders: c.contenders,
-         ...(c.listed.length > 0 ? { listed: c.listed } : {}),
+         // In a list, `home` is only the anchor; the peers are the sources.
+         ...(c.peers
+            ? {
+                 peers: c.peers.map((p) => ({
+                    source: p.source,
+                    reaches: p.reaches.map((r) => r.source),
+                 })),
+              }
+            : {}),
          reach: [...c.reach.values()].map((r) => ({
             source: r.source,
             hops: r.hops,

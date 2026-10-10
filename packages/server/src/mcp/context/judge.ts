@@ -21,6 +21,7 @@
 
 import {
    DEFAULT_JUDGE_INSTRUCTIONS,
+   DEFAULT_JUDGE_LIST_INSTRUCTIONS,
    JUDGE_REPLY_FORMAT,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
@@ -56,7 +57,13 @@ export interface JudgeVerdict {
 /** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
 const JUDGE_DOC_MAX_CHARS = 1_500;
 
-function routeOf(index: FcjIndex, cluster: Cluster, node: CatalogNode): string {
+/** How a field is reached from the home; nothing in a list, which has no home. */
+function routeOf(
+   index: FcjIndex,
+   cluster: Cluster,
+   node: CatalogNode,
+): string | undefined {
+   if (cluster.peers) return undefined;
    const entry = cluster.reach.get(node.sourceKey);
    if (!entry || entry.hops === 0) return "own field";
    const home = index.catalog.sources.get(cluster.home)?.name ?? cluster.home;
@@ -79,8 +86,9 @@ function optionLine(
       doc.length > JUDGE_DOC_MAX_CHARS
          ? `${doc.slice(0, JUDGE_DOC_MAX_CHARS)}…`
          : doc;
+   const route = routeOf(index, cluster, node);
    const parts = [
-      `[${option.number}] ${node.name} (${kind}; source ${node.source}; ${routeOf(index, cluster, node)})`,
+      `[${option.number}] ${node.name} (${kind}; source ${node.source}${route ? `; ${route}` : ""})`,
       cut
          ? `: ${cut}`
          : `: (no doc; name in words: ${humanizeName(node.name)})`,
@@ -116,6 +124,15 @@ export function judgeOptions(
    return [...byKey.values()];
 }
 
+/** A source's one-line description, as the judge reads it. */
+function sourceLine(index: FcjIndex, key: string): string {
+   const source = index.catalog.sources.get(key);
+   const summary = (index.summaries.get(key) ?? source?.node.doc ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+   return `${source?.name ?? key}${summary ? ` - ${summary}` : ""}`;
+}
+
 /** The user message for one cluster. Targets are numbered from 1 in the caller's order. */
 export function renderJudgePrompt(
    index: FcjIndex,
@@ -124,42 +141,24 @@ export function renderJudgePrompt(
    options: readonly JudgeOption[],
 ): string {
    const full = getEgressPreset() === "full";
-   const home = index.catalog.sources.get(cluster.home);
-   const summary = index.summaries.get(cluster.home) ?? home?.node.doc ?? "";
-   const lines: string[] = [
-      `Home source: ${home?.name ?? cluster.home}${summary ? ` - ${summary.replace(/\s+/g, " ").trim()}` : ""}`,
-   ];
-   const reached = [...cluster.reach.values()].filter((r) => r.hops > 0);
-   if (reached.length > 0) {
-      lines.push(
-         `Sources its joins reach: ${reached
-            .map((r) => index.catalog.sources.get(r.source)?.name ?? r.source)
-            .join(", ")}`,
-      );
-   }
-   if (cluster.twins.length > 0) {
-      lines.push(
-         `Sources that give the same answer under another name: ${cluster.twins
-            .map((s) => index.catalog.sources.get(s)?.name ?? s)
-            .join(", ")}`,
-      );
-   }
-   if (cluster.contenders.length > 0) {
-      lines.push(
-         `Sources that match these targets almost as well, with other fields: ${cluster.contenders
-            .map((s) => index.catalog.sources.get(s)?.name ?? s)
-            .join(
-               ", ",
-            )}. Pick from the one that fits the question; say which in "caveats" when it is a close call.`,
-      );
-   }
-   if (cluster.listed.length > 0) {
-      lines.push(
-         `Other sources with candidates, which the home's joins do not reach: ${cluster.listed
-            .map((s) => index.catalog.sources.get(s)?.name ?? s)
-            .join(", ")}`,
-      );
-   }
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines: string[] = cluster.peers
+      ? peerLines(index, cluster)
+      : homeLines(index, cluster);
+   const noteOf = (t: FindTarget, o: JudgeOption) => {
+      const found = cluster.candidates
+         .get(t.index)
+         ?.find((c) => c.key === o.key)?.found;
+      const values = found?.values;
+      return values && values.length > 0
+         ? full
+            ? `stored values matching the target: ${values
+                 .slice(0, 5)
+                 .map((v) => JSON.stringify(v.value))
+                 .join(", ")}`
+            : `a stored value matches the target's value (${values[0].how})`
+         : undefined;
+   };
    lines.push("", "<targets>");
    targets.forEach((t, i) => {
       const covered = cluster.covers.includes(t.index);
@@ -168,21 +167,24 @@ export function renderJudgePrompt(
       );
       const listed = options.filter((o) => o.targets.includes(t.index));
       if (listed.length === 0) lines.push("  (no candidates in this group)");
-      for (const o of listed) {
-         const found = cluster.candidates
-            .get(t.index)
-            ?.find((c) => c.key === o.key)?.found;
-         const values = found?.values;
-         const note =
-            values && values.length > 0
-               ? full
-                  ? `stored values matching the target: ${values
-                       .slice(0, 5)
-                       .map((v) => JSON.stringify(v.value))
-                       .join(", ")}`
-                  : `a stored value matches the target's value (${values[0].how})`
-               : undefined;
-         lines.push(`  ${optionLine(index, cluster, o, note)}`);
+      if (!cluster.peers) {
+         for (const o of listed)
+            lines.push(`  ${optionLine(index, cluster, o, noteOf(t, o))}`);
+         return;
+      }
+      // A list: the target's candidates in their own order, under the
+      // source that owns them.
+      const byKey = new Map(listed.map((o) => [o.key, o]));
+      let owner: string | undefined;
+      for (const c of cluster.candidates.get(t.index) ?? []) {
+         const o = byKey.get(c.key);
+         if (!o) continue;
+         const source = index.catalog.nodes.get(c.key)!.sourceKey;
+         if (source !== owner) {
+            owner = source;
+            lines.push(`  From ${nameOf(source)}:`);
+         }
+         lines.push(`    ${optionLine(index, cluster, o, noteOf(t, o))}`);
       }
    });
    lines.push("</targets>");
@@ -194,6 +196,63 @@ export function renderJudgePrompt(
    }
    lines.push("", JUDGE_REPLY_FORMAT);
    return lines.join("\n");
+}
+
+/** A cluster's header: its home, the sources its joins reach, its twins and contenders. */
+function homeLines(index: FcjIndex, cluster: Cluster): string[] {
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines = [`Home source: ${sourceLine(index, cluster.home)}`];
+   const reached = [...cluster.reach.values()].filter((r) => r.hops > 0);
+   if (reached.length > 0) {
+      lines.push(
+         `Sources its joins reach: ${reached.map((r) => nameOf(r.source)).join(", ")}`,
+      );
+   }
+   if (cluster.twins.length > 0) {
+      lines.push(
+         `Sources that give the same answer under another name: ${cluster.twins
+            .map(nameOf)
+            .join(", ")}`,
+      );
+   }
+   if (cluster.contenders.length > 0) {
+      lines.push(
+         `Sources that match these targets almost as well, with other fields: ${cluster.contenders
+            .map(nameOf)
+            .join(
+               ", ",
+            )}. Pick from the one that fits the question; say which in "caveats" when it is a close call.`,
+      );
+   }
+   return lines;
+}
+
+/**
+ * A list's header: every source as a peer, in order of first appearance,
+ * with its description and the other listed sources a query from it can use
+ * through its joins, by join path.
+ */
+function peerLines(index: FcjIndex, cluster: Cluster): string[] {
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const lines = ["Sources with candidates:"];
+   for (const peer of cluster.peers ?? []) {
+      const name = nameOf(peer.source);
+      lines.push(`- ${sourceLine(index, peer.source)}`);
+      lines.push(
+         peer.reaches.length === 0
+            ? `  A query from ${name} can use none of the other listed sources.`
+            : `  A query from ${name} can also use: ${peer.reaches
+                 .map(
+                    (r) =>
+                       `${nameOf(r.source)} (through ${r.paths
+                          .filter((p) => p.length > 0)
+                          .map((p) => `${name}.${p.join(".")}`)
+                          .join(" or ")})`,
+                 )
+                 .join(", ")}.`,
+      );
+   }
+   return lines;
 }
 
 /** Check one reply against what was offered; the message says what to fix. */
@@ -273,7 +332,11 @@ export async function judge(args: {
    return runPooled(args.clusters, args.concurrency, async (cluster) => {
       const options = judgeOptions(cluster, args.targets);
       const reply = await args.chat.completeJson({
-         system: args.instructions ?? DEFAULT_JUDGE_INSTRUCTIONS,
+         system:
+            args.instructions ??
+            (cluster.peers
+               ? DEFAULT_JUDGE_LIST_INSTRUCTIONS
+               : DEFAULT_JUDGE_INSTRUCTIONS),
          prompt: renderJudgePrompt(args.index, cluster, args.targets, options),
          maxTokens: 120 * args.targets.length + 300,
          validate: validateVerdict(args.targets, options),

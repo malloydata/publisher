@@ -153,6 +153,35 @@ source: plain_payments is payments extend {
 `,
 };
 
+/**
+ * The shape of a list-mode loss: the best candidate for "total revenue" sits
+ * on a narrow derived source (`promotion_summary`, one row per promotion) and
+ * the field the question wants on the main one (`sales_lines`, which reaches
+ * `stores` through the join `store`). No join links the two.
+ */
+export const FCJ_PEERS_FILES: Record<string, string> = {
+   "retail.malloy": `
+#(doc) One row per store.
+source: stores is duckdb.sql("select 1 as id, 'Denver' as city_name") extend {
+  #(doc) City the store is in.
+  dimension: store_city is city_name
+}
+
+#(doc) One row per order line, at every store on every day.
+source: sales_lines is duckdb.sql("select 1 as id, 1 as store_id, 12.0 as amount") extend {
+  #(doc) Revenue of the order lines.
+  measure: total_revenue is amount.sum()
+  join_one: store is stores on store.id = store_id
+}
+
+#(doc) One row per promotion, over its own window only.
+source: promotion_summary is duckdb.sql("select 1 as id, 3.0 as lift") extend {
+  #(doc) Total revenue lift of the promotion.
+  measure: total_revenue_lift is lift.sum()
+}
+`,
+};
+
 /** A throwaway DuckDB file, with `create` run on it, and its cleanup. */
 export async function openTempDb(
    create: (db: DuckDBConnection) => Promise<void>,

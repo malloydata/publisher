@@ -220,18 +220,22 @@ describe("connect", () => {
       });
       expect(out.clusters.length).toBe(1);
       const c = out.clusters[0];
-      // The home is the owner of the measure target's best candidate.
+      // `home` is only the group's id: the owner of the measure's best candidate.
       expect([c.home, c.covers, c.twins, c.contenders]).toEqual([
          "flights@travel.malloy",
          [0, 1],
          [],
          [],
       ]);
-      expect(c.listed).toEqual([
-         "orders@shop.malloy",
-         "races@reports.malloy",
-         "orders_public@shop.malloy",
-         "cities@travel.malloy",
+      // Every source with a candidate is a peer, in order of first appearance.
+      expect(
+         c.peers!.map((x) => [x.source, x.reaches.map((r) => r.source)]),
+      ).toEqual([
+         ["flights@travel.malloy", []],
+         ["orders@shop.malloy", []],
+         ["races@reports.malloy", []],
+         ["orders_public@shop.malloy", []],
+         ["cities@travel.malloy", []],
       ]);
       // Find order, grouped by owning source: orders' two fields sit together.
       expect(c.candidates.get(0)!.map((x) => [x.key, x.rank, x.hops])).toEqual([
@@ -245,17 +249,13 @@ describe("connect", () => {
       // Scores are the find stage's own, not rescored.
       const found = c.candidates.get(1)!.map((x) => x.score === x.found.score);
       expect(found.every(Boolean)).toBe(true);
-      expect(c.extras).toEqual([
-         {
-            key: "source:flights@travel.malloy:flights",
-            reason: "the home source",
-         },
-      ]);
+      // No source node is added as "the home source".
+      expect(c.extras).toEqual([]);
       expect(out.unresolved).toEqual([]);
       expect(out.considered).toEqual([]);
    });
 
-   it('with connect: "list", keeps the routes of a source the home joins to', () => {
+   it('with connect: "list", a source another peer joins to is a peer too, and the joining peer names the paths', () => {
       const out = run(
          [
             t(0, "dimension", "region name of the arrival airport"),
@@ -265,12 +265,51 @@ describe("connect", () => {
          { ...DEFAULT_FCJ_SETTINGS, connect: "list" },
       );
       const c = out.clusters[0];
-      expect(c.home).toBe("flights@travel.malloy");
       const region = c.candidates
          .get(0)!
          .find((x) => x.key === "dimension:regions@travel.malloy:region_name")!;
-      expect(region.hops).toBe(2);
-      expect(c.listed.includes("regions@travel.malloy")).toBe(false);
+      expect(region.hops).toBe(0);
+      const flights = c.peers!.find(
+         (x) => x.source === "flights@travel.malloy",
+      )!;
+      expect(flights.reaches.map((r) => [r.source, r.hops, r.paths])).toEqual([
+         ["airports@travel.malloy", 1, [["arrival"], ["origin"]]],
+         [
+            "regions@travel.malloy",
+            2,
+            [
+               ["arrival", "region"],
+               ["origin", "region"],
+            ],
+         ],
+      ]);
+   });
+
+   it('with connect: "list", a period adds the dates of every source among the measure\'s best three, each named', () => {
+      const c = run(
+         [
+            t(0, "measure", "number of races"),
+            t(1, "dimension", "city by month"),
+         ],
+         () => true,
+         { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 3 },
+      ).clusters[0];
+      expect(c.candidates.get(0)!.map((x) => x.key)).toEqual([
+         "measure:races@reports.malloy:race_count",
+         "measure:flights@travel.malloy:flight_count",
+         "measure:cities@travel.malloy:city_count",
+      ]);
+      // cities has no date; the other two each give theirs, under their name.
+      expect(c.extras).toEqual([
+         {
+            key: "dimension:races@reports.malloy:start_date",
+            reason: "a date of races, and a target names a period",
+         },
+         {
+            key: "dimension:flights@travel.malloy:start_date",
+            reason: "a date of flights, and a target names a period",
+         },
+      ]);
    });
 
    it("with the provisional collapseCopies, an extension's copy is not a second home", async () => {
