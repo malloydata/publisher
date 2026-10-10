@@ -45,6 +45,13 @@ function run(
    return connect({ index: f.index, found, queries, settings, allow });
 }
 
+const CONTENDERS_OFF: Array<[string, string[]]> = [["cities@travel.malloy", []]];
+const CONTENDERS_ON: Array<[string, string[]]> = [
+   [
+      "cities@travel.malloy",
+      ["races@reports.malloy", "flights@travel.malloy", "orders@shop.malloy"],
+   ],
+];
 const homes = (out: ReturnType<typeof run>) =>
    out.clusters.map((c) => [c.home, c.covers, c.twins]);
 const keys = (out: ReturnType<typeof run>, cluster: number, target: number) =>
@@ -182,5 +189,20 @@ describe("connect", () => {
          "flights@travel.malloy",
       ]);
       expect(out.unresolved).toEqual([0, 1]);
+   });
+
+   it("with the provisional contenderShare, takes near-tied sources with other fields into the home's cluster", () => {
+      const targets = [t(0, "measure", "count of rows")];
+      const off = run(targets);
+      expect(off.clusters.map((c) => [c.home, c.contenders])).toEqual(
+         CONTENDERS_OFF,
+      );
+      const on = run(targets, () => true, {
+         ...DEFAULT_FCJ_SETTINGS,
+         contenderShare: 0.9,
+      });
+      expect(on.clusters.map((c) => [c.home, c.contenders])).toEqual(
+         CONTENDERS_ON,
+      );
    });
 });

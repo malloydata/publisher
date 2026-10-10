@@ -144,6 +144,15 @@ export function renderJudgePrompt(
             .join(", ")}`,
       );
    }
+   if (cluster.contenders.length > 0) {
+      lines.push(
+         `Sources that match these targets almost as well, with other fields: ${cluster.contenders
+            .map((s) => index.catalog.sources.get(s)?.name ?? s)
+            .join(
+               ", ",
+            )}. Pick from the one that fits the question; say which in "caveats" when it is a close call.`,
+      );
+   }
    lines.push("", "<targets>");
    targets.forEach((t, i) => {
       const covered = cluster.covers.includes(t.index);
