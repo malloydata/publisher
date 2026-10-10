@@ -54,7 +54,7 @@ export default function Model({
    onGivensChange,
 }: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
-   const { data, isError, isLoading, error } = useModelData(resourceUri);
+   const { data, isLoadingError, isLoading, error } = useModelData(resourceUri);
    const [dialogOpen, setDialogOpen] = React.useState(false);
    const [sharedQuery, setSharedQuery] = React.useState<
       QueryExplorerResult | undefined
@@ -92,7 +92,8 @@ export default function Model({
       return <Loading text="Fetching Model..." />;
    }
 
-   if (isError) {
+   // A failed refetch keeps the model already on screen.
+   if (isLoadingError) {
       console.log("error", error);
       return <ApiErrorDisplay error={error} context={`Model > ${modelPath}`} />;
    }

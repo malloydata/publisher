@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Snackbar, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import {
@@ -15,7 +15,7 @@ import {
 } from "../../hooks/useQueryWithApiError";
 import { reporting } from "../../telemetry/consoleEvents";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { ApiErrorDisplay, apiErrorMessage } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { PackageSection } from "../PackageSection";
 import { useServer } from "../ServerProvider";
@@ -253,7 +253,7 @@ export default function Materializations({
       <>
          <PackageSection
             title="Materializations"
-            count={listQuery.isSuccess ? materializations.length : undefined}
+            count={listQuery.data ? materializations.length : undefined}
             action={
                mutable && (
                   <Stack direction="row" spacing={1} alignItems="center">
@@ -296,7 +296,7 @@ export default function Materializations({
                )
             }
          >
-            {packageQuery.isSuccess && (
+            {packageQuery.data && (
                <Typography
                   variant="body2"
                   color="text.secondary"
@@ -305,16 +305,25 @@ export default function Materializations({
                   {summary}
                </Typography>
             )}
-            {listQuery.isError && (
+            {/* A failed poll keeps the list it had: the statuses in it may be
+                stale, so it says so rather than swapping it for an error. */}
+            {listQuery.isLoadingError && (
                <ApiErrorDisplay
                   error={listQuery.error}
                   context={`${environmentName} > ${packageName} > Materializations`}
                />
             )}
-            {!listQuery.isSuccess && !listQuery.isError && (
+            {listQuery.isRefetchError && (
+               <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  Could not refresh the materializations (
+                  {apiErrorMessage(listQuery.error)}). Their statuses may be out
+                  of date.
+               </Alert>
+            )}
+            {!listQuery.data && !listQuery.isLoadingError && (
                <Loading text="Loading materializations..." />
             )}
-            {listQuery.isSuccess && (
+            {listQuery.data && (
                <MaterializationRunsList
                   materializations={materializations}
                   mutable={mutable}

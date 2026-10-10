@@ -4,7 +4,7 @@
 import { Alert } from "@mui/material";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { ApiErrorDisplay, apiErrorMessage } from "../ApiErrorDisplay";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
@@ -100,8 +100,8 @@ export function Dashboard({
 
    const {
       data: manifestResponse,
-      isSuccess,
-      isError,
+      isLoadingError,
+      isRefetchError,
       error,
    } = useQueryWithApiError({
       // Every value the request is built from, so the key cannot drift out of
@@ -136,7 +136,10 @@ export function Dashboard({
       );
    }
 
-   if (isError) {
+   // Only a failure with nothing to show replaces the dashboard. A failed
+   // background refetch leaves the last manifest in the cache, and swapping a
+   // dashboard the reader is looking at for an error card throws that away.
+   if (isLoadingError) {
       return (
          <ApiErrorDisplay
             context={`${environmentName} > ${packageName} > ${dashboard}`}
@@ -144,11 +147,11 @@ export function Dashboard({
          />
       );
    }
-   if (!isSuccess || !manifest) {
+   if (!manifest) {
       return <Loading text={LOADING_COPY.opening("dashboard")} />;
    }
 
-   return (
+   const view = (
       <DashboardView
          manifest={manifest}
          environmentName={environmentName}
@@ -163,6 +166,16 @@ export function Dashboard({
          onEvent={onEvent}
          chrome={chrome}
       />
+   );
+   if (!isRefetchError) return view;
+   return (
+      <>
+         <Alert severity="warning" sx={{ mb: 2 }}>
+            Could not refresh this dashboard ({apiErrorMessage(error)}). Showing
+            the version loaded earlier.
+         </Alert>
+         {view}
+      </>
    );
 }
 

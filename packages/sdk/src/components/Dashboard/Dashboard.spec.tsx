@@ -10,7 +10,13 @@
  * manual smoke test can see, so it is pinned here.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -19,6 +25,7 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 import type { CompiledModel, DashboardManifest } from "../../client";
+import { globalQueryClient } from "../../utils/queryClient";
 
 const getDashboard = mock(
    (
@@ -236,5 +243,50 @@ describe("the version reaches what the manifest drives", () => {
 
       await screen.findByLabelText("REGION");
       expect(screen.queryByRole("button", { name: /^Explore / })).toBeNull();
+   });
+});
+
+describe("a failed manifest fetch", () => {
+   const manifest: DashboardManifest = {
+      name: "ops",
+      path: "dashboards/ops.malloy",
+      query: "overview",
+      givens: [{ name: "REGION", type: "string" }],
+   };
+
+   it("shows the error when there is no dashboard to keep", async () => {
+      getDashboard.mockImplementation(() =>
+         Promise.reject(new Error("Network Error")),
+      );
+
+      render(dashboardAt(), { wrapper: serverWrapper });
+
+      expect(await screen.findByText("Network Error")).toBeDefined();
+      expect(screen.queryByLabelText("REGION")).toBeNull();
+   });
+
+   it("keeps a rendered dashboard when a refetch fails", async () => {
+      // The manifest stays in the cache when a background refetch fails, and
+      // the reader was looking at it. Swapping it for an error card threw it
+      // away over a request the reader never made.
+      getDashboard.mockImplementation(() =>
+         Promise.resolve({ data: manifest }),
+      );
+      render(dashboardAt(), { wrapper: serverWrapper });
+      await screen.findByLabelText("REGION");
+
+      getDashboard.mockImplementation(() =>
+         Promise.reject(new Error("Network Error")),
+      );
+      await act(() =>
+         globalQueryClient.refetchQueries({ queryKey: ["dashboard"] }),
+      );
+
+      expect(
+         await screen.findByText(/Could not refresh this dashboard/),
+      ).toBeDefined();
+      expect(screen.getByText(/Network Error/)).toBeDefined();
+      expect(screen.getByLabelText("REGION")).toBeDefined();
+      expect(getDashboard).toHaveBeenCalledTimes(2);
    });
 });
