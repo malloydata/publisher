@@ -1854,11 +1854,40 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
    async (req, res) => {
       try {
+         const skills = req.query.skills ?? "full";
+         if (skills !== "full" && skills !== "summary") {
+            res.status(400).json({
+               message: `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
+            });
+            return;
+         }
          res.status(200).json(
             await skillController.getAgent(
                req.params.environmentName,
                req.params.packageName,
                req.params.agentName,
+               skills,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getAgentSkillFile(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
             ),
          );
       } catch (error) {

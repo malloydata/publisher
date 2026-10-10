@@ -456,5 +456,114 @@ describe("package agents", () => {
          expect(missing.message).toContain("Fix:");
          expect(missing.availableAgents).toHaveLength(1);
       });
+
+      describe("skills summary and single-file read", () => {
+         const RAW_REF = "---\nnot: frontmatter\n---\nraw glossary\n";
+         const loadWithReference = async () => {
+            write(
+               "agents/analyst/skills/conventions/reference/glossary.md",
+               RAW_REF,
+            );
+            write("secret.txt", "outside the agent");
+            manifest({ agents: { analyst: analyst() } });
+            return load();
+         };
+
+         it("summary drops file_contents, keeps name, description and bytes, and the same pin", async () => {
+            const pkg = await loadWithReference();
+            const full = pkg.getAgent("analyst")!;
+            const summary = pkg.getAgent("analyst", "summary")!;
+
+            expect(summary.skills).toEqual(
+               full.skills!.map((f) => ({
+                  relative_filepath: f.relative_filepath,
+                  ...(f.relative_filepath!.endsWith("/SKILL.md")
+                     ? { name: "conventions", description: "House rules." }
+                     : {}),
+                  bytes: Buffer.byteLength(f.file_contents!),
+               })),
+            );
+            expect(JSON.stringify(summary)).not.toContain("file_contents");
+            expect(summary.source).toEqual(full.source);
+            expect({ ...summary, skills: full.skills } as typeof full).toEqual(
+               full,
+            );
+            // The default is the full shape, as the sandbox renderer consumes it.
+            expect(pkg.getAgent("analyst", "full")).toEqual(full);
+            expect(full.skills!.every((f) => "file_contents" in f)).toBe(true);
+         });
+
+         it("returns exactly one file with the definition's pin, and refuses anything outside the resolved set", async () => {
+            const pkg = await loadWithReference();
+            const full = pkg.getAgent("analyst")!;
+            const controller = new SkillController(storeFor(pkg));
+            const tool = toolFor(pkg);
+            const paths = full.skills!.map((f) => f.relative_filepath);
+            expect(paths).toContain("conventions/reference/glossary.md");
+
+            for (const file of full.skills!) {
+               const read = await controller.getAgentSkillFile(
+                  "env",
+                  "pkg",
+                  "analyst",
+                  file.relative_filepath!,
+               );
+               expect(read).toEqual({ ...file, source: full.source });
+               const viaMcp = body(
+                  await tool({
+                     scopes,
+                     agent_name: "analyst",
+                     skill_path: file.relative_filepath,
+                  }),
+               );
+               expect(viaMcp.skillFile).toEqual(read);
+               expect(viaMcp.agent).toBeNull();
+            }
+
+            for (const bad of [
+               "../../../secret.txt",
+               "conventions/../../../secret.txt",
+               "agents/other/instructions.md",
+               "/secret.txt",
+               "conventions",
+               "",
+            ]) {
+               await expect(
+                  controller.getAgentSkillFile("env", "pkg", "analyst", bad),
+               ).rejects.toBeInstanceOf(AgentNotFoundError);
+               if (bad === "") continue;
+               const miss = body(
+                  await tool({
+                     scopes,
+                     agent_name: "analyst",
+                     skill_path: bad,
+                  }),
+               );
+               expect(miss.skillFile).toBeUndefined();
+               expect(miss.message).toContain("Fix:");
+            }
+            await expect(
+               controller.getAgentSkillFile("env", "pkg", "nope", paths[0]!),
+            ).rejects.toBeInstanceOf(AgentNotFoundError);
+         });
+
+         it("get_agent summary matches REST and leaves the default alone", async () => {
+            const pkg = await loadWithReference();
+            const controller = new SkillController(storeFor(pkg));
+            const tool = toolFor(pkg);
+
+            const viaMcp = body(
+               await tool({ scopes, agent_name: "analyst", skills: "summary" }),
+            );
+            expect(viaMcp.agent).toEqual(
+               await controller.getAgent("env", "pkg", "analyst", "summary"),
+            );
+            const dflt = body(await tool({ scopes, agent_name: "analyst" }));
+            expect(dflt.agent).toEqual(pkg.getAgent("analyst"));
+            expect(dflt.agent.source.definitionSha).toBe(
+               viaMcp.agent.source.definitionSha,
+            );
+         });
+      });
    });
 });

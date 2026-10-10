@@ -370,6 +370,25 @@ function readAgentText(
 const emitSkillMd = (name: string, description: string, body: string) =>
    `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
 
+/** A served skill file without its text; a SKILL.md also carries the name and description its frontmatter holds. */
+export function summarizeAgentSkillFile(file: PackageAgent["skills"][number]): {
+   relative_filepath: string;
+   name?: string;
+   description?: string;
+   bytes: number;
+} {
+   const { relative_filepath, file_contents } = file;
+   const bytes = Buffer.byteLength(file_contents);
+   if (!relative_filepath.endsWith("/SKILL.md")) {
+      return { relative_filepath, bytes };
+   }
+   const { name, description } = parseSkill(
+      file_contents,
+      relative_filepath.split("/")[0]!,
+   );
+   return { relative_filepath, name, description, bytes };
+}
+
 function readAgentSchedules(
    packagePath: string,
    realRoot: string,

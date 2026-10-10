@@ -66,6 +66,7 @@ import {
    PACKAGE_SKILLS_DIR,
    readPackageAgents,
    readSkillsDir,
+   summarizeAgentSkillFile,
    type PackageAgent,
 } from "../mcp/skills/package_skills";
 import {
@@ -159,6 +160,8 @@ export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
+type ApiAgentSource = components["schemas"]["AgentSource"];
+type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -417,21 +420,49 @@ export class Package {
       }));
    }
 
-   /** One agent resolved, pinned to the load and content it was read from. */
-   public getAgent(name: string): ApiAgent | undefined {
+   private agentSource(definitionSha: string): ApiAgentSource {
+      return {
+         environment: this.environmentName,
+         package: this.packageName,
+         sourceContentSha: this.sourceContentSha,
+         definitionSha,
+         servedRevision: this.servedRevision,
+      };
+   }
+
+   /**
+    * One agent resolved, pinned to the load and content it was read from.
+    * `summary` swaps each skill's text for its name, description and size; the
+    * pin is the same because both are views of one resolved definition.
+    */
+   public getAgent(
+      name: string,
+      skills: "full" | "summary" = "full",
+   ): ApiAgent | undefined {
       const agent = this.packageAgents.get(name);
       if (!agent) return undefined;
       const { definitionSha, ...definition } = agent;
       return {
          ...definition,
-         source: {
-            environment: this.environmentName,
-            package: this.packageName,
-            sourceContentSha: this.sourceContentSha,
-            definitionSha,
-            servedRevision: this.servedRevision,
-         },
+         skills:
+            skills === "full"
+               ? definition.skills
+               : definition.skills.map(summarizeAgentSkillFile),
+         source: this.agentSource(definitionSha),
       };
+   }
+
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem. */
+   public getAgentSkillFile(
+      name: string,
+      relativeFilepath: string,
+   ): ApiAgentSkillRead | undefined {
+      const agent = this.packageAgents.get(name);
+      const file = agent?.skills.find(
+         (f) => f.relative_filepath === relativeFilepath,
+      );
+      if (!agent || !file) return undefined;
+      return { ...file, source: this.agentSource(agent.definitionSha) };
    }
 
    /**

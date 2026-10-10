@@ -10,6 +10,7 @@ import { EnvironmentStore } from "../service/environment_store";
 
 type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
+type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
@@ -101,6 +102,7 @@ export class SkillController {
       environmentName: string,
       packageName: string,
       agentName: string,
+      skills: "full" | "summary" = "full",
    ): Promise<ApiAgent> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -108,6 +110,7 @@ export class SkillController {
       );
       const agent = (await environment.getPackage(packageName, false)).getAgent(
          agentName,
+         skills,
       );
       if (!agent) {
          throw new AgentNotFoundError(
@@ -115,5 +118,27 @@ export class SkillController {
          );
       }
       return agent;
+   }
+
+   /** One file of an agent's skills, by a `relative_filepath` from the summary. */
+   public async getAgentSkillFile(
+      environmentName: string,
+      packageName: string,
+      agentName: string,
+      relativeFilepath: string,
+   ): Promise<ApiAgentSkillRead> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const file = (
+         await environment.getPackage(packageName, false)
+      ).getAgentSkillFile(agentName, relativeFilepath);
+      if (!file) {
+         throw new AgentNotFoundError(
+            `Skill file '${relativeFilepath}' not found for agent '${agentName}' in package '${packageName}'.`,
+         );
+      }
+      return file;
    }
 }
