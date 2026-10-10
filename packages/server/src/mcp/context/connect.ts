@@ -35,6 +35,9 @@
  * nothing matched them are added with the reason: a chosen measure's
  * dependencies, the home source's dates when a target mentions a period,
  * views that use two or more chosen fields, and the home source itself.
+ *
+ * PROVISIONAL, `retrieval.fcj.connect: "list"`: no cluster filter at all (see
+ * connectList). It is the baseline a connect rule has to beat.
  */
 
 import type { FcjSettings } from "../../service/package_retrieval";
@@ -60,6 +63,8 @@ export type ConnectSettings = Pick<
    | "keyword"
    | "values"
    | "contenderShare"
+   | "connect"
+   | "listTopK"
 >;
 
 /** A source's case for being a home. */
@@ -104,7 +109,13 @@ export interface Cluster {
     * judge sees them; their fields are shown on their own cards.
     */
    contenders: string[];
-   /** Reach of the home (and the twins), by source key. */
+   /**
+    * With `connect: "list"` only: sources holding candidates that the home's
+    * joins do not reach. In the pool at 0 hops, their fields on their own
+    * cards. Empty for a cluster.
+    */
+   listed: string[];
+   /** Reach of the home (and the twins, contenders and listed sources), by source key. */
    reach: Map<string, ReachEntry>;
    /** Reach of the home alone: the routes a field has from the home source. */
    homeReach: Map<string, ReachEntry>;
@@ -398,6 +409,7 @@ export function connect(args: {
    allow: (node: CatalogNode) => boolean;
 }): ConnectResult {
    const { index, found, settings } = args;
+   if (settings.connect === "list") return connectList(args);
    const admitSource = (key: string) => {
       const node = index.catalog.sources.get(key)?.node;
       return node ? args.allow(node) : false;
@@ -456,6 +468,7 @@ export function connect(args: {
             newlyCovers,
             twins,
             contenders,
+            listed: [],
             reach: pool,
             homeReach: reach.of(score.source),
             candidates,
@@ -467,6 +480,101 @@ export function connect(args: {
       clusters,
       unresolved,
       considered: scores.filter((s) => s.covers.length > 0).slice(0, 10),
+   };
+}
+
+/**
+ * PROVISIONAL (`connect: "list"`): one group with no cluster filter. Every
+ * target gets the find stage's own top `listTopK`, in find order but grouped
+ * by owning source (sources in the order of their best candidate for that
+ * target), so the judge still sees which fields share a source. The home,
+ * which the structural extras and the response's card are built around, is
+ * the owner of the first measure target's best candidate, else of the first
+ * target's. A source the home's joins reach keeps its routes; any other
+ * source is `listed`, its fields on their own cards.
+ *
+ * `rank` is the candidate's find-stage rank and `score` its fused score, with
+ * no hop discount: nothing is rescored.
+ */
+function connectList(args: Parameters<typeof connect>[0]): ConnectResult {
+   const { index, found, settings } = args;
+   const withCandidates = found.filter((r) => r.candidates.length > 0);
+   const anchor =
+      withCandidates.find((r) => r.target.type === "measure") ??
+      withCandidates[0];
+   const unresolved = found
+      .filter((r) => r.candidates.length === 0)
+      .map((r) => r.target.index);
+   if (!anchor) return { clusters: [], unresolved, considered: [] };
+   const ownerOf = (key: string) => index.catalog.nodes.get(key)!.sourceKey;
+   const home = ownerOf(anchor.candidates[0].key);
+   const homeReach = new ReachCache(
+      index.catalog.joins,
+      settings.reachDepth,
+   ).of(home);
+   const pool = new Map(homeReach);
+   const listed: string[] = [];
+   const byRank = new Map<number, ClusterCandidate[]>();
+   for (const r of found) {
+      byRank.set(
+         r.target.index,
+         r.candidates.slice(0, settings.listTopK).map((c, i) => {
+            const owner = ownerOf(c.key);
+            if (!pool.has(owner)) {
+               pool.set(owner, { source: owner, hops: 0, paths: [[]] });
+               listed.push(owner);
+            }
+            return {
+               key: c.key,
+               score: c.score,
+               rank: i + 1,
+               hops: homeReach.get(owner)?.hops ?? 0,
+               found: c,
+            };
+         }),
+      );
+   }
+   const targets = found.map((r) => r.target);
+   // The extras read the lists in rank order: a measure's inputs are those
+   // of the best three measures, wherever they sit.
+   const extras = extrasOf(index, home, pool, byRank, targets, args.allow);
+   const candidates = new Map<number, ClusterCandidate[]>();
+   for (const [t, list] of byRank) {
+      const order = new Map<string, number>();
+      for (const c of list) {
+         const owner = ownerOf(c.key);
+         if (!order.has(owner)) order.set(owner, order.size);
+      }
+      candidates.set(
+         t,
+         [...list].sort(
+            (a, b) =>
+               order.get(ownerOf(a.key))! - order.get(ownerOf(b.key))! ||
+               a.rank - b.rank,
+         ),
+      );
+   }
+   const covers = withCandidates
+      .map((r) => r.target.index)
+      .sort((a, b) => a - b);
+   return {
+      clusters: [
+         {
+            home,
+            score: 0,
+            covers,
+            newlyCovers: covers,
+            twins: [],
+            contenders: [],
+            listed,
+            reach: pool,
+            homeReach,
+            candidates,
+            extras,
+         },
+      ],
+      unresolved,
+      considered: [],
    };
 }
 
