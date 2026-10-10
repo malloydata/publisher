@@ -145,6 +145,8 @@ type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+const GIVENS_DOCS_URL =
+   "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -1599,6 +1601,11 @@ export class Package {
          // shape this closes was a package reporting exploresWarnings: none
          // while listed files surfaced nothing (HANDOFF CR-5).
          ...this.emptyDiscoveryWarnings(),
+         // Content on a deprecated format: a `.malloynb` notebook, and a source
+         // declaring `#(filter)` annotations. Both still load and run, so this
+         // is advisory; it rides the API so a client can say so on the package
+         // rather than leave it to the server log.
+         ...this.legacyFormatWarnings(),
          // The whole surface failed to compile, so every model in the package
          // is refused by name. Rides the API for the same reason as the line
          // above, and more urgently: the 404s it causes name models that are
@@ -2573,6 +2580,40 @@ export class Package {
     * models are skipped — nobody browses them, so an empty surface there is
     * just normal plumbing.
     */
+   /**
+    * One warning per `.malloynb` notebook, and one per source that declares
+    * deprecated `#(filter)` annotations. A filtered source is reported once,
+    * by name (`subject`), however many models import it: every importer's
+    * compile resolves it, and a row per importer would repeat one fix.
+    */
+   public legacyFormatWarnings(): ApiPackageWarning[] {
+      const warnings: ApiPackageWarning[] = [];
+      const filtered = new Set<string>();
+      for (const [modelPath, model] of this.models) {
+         if (modelPath.toLowerCase().endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            warnings.push({
+               model: modelPath,
+               severity: "warn",
+               message:
+                  `${modelPath} is a .malloynb notebook, a deprecated format. ` +
+                  `Convert it to a .malloy notebook under notebooks/.`,
+            });
+         }
+         for (const name of model.deprecatedFilterSourceNames())
+            filtered.add(name);
+      }
+      for (const name of [...filtered].sort()) {
+         warnings.push({
+            subject: name,
+            severity: "warn",
+            message:
+               `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
+               `with given: runtime parameters (see ${GIVENS_DOCS_URL}).`,
+         });
+      }
+      return warnings;
+   }
+
    public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
       const warnings: Array<{ model: string; message: string }> = [];

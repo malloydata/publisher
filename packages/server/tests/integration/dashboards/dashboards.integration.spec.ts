@@ -797,7 +797,15 @@ describe("Dashboard discovery (E2E)", () => {
       };
 
       it("says nothing about a well-formed package", async () => {
-         expect(await packageWarnings(PACKAGE_NAME)).toEqual([]);
+         // The fixture keeps `.malloynb` notebooks, which the package reports as a
+         // deprecated format (legacyFormatWarnings); no dashboard lint finding is.
+         const warnings = await packageWarnings(PACKAGE_NAME);
+         expect(
+            warnings.filter(
+               (w: { message?: string }) =>
+                  !w.message?.includes("a deprecated format"),
+            ),
+         ).toEqual([]);
       });
 
       /**

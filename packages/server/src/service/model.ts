@@ -1131,6 +1131,13 @@ export class Model {
       }
    }
 
+   /** The sources this model can resolve that declare deprecated `#(filter)` annotations. */
+   public deprecatedFilterSourceNames(): string[] {
+      return [...this.filterMap.entries()]
+         .filter(([, filters]) => filters.length > 0)
+         .map(([name]) => name);
+   }
+
    /**
     * Get the parsed filter definitions for a given source name.
     * Returns an empty array if no filters are declared.
