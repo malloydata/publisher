@@ -26,8 +26,8 @@ ADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to ap
 - skill_path (optional): a relative_filepath from a summary. Only with agent_name.
 
 ## Response
-- agent: the resolved definition, or null when listing, when agent_name did not match, or when skill_path is set.
-- skillFile: only with skill_path; {relative_filepath, file_contents, source}.
+- agent: the resolved definition, or null when listing or when agent_name did not match. Absent when skill_path returns a file.
+- skillFile: only with skill_path; {relative_filepath, file_contents, source}. skill_path wins over skills.
 - availableAgents: always present; every agent the package serves.
 - message: only when agent_name did not match.
 
@@ -111,14 +111,17 @@ export function registerGetAgentTool(
             const pkg = await environment.getPackage(scope.package, false);
             const availableAgents = pkg.listAgents();
             if (params.agent_name === undefined || params.agent_name === null) {
-               return jsonResource(uri, { agent: null, availableAgents });
+               return jsonResource(uri, {
+                  agent: null,
+                  availableAgents,
+                  ...(params.skill_path && {
+                     message:
+                        "skill_path needs agent_name. Fix: name the agent from availableAgents whose skill file you want.",
+                  }),
+               });
             }
 
-            const agent = pkg.getAgent(
-               params.agent_name,
-               params.skills ?? "full",
-            );
-            if (!agent) {
+            if (!availableAgents.some((a) => a.name === params.agent_name)) {
                return jsonResource(uri, {
                   agent: null,
                   availableAgents,
@@ -137,12 +140,13 @@ export function registerGetAgentTool(
                      message: `Agent ${JSON.stringify(params.agent_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as a skills: "summary" fetch lists it.`,
                   });
                }
-               return jsonResource(uri, {
-                  agent: null,
-                  skillFile,
-                  availableAgents,
-               });
+               // No `agent` key: a file read must not look like "no agent matched".
+               return jsonResource(uri, { skillFile, availableAgents });
             }
+            const agent = pkg.getAgent(
+               params.agent_name,
+               params.skills ?? "full",
+            );
             return jsonResource(uri, { agent, availableAgents });
          } catch (error) {
             logger.warn("[MCP Tool getAgent] lookup failed", {

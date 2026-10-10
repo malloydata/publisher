@@ -22,6 +22,14 @@ describe("skills wildcard route", () => {
             name: (req.params as unknown as Record<string, string>)[0] ?? "",
          });
       });
+      app.get(
+         "/packages/:packageName/agents/:agentName/skills/*",
+         (req, res) => {
+            res.json({
+               name: (req.params as unknown as Record<string, string>)[0] ?? "",
+            });
+         },
+      );
       await new Promise<void>((resolve) => {
          server = app.listen(0, "127.0.0.1", resolve);
       });
@@ -51,5 +59,16 @@ describe("skills wildcard route", () => {
 
    it("decodes exactly once, so an encoded percent stays a percent", async () => {
       expect(await nameFor("/packages/p/skills/a%2541")).toBe("a%41");
+   });
+
+   it("serves an agent's skill file path the same way", async () => {
+      const agent = "/packages/p/agents/analyst/skills";
+      expect(await nameFor(`${agent}/conventions/reference/glossary.md`)).toBe(
+         "conventions/reference/glossary.md",
+      );
+      expect(await nameFor(`${agent}/conventions%2FSKILL.md`)).toBe(
+         "conventions/SKILL.md",
+      );
+      expect(await nameFor(`${agent}/a%2541`)).toBe("a%41");
    });
 });

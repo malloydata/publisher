@@ -517,7 +517,7 @@ describe("package agents", () => {
                   }),
                );
                expect(viaMcp.skillFile).toEqual(read);
-               expect(viaMcp.agent).toBeNull();
+               expect(viaMcp).not.toHaveProperty("agent");
             }
 
             for (const bad of [
@@ -542,6 +542,9 @@ describe("package agents", () => {
                expect(miss.skillFile).toBeUndefined();
                expect(miss.message).toContain("Fix:");
             }
+            const noAgent = body(await tool({ scopes, skill_path: paths[0]! }));
+            expect(noAgent.skillFile).toBeUndefined();
+            expect(noAgent.message).toContain("needs agent_name");
             await expect(
                controller.getAgentSkillFile("env", "pkg", "nope", paths[0]!),
             ).rejects.toBeInstanceOf(AgentNotFoundError);
