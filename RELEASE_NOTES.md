@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - A package can ship its own skills and declare agents
+
+A package can now carry guidance for the agents that work with it. A `skills/` directory at the package root holds agent skills in the agentskills.io format, served next to the bundled ones by a new `get_skill` MCP tool and `GET .../packages/{pkg}/skills`; a package skill with the name of a bundled one replaces it for that package. An `agents` object in `publisher.json` declares named agents, each with a description, an instructions file, its own skills, and optional scheduled tasks. They are served by a new `get_agent` MCP tool and `GET .../packages/{pkg}/agents` and `.../agents/{name}`, listed on `Package.agents`, and shown in an Agents section on the package page.
+
+Publisher serves a definition and never runs one. A client adopts an agent by fetching it and following it in its own session, and the bundled `malloy-run-agent` skill does that when the user names an agent. A definition carries no tool, permission or hook setting: an agent entry with a key this server does not know (`tools`, `hooks` and the like included) is dropped, and a broken agent never fails the package, it is left out with a `Fix:` warning. Schedules are validated (5-field UTC cron, task file in the package) and shown, but nothing executes them yet.
+
+Two things to know when upgrading. `sourceContentSha` now also covers package skill files, the `agents` object, and every file an agent reads, so it moves on an edit to any of them (a `version` bump still does not move it). And the MCP surface grows from eight tools to ten; a client that pins the tool list will see `get_skill` and `get_agent` as new. A package without `skills/` or `agents` behaves exactly as before, and an older Publisher serves a package that has them without the extras.
+
 ## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
 When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.

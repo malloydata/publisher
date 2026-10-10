@@ -62,12 +62,58 @@ The fields the server reads:
 | `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md). |
 | `materialization` | Persisted-source build policy (`schedule`, `freshness`). Package root only. See [materialization.md](materialization.md). |
 | `scope` | `"package"` (the default) or `"version"`. Any other value fails the package load. |
+| `agents` | Named agents the package declares, keyed by agent name. See [Agents](#agents). |
 | `retrieval` | How `get_context` searches and indexes this package: `representation` (`single` or `facets`), `keyphrases` (`auto`, `never`, `always`), `refine`, `rerank`, `sourceMatch` and `sourceSummary` (each `{ "enabled": "auto" \| true \| false }`, with `minLevel` on `refine` and `topSources` on `rerank`), and `prompts` (a file path inside the package for each of `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load. See [get-context-pipeline.md](get-context-pipeline.md) and [configuration.md](configuration.md). |
 
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
 package load with a message naming the valid ones. The bundled examples carry a `version` field as a
 convention, but nothing reads it. (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it.)
+
+## Skills
+
+A package can carry agent skills of its own in a `skills/` directory at its root: one directory per skill, each holding a `SKILL.md` in the [agentskills.io](https://agentskills.io) format (a `name` and `description` in the frontmatter, then the body) and optional `reference/*.md` files. Publisher serves them next to the bundled skills over the `get_skill` MCP tool and `GET …/packages/{pkg}/skills`, scoped to that package, so an agent learns how to work with this package's data from the package itself.
+
+- A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading.
+- Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A `skills/` directory that is itself a link out of the package is skipped with a load warning.
+- A file over 256 KB is not served. A skill whose `SKILL.md` cannot be read, or that repeats another skill's `name`, is skipped; one with no `description` is served but flagged, since nothing tells a caller when to read it. Each case is a load warning naming the fix, and the package still loads.
+
+## Agents
+
+A package can declare agents: a named brief for working with this package, made of instructions, the agent's own skills, and optional scheduled tasks. Publisher parses and serves the definition. It does not run the agent. A client adopts one by fetching it (`get_agent`, or `GET …/packages/{pkg}/agents/{name}`) and following it in its own session, with its own tools and permissions; the bundled `malloy-run-agent` skill is the recipe. Adopt an agent only when the user names it: nothing advertises one in discovery.
+
+```json
+{
+  "name": "storefront",
+  "agents": {
+    "analyst": {
+      "description": "Answers revenue questions using the storefront conventions",
+      "model": "inherit",
+      "instructions": "agents/analyst/instructions.md",
+      "skills": ["agents/analyst/skills"],
+      "schedules": [
+        { "cron": "0 13 * * MON", "task": "agents/analyst/tasks/weekly-report.md" }
+      ]
+    }
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `description` | Required. One line saying what the agent is for. |
+| `instructions` | Required. Package-relative path of a Markdown file (no frontmatter): the brief the agent works from. At most 16 KB. |
+| `model` | Optional. The model the agent asks for; `inherit` (the default) means the caller's own. |
+| `skills` | Optional. Package-relative directories, each holding `<skill>/SKILL.md` as in [Skills](#skills). Two directories holding the same `<skill>/SKILL.md` collide and drop the agent. All of an agent's skill files together may total at most 256 KB. |
+| `schedules` | Optional. A list of `{ "cron", "task" }`: a 5-field UNIX cron in UTC and the package-relative path of a Markdown task file (at most 16 KB). **Schedules are parsed, validated and shown. Nothing executes them yet.** A task runs when someone asks for it. |
+
+The agent's name is its key: 1 to 64 characters of lowercase letters, digits and single hyphens.
+
+**Strict allowlist.** An agent or schedule entry with a key this server does not know is dropped, because a key it does not understand might limit the agent, and an unknown key never runs. `tools`, `mcp-servers`, `hooks`, `permission-mode` and `base` are not part of the schema, so they are dropped too: a definition adds words to a session and never widens what the session may do. A key starting `x-` is ignored, for notes and tool metadata.
+
+**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, an over-cap file, a bad cron) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
+
+Two hashes say which bytes a definition came from. `sourceContentSha` on the package covers the models, the package skill files, the `agents` object and every file an agent reads; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
 
 ## Where the data comes from
 
