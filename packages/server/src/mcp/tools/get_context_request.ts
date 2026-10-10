@@ -83,7 +83,7 @@ export const convergedContextShape = {
                .max(20)
                .nullish()
                .describe(
-                  'For a dimension or dimensional_value target: the literal values the user named, as typed (e.g. ["cancelled"]). The server looks them up among stored values to find the dimension that holds them.',
+                  'For a dimension or dimensional_value target: the literal values the user named, as typed (e.g. ["cancelled"]). Where this server indexes stored values, it looks them up to find the dimension that holds them; elsewhere they are ignored.',
                ),
          }),
       )
