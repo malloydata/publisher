@@ -139,6 +139,16 @@ import {
 } from "../service/given";
 import { ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
+import { captureEligibilityRefusals } from "../materialization_metrics";
+import { SchemaCache } from "./schema_cache";
+import { renderTagTargets } from "../service/render_tag_targets";
+import {
+   collectModelBuildPlan,
+   deriveBuildPlanOutcome,
+   emptyBuildPlanParts,
+   resolveConnectionDigests,
+   type WirePackageMaterialization,
+} from "../service/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -155,6 +165,7 @@ import type {
    SchemaForTablesResponse,
    SerializedModel,
    SerializedNotebookCell,
+   WorkerBuildPlan,
 } from "./protocol";
 
 if (!parentPort) {
@@ -224,17 +235,42 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
 // Proxy connection: stand-in for non-duckdb connections at compile time
 // ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Schemas this worker has fetched through the main thread, kept across loads.
+ * Sized by PACKAGE_LOAD_SCHEMA_CACHE_ENTRIES (0 disables it). See SchemaCache.
+ */
+const DEFAULT_SCHEMA_CACHE_ENTRIES = 5000;
+const schemaCache = new SchemaCache<TableSourceDef | SQLSourceDef>(
+   ((): number => {
+      const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_ENTRIES;
+      const parsed = raw === undefined ? NaN : Number(raw);
+      return Number.isInteger(parsed) && parsed >= 0
+         ? parsed
+         : DEFAULT_SCHEMA_CACHE_ENTRIES;
+   })(),
+);
+
 class ProxyConnection {
    public readonly name: string;
    public readonly dialectName: string;
    private readonly digest: string;
    private readonly jobId: string;
+   /** Prefix of this connection's schema-cache keys. */
+   private readonly cacheScope: string;
 
-   constructor(metadata: ConnectionMetadata, jobId: string) {
+   constructor(
+      metadata: ConnectionMetadata,
+      jobId: string,
+      environmentScope: string,
+   ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
+      // The environment is part of the key, not only the digest: a digest can
+      // be a configured fingerprint, and two environments' connections must
+      // never share what one of them can see.
+      this.cacheScope = [environmentScope, this.name, this.digest].join("\0");
    }
 
    getDigest(): string {
@@ -242,6 +278,85 @@ class ProxyConnection {
    }
 
    async fetchSchemaForTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      const cached: Record<string, TableSourceDef> = {};
+      const joined: [string, string, Promise<unknown>][] = [];
+      const missing: Record<string, string> = {};
+      for (const [key, tablePath] of Object.entries(tables)) {
+         const cacheKey = this.tableCacheKey(tablePath);
+         const hit = schemaCache.get(cacheKey, options.refreshTimestamp);
+         const pending =
+            hit === undefined && options.refreshTimestamp === undefined
+               ? schemaCache.joinInFlight(cacheKey)
+               : undefined;
+         if (hit) {
+            cached[key] = hit as TableSourceDef;
+         } else if (pending) {
+            joined.push([key, tablePath, pending]);
+         } else {
+            missing[key] = tablePath;
+         }
+      }
+      let fetched: {
+         schemas: Record<string, TableSourceDef>;
+         errors: Record<string, string>;
+      } = { schemas: {}, errors: {} };
+      if (Object.keys(missing).length > 0) {
+         const request = this.fetchSchemaForTablesFromMain(missing, options);
+         for (const [key, tablePath] of Object.entries(missing)) {
+            schemaCache.trackInFlight(
+               this.tableCacheKey(tablePath),
+               request.then((r) => r.schemas[key]),
+            );
+         }
+         fetched = await request;
+         const fetchedAt = options.refreshTimestamp ?? Date.now();
+         for (const [key, schema] of Object.entries(fetched.schemas)) {
+            const tablePath = missing[key];
+            if (tablePath !== undefined) {
+               schemaCache.set(
+                  this.tableCacheKey(tablePath),
+                  schema,
+                  fetchedAt,
+               );
+            }
+         }
+      }
+      // A table another request was already fetching. When that fetch did not
+      // produce it, ask for it alone, so the error is this table's own.
+      const unanswered: Record<string, string> = {};
+      for (const [key, tablePath, pending] of joined) {
+         const schema = await pending;
+         if (schema) {
+            cached[key] = schema as TableSourceDef;
+         } else {
+            unanswered[key] = tablePath;
+         }
+      }
+      if (Object.keys(unanswered).length > 0) {
+         const retried = await this.fetchSchemaForTablesFromMain(
+            unanswered,
+            options,
+         );
+         Object.assign(fetched.schemas, retried.schemas);
+         Object.assign(fetched.errors, retried.errors);
+      }
+      return {
+         schemas: { ...cached, ...fetched.schemas },
+         errors: fetched.errors,
+      };
+   }
+
+   private tableCacheKey(tablePath: string): string {
+      return `${this.cacheScope}\0table\0${tablePath}`;
+   }
+
+   private async fetchSchemaForTablesFromMain(
       tables: Record<string, string>,
       options: FetchSchemaOptions,
    ): Promise<{
@@ -270,6 +385,36 @@ class ProxyConnection {
    }
 
    async fetchSchemaForSQLStruct(
+      sentence: SQLSourceRequest,
+      options: FetchSchemaOptions,
+   ): Promise<
+      | { structDef: SQLSourceDef; error?: undefined }
+      | { error: string; structDef?: undefined }
+   > {
+      const cacheKey = `${this.cacheScope}\0sql\0${sentence.connection}\0${sentence.selectStr}`;
+      const hit = schemaCache.get(cacheKey, options.refreshTimestamp);
+      if (hit) return { structDef: hit as SQLSourceDef };
+      if (options.refreshTimestamp === undefined) {
+         const pending = await schemaCache.joinInFlight(cacheKey);
+         if (pending) return { structDef: pending as SQLSourceDef };
+      }
+      const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
+      schemaCache.trackInFlight(
+         cacheKey,
+         request.then((r) => r.structDef),
+      );
+      const result = await request;
+      if (result.structDef !== undefined) {
+         schemaCache.set(
+            cacheKey,
+            result.structDef,
+            options.refreshTimestamp ?? Date.now(),
+         );
+      }
+      return result;
+   }
+
+   private async fetchSchemaForSQLStructFromMain(
       sentence: SQLSourceRequest,
       options: FetchSchemaOptions,
    ): Promise<
@@ -429,6 +574,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                   const proxy = new ProxyConnection(
                      response.metadata,
                      job.requestId,
+                     job.environmentName ?? path.dirname(job.packagePath),
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -784,10 +930,18 @@ function buildRuntimeForModel(
    return { runtime, urlReader, textFor };
 }
 
+/** A compiled `.malloy` model, kept for the build-plan stage. */
+interface CompiledForPlan {
+   materializer: ModelMaterializer;
+   model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+   importBaseURL: URL;
+}
+
 async function compileMalloyModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   compiledForPlan?: Map<string, CompiledForPlan>,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -803,6 +957,11 @@ async function compileMalloyModel(
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
+   compiledForPlan?.set(modelPath, {
+      materializer: mm,
+      model: compiled,
+      importBaseURL,
+   });
 
    const malloyGivens = Array.from(compiled.givens.values());
    const givens =
@@ -907,6 +1066,25 @@ async function compileMalloyModel(
       },
    });
 
+   // Prepared here rather than on the main thread, where compiling every
+   // annotated view of a large model blocks the event loop (see
+   // SerializedModel.renderTagResults).
+   const renderTagResults: { label: string; result: Malloy.Result }[] = [];
+   for (const target of renderTagTargets(queries, sources)) {
+      try {
+         const prepared = await mm
+            .loadQuery(target.queryString)
+            .getPreparedResult();
+         renderTagResults.push({
+            label: target.label,
+            result: prepared.toStableResult(),
+         });
+      } catch {
+         // A view or query that fails to prepare is reported by the normal
+         // compile path; the render-tag check skips it.
+      }
+   }
+
    return {
       modelPath,
       modelType: "model",
@@ -932,6 +1110,7 @@ async function compileMalloyModel(
          authorizeWarningCollection.warnings.length > 0
             ? authorizeWarningCollection.warnings
             : undefined,
+      renderTagResults,
    };
 }
 
@@ -1157,10 +1336,16 @@ async function compileOneModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   compiledForPlan?: Map<string, CompiledForPlan>,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(job, malloyConfig, modelPath);
+         return await compileMalloyModel(
+            job,
+            malloyConfig,
+            modelPath,
+            compiledForPlan,
+         );
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
          return await compileNotebookModel(job, malloyConfig, modelPath);
@@ -1235,15 +1420,31 @@ async function loadPackage(
    // regardless of whether any fetch ever happens during setup (none do
    // today, but this stops that assumption from silently mattering).
    const compileRegionStart = performance.now();
+   const schemaCacheHitsAtStart = schemaCache.hits;
    schemaWait.begin(job.requestId);
+   const compiledForPlan = job.computeBuildPlan
+      ? new Map<string, CompiledForPlan>()
+      : undefined;
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
-         compileOneModel(job, malloyConfig, modelPath),
+         compileOneModel(job, malloyConfig, modelPath, compiledForPlan),
       ),
    );
 
-   const loadEnd = performance.now();
+   const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;
+   const schemaFetchCount = schemaWait.fetches;
+   const schemaCacheHits = schemaCache.hits - schemaCacheHitsAtStart;
+   const buildPlan = compiledForPlan
+      ? await deriveWorkerBuildPlan(
+           job,
+           malloyConfig,
+           modelPaths,
+           compiledForPlan,
+           packageMetadata.materialization ?? null,
+        )
+      : undefined;
+   const loadEnd = performance.now();
    return {
       type: "load-package-result",
       requestId: job.requestId,
@@ -1257,12 +1458,99 @@ async function loadPackage(
          // it slightly negative).
          compileDurationMs: Math.max(
             0,
-            loadEnd - compileRegionStart - schemaFetchDurationMs,
+            compileEnd - compileRegionStart - schemaFetchDurationMs,
          ),
          schemaFetchDurationMs,
-         schemaFetchCount: schemaWait.fetches,
+         schemaFetchCount,
+         schemaCacheHits,
       },
+      buildPlan,
    };
+}
+
+/**
+ * Derive the package's persist build plan from the models this load just
+ * compiled, the same derivation `computePackageBuildPlan` runs on the main
+ * thread after compiling the package a second time. Any `.malloy` model that
+ * did not compile fails the plan, as its compile throwing would there.
+ */
+async function deriveWorkerBuildPlan(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   modelPaths: string[],
+   compiledForPlan: Map<string, CompiledForPlan>,
+   materializationConfig: WirePackageMaterialization | null,
+): Promise<WorkerBuildPlan> {
+   const start = performance.now();
+   const stopCapture = captureEligibilityRefusals();
+   try {
+      const parts = emptyBuildPlanParts();
+      for (const modelPath of modelPaths) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const compiled = compiledForPlan.get(modelPath);
+         if (!compiled) {
+            throw new Error(`Model ${modelPath} did not compile`);
+         }
+         await collectModelBuildPlan(parts, {
+            modelPath,
+            packagePath: job.packagePath,
+            materializer: compiled.materializer,
+            malloyModel: compiled.model,
+            getRuntime: async (overlay) => {
+               const files = makeWorkerUrlReader(job);
+               return {
+                  runtime: new Runtime({
+                     urlReader: {
+                        readURL: (url: URL) =>
+                           overlay.get(url.href) !== undefined
+                              ? Promise.resolve(overlay.get(url.href) as string)
+                              : files.readURL(url),
+                     },
+                     config: malloyConfig,
+                  }),
+                  importBaseURL: compiled.importBaseURL,
+               };
+            },
+         });
+      }
+      const connections = new Map<string, Connection>();
+      for (const name of new Set(parts.graphs.map((g) => g.connectionName))) {
+         if (!name) continue;
+         try {
+            connections.set(
+               name,
+               await malloyConfig.connections.lookupConnection(name),
+            );
+         } catch {
+            // Left out; resolveConnectionDigests reports it as skipped.
+         }
+      }
+      const digestSkipped: string[] = [];
+      const connectionDigests = await resolveConnectionDigests(
+         connections,
+         parts.graphs,
+         (name) => digestSkipped.push(name),
+      );
+      const outcome = deriveBuildPlanOutcome(
+         { ...parts, connectionDigests },
+         materializationConfig,
+      );
+      return {
+         ok: true,
+         outcome,
+         durationMs: performance.now() - start,
+         digestSkipped,
+         eligibilityRefused: stopCapture(),
+      };
+   } catch (error) {
+      return {
+         ok: false,
+         error: error instanceof Error ? error.message : String(error),
+         durationMs: performance.now() - start,
+      };
+   } finally {
+      stopCapture();
+   }
 }
 
 // ──────────────────────────────────────────────────────────────────────

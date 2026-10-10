@@ -51,6 +51,9 @@ import { formatDuration, logger } from "../logger";
 import { recordNotebookDiscovery } from "../notebook_metrics";
 import {
    recordBuildPlanComputeDuration,
+   recordConnectionDigestSkipped,
+   recordEligibilityRefused,
+   type EligibilityRefusalReason,
    recordBuildPlanComputeFailed,
    recordColocatedBindDropped,
    recordManifestBindDegraded,
@@ -90,11 +93,8 @@ const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
    "grain_dimension_not_public",
 ]);
-import {
-   ColocatedSourceEligibility,
-   computePackageBuildPlan,
-   SourceEligibility,
-} from "./build_plan";
+import { ColocatedSourceEligibility, SourceEligibility } from "./build_plan";
+import { computePackageBuildPlan } from "./build_plan_compile";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -1099,8 +1099,10 @@ export class Package {
          .loadPackage({
             packagePath,
             packageName,
+            environmentName,
             malloyConfig,
             defaultConnectionName: "duckdb",
+            computeBuildPlan: true,
          })
          .catch((err: unknown) => {
             // Compile errors surface in-band via
@@ -1155,6 +1157,7 @@ export class Package {
          compileDurationMs: outcome.timings.compileDurationMs,
          schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
          schemaFetchCount: outcome.timings.schemaFetchCount,
+         schemaCacheHits: outcome.timings.schemaCacheHits,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -1239,12 +1242,13 @@ export class Package {
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
       pkg.wireFreshnessResolvers();
 
-      // Compute the persist build plan off the live (unbound) models, before the
-      // caller binds any configured manifest, so the surfaced plan reflects the
-      // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
-      // failure is logged, not fatal — the package still serves; the plan is
-      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
-      // compile); accepted for now.
+      // The persist build plan, derived off the live (unbound) models before
+      // the caller binds any configured manifest, so the surfaced plan reflects
+      // the canonical build (not the manifest-rewritten SQL). The load worker
+      // derives it from its own compile (see LoadPackageResult.buildPlan);
+      // deriving it here instead would compile every model a second time on
+      // this thread. Best-effort: a plan failure is logged, not fatal — the
+      // package still serves; the plan is just absent.
       //
       // A failure also leaves `sourceEligibility` unknown, which refuses every
       // storage serve binding until a load succeeds (see
@@ -1258,13 +1262,33 @@ export class Package {
       // its recordColocatedBindDropped("build_plan_unavailable") counter).
       try {
          const buildPlanStart = Date.now();
+         const workerPlan = outcome.buildPlan;
+         if (workerPlan && !workerPlan.ok) {
+            throw new Error(workerPlan.error);
+         }
+         for (const [reason, count] of Object.entries(
+            workerPlan?.eligibilityRefused ?? {},
+         )) {
+            for (let i = 0; i < (count ?? 0); i++) {
+               recordEligibilityRefused(reason as EligibilityRefusalReason);
+            }
+         }
+         for (const connectionName of workerPlan?.digestSkipped ?? []) {
+            recordConnectionDigestSkipped();
+            logger.warn(
+               "Skipping connection digest; connection did not resolve",
+               { connectionName },
+            );
+         }
          const {
             plan,
             droppedPersistSources,
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
-         } = await computePackageBuildPlan(pkg);
+         } = workerPlan
+            ? workerPlan.outcome
+            : await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
@@ -1281,7 +1305,9 @@ export class Package {
                sourceEntityId: source.sourceEntityId,
                declaration: incrementalDeclarations[sourceID],
             }));
-         recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+         recordBuildPlanComputeDuration(
+            workerPlan ? workerPlan.durationMs : Date.now() - buildPlanStart,
+         );
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -2860,6 +2886,7 @@ export class Package {
          outcome = await pool.loadPackage({
             packagePath: this.packagePath,
             packageName: this.packageName,
+            environmentName: this.environmentName,
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,

@@ -69,6 +69,8 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import { renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
@@ -4824,6 +4826,9 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.preparedRenderTagResults = data.renderTagResults as
+         | { label: string; result: Malloy.Result }[]
+         | undefined;
       return model;
    }
 
@@ -5996,27 +6001,19 @@ export class Model {
       // that fails to compile still leaves the storage tier able to serve these
       // rollups: planning is pure, the compile is not.
       //
-      // Statically imported, unlike the compile helper below. That one needs a
-      // dynamic import to break a real cycle; this module is already in this
-      // file's static graph by way of `preaggregation_serve_bindings`, so a
-      // dynamic import here bought nothing and put an await between the reset
-      // above and the assignment below.
       this.preaggregateRollupPlans = planModelPreaggregation(
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
-      // Dynamic import to break a module cycle: the helper compiles through
-      // Model.getModelRuntime, so importing it at the top of this file would make
-      // the two modules import each other.
-      const { tryCompileSynthesizedPreaggregation } = await import(
-         "./preaggregation_compile"
-      );
       const synthesized = await tryCompileSynthesizedPreaggregation({
          packagePath,
          modelPath: this.modelPath,
-         malloyConfig,
          contents: this.modelDef.contents as Record<string, unknown>,
-         buildManifest,
+         getRuntime: (overlay) =>
+            Model.getModelRuntime(packagePath, this.modelPath, malloyConfig, {
+               buildManifest,
+               overlay,
+            }),
       });
       this.preaggregateServeMaterializer = synthesized?.materializer;
    }
@@ -6066,56 +6063,16 @@ export class Model {
          "@malloydata/render-validator"
       );
 
-      // Renderable targets: top-level named queries and every view declared on a
-      // source. Source views are where render tags like `# big_value` usually
-      // live, and they are NOT in `this.queries`.
-      const targets: { label: string; queryString: string }[] = [];
-      for (const query of this.queries ?? []) {
-         // Only an annotated, named query can carry a render tag to validate;
-         // skip the rest rather than compiling every query in the package.
-         if (!query.name || !query.annotations?.length) {
-            continue;
-         }
-         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
-         // Malloy quoting still lexes and cannot break out of the quotes.
-         targets.push({
-            label: query.name,
-            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
-         });
-      }
-      for (const source of this.sources ?? []) {
-         for (const view of source.views ?? []) {
-            // Render tags live on the view's own or inherited annotations, not
-            // via source-to-view inheritance, so an unannotated view has
-            // nothing to validate and need not be compiled. (A model-level
-            // `##` tag is the one case this gate doesn't reach, but those are
-            // theme/config, not the child-only chart tags this guards against.)
-            if (!view.annotations?.length) {
-               continue;
-            }
-            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
-            // name like `gated-source` fails to lex, and the catch below would
-            // then silently skip the very view this is meant to validate.
-            targets.push({
-               label: `${source.name} -> ${view.name}`,
-               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
-            });
-         }
-      }
+      // The worker prepares the targets alongside the model's compile (see
+      // SerializedModel.renderTagResults); a model that arrives without them is
+      // prepared here. Taken once: the results are only read by this check.
+      const prepared =
+         this.preparedRenderTagResults ??
+         (await this.prepareRenderTagTargets(mm));
+      this.preparedRenderTagResults = undefined;
 
       const findings: RenderTagWarning[] = [];
-      for (const target of targets) {
-         let result: Malloy.Result;
-         try {
-            const prepared = await mm
-               .loadQuery(target.queryString)
-               .getPreparedResult();
-            result = prepared.toStableResult();
-         } catch {
-            // A view/query that fails to prepare is reported by the normal
-            // compile path; don't mask that with a render-tag error.
-            continue;
-         }
+      for (const { label, result } of prepared) {
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
          // ("Ignored # colspan ... colspan only applies in columns mode"), or a
@@ -6146,13 +6103,13 @@ export class Model {
             // An inert tag is not an invalid one, so don't call it "Invalid";
             // the per-finding messages already say which kind each is.
             logger.warn(
-               `Render tag findings on '${target.label}': ${logs
+               `Render tag findings on '${label}': ${logs
                   .map((e) => `[${e.severity}] ${e.message}`)
                   .join("; ")}`,
             );
             for (const e of logs) {
                findings.push({
-                  subject: target.label,
+                  subject: label,
                   message: e.message,
                   severity: e.severity === "error" ? "error" : "warn",
                });
@@ -6160,6 +6117,39 @@ export class Model {
          }
       }
       return findings;
+   }
+
+   /**
+    * Results the package-load worker prepared for the render-tag check, held
+    * until {@link validateRenderTags} reads them.
+    */
+   private preparedRenderTagResults:
+      | { label: string; result: Malloy.Result }[]
+      | undefined;
+
+   /**
+    * Prepare each render-tag target compile-only, for a model the worker did
+    * not prepare them for. A target that fails to prepare is reported by the
+    * normal compile path, so it is skipped rather than masked here.
+    */
+   private async prepareRenderTagTargets(
+      mm: ModelMaterializer,
+   ): Promise<{ label: string; result: Malloy.Result }[]> {
+      const prepared: { label: string; result: Malloy.Result }[] = [];
+      for (const target of renderTagTargets(this.queries, this.sources)) {
+         try {
+            const result = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            prepared.push({
+               label: target.label,
+               result: result.toStableResult(),
+            });
+         } catch {
+            continue;
+         }
+      }
+      return prepared;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {

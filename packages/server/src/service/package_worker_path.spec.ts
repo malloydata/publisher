@@ -618,6 +618,44 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
+   it("validates render tags from results the worker prepared, without compiling on the main thread", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "render.malloy"),
+         `source: cards is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { Model } = await import("./model");
+      const prepareSpy = spyOn(
+         Model.prototype as unknown as {
+            prepareRenderTagTargets: () => Promise<unknown[]>;
+         },
+         "prepareRenderTagTargets",
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some(
+               (w) => w.subject === "cards -> card" && w.severity === "error",
+            ),
+         ).toBe(true);
+         expect(prepareSpy).not.toHaveBeenCalled();
+      } finally {
+         prepareSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
       writeManifest();
       // A source whose name needs Malloy backtick-quoting (here, a hyphen). The
@@ -1041,6 +1079,176 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
    // implementation shuts down the outgoing singleton). Subsequent
    // tests in this describe would see a dead pool. afterAll only
    // resets the singleton to null, so this is safe at the tail.
+   it(
+      "derives the build plan in the worker, identical to the main-thread computation",
+      async () => {
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "base.malloy"),
+            `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id, 10 as amount, 'A' as category")
+`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "tiles.malloy"),
+            `##! experimental.persistence
+##! experimental.givens
+
+import "base.malloy"
+
+#@ persist name="by_category"
+source: by_category is base -> { group_by: category; aggregate: total is amount.sum() }
+
+#@ persist name="stored" storage=lake
+source: stored is base -> { group_by: org_id; aggregate: n is count() }
+
+#(access_filter) org_id = $ORG
+#@ persist name="gated"
+source: gated is base -> { select: org_id } extend {}
+`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "rollup.malloy"),
+            `##! experimental { persistence composite_sources }
+
+source: orders is duckdb.sql("""
+  SELECT 1 AS order_id, 10 AS amount, 'A' AS category
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+         );
+
+         const outcomes: Awaited<ReturnType<PackageLoadPool["loadPackage"]>>[] =
+            [];
+         const loadPackage = pool.loadPackage.bind(pool);
+         const spy = spyOn(pool, "loadPackage").mockImplementation(
+            async (request) => {
+               const outcome = await loadPackage(request);
+               outcomes.push(outcome);
+               return outcome;
+            },
+         );
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            spy.mockRestore();
+
+            expect(outcomes).toHaveLength(1);
+            const workerPlan = outcomes[0].buildPlan;
+            if (!workerPlan?.ok) {
+               throw new Error(
+                  `worker returned no build plan: ${JSON.stringify(workerPlan)}`,
+               );
+            }
+            // The package serves the worker's plan rather than compiling its own.
+            expect(pkg.getPackageMetadata().buildPlan).toEqual(
+               workerPlan.outcome.plan ?? undefined,
+            );
+
+            const { computePackageBuildPlan } = await import(
+               "./build_plan_compile"
+            );
+            const mainThread = await computePackageBuildPlan(pkg);
+            expect(workerPlan.outcome).toEqual(mainThread);
+            // The fixture reaches every part of the plan, so equality above is
+            // not equality of empty results.
+            expect(
+               Object.values(mainThread.plan?.sources ?? {})
+                  .map((source) => `${source.origin}:${source.name}`)
+                  .sort(),
+            ).toEqual([
+               "persist:by_category",
+               "persist:gated",
+               "persist:stored",
+               "preaggregate:orders__preagg__category__edb2cd3b",
+            ]);
+         } finally {
+            spy.mockRestore();
+            await duckdb.close();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers a later load's schema requests from the worker cache, within an environment only",
+      async () => {
+         const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+         writeManifest();
+         for (const name of ["one", "two"]) {
+            fs.writeFileSync(
+               path.join(tempDir, `${name}.malloy`),
+               `source: from_table is warehouse.table('${token}')
+source: from_sql is warehouse.sql("select 1 as ${token}")
+`,
+            );
+         }
+
+         const timings: {
+            schemaFetchCount: number;
+            schemaCacheHits?: number;
+         }[] = [];
+         const loadPackage = pool.loadPackage.bind(pool);
+         const spy = spyOn(pool, "loadPackage").mockImplementation(
+            async (request) => {
+               const outcome = await loadPackage(request);
+               timings.push(outcome.timings);
+               return outcome;
+            },
+         );
+         // Not `duckdb`: a package resolves that name to its own in-memory
+         // database, and every other name through the environment, which is
+         // where a warehouse connection and its schemas live.
+         const { MalloyConfig, FixedConnectionMap } = await import(
+            "@malloydata/malloy"
+         );
+         const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+         const duckdb = new DuckDBConnection("warehouse", ":memory:");
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(
+            () =>
+               new FixedConnectionMap(
+                  new Map([["warehouse", duckdb]]),
+                  "warehouse",
+               ),
+         );
+         try {
+            await duckdb.runSQL(`create table ${token} as select 1 as a`);
+            await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
+            await Package.create(`${token}-a`, "pkg", tempDir, malloyConfig);
+            await Package.create(`${token}-b`, "pkg", tempDir, malloyConfig);
+
+            const [first, second, otherEnvironment] = timings;
+            // Two models ask for the same table and the same SQL; the first
+            // load fetches each once and answers the other request from the
+            // fetch already under way.
+            expect(first.schemaFetchCount).toBe(2);
+            expect(first.schemaCacheHits).toBe(2);
+            expect(second.schemaFetchCount).toBe(0);
+            expect(second.schemaCacheHits).toBe(4);
+            // Another environment's connection of the same name and digest
+            // fetches for itself.
+            expect(otherEnvironment.schemaFetchCount).toBe(2);
+         } finally {
+            spy.mockRestore();
+            await duckdb.close();
+         }
+      },
+      { timeout: 60000 },
+   );
+
    it("rewraps pool-infrastructure failures as ServiceUnavailableError (HTTP 503)", async () => {
       writeManifest();
       fs.writeFileSync(

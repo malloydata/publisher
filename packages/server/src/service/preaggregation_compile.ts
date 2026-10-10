@@ -22,11 +22,10 @@
 import type {
    Model as MalloyModel,
    ModelMaterializer,
+   Runtime,
 } from "@malloydata/malloy";
 import * as path from "path";
-import type { BuildManifest } from "../storage/DatabaseInterface";
 import { logger } from "../logger";
-import { Model, type ModelConnectionInput } from "./model";
 import {
    planModelPreaggregation,
    synthesizePreaggregationModel,
@@ -39,6 +38,11 @@ import {
  * that if it ever DID reach disk it would not be picked up as a model.
  */
 const SYNTHESIZED_SUFFIX = ".preagg.malloy";
+
+/** See `compileSynthesizedPreaggregation`'s `getRuntime`. */
+export type SynthesizedRuntimeFactory = (
+   overlay: ReadonlyMap<string, string>,
+) => Promise<{ runtime: Runtime; importBaseURL: URL }>;
 
 export interface SynthesizedPreaggregation {
    /** The rollups the author's declarations asked for. Never empty. */
@@ -80,9 +84,15 @@ export function synthesizedModelURL(
 export async function compileSynthesizedPreaggregation(args: {
    packagePath: string;
    modelPath: string;
-   malloyConfig: ModelConnectionInput;
    contents: Record<string, unknown>;
-   buildManifest?: BuildManifest["entries"];
+   /**
+    * Builds the runtime the synthesized model compiles in, with `overlay`
+    * served ahead of the package's files. A caller on the main thread passes
+    * `Model.getModelRuntime` (with any build manifest); the package-load
+    * worker passes its own, because it compiles against proxied connections
+    * and must not load `./model`.
+    */
+   getRuntime: SynthesizedRuntimeFactory;
 }): Promise<SynthesizedPreaggregation | undefined> {
    const plans = planModelPreaggregation(args.contents);
    if (plans.length === 0) return undefined;
@@ -96,14 +106,8 @@ export async function compileSynthesizedPreaggregation(args: {
    if (!text) return undefined;
 
    const synthesizedURL = synthesizedModelURL(args.packagePath, args.modelPath);
-   const { runtime, importBaseURL } = await Model.getModelRuntime(
-      args.packagePath,
-      args.modelPath,
-      args.malloyConfig,
-      {
-         buildManifest: args.buildManifest,
-         overlay: new Map([[synthesizedURL.href, text]]),
-      },
+   const { runtime, importBaseURL } = await args.getRuntime(
+      new Map([[synthesizedURL.href, text]]),
    );
    const materializer = runtime.loadModel(synthesizedURL, { importBaseURL });
    const model = await materializer.getModel();

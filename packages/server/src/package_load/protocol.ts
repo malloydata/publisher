@@ -74,6 +74,8 @@
  * fail-closed deny, with no test naming the reason.
  */
 
+import type { EligibilityRefusalReason } from "../materialization_metrics";
+import type { BuildPlanOutcome } from "../service/build_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -108,6 +110,11 @@ export interface LoadPackageRequest {
    /** Logical package name (used in metric labels + log fields). */
    packageName: string;
    /**
+    * The environment the package loads into. Scopes the worker's schema
+    * cache, so environments never share schemas.
+    */
+   environmentName?: string;
+   /**
     * Default connection name (passed verbatim to the worker; today
     * always `"duckdb"` for embedded packages, but kept configurable
     * to mirror Malloy's own surface).
@@ -124,6 +131,13 @@ export interface LoadPackageRequest {
    replacement?: { modelPath: string; source: string };
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
+   /**
+    * Derive the package's persist build plan from this compile and return it
+    * as `LoadPackageResult.buildPlan`. Only meaningful without a
+    * `buildManifest`: the plan describes the canonical build, not SQL a bound
+    * manifest has rewritten.
+    */
+   computeBuildPlan?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -205,6 +219,17 @@ export interface SerializedModel {
     * constructed.
     */
    authorizeWarnings?: string[];
+   /**
+    * The compiled result of each render-tag target (see `renderTagTargets`),
+    * prepared compile-only alongside the model's compile, for the main thread
+    * to run the renderer's tag validation over. The renderer cannot load in
+    * the worker, but preparing these queries is the expensive part, and on
+    * the main thread it blocks the event loop. A target that fails to
+    * prepare is left out, as the main thread would skip it. Absent when the
+    * worker did not prepare them; the main thread then prepares them itself.
+    * Wire-typed `unknown` like `modelDef`: each is a `Malloy.Result`.
+    */
+   renderTagResults?: { label: string; result: unknown }[];
 }
 
 export interface SerializedNotebookCell {
@@ -271,8 +296,33 @@ export interface LoadPackageResult {
       schemaFetchDurationMs: number;
       /** Number of proxied connection schema fetches the load drove. */
       schemaFetchCount: number;
+      /**
+       * Schema requests the worker answered from its own cache, without a
+       * round trip to the main thread. Counted over the compile region.
+       */
+      schemaCacheHits?: number;
    };
+   /** Present when the request set `computeBuildPlan`. */
+   buildPlan?: WorkerBuildPlan;
 }
+
+/**
+ * The package build plan the worker derived from the models it compiled, so
+ * the main thread does not compile the package a second time to get it.
+ * `durationMs` is the worker time spent deriving it. A failure carries the
+ * message the main thread reports; it fails the plan, not the load.
+ */
+export type WorkerBuildPlan =
+   | {
+        ok: true;
+        outcome: BuildPlanOutcome;
+        durationMs: number;
+        /** Connections whose digest could not be read (see resolveConnectionDigests). */
+        digestSkipped: string[];
+        /** Eligibility refusals counted while deriving it, by reason. */
+        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+     }
+   | { ok: false; error: string; durationMs: number };
 
 export interface LoadPackageError {
    type: "load-package-error";

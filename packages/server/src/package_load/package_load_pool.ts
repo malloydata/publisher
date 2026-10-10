@@ -203,6 +203,8 @@ export interface PackageLoadUrlReader {
 export interface LoadPackageJob {
    packagePath: string;
    packageName: string;
+   /** See {@link LoadPackageRequest.environmentName}. */
+   environmentName?: string;
    /**
     * The live MalloyConfig. We don't ship it across the worker
     * boundary; we hold it on the main side and answer the worker's
@@ -221,6 +223,8 @@ export interface LoadPackageJob {
    replacement?: { modelPath: string; source: string };
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
+   /** See {@link LoadPackageRequest.computeBuildPlan}. */
+   computeBuildPlan?: boolean;
 }
 
 /**
@@ -261,6 +265,8 @@ export interface LoadPackageOutcome {
    loadDurationMs: number;
    /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
    timings: LoadPackageResult["timings"];
+   /** See {@link LoadPackageResult.buildPlan}. */
+   buildPlan?: LoadPackageResult["buildPlan"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -459,10 +465,12 @@ export class PackageLoadPool {
          requestId: jobId,
          packagePath: qj.request.packagePath,
          packageName: qj.request.packageName,
+         environmentName: qj.request.environmentName,
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
          collectProblems: qj.request.collectProblems,
+         computeBuildPlan: qj.request.computeBuildPlan,
       };
       pw.worker.postMessage(message);
    }
@@ -862,6 +870,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       })),
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
+      buildPlan: result.buildPlan,
    };
 }
 
