@@ -15,8 +15,10 @@ measure. Several of them do not mean what they are called.
 
 ## The general rules, briefly
 
-Write `search_text` as a short description of the concept, not the user's word
-back at us. "region" becomes "the geographic region the customer lives in".
+Send `search_text` on every target. Omitting it lists a catalog, capped per
+source, and the cap drops the fields your question is about. Write it as a short
+description of the concept, not the user's word back at us: "region" becomes
+"the geographic region the customer lives in".
 
 One target per distinct concept. Do not stack three dimension targets at the
 same field.
@@ -27,10 +29,16 @@ Pick the target type by what the thing is:
   bands.
 - `measure`: something aggregated. Counts, sums, rates, averages.
 - `view`: a pre-built analysis. Ask for one before assembling your own.
+- `dimensional_value`: a literal the user named ("Cancelled"). The one target
+  where echoing the user's word is right. Scope the call to the source once
+  you know it.
 - `source`: use alone, never mixed with the types above in one call.
 
 A numeric-looking category ("tier 2", "18-30") is a dimension, not a measure.
 "Top N" with no metric named still needs a measure target for the ranking.
+"How many" and "how much" ask for a measure even when no noun names it: add a
+measure target for the quantity itself, because the filter ("in 2019") is the
+loud part of the sentence and the count is the part that gets dropped.
 
 ## Storefront vocabulary
 
@@ -69,7 +77,7 @@ not. It is where the customer lives.
 
 ## Finding a literal value
 
-`get_context` searches the model, not the values in it. To find what a
-categorical dimension actually holds, target the dimension, then read its values
-with a query. `status` holds exactly `Complete`, `Shipped`, `Processing`,
+A `dimensional_value` target searches stored values where the server indexes
+them. Where it returns nothing, target the dimension, then read its distinct
+values with a query before filtering. `status` holds exactly `Complete`, `Shipped`, `Processing`,
 `Returned`, `Cancelled`.
