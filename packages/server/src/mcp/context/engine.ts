@@ -21,6 +21,8 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import { fcjSettingsOf } from "../../service/package_retrieval";
 import { EMBEDDING_QUERY_TIMEOUT_MS } from "../../service/embedding_provider";
 import { logger } from "../../logger";
+import { activeLlmSettings } from "../../providers/active";
+import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
 import {
    projectEntity,
@@ -30,7 +32,7 @@ import {
    type ResultEntity,
 } from "../tools/get_context_tool";
 import type { CatalogNode } from "./catalog";
-import { fcjStateOf, kickFcjBuild } from "./engine_state";
+import { fcjChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
@@ -39,6 +41,7 @@ import {
 } from "./find";
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
+import { judge, type JudgeVerdict } from "./judge";
 import { routesOf } from "./routes";
 import { toUnit } from "./vectors";
 
@@ -272,19 +275,80 @@ export async function runFcjQuery(args: {
       tokens: { input: 0, output: 0 },
    });
 
-   // Until the judge exists, each cluster answers each target it covers with
-   // its best few in-cluster candidates.
+   // Stage 3.
+   started = performance.now();
+   const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
+   const chat =
+      settings.judge !== false && activeLlmSettings() ? fcjChat() : null;
+   let verdicts: JudgeVerdict[];
+   const used = meter.snapshot();
+   if (chat && connected.clusters.length > 0) {
+      try {
+         verdicts = await judge({
+            index,
+            clusters: connected.clusters,
+            targets,
+            chat: meter.wrap(chat),
+            ...(pkg.getRetrievalSettings?.()?.prompts.judge
+               ? {
+                    instructions:
+                       pkg.getRetrievalSettings().prompts.judge!.text,
+                 }
+               : {}),
+            concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
+         });
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge failed", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return judgeFailure(uri, error, stages);
+      }
+      const now = meter.snapshot();
+      stages.push({
+         name: "judge",
+         status: "ran",
+         ms: Math.round(performance.now() - started),
+         in: connected.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: now.calls - used.calls,
+         tokens: {
+            input: now.inputTokens - used.inputTokens,
+            output: now.outputTokens - used.outputTokens,
+         },
+      });
+   } else {
+      verdicts = unjudged(connected, targets);
+      stages.push({
+         name: "judge",
+         status: "skipped",
+         ms: 0,
+         in: connected.clusters.length,
+         out: verdicts.reduce((n, v) => n + v.picks.length, 0),
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      });
+   }
+
    started = performance.now();
    const rows: ResultEntity[] = [];
    const searchTexts = new Map(targets.map((t) => [t.index, t.text]));
-   const typeOf = new Map(targets.map((t) => [t.index, t.type]));
-   for (const cluster of connected.clusters) {
-      for (const t of cluster.covers) {
-         const list = cluster.candidates.get(t) ?? [];
-         for (const c of list.slice(0, unjudgedPicks(typeOf.get(t)))) {
-            const node = index.catalog.nodes.get(c.key)!;
+   for (const verdict of verdicts) {
+      const cluster = connected.clusters.find(
+         (c) => c.home === verdict.cluster,
+      )!;
+      for (const pick of verdict.picks) {
+         for (const key of pick.keys) {
+            const node = index.catalog.nodes.get(key)!;
+            const score =
+               cluster.candidates.get(pick.target)?.find((c) => c.key === key)
+                  ?.score ?? 0;
             rows.push(
-               resultRowOf(node, request, c.score, new Map([[t, c.score]])),
+               resultRowOf(
+                  node,
+                  request,
+                  score,
+                  new Map([[pick.target, score]]),
+               ),
             );
          }
       }
@@ -324,6 +388,17 @@ export async function runFcjQuery(args: {
                  fcj: {
                     find: findTrace(index, found),
                     connect: connectTrace(index, connected),
+                    judge: verdicts.map((v) => ({
+                       cluster: v.cluster,
+                       picks: v.picks.map((p) => ({
+                          target_index: p.target,
+                          ids: p.keys.map(
+                             (k) => index.catalog.nodes.get(k)?.id,
+                          ),
+                          ...(p.reason ? { reason: p.reason } : {}),
+                       })),
+                       caveats: v.caveats,
+                    })),
                  },
               },
            }
@@ -336,6 +411,50 @@ export function unjudgedPicks(type: FindTarget["type"] | undefined): number {
    if (type === "measure") return 2;
    if (type === "dimension") return 5;
    return 3;
+}
+
+/**
+ * The verdicts when no judge runs (`retrieval.fcj.judge: false`, or no LLM):
+ * each cluster answers each target it covers with its best few in-cluster
+ * candidates, and names no caveat.
+ */
+export function unjudged(
+   connected: ConnectResult,
+   targets: readonly FindTarget[],
+): JudgeVerdict[] {
+   const typeOf = new Map(targets.map((t) => [t.index, t.type]));
+   return connected.clusters.map((cluster) => ({
+      cluster: cluster.home,
+      picks: cluster.covers.map((t) => ({
+         target: t,
+         keys: (cluster.candidates.get(t) ?? [])
+            .slice(0, unjudgedPicks(typeOf.get(t)))
+            .map((c) => c.key),
+      })),
+      caveats: [],
+   }));
+}
+
+/** The error result when the judge failed after the provider's retries. */
+function judgeFailure(uri: string, error: unknown, stages: StageRow[]) {
+   const reason = error instanceof Error ? error.message : String(error);
+   return jsonToolError(
+      uri,
+      {
+         message: `get_context failed in the judge step: ${reason}`,
+         suggestions: [
+            "Ask the same question again; a timeout or a malformed model reply is often transient.",
+            "If it keeps failing, the operator should check the LLM settings (retrieval.llm in publisher.config.json) and the server log. To search without the judge, set the package's retrieval.fcj.judge to false in publisher.json.",
+         ],
+      },
+      {
+         sources: [],
+         retrieval: "error",
+         retrieval_reason: "llm-stage-failed",
+         retrieval_stage: "judge",
+         retrieval_trace: { engine: "fcj", stages },
+      },
+   );
 }
 
 /** The connect stage's part of the full trace. */
