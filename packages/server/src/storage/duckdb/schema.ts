@@ -84,7 +84,14 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Packages table
+   // Packages table.
+   //
+   // `latest_version` is the package's one `latest` pointer: the version (a
+   // `versions.version_id`) served when a request names none, NULL for a
+   // package with no versions. Package-level state lives here; per-version
+   // state lives on `versions`. Declared last, nullable and unconstrained, so
+   // `reconcileDeclaredColumns` adds it to a store that predates it and a fresh
+   // store and an upgraded one end up the same shape.
    await db.run(`
     CREATE TABLE IF NOT EXISTS packages (
       id VARCHAR PRIMARY KEY,
@@ -95,8 +102,51 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       metadata JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
+      latest_version VARCHAR,
       FOREIGN KEY (environment_id) REFERENCES environments(id),
       UNIQUE (environment_id, name)
+    )
+  `);
+
+   // Versions table.
+   //
+   // One row per published, immutable version of a package, keyed by the
+   // version string itself, as `(environment, package, version)`. The row is
+   // the authority on which versions exist and where each lives: `dir_name` is
+   // its folder under the package (the version with `+` written as `_`), a
+   // folder with no row is an orphan removed at startup, and a row whose folder
+   // is missing is fetched again from `source_location` and kept only if it
+   // hashes to `content_hash`.
+   //
+   // The content is immutable; the row is not. `archive_status`/`archived_at`,
+   // `manifest_path` (the build manifest the version is bound to: serving
+   // state, not content) and `promoted_at`/`demoted_at` (when it last became
+   // and stopped being `latest`) change over its life. `description` is the
+   // version's own publisher.json description. `git_commit_sha` and `git_ref`
+   // are reserved for publish provenance; nothing writes them yet.
+   //
+   // Keyed on the package's NAME, like `materializations`, and deleted with the
+   // package by hand (DuckDBRepository), since nothing here cascades.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS versions (
+      version_id VARCHAR NOT NULL,
+      environment_id VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dir_name VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      source_location VARCHAR,
+      manifest_path VARCHAR,
+      archive_status VARCHAR NOT NULL,
+      archived_at TIMESTAMP,
+      promoted_at TIMESTAMP,
+      demoted_at TIMESTAMP,
+      description VARCHAR,
+      git_commit_sha VARCHAR,
+      git_ref VARCHAR,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      FOREIGN KEY (environment_id) REFERENCES environments(id),
+      PRIMARY KEY (environment_id, package_name, version_id)
     )
   `);
 
@@ -146,7 +196,9 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // a second concurrent create fails with a constraint violation, which the
    // service layer translates to `MaterializationConflictError`.
    // `manifest` is a JSON blob holding the build output returned inline on the
-   // resource.
+   // resource. `version` is the package version the run built, NULL for a
+   // package with no versions; declared last and unconstrained for the same
+   // reason as `packages.latest_version`.
    await db.run(`
     CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
@@ -161,6 +213,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       manifest JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
+      version VARCHAR,
       FOREIGN KEY (environment_id) REFERENCES environments(id)
     )
   `);
@@ -273,6 +326,9 @@ async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
    // Create indexes for better query performance
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_versions_environment_package ON versions(environment_id, package_name)",
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_connections_environment_id ON connections(environment_id)",
@@ -858,6 +914,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "build_manifests",
       "incremental_ledger",
       "materializations",
+      "versions",
       "packages",
       "connections",
       "storage_destinations",

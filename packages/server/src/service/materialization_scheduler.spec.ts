@@ -32,10 +32,50 @@ function fakePackage(name: string, opts: FakePkgOpts = {}) {
    };
 }
 
-function fakeEnv(name: string, pkgs: ReturnType<typeof fakePackage>[]) {
+/** A published version, as the registry lists it. */
+interface FakeVersion {
+   packageName: string;
+   versionId: string;
+   dirName: string;
+   archiveStatus: "archive" | "unarchive";
+   manifestPath: string | null;
+   /** Its publisher.json. */
+   manifest: Record<string, unknown> | null;
+}
+
+function fakeVersion(
+   versionId: string,
+   manifest: Record<string, unknown> | null,
+   overrides: Partial<FakeVersion> = {},
+): FakeVersion {
+   return {
+      packageName: "v",
+      versionId,
+      dirName: versionId,
+      archiveStatus: "unarchive",
+      manifestPath: null,
+      manifest,
+      ...overrides,
+   };
+}
+
+function fakeEnv(
+   name: string,
+   pkgs: ReturnType<typeof fakePackage>[],
+   versions: FakeVersion[] | null = null,
+) {
    return {
       getEnvironmentName: () => name,
       getLoadedPackages: () => pkgs,
+      peekVersion: () => undefined,
+      getVersionService: () =>
+         versions === null
+            ? null
+            : {
+                 activeVersions: async () =>
+                    versions.filter((v) => v.archiveStatus !== "archive"),
+                 publishedManifestOf: async (v: FakeVersion) => v.manifest,
+              },
    };
 }
 
@@ -48,7 +88,7 @@ function fakeStore(envs: ReturnType<typeof fakeEnv>[]): EnvironmentStore {
 interface FireCall {
    env: string;
    pkg: string;
-   opts: { forceRefresh?: boolean; trigger?: string };
+   opts: { forceRefresh?: boolean; trigger?: string; versionId?: string };
 }
 
 function fakeService(
@@ -65,7 +105,7 @@ function fakeService(
       createMaterialization: (
          env: string,
          pkg: string,
-         o: { forceRefresh?: boolean; trigger?: string },
+         o: { forceRefresh?: boolean; trigger?: string; versionId?: string },
       ) => {
          calls.push({ env, pkg, opts: o });
          if (opts.throwConflict) {
@@ -76,9 +116,20 @@ function fakeService(
          }
          return Promise.resolve({});
       },
-      getLatestScheduledFireAt: () => Promise.resolve(opts.lastFireAt ?? null),
+      anchorsAsked: [] as (string | undefined)[],
+      getLatestScheduledFireAt: (
+         _env: string,
+         _pkg: string,
+         versionId?: string,
+      ) => {
+         service.anchorsAsked.push(versionId);
+         return Promise.resolve(opts.lastFireAt ?? null);
+      },
    };
-   return service as unknown as MaterializationService & { calls: FireCall[] };
+   return service as unknown as MaterializationService & {
+      calls: FireCall[];
+      anchorsAsked: (string | undefined)[];
+   };
 }
 
 // A deterministic cron: nextAfter is always `from + 60s`; isValid configurable.
@@ -288,5 +339,103 @@ describe("MaterializationScheduler", () => {
       // It is genuinely re-armed (not inert): the next occurrence still fires.
       await sched.tick(dueLater + 1 + 60_001);
       expect(service.calls.length).toBe(1);
+   });
+});
+
+describe("MaterializationScheduler: published versions", () => {
+   const t0 = 1_000_000_000_000;
+   const dueLater = t0 + 60_001;
+   const scheduled = (scope = "version") => ({
+      name: "v",
+      materialization: { scope, schedule: "* * * * *" },
+   });
+
+   function versionScheduler(
+      versions: FakeVersion[],
+      service: ReturnType<typeof fakeService>,
+   ) {
+      return new MaterializationScheduler(
+         fakeStore([fakeEnv("env1", [], versions)]),
+         service,
+         CONFIG,
+         fakeCron(),
+      );
+   }
+
+   it("fires each version on its own schedule, naming it, without loading it first", async () => {
+      const service = fakeService();
+      const sched = versionScheduler(
+         [fakeVersion("1.0.0", scheduled()), fakeVersion("2.0.0", scheduled())],
+         service,
+      );
+      await sched.tick(t0);
+      expect(service.calls).toEqual([]);
+      await sched.tick(dueLater);
+      expect(
+         service.calls.map((c) => [c.pkg, c.opts.versionId, c.opts.trigger]),
+      ).toEqual([
+         ["v", "1.0.0", "SCHEDULER"],
+         ["v", "2.0.0", "SCHEDULER"],
+      ]);
+      // Each version anchors on its own scheduled fires.
+      expect(service.anchorsAsked).toEqual(["1.0.0", "2.0.0"]);
+   });
+
+   it("archiving a version stops its schedule, and unarchiving it arms it again", async () => {
+      const service = fakeService();
+      const v1 = fakeVersion("1.0.0", scheduled());
+      const sched = versionScheduler([v1], service);
+      await sched.tick(t0);
+
+      v1.archiveStatus = "archive";
+      await sched.tick(dueLater);
+      expect(service.calls).toEqual([]);
+
+      v1.archiveStatus = "unarchive";
+      // Armed afresh: not due on the arming tick.
+      await sched.tick(dueLater + 1);
+      expect(service.calls).toEqual([]);
+      await sched.tick(dueLater + 60_002);
+      expect(service.calls.map((c) => c.opts.versionId)).toEqual(["1.0.0"]);
+   });
+
+   it("skips a version with no schedule, outside scope version, or bound to a host's manifest", async () => {
+      const service = fakeService();
+      const sched = versionScheduler(
+         [
+            fakeVersion("1.0.0", { name: "v" }),
+            fakeVersion("2.0.0", scheduled("package")),
+            fakeVersion("3.0.0", scheduled(), {
+               manifestPath: "gs://bucket/m.json",
+            }),
+            fakeVersion("4.0.0", null),
+            fakeVersion("5.0.0", {
+               name: "v",
+               scope: "package",
+               materialization: { scope: "version", schedule: "* * * * *" },
+            }),
+         ],
+         service,
+      );
+      await sched.tick(t0);
+      await sched.tick(dueLater);
+      expect(service.calls).toEqual([]);
+   });
+
+   it("leaves a package with no versions to the package sweep", async () => {
+      const service = fakeService();
+      const sched = new MaterializationScheduler(
+         fakeStore([
+            fakeEnv("env1", [fakePackage("p", { schedule: "* * * * *" })], []),
+         ]),
+         service,
+         CONFIG,
+         fakeCron(),
+      );
+      await sched.tick(t0);
+      await sched.tick(dueLater);
+      expect(service.calls.map((c) => [c.pkg, c.opts.versionId])).toEqual([
+         ["p", undefined],
+      ]);
    });
 });

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { components } from "../api";
-import { BadRequestError } from "../errors";
+import { BadRequestError, PackageVersionError } from "../errors";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -44,6 +44,7 @@ export class MaterializationController {
       strictUpstreams?: boolean;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
+      versionId?: string;
    } {
       const result: {
          forceRefresh?: boolean;
@@ -54,7 +55,20 @@ export class MaterializationController {
          strictUpstreams?: boolean;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
+         versionId?: string;
       } = {};
+      // The version to build. Its format, existence and archive state are
+      // the service's to check, the way every read checks them; this only
+      // refuses a value that is not text at all. Empty or null means latest.
+      if (body.versionId !== undefined && body.versionId !== null) {
+         if (typeof body.versionId !== "string") {
+            throw new PackageVersionError(
+               "VERSION_ID_INVALID",
+               'versionId must be a string, such as "1.2.0".',
+            );
+         }
+         if (body.versionId !== "") result.versionId = body.versionId;
+      }
       if (body.runContext !== undefined && body.runContext !== null) {
          result.runContext = this.validateRunContext(body.runContext);
       }
@@ -388,18 +402,20 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      versionId?: unknown,
    ) {
       return this.materializationService.stopMaterialization(
          environmentName,
          packageName,
          materializationId,
+         versionId,
       );
    }
 
    async listMaterializations(
       environmentName: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: { limit?: number; offset?: number; versionId?: unknown },
    ) {
       return this.materializationService.listMaterializations(
          environmentName,
@@ -412,11 +428,13 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      versionId?: unknown,
    ) {
       return this.materializationService.getMaterialization(
          environmentName,
          packageName,
          materializationId,
+         versionId,
       );
    }
 
@@ -424,7 +442,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean } = {},
+      options: { dropTables?: boolean; versionId?: unknown } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

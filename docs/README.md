@@ -21,19 +21,20 @@ every doc below points back to one of them, and each example's README points bac
 | Example                                              | What it shows                                                                                                                     |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | [storefront](../examples/storefront)                 | A complete ecommerce model — joins, measures, `# dashboard` views, and a no-build HTML app. The flagship first-open package.      |
-| [governed-analytics](../examples/governed-analytics) | Givens, `#(access_filter)`, row-level access, and discovery curation in one small package.                                            |
+| [governed-analytics](../examples/governed-analytics) | Givens, `#(access_filter)`, row-level access, and discovery curation in one small package.                                        |
 | [html-data-app](../examples/html-data-app)           | A no-build SaaS-subscriptions dashboard served from a package's `public/` directory.                                              |
 | [data-app](../examples/data-app)                     | _Advanced/internal:_ a standalone React app built on the SDK, reading from `storefront`. Not a served package — run it with Vite. |
 
 ## Concepts
 
-| Doc                                | Read it when you want to…                                                                                |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                      |
-| [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                           |
-| [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served.      |
-| [scaffolding.md](scaffolding.md)   | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
-| [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                     |
+| Doc                                        | Read it when you want to…                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| [architecture.md](architecture.md)         | Understand how Malloy, Render, Publisher, and the SDK fit together.                                      |
+| [api-overview.md](api-overview.md)         | Understand the REST + MCP surfaces and the resource hierarchy.                                           |
+| [packages.md](packages.md)                 | Understand the package format: `publisher.json`, models, data files, and how a package gets served.      |
+| [package-versions.md](package-versions.md) | Publish immutable versions, read one by `versionId`, move `latest`, archive, and build per version.      |
+| [scaffolding.md](scaffolding.md)           | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
+| [dbt-roadmap.md](dbt-roadmap.md)           | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                     |
 
 ## Use it
 
@@ -55,9 +56,9 @@ there for the primitive, then follow the application you need.
 | Doc                                                | Read it when you want to…                                                                              |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | [givens.md](givens.md)                             | Learn the base mechanism — declare runtime parameters, drive filter widgets, and reach access control. |
-| [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(access_filter)`).                          |
-| [authorize.md](authorize.md)                       | Gate _who_ can query a source, and _which rows_ they get, with `#(access_filter)`.                         |
-| [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`index.malloy`) — the visibility axis.                 |
+| [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(access_filter)`).                      |
+| [authorize.md](authorize.md)                       | Gate _who_ can query a source, and _which rows_ they get, with `#(access_filter)`.                     |
+| [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`index.malloy`) — the visibility axis.                   |
 | [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 
 ## Deploy & operate
@@ -76,13 +77,13 @@ there for the primitive, then follow the application you need.
 
 ## Develop & contribute
 
-| Doc                                                            | Read it when you want to…                                                                                                                                                                               |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                                               |
-| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                          |
-| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                              |
-| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                                                 |
-| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the `.malloy` notebook      — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
+| Doc                                                            | Read it when you want to…                                                                                                                                                                          |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                                          |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                     |
+| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                         |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                                            |
+| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the `.malloy` notebook — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
 
 ## Full public docs
 

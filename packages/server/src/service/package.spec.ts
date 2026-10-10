@@ -623,6 +623,63 @@ describe("service/package", () => {
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
       });
+
+      describe("a published version binds only what its own definition built", () => {
+         /** A package whose plan defines each source at the given address. */
+         const definedAs = (
+            versionId: string | undefined,
+            sources: Record<string, string>,
+         ) => {
+            const pkg = packageWith({
+               eligible: Object.keys(sources),
+               refused: {},
+            });
+            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+            (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+               graphs: [],
+               sources: Object.fromEntries(
+                  Object.entries(sources).map(([name, sourceEntityId]) => [
+                     `${name}@m.malloy`,
+                     { name, sourceEntityId, sourceID: `${name}@m.malloy` },
+                  ]),
+               ),
+            };
+            return pkg;
+         };
+         // What a run stamps: the source's name and its definition's address.
+         const built = (sourceName: string, sourceEntityId: string) => ({
+            ...entry(sourceName, `t_${sourceName}`),
+            sourceEntityId,
+         });
+
+         it("serves live a source whose stored table another definition built", () => {
+            // Another version rebuilt `orders` from a changed definition, under
+            // the name every version of a `scope: package` package shares.
+            const pkg = definedAs("1.0.0", {
+               orders: "v1-orders",
+               items: "items",
+            });
+
+            pkg.bindStorageServeBindings({
+               a: built("orders", "v2-orders"),
+               b: built("items", "items"),
+            });
+
+            expect(boundSources(pkg)).toEqual(["items"]);
+         });
+
+         it("binds a table its own definition built", () => {
+            const pkg = definedAs("2.0.0", { orders: "v2-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+
+         it("leaves a package with no versions binding by name, as before", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.bindStorageServeBindings({ a: built("orders", "v2-orders") });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+      });
    });
 
    // The colocated-tier analogue of the storage gate above — a positive

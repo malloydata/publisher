@@ -21,6 +21,30 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Packages published from a location are immutable versions
+
+`POST /api/v0/environments/{env}/packages` with a `location` now publishes an immutable **version** of the package when its `publisher.json` declares a semantic `version`. Every version keeps serving the content it was published with, a request picks one with `versionId`, and a request that names none gets the package's `latest`. [docs/package-versions.md](docs/package-versions.md) is the full reference.
+
+**What changes for a publish from a location:**
+
+- Nothing, for a `publisher.json` with no `version`, or one that is not a semantic version such as `1.2.0` or `1.2.0-rc.1`: the package is installed in place as `latest`, replacing the previous publish, as before. The server logs a warning naming the package, since adding a `version` publishes immutable versions. Once a package has versions, such a publish answers 400 `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`.
+- With a `version`, publishing that version again with the same content answers 200 and writes nothing. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same version to update it, bump `version` instead.**
+- A versioned package no longer changes in place: `?reload=true` (and MCP `reload_package`) returns it as it is (`mode: "unchanged"`), and model, dashboard and notebook writes, and an unversioned publish over it, answer 409 `PACKAGE_IS_VERSIONED`. Iterate with watch mode, then publish.
+- `PATCH …/packages/{pkg}` is deprecated. On a versioned package it still rebinds `latest`'s `manifestLocation` and sets the package's `description`, and accepts the package sent back whole; a change to content answers 409.
+- `manifestLocation` on a versioned publish, on that PATCH, and on the new manifest route must be a `gs://` or `s3://` URI (400 otherwise).
+
+A package loaded from `publisher.config.json`, registered from a directory with no `location`, or published from a location without a semantic `version`, has no versions and behaves as before.
+
+**Reading a version.** Every route that reaches into a package takes `versionId` (queries in the body; materialization create in the body). These answered 501 before; now a version is served, an unknown one answers 404 `VERSION_NOT_FOUND`, an archived one 410 `VERSION_ARCHIVED`, and a malformed one 400 `VERSION_ID_INVALID`. An empty `versionId=` means no version. A package listing with a non-empty `versionId` answers 400 (it was 501). Responses carry `versionId` and `latestVersion`, data apps carry `versionId`, and `/status` lists every version each package holds and reports `packageVersioning: "on"` and `versionPromotion`.
+
+**New routes:** `GET …/packages/{pkg}/versions` and `GET …/versions/{version}`; `PATCH …/versions/{version}` with `{"archiveStatus": "archive" | "unarchive"}`; `PUT …/versions/{version}/manifest`; and `PUT …/packages/{pkg}/latest` with `{"version": "…"}`.
+
+**Promotion.** `versionPromotion` (`PUBLISHER_VERSION_PROMOTION`, or `publisher.config.json`): `on-publish` (the default) moves `latest` to a newly published higher version; `explicit` never does, and only `PUT …/latest` moves it.
+
+**Materializations** build one version at a time, chosen by `versionId`. Under `scope: "version"` each version builds and serves its own tables (`summary__v1_2_0`), its runs hold their own slot, and archiving it reclaims them. Under `scope: "package"` the versions share tables: an auto-run of a version other than `latest` answers 400 `VERSION_NOT_LATEST`, and a version binds a stored table only when its own definition built it. The standalone scheduler fires each published version on its own schedule.
+
+**Upgrading.** An existing `publisher.db` gains a `versions` table and two columns on startup; nothing is lost, and every existing package stays unversioned until its first publish from a location. The SDK percent-encodes `versionId` in resource URIs, so build metadata (`+build.5`) survives.
+
 ## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
 When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.

@@ -22,6 +22,7 @@ import {
    ModelCompilationError,
    NotImplementedError,
    NotQueryableError,
+   PackageVersionError,
    PayloadTooLargeError,
    QueryCompileError,
    ResponseUnserializableError,
@@ -543,5 +544,34 @@ describe("isCredentialRejection", () => {
       });
       expect(isCredentialRejection(denied)).toBe(false);
       expect(databaseAccessFailure(denied)).toBeUndefined();
+   });
+});
+
+describe("PackageVersionError", () => {
+   it("answers each reason with its status and carries the reason", () => {
+      const expected = {
+         MANIFEST_VERSION_MISSING: 400,
+         MANIFEST_VERSION_INVALID: 400,
+         VERSION_ID_INVALID: 400,
+         VERSION_NOT_FOUND: 404,
+         VERSION_CONFLICT: 409,
+         PACKAGE_IS_VERSIONED: 409,
+         VERSION_IS_LATEST: 409,
+         VERSION_IS_LAST_ACTIVE: 409,
+         VERSION_BUILDING: 409,
+         VERSION_NOT_LATEST: 400,
+         VERSION_ARCHIVED: 410,
+      } as const;
+      for (const [name, status] of Object.entries(expected)) {
+         const reason = name as keyof typeof expected;
+         const answer = internalErrorToHttpError(
+            new PackageVersionError(reason, `refused: ${reason}`),
+            { log: false },
+         );
+         expect(answer).toEqual({
+            status,
+            json: { code: status, message: `refused: ${reason}`, reason },
+         });
+      }
    });
 });

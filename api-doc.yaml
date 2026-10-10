@@ -30,6 +30,7 @@ info:
     └── Environments
         ├── Connections               schemas, tables, and ad-hoc SQL
         └── Packages
+            ├── Versions              published, immutable versions and `latest`
             ├── Models                query and compile
             ├── Notebooks             execute a cell at a time
             ├── Data Apps             static HTML data apps from public/
@@ -81,6 +82,10 @@ tags:
     description: Real-time file watching for development workflows
   - name: materializations
     description: Package-level materializations for persisting Malloy sources
+  - name: versions
+    description:
+      Published, immutable versions of a package, the package's `latest`
+      pointer, and each version's lifecycle (archive, manifest binding)
 
 paths:
   /status:
@@ -1017,6 +1022,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of schemas available in the connection with metadata
@@ -1030,6 +1036,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "424":
@@ -1083,6 +1091,7 @@ paths:
             type: array
             items:
               type: string
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -1096,6 +1105,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "424":
@@ -1145,6 +1156,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: Table information
@@ -1158,6 +1170,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "500":
@@ -1195,6 +1209,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         description: SQL statement to fetch the SQL source
         required: true
@@ -1218,6 +1233,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "500":
@@ -1258,6 +1275,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         description: SQL statement to execute
         required: true
@@ -1300,6 +1318,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "424":
@@ -1341,6 +1361,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         description: SQL statement to create the temporary table
         required: true
@@ -1362,6 +1383,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "500":
@@ -1389,6 +1412,10 @@ paths:
         This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
         than ignored, because answering 200 here reads as a reload that worked. Reload is
         per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
+
+        A package with published versions is listed once, as its `latest` version. A
+        non-empty `versionId` is rejected with 400: read one version with
+        `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
       parameters:
         - name: environmentName
           in: path
@@ -1411,8 +1438,6 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     post:
@@ -1424,6 +1449,40 @@ paths:
         Creates a new Malloy package within the specified environment. A package serves as a
         container for models, notebooks, embedded databases, and other resources. The package
         will be initialized with the provided metadata and can immediately accept content.
+
+        ## Versioned publish
+
+        A request that carries a `location` publishes an immutable version of the package when
+        the package's own `publisher.json` declares a semantic `version`. The request takes no
+        version parameter: the version is that field, the way `npm publish` reads
+        `package.json`, so bumping it is the release action.
+
+        - A `publisher.json` with no `version`, or one that is not a semantic version, publishes
+          the package as it always has: it is installed in place as `latest`, replacing the
+          previous publish, and has no versions. The server logs a warning that names the
+          package. A package that already has published versions refuses such a tree with 400
+          (`reason` `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`).
+        - Publishing a version the package already has, with different content, is refused with
+          409 (`reason` `VERSION_CONFLICT`). The same content again succeeds and writes no
+          files, so re-loading a version onto a server that already holds it is safe to retry;
+          a non-null `manifestLocation` on that request binds the version to it. A re-load
+          moves `latest` only to a strictly higher version, never back to an older build of an
+          equal one. Re-publishing an archived version is refused with 410 (`reason`
+          `VERSION_ARCHIVED`): unarchive it instead.
+        - A version that does not pass the publish checks (the same ones an unversioned publish
+          applies) is refused with 400, and the versions already published keep serving.
+        - Under `versionPromotion: "on-publish"` (the default), the new version becomes the
+          package's `latest` unless a higher version already is. Under `"explicit"`, publish
+          never moves `latest`; `PUT .../packages/{packageName}/latest` does.
+        - A package mounted for watch mode is the author's own source directory, so it cannot
+          hold immutable versions: publishing a version of it is refused with 400.
+        - The request's `description`, when sent, is the package's description. Each version
+          keeps the `description` from its own publisher.json.
+
+        A request without a `location` registers a directory already in the environment as a
+        single unversioned package, as packages loaded from `publisher.config.json` are. A
+        package that already has versions refuses that with 409 (`reason`
+        `PACKAGE_IS_VERSIONED`).
       parameters:
         - name: environmentName
           in: path
@@ -1448,12 +1507,14 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1466,8 +1527,9 @@ paths:
       description: |
         Retrieves detailed information about a specific package, including its models, notebooks,
         databases, and metadata. The reload parameter can be used to refresh the package state
-        from disk before returning the information. The versionId parameter allows access to
-        specific package versions.
+        from disk before returning the information. The versionId parameter selects one
+        published version of a versioned package; without it, the package's `latest` version
+        is returned.
       parameters:
         - name: environmentName
           in: path
@@ -1481,12 +1543,7 @@ paths:
           required: true
           schema:
             type: string
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
         - name: reload
           in: query
           description: |
@@ -1496,6 +1553,10 @@ paths:
             `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
             parameter repeated) is refused with 400 rather than read as `false`,
             which would answer 200 without recompiling.
+
+            A published version is immutable, so it has nothing to reload: on a
+            versioned package `reload=true` returns the version as it is,
+            neither recompiling nor re-fetching it.
           required: false
           schema:
             type: boolean
@@ -1512,12 +1573,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     patch:
@@ -1525,7 +1586,17 @@ paths:
         - packages
       operationId: update-package
       summary: Update package configuration
+      deprecated: true
       description: |
+        DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
+        operation will be removed. On a package that has published versions it changes only
+        what is not content: `manifestLocation` is bound to the package's `latest` version (as
+        `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version), and
+        `description` is the package's. `name` and the `location` the version was published from
+        may be sent back unchanged. Any other change is refused with 409 (`reason`
+        `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
+        change content.
+
         Updates the configuration and metadata of an existing package. This allows you to
         modify package settings, update the description, change the location, or update other
         package-level properties. The package must exist and be accessible.
@@ -1576,10 +1647,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
@@ -1591,6 +1662,10 @@ paths:
         Permanently deletes a package and all its associated resources including models,
         notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
         The package must exist and be accessible for deletion.
+
+        On a versioned package this deletes every published version and its files. To take one
+        version out of service while keeping the rest, archive it with
+        `PATCH .../packages/{packageName}/versions/{version}`.
       parameters:
         - name: environmentName
           in: path
@@ -1617,8 +1692,237 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/versions:
+    get:
+      tags:
+        - versions
+      operationId: list-package-versions
+      summary: List a package's published versions
+      description: |
+        Lists every version published to the package, highest version first, including archived
+        ones (marked by `archiveStatus`). The entry marked `latest` is the version served when a
+        request names no `versionId`. An unversioned package (one loaded from
+        `publisher.config.json` or registered from a directory) has no versions and returns an
+        empty list.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+      responses:
+        "200":
+          description: The package's versions, highest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PackageVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/versions/{version}:
+    get:
+      tags:
+        - versions
+      operationId: get-package-version
+      summary: Get one published version
+      description: |
+        Returns one published version, archived or not. An unknown version answers 404 with
+        `reason` `VERSION_NOT_FOUND`.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/versionPath"
+      responses:
+        "200":
+          description: The version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      tags:
+        - versions
+      operationId: update-package-version
+      summary: Archive or unarchive a version
+      description: |
+        Changes a version's lifecycle state. Content is never edited here: a published version
+        is immutable.
+
+        - `archive` takes the version out of service: reads and queries that name it answer 410
+          with `reason` `VERSION_ARCHIVED`, and it is unloaded from memory. The tables its own
+          auto-runs built under `scope: version` are reclaimed in the background, with their run
+          records; tables another version's run still references are kept, and so are an
+          orchestrated run's, whose names and lifetime the caller that assigned them owns. Its
+          files stay on disk, so the publisher never reclaims an archived version's directory.
+        - `unarchive` puts it back in service. It loads again on its next read, and serves live
+          until it is built again.
+
+        Archiving stops the version's materialization schedule, if it has one, and unarchiving
+        starts it again. An archive is refused with 409 when:
+
+        - the version is the package's `latest` (`reason` `VERSION_IS_LATEST`): move `latest`
+          first;
+        - it is the package's last version in service (`reason` `VERSION_IS_LAST_ACTIVE`): a
+          package always keeps one. To take the whole package out of service, delete it;
+        - a materialization of that version is running (`reason` `VERSION_BUILDING`), since the
+          archive would reclaim the tables that run is writing. A run that starts after the
+          archive fails, and what it built is reclaimed when it ends.
+
+        Sending the state the version is already in changes nothing and answers 200.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/versionPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageVersionUpdate"
+      responses:
+        "200":
+          description: The version after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/versions/{version}/manifest:
+    put:
+      tags:
+        - versions
+      operationId: set-package-version-manifest
+      summary: Bind a version to a build manifest
+      description: |
+        Sets the version's `manifestLocation`, the externally computed build manifest its persist
+        references resolve through, and rebinds that version's models to it right away. A null
+        `manifestLocation` clears the binding and the version serves live. Only this version is
+        affected.
+
+        This is serving state, not package content, which is why it is the one thing about a
+        published version that can change. It replaces the deprecated
+        `PATCH .../packages/{packageName}` for rebinding a manifest.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/versionPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageVersionManifest"
+      responses:
+        "200":
+          description: >-
+            The version as a package resource (`versionId` set), which is where
+            the binding's outcome is reported: `manifestBindingStatus`,
+            `manifestEntryCount` and `boundManifestUri`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/latest:
+    put:
+      tags:
+        - versions
+      operationId: set-package-latest-version
+      summary: Point the package's latest at a version
+      description: |
+        Makes the named version the package's `latest`: the version served to every request that
+        names no `versionId`. Nothing is rebuilt or re-fetched; the pointer moves. Pointing it at
+        an earlier version is a rollback, and the next publish still moves `latest` under
+        `versionPromotion: "on-publish"`.
+
+        This is the only way `latest` moves when the server runs with
+        `versionPromotion: "explicit"`, the mode for an orchestrator that decides when a
+        version is ready to serve.
+
+        The version must exist and must not be archived (404 `VERSION_NOT_FOUND`, 410
+        `VERSION_ARCHIVED`), and it is loaded before the pointer moves: a version that fails to
+        load is refused with that load's error, and `latest` stays where it was.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageLatestVersion"
+      responses:
+        "200":
+          description: The version that is now latest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1653,12 +1957,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
@@ -1673,10 +1972,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1722,12 +2021,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
@@ -1740,12 +2034,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/ModelCompilationError"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
     put:
       tags:
         - models
@@ -1798,6 +2092,12 @@ paths:
         Refused with 403 when `publisher.config.json` has `frozenConfig: true`.
         Like every write on this server, it is unauthenticated and meant to sit
         behind an authenticating gateway; see docs/security-posture.md.
+
+        A published version is immutable, so a package with versions refuses
+        this write with 409 (`reason` `PACKAGE_IS_VERSIONED`), whatever
+        `versionId` names: change the file in the package's source and publish
+        a new version. A `versionId` on a package with no versions answers 404
+        (`reason` `VERSION_NOT_FOUND`).
       parameters:
         - name: environmentName
           in: path
@@ -1817,12 +2117,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         required: true
         content:
@@ -1861,8 +2156,6 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1897,7 +2190,7 @@ paths:
           description: Name of the package
           required: true
           schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+            type: string
         - name: path
           in: path
           description: Path to the model within the package
@@ -1926,12 +2219,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "502":
@@ -2001,6 +2294,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         required: true
         content:
@@ -2020,6 +2314,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
@@ -2076,12 +2372,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of dashboards in the package
@@ -2095,10 +2386,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2141,12 +2432,7 @@ paths:
           schema:
             type: string
             minLength: 1
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The dashboard manifest
@@ -2158,10 +2444,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2191,12 +2477,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of notebooks in the package
@@ -2210,10 +2491,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2249,12 +2530,7 @@ paths:
           required: true
           schema:
             type: string
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A Malloy notebook with raw cell contents.
@@ -2266,10 +2542,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
 
   /environments/{environmentName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}:
     get:
@@ -2316,12 +2592,7 @@ paths:
           required: true
           schema:
             type: integer
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
         - name: filter_params
           in: query
           deprecated: true
@@ -2374,12 +2645,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "424":
           $ref: "#/components/responses/ConnectionUnavailable"
         "502":
@@ -2412,12 +2683,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of embedded databases in the package
@@ -2431,10 +2697,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2467,6 +2733,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: A list of data apps in the package
@@ -2482,10 +2749,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2511,6 +2778,11 @@ paths:
             package changes.
           - periodic `: heartbeat` comments to keep idle proxies from closing
             the connection.
+
+        `versionId` is accepted so a data app can send it on every call, but a
+        published version never changes: its stream carries `hello`, `mode` and
+        heartbeats and no `changed` event. Watch mode only ever mounts
+        unversioned packages.
       parameters:
         - name: environmentName
           in: path
@@ -2524,6 +2796,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: An open Server-Sent Events stream of change events
@@ -2538,6 +2811,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2677,6 +2952,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2685,14 +2962,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "410":
+          $ref: "#/components/responses/Gone"
     get:
       tags:
         - materializations
       operationId: list-materializations
       summary: List materializations for a package
-      description:
+      description: >-
         Returns the materialization history for the package, ordered by
-        most recent first.
+        most recent first. For a package with published versions, the runs of
+        one version (the one `versionId` names, or `latest`), together with
+        the runs from before the package's first versioned publish.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2710,6 +2991,7 @@ paths:
             type: integer
             minimum: 0
           description: Number of materializations to skip
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: List of materializations
@@ -2721,6 +3003,8 @@ paths:
                   $ref: "#/components/schemas/Materialization"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
 
   /environments/{environmentName}/packages/{packageName}/materializations/{materializationId}:
     get:
@@ -2728,10 +3012,16 @@ paths:
         - materializations
       operationId: get-materialization
       summary: Get a specific materialization
+      description: >-
+        A run's id is unique, so with no `versionId` the run is found whichever
+        version built it. Naming a version also requires the run to be that
+        version's (or one from before the package's first versioned publish);
+        the same holds for stopping and deleting a run.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: Materialization details
@@ -2741,6 +3031,8 @@ paths:
                 $ref: "#/components/schemas/Materialization"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
     post:
       tags:
         - materializations
@@ -2762,6 +3054,7 @@ paths:
             enum:
               - stop
           description: Action to perform on the materialization
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: Materialization cancelled (action=stop)
@@ -2779,6 +3072,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "410":
+          $ref: "#/components/responses/Gone"
     delete:
       tags:
         - materializations
@@ -2808,6 +3103,7 @@ paths:
           schema:
             type: boolean
             default: false
+        - $ref: "#/components/parameters/versionId"
       responses:
         "204":
           description: Materialization deleted
@@ -2821,6 +3117,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "410":
+          $ref: "#/components/responses/Gone"
 
 components:
   responses:
@@ -2846,6 +3144,34 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: The specified resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: |
+        The request conflicts with the package's current state. `reason` says
+        which conflict:
+          * VERSION_CONFLICT: the version is already published with different
+            content. Bump the `version` in publisher.json and publish again.
+          * PACKAGE_IS_VERSIONED: the package has published versions, which are
+            immutable, so it cannot be changed in place.
+          * VERSION_IS_LATEST: the version is the package's `latest` and cannot
+            be archived. Move `latest` first.
+          * VERSION_IS_LAST_ACTIVE: the version is the package's last one in
+            service and cannot be archived. Delete the package instead.
+          * VERSION_BUILDING: a materialization of the version is running, and
+            archiving would reclaim the tables it is writing. Wait for it, or stop it.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Gone:
+      description: |
+        The version the request names (by `versionId`, the path, or the
+        publisher.json of the tree being published) has been archived
+        (`reason` VERSION_ARCHIVED). It is out of service until it is
+        unarchived; the package's other versions are unaffected.
       content:
         application/json:
           schema:
@@ -2970,8 +3296,170 @@ components:
 
     VersionIdPattern:
       type: string
-      pattern: "^[a-zA-Z0-9_.-]+$"
-      description: Version identifier pattern supporting dots and dashes
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >-
+        A package version: a semantic version (SemVer 2.0), MAJOR.MINOR.PATCH
+        with an optional pre-release suffix (`-rc1`, `-alpha.2`) and optional
+        build metadata (`+20231120.deadbeef`). Pre-release and
+        build suffixes are accepted so release-candidate builds can be
+        published.
+
+    VersionIdOrEmpty:
+      description: >-
+        A `VersionIdPattern`, or the empty string, which names no version and
+        so means the package's `latest`.
+      anyOf:
+        - $ref: "#/components/schemas/VersionIdPattern"
+        - type: string
+          maxLength: 0
+
+    PackageVersion:
+      type: object
+      description: >-
+        One published version of a package. Its content is immutable; what
+        changes over its life is its lifecycle state (`archiveStatus`), whether
+        it is the package's `latest`, and the build manifest it is bound to.
+      required:
+        - resource
+        - packageName
+        - id
+        - latest
+        - archiveStatus
+        - archivedAt
+        - promotedAt
+        - demotedAt
+        - contentHash
+        - manifestLocation
+        - gitCommitSha
+        - gitRef
+        - createdAt
+        - updatedAt
+      properties:
+        resource:
+          type: string
+          readOnly: true
+          description: Resource path to the version
+        packageName:
+          type: string
+          readOnly: true
+          description: The package this version belongs to
+        id:
+          $ref: "#/components/schemas/VersionIdPattern"
+          description: >-
+            The version, from the package's publisher.json: the value a
+            `versionId` names everywhere else.
+        latest:
+          type: boolean
+          readOnly: true
+          description: >-
+            Whether this is the package's `latest` version, the one served when a
+            request names no `versionId`.
+        archiveStatus:
+          type: string
+          readOnly: true
+          enum: [archive, unarchive]
+          description: >-
+            `unarchive` while the version is in service; `archive` once it has
+            been taken out of service (reads that name it answer 410). Each
+            value is named for the action that sets it.
+        archivedAt:
+          type: ["string", "null"]
+          format: date-time
+          readOnly: true
+          description: When the version was archived; null while it is in service.
+        promotedAt:
+          type: ["string", "null"]
+          format: date-time
+          readOnly: true
+          description: >-
+            When the version last became the package's `latest`; null if it
+            never has.
+        demotedAt:
+          type: ["string", "null"]
+          format: date-time
+          readOnly: true
+          description: >-
+            When the version last stopped being the package's `latest`; null if
+            it never has.
+        description:
+          type: string
+          readOnly: true
+          description: The `description` from the version's publisher.json
+        location:
+          type: string
+          readOnly: true
+          description: >-
+            Where the version was published from. A version whose files are
+            missing on disk is fetched again from here, and checked against
+            `contentHash` before it is served.
+        contentHash:
+          type: string
+          readOnly: true
+          description: >-
+            SHA-256 (hex) over the version's files. Publishing the same version
+            with the same content again succeeds and changes nothing; with
+            different content it is refused with 409 VERSION_CONFLICT.
+        manifestLocation:
+          type: ["string", "null"]
+          readOnly: true
+          description: >-
+            The build manifest this version is bound to (see
+            `Package.manifestLocation`); null when it serves live. Set with
+            `PUT .../versions/{version}/manifest`.
+        gitCommitSha:
+          type: ["string", "null"]
+          readOnly: true
+          description: >-
+            Git commit the version was published from, when the publisher
+            recorded it. Reserved: nothing records it yet.
+        gitRef:
+          type: ["string", "null"]
+          readOnly: true
+          description: Git ref the version was published from. Reserved, like `gitCommitSha`.
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: When the version was published
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: When the version's lifecycle state or binding last changed
+
+    PackageVersionUpdate:
+      type: object
+      description: A lifecycle change to a published version
+      properties:
+        archiveStatus:
+          type: string
+          enum: [archive, unarchive]
+          description: >-
+            `archive` takes the version out of service; `unarchive` puts it back.
+      required:
+        - archiveStatus
+
+    PackageVersionManifest:
+      type: object
+      description: The build manifest to bind a published version to
+      properties:
+        manifestLocation:
+          type: ["string", "null"]
+          minLength: 1
+          description: >-
+            URI (gs:// or s3://) of the build manifest to bind, or null to clear
+            the binding and serve live. An empty string is refused with 400.
+      required:
+        - manifestLocation
+
+    PackageLatestVersion:
+      type: object
+      description: The version to make the package's `latest`
+      properties:
+        version:
+          $ref: "#/components/schemas/VersionIdPattern"
+      required:
+        - version
 
     PathPattern:
       type: string
@@ -2987,7 +3475,17 @@ components:
           description: Unix timestamp of the status check
         environments:
           type: array
-          description: List of available environments
+          description: >-
+            List of available environments. Each environment's `packages` lists
+            one entry per package, as `GET .../packages` does, except that a
+            versioned package is listed once for EVERY version this server holds,
+            each entry with its own `versionId`, `archiveStatus` and `loaded`. A
+            loaded version's entry also carries its manifest binding
+            (`manifestBindingStatus`, `boundManifestUri`); an unloaded one (an
+            archived version, or one not loaded since the server started) carries only
+            its name and version. An orchestrator reconciles what a server holds
+            from this list, so it names every version rather than only `latest`
+            or only what is in memory; `resource` keeps its shape.
           items:
             $ref: "#/components/schemas/Environment"
         initialized:
@@ -3013,6 +3511,23 @@ components:
             This server's release version, for example "0.8.2". Use it to tell
             which build answered, for instance to rule out an old copy served
             from the npx cache.
+        packageVersioning:
+          type: string
+          enum: ["off", "on"]
+          readOnly: true
+          description: >-
+            "on" on every server that takes published versions: a publish
+            from a location publishes an immutable version. Absent from a
+            server that predates them, which is how an orchestrator talking
+            to servers mid-rollout tells which ones take native versions.
+        versionPromotion:
+          type: string
+          enum: ["on-publish", "explicit"]
+          readOnly: true
+          description: >-
+            The `versionPromotion` setting this server runs with. With
+            "explicit", a publish never moves a package's `latest`; only
+            `PUT .../packages/{packageName}/latest` does.
         emptyReason:
           type: string
           readOnly: true
@@ -3339,6 +3854,45 @@ components:
         name:
           type: string
           description: Package name
+        versionId:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          readOnly: true
+          description: >-
+            The published version this response describes. Absent for a package
+            that has no published versions. A request that names no `versionId`
+            is answered with the package's `latest` version, so this is how a
+            caller learns which version it got. In a package listing it is null
+            for a package none of whose versions is `latest` yet (under
+            `versionPromotion: explicit`, before `PUT .../latest`). Set from the
+            version's publisher.json at publish; never sent by a client.
+        latestVersion:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          readOnly: true
+          description: >-
+            The package's `latest` version. Absent for a package that has no
+            published versions, and null while none of its versions is `latest`.
+            Equal to `versionId` unless the request named another one.
+        loaded:
+          type: boolean
+          readOnly: true
+          description: >-
+            Set only on a version's entry in `GET /status`: whether this server
+            holds the version in memory. A published version that is not loaded
+            (an archived one, or one not loaded since the server started) is still
+            held, so it is still listed, with `loaded: false` and only its
+            `resource`, name, version, `latestVersion`, `archiveStatus` and
+            `status`. It loads when a request next names it.
+        archiveStatus:
+          type: string
+          enum: [archive, unarchive]
+          readOnly: true
+          description: >-
+            Set only on a version's entry in `GET /status`: whether the version
+            is archived.
         description:
           type: string
           description: Package description
@@ -4493,6 +5047,22 @@ components:
         packageName:
           type: string
           description: Name of the package containing this data app
+        versionId:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          readOnly: true
+          description: >-
+            The published version this data app was listed from. Absent for a
+            package that has no published versions. A link that must keep opening
+            this version after `latest` moves carries it as `?versionId=`, as
+            `resource` does. The static route serving the page reads it only
+            when it names a version the package has: otherwise (a package with
+            no versions, or a `versionId` that is no version of this package)
+            it serves the files of `latest`, so a router that forwards a page's
+            query string unchanged keeps working. The page's queries, through
+            the data-app runtime, follow the same rule. Files the page loads by
+            relative URL carry no `?versionId=`, so they come from `latest`.
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -5006,8 +5576,16 @@ components:
             {"columnName": value}. If false (default), returns the full Malloy
             result with type metadata for rendering.'
         versionId:
-          type: string
-          description: Version ID
+          $ref: "#/components/schemas/VersionIdOrEmpty"
+          description: >-
+            The published version of the package to query. Omitted or empty,
+            the query runs against the package's `latest` version. An unknown version
+            answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
+            (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
+            string, as a proxy forwarding a page's URL sends, is read the same way;
+            when both name a version they must agree, or the request answers 400.
+            It is not declared as a query parameter, so generated clients keep
+            their argument order.
         filterParams:
           type: object
           deprecated: true
@@ -6308,8 +6886,36 @@ components:
             client generated before it -- on the one field whose purpose is to
             grow. Callers must treat an unrecognized value as absent.
 
+            The package-version values let a caller tell "forgot to bump the
+            version" from "the model is broken", which share a status code:
+
+              * MANIFEST_VERSION_MISSING (400): a publish to a package that has
+                published versions, whose publisher.json has no `version`.
+              * MANIFEST_VERSION_INVALID (400): such a publish whose `version`
+                is not a semantic version.
+              * VERSION_CONFLICT (409): that version is already published with
+                different content.
+              * PACKAGE_IS_VERSIONED (409): the package has published versions,
+                so it cannot be changed in place.
+              * VERSION_IS_LATEST (409): the package's `latest` version cannot be
+                archived.
+              * VERSION_IS_LAST_ACTIVE (409): the package's last version in
+                service cannot be archived.
+              * VERSION_BUILDING (409): a materialization of the version is
+                running, so it cannot be archived yet.
+              * VERSION_ID_INVALID (400): a requested `versionId` is not a
+                semantic version.
+              * VERSION_NOT_LATEST (400): an auto-run of a version other than
+                `latest`, in a package whose versions share their tables.
+              * VERSION_NOT_FOUND (404): the package has no such version.
+              * VERSION_ARCHIVED (410): the version is archived.
+
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
+            MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
+            VERSION_CONFLICT, PACKAGE_IS_VERSIONED, VERSION_IS_LATEST,
+            VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
+            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
         problems:
           type: array
           description: |
@@ -6601,6 +7207,34 @@ components:
         caller-assigned names from the package's already-compiled build plan
         (read off `Package.buildPlan`).
       properties:
+        versionId:
+          $ref: "#/components/schemas/VersionIdOrEmpty"
+          description: >-
+            The published version of the package to build. Omitted or empty, the
+            package's `latest` version is built. An unknown version answers 404
+            (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
+            VERSION_ARCHIVED). Carried in the body rather than the query string
+            because the body is optional: a new optional query parameter ahead
+            of it would move the body argument of every generated client.
+
+            The run records the version it built in `metadata.versionId`, with
+            the package's materialization scope in `metadata.scope`, which
+            decides whose tables it builds. Under `scope: "version"` each
+            version builds into tables of its own: a self-assigned name gains
+            the version as a suffix (`order_summary__v1_2_0`). Under
+            `scope: "package"` (the default) the versions share the package's
+            tables, so an auto-run (no `buildInstructions`) of a version other
+            than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it
+            would rebuild the table `latest` serves. Pass `buildInstructions`
+            to build any version into tables you name, other than the ones the
+            versions share. A run with `buildInstructions`, or under
+            `scope: "version"`, holds its own version's slot, so one such run is
+            active per version at a time; an auto-run under `scope: "package"`
+            writes the shared tables, so one is active per package. A second run
+            where one is already active answers 409, and so does a run with
+            `buildInstructions` that would write a table another active run of
+            the package writes. An auto-run learns its tables only when it
+            starts building, so one that would write such a table fails then.
         buildInstructions:
           oneOf:
             - $ref: "#/components/schemas/BuildInstructions"
@@ -7937,3 +8571,35 @@ components:
       description: ID of the materialization
       schema:
         type: string
+    versionId:
+      name: versionId
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: |
+        The published version of the package to serve, a semantic version such
+        as `1.2.0` or `1.2.0-rc1`. Omitted or empty (`versionId=`, which a proxy
+        forwarding a page's query string may send), the request is served from
+        the package's `latest` version.
+
+        A value that is not a semantic version answers 400 with `reason`
+        VERSION_ID_INVALID, so a malformed value is told apart from a missing
+        version. An unknown version answers 404 with `reason` VERSION_NOT_FOUND,
+        and an archived one answers 410 with `reason` VERSION_ARCHIVED. A
+        package that has no versions (one loaded from `publisher.config.json`
+        or registered from a directory) is served as before when this is
+        omitted, and answers 404 VERSION_NOT_FOUND when it is given.
+
+        Build metadata must be percent-encoded: send `1.2.0+build.5` as
+        `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.
+      schema:
+        $ref: "#/components/schemas/VersionIdOrEmpty"
+    versionPath:
+      name: version
+      in: path
+      required: true
+      description: |
+        A published version of the package, a semantic version such as `1.2.0`.
+        Percent-encode build metadata (`+` as `%2B`).
+      schema:
+        $ref: "#/components/schemas/VersionIdPattern"

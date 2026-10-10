@@ -19,6 +19,7 @@ import {
    NotQueryableError,
    OffSurfaceError,
    PackageManifestError,
+   PackageVersionError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
@@ -80,6 +81,18 @@ export function classifyToolError(
          suggestions: [
             "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
             "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof PackageVersionError) {
+      // A package-version refusal (an unknown, archived or malformed version,
+      // or no `latest` yet). Not transient and not the model's fault; the
+      // message says which, and what to name instead.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient: retrying with the same version fails the same way.",
+            "Name a version the package has and that is in service, or omit the version to use the package's latest.",
          ],
       } satisfies ErrorDetails;
    }

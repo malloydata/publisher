@@ -1,27 +1,40 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import * as path from "path";
+import * as fs from "fs";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
+import { getVersionPromotionMode } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
    internalErrorToHttpError,
    PackageAdmissionRefusedError,
+   PackageVersionError,
 } from "../errors";
 import { logger } from "../logger";
 import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
+import type { Environment } from "../service/environment";
+import type { Package } from "../service/package";
+import type { VersionService } from "../service/versions/version_service";
+import {
+   isUnversionedStage,
+   type StagedVersion,
+   type UnversionedStage,
+} from "../service/versions/version_store";
+import { versionManifestLocation } from "./manifest_location";
+import { changedFields } from "./versioned_patch";
 
 type ApiPackage = components["schemas"]["Package"];
 
 /**
  * Which path a reload took. `in-place` recompiles the tree already on disk and
  * leaves it alone; `reinstalled` re-fetches from the package's install location,
- * which overwrites on-disk edits.
+ * which overwrites on-disk edits. `unchanged` answers for a published version,
+ * which is immutable: nothing is recompiled or re-fetched.
  */
-export type PackageReloadMode = "in-place" | "reinstalled";
+export type PackageReloadMode = "in-place" | "reinstalled" | "unchanged";
 
 /**
  * Everything that is strict-at-publish, joined into one 400 message (or
@@ -66,6 +79,27 @@ function formatPublishRejections(
    return message || undefined;
 }
 
+/**
+ * Say, on a publish from a location whose publisher.json declares no semantic
+ * version, that the package is installed in place as before versions, and how
+ * to publish immutable versions instead.
+ */
+export function warnUnversionedPublish(
+   packageName: string,
+   reason: PackageVersionError,
+): void {
+   logger.warn(
+      `Publisher now supports package versioning. Package ${packageName}'s publisher.json declares no semantic version, so it is published as latest, replacing the package in place as before. Add a "version" (such as "1.0.0") to publish immutable versions.`,
+      { packageName, reason: reason.reason },
+   );
+}
+
+/** Hand a staged download to an install, which downloads into `target`. */
+async function moveStagedTree(source: string, target: string): Promise<void> {
+   await fs.promises.rm(target, { recursive: true, force: true });
+   await fs.promises.rename(source, target);
+}
+
 export class PackageController {
    private environmentStore: EnvironmentStore;
 
@@ -85,19 +119,27 @@ export class PackageController {
       environmentName: string,
       packageName: string,
       reload: boolean,
+      versionId?: unknown,
    ): Promise<ApiPackage> {
       let metadata: ApiPackage;
       if (reload) {
-         metadata = (await this.reloadPackage(environmentName, packageName))
-            .metadata;
+         metadata = (
+            await this.reloadPackage(environmentName, packageName, versionId)
+         ).metadata;
       } else {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
             false,
          );
-         const _package = await environment.getPackage(packageName, false);
+         const _package = await environment.getPackage(packageName, false, {
+            versionId,
+         });
          metadata = _package.getPackageMetadata();
          metadata.status = environment.describePackageStatus(packageName);
+         // A published version also carries the package's current `latest`.
+         if (metadata.versionId) {
+            metadata = await environment.describePackage(_package);
+         }
       }
 
       // Enriched on BOTH paths. This sat below a `reload` early return, so
@@ -152,11 +194,27 @@ export class PackageController {
    public async reloadPackage(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+
+      // The version named is resolved first: a package with none has no
+      // version to name (404), and a malformed one is a 400. A published
+      // version is immutable, so it has nothing to reload: it is answered as
+      // it is.
+      const versions = environment.getVersionService();
+      if (versions && (await versions.resolve(packageName, versionId))) {
+         const version = await environment.getPackage(packageName, false, {
+            versionId,
+         });
+         return {
+            metadata: await environment.describePackage(version),
+            mode: "unchanged",
+         };
+      }
 
       // Resolve the package's source location from the currently-cached
       // metadata WITHOUT triggering a stale-state reload. If a `location`
@@ -219,53 +277,119 @@ export class PackageController {
          environmentName,
          false,
       );
+      const versions = environment.getVersionService();
+      // Published versions are immutable, so a package that has them is not
+      // replaced by registering a directory under its name.
+      if (
+         !body.location &&
+         versions &&
+         (await versions.isVersioned(packageName))
+      ) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable; publish a new version instead of replacing it.`,
+         );
+      }
       // Strict at publish: the author is in the loop here, so reject a bad
       // explores with an actionable 400 instead of silently serving a hidden
       // surface. (At startup/reload we fail safe and only warn — see
       // Package.loadViaWorker.) The rollback differs by path so a rejected
       // publish never destroys user content:
-      //   - location: the tree was just downloaded into a fresh canonical, so
-      //     validation runs inside installPackage's swap window and a failure
-      //     wipes that download (the existing rollback) — nothing pre-existing
-      //     to lose.
+      //   - location, with a version: its tree was downloaded into a fresh
+      //     folder and the checks run before it is recorded, so a failure
+      //     removes only that download.
+      //   - location, without a version: the tree was just downloaded into a
+      //     fresh canonical, so validation runs inside installPackage's swap
+      //     window and a failure wipes that download (the existing rollback)
+      //     — nothing pre-existing to lose.
       //   - no-location: addPackage registered a *pre-existing* user directory,
       //     so we validate after the fact and `unloadPackage` (evict from
       //     memory, keep the files) rather than delete it.
       let result;
       try {
          if (body.location) {
-            const bodyLocation = body.location;
-            result = await environment.installPackage(
-               packageName,
-               (stagingPath) =>
-                  this.downloadInto(
-                     environmentName,
-                     packageName,
+            const bodyLocation: unknown = body.location;
+            if (typeof bodyLocation !== "string") {
+               throw new BadRequestError("`location` must be a string.");
+            }
+            const download = (stagingPath: string) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               );
+            // A tree whose publisher.json declares a semantic version is
+            // published as that immutable version. One that declares none is
+            // installed in place, as every publish from a location was before
+            // versions: each publish replaces the package, and it is what a
+            // request without a versionId reads.
+            let installFrom = download;
+            let unversioned: UnversionedStage | undefined;
+            if (versions) {
+               const staged = await versions.stageForPublish(
+                  packageName,
+                  download,
+               );
+               if (!isUnversionedStage(staged)) {
+                  return await this.publishVersion(
+                     versions,
+                     staged,
                      bodyLocation,
-                     stagingPath,
-                  ),
-               (pkg) => formatPublishRejections(pkg),
-               // The install records where it fetched from, and a publish that
-               // names a manifest binds it, both under the install's own lock.
-               // The downloaded tree's publisher.json carries neither: the
-               // location is the caller's, and the orchestrator computes the
-               // manifest, not the author. Without the location a later PATCH
-               // naming the same location could not be told from new content;
-               // without the manifest the package came up serving live and was
-               // fully reloaded moments later by the drift check.
-               {
-                  update: {
-                     location: bodyLocation,
-                     // Only a manifest to bind. A fresh install serves live
-                     // already, so a null or empty value has nothing to
-                     // revert and would only recompile the package a second
-                     // time.
-                     ...(body.manifestLocation
-                        ? { manifestLocation: body.manifestLocation }
-                        : {}),
+                     body,
+                  );
+               }
+               // A package that has published versions is never installed in
+               // place, so for it a tree with no semantic version is only a
+               // version that is missing: say which.
+               if (await versions.isVersioned(packageName)) {
+                  await versions.discardStage(staged);
+                  throw staged.reason;
+               }
+               unversioned = staged;
+               if (staged.hasManifest) {
+                  warnUnversionedPublish(packageName, staged.reason);
+               }
+               installFrom = (stagingPath) =>
+                  moveStagedTree(staged.stagingPath, stagingPath);
+            }
+            try {
+               result = await environment.installPackage(
+                  packageName,
+                  installFrom,
+                  (pkg) => formatPublishRejections(pkg),
+                  // The install records where it fetched from, and a publish
+                  // that names a manifest binds it, both under the install's
+                  // own lock. The downloaded tree's publisher.json carries
+                  // neither: the location is the caller's, and the
+                  // orchestrator computes the manifest, not the author.
+                  // Without the location a later PATCH naming the same
+                  // location could not be told from new content; without the
+                  // manifest the package came up serving live and was fully
+                  // reloaded moments later by the drift check.
+                  {
+                     update: {
+                        location: bodyLocation,
+                        // Only a manifest to bind. A fresh install serves live
+                        // already, so a null or empty value has nothing to
+                        // revert and would only recompile the package a
+                        // second time.
+                        ...(body.manifestLocation
+                           ? { manifestLocation: body.manifestLocation }
+                           : {}),
+                     },
                   },
-               },
-            );
+               );
+            } finally {
+               if (unversioned && versions) {
+                  await versions.discardStage(unversioned).catch((error) =>
+                     logger.warn("Could not remove a staged package", {
+                        packageName,
+                        error,
+                     }),
+                  );
+               }
+            }
          } else {
             result = await environment.addPackage(packageName);
          }
@@ -323,6 +447,44 @@ export class PackageController {
       return result;
    }
 
+   /**
+    * Publish a staged tree as the version its publisher.json declares. The
+    * request carries no version. A request field this refuses discards the
+    * stage, which is never placed.
+    */
+   private async publishVersion(
+      versions: VersionService<Package>,
+      staged: StagedVersion,
+      location: string,
+      body: ApiPackage,
+   ): Promise<Package> {
+      let manifestLocation: string | null | undefined;
+      try {
+         const fields = body as Record<string, unknown>;
+         if (
+            fields.description !== undefined &&
+            fields.description !== null &&
+            typeof fields.description !== "string"
+         ) {
+            throw new BadRequestError("`description` must be a string.");
+         }
+         manifestLocation = versionManifestLocation(fields.manifestLocation);
+      } catch (error) {
+         await versions.discardStage(staged);
+         throw error;
+      }
+      const published = await versions.publishStagedVersion(staged, {
+         sourceLocation: location,
+         manifestLocation,
+         description: body.description ?? undefined,
+         promotion: getVersionPromotionMode(
+            this.environmentStore.serverRootPath,
+         ),
+         validate: (pkg) => formatPublishRejections(pkg),
+      });
+      return published.loaded;
+   }
+
    public async deletePackage(environmentName: string, packageName: string) {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
@@ -331,11 +493,25 @@ export class PackageController {
          environmentName,
          false,
       );
-      const result = await environment.deletePackage(packageName);
-      await this.environmentStore.deletePackageFromDatabase(
-         environmentName,
-         packageName,
-      );
+      // The rows are removed by the environment, under the package's lock
+      // (see Environment.deletePackage): a versioned package's first, an
+      // unversioned one's after it is unloaded, as before.
+      let recordsRemoved = false;
+      const result = await environment.deletePackage(packageName, {
+         removeRecords: async () => {
+            await this.environmentStore.deletePackageFromDatabase(
+               environmentName,
+               packageName,
+            );
+            recordsRemoved = true;
+         },
+      });
+      if (!recordsRemoved) {
+         await this.environmentStore.deletePackageFromDatabase(
+            environmentName,
+            packageName,
+         );
+      }
 
       return result;
    }
@@ -352,6 +528,15 @@ export class PackageController {
          environmentName,
          false,
       );
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         return this.updateVersionedPackage(
+            environment,
+            versions,
+            packageName,
+            body,
+         );
+      }
       // A `location` that matches the one the package was installed from is a
       // metadata update, not a reinstall. A package version's content does not
       // change under one URI, so re-downloading and recompiling it would only
@@ -419,6 +604,79 @@ export class PackageController {
    }
 
    /**
+    * PATCH on a package that has published versions. Deprecated: a version's
+    * content is immutable, so the only changes kept are the ones that are not
+    * content, for callers that rebind through this route: `manifestLocation`
+    * (bound to the package's `latest` version, as
+    * `PUT .../versions/{latest}/manifest` would) and the package's
+    * `description`.
+    *
+    * A body that echoes the package back is accepted, because clients send
+    * whole objects: read-only fields and unset ones are ignored, and every
+    * other field may carry the value latest has now (see changedFields). Only
+    * a value that would change latest's content is refused, with 409
+    * PACKAGE_IS_VERSIONED.
+    */
+   private async updateVersionedPackage(
+      environment: Environment,
+      versions: VersionService<Package>,
+      packageName: string,
+      body: ApiPackage,
+   ): Promise<ApiPackage> {
+      const fields = body as Record<string, unknown>;
+      if (
+         fields.description !== undefined &&
+         fields.description !== null &&
+         typeof fields.description !== "string"
+      ) {
+         throw new BadRequestError("`description` must be a string.");
+      }
+      const manifestLocation = versionManifestLocation(fields.manifestLocation);
+      const latest = await versions.latestOf(packageName);
+      const refuse = (why: string) =>
+         new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable: ${why} Publish a new version to change its content, and rebind a version's manifest with PUT .../versions/{version}/manifest.`,
+         );
+      if (latest === null) {
+         throw refuse("it has no latest version to apply this to.");
+      }
+      const version = await versions.getVersion(packageName, latest);
+      const current = (await environment.describePackage(
+         await environment.getPackage(packageName, false, {
+            versionId: latest,
+         }),
+      )) as Record<string, unknown>;
+      const changed = changedFields(
+         fields,
+         current,
+         packageName,
+         version.sourceLocation,
+      );
+      if (changed.length > 0) {
+         throw refuse(`this request changes ${changed.join(", ")}.`);
+      }
+
+      // A description is the package's own once a request sets one; one that
+      // only echoes what the package reads as now is not set, so a package
+      // with none goes on reading as its latest version's.
+      if (
+         typeof fields.description === "string" &&
+         fields.description !== "" &&
+         fields.description !== current.description
+      ) {
+         await versions.setPackageDescription(packageName, fields.description);
+      }
+      const loaded =
+         manifestLocation !== undefined
+            ? await versions.setManifest(packageName, latest, manifestLocation)
+            : await environment.getPackage(packageName, false, {
+                 versionId: latest,
+              });
+      return environment.describePackage(loaded);
+   }
+
+   /**
     * Run the right downloader for the given location into `targetPath`.
     * Callers pass a sibling staging dir (not the canonical package
     * directory) so the long-running download doesn't hold the per-package
@@ -430,44 +688,11 @@ export class PackageController {
       packageLocation: string,
       targetPath: string,
    ) {
-      const isCompressedFile = packageLocation.endsWith(".zip");
-      if (
-         packageLocation.startsWith("https://") ||
-         packageLocation.startsWith("git@")
-      ) {
-         await this.environmentStore.downloadGitHubDirectory(
-            packageLocation,
-            targetPath,
-         );
-      } else if (packageLocation.startsWith("gs://")) {
-         await this.environmentStore.downloadGcsDirectory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      } else if (packageLocation.startsWith("s3://")) {
-         await this.environmentStore.downloadS3Directory(
-            packageLocation,
-            environmentName,
-            targetPath,
-            isCompressedFile,
-         );
-      }
-
-      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
-         // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
-         // so we need to mount them on the right place. `path.isAbsolute` is
-         // what catches a Windows drive-letter path (`D:\pkgs\sales`), which no
-         // other branch here claims either — without it the install stages
-         // nothing and the swap fails with a bare ENOENT rename. Same pairing
-         // as environment_store's isLocalPath.
-         await this.environmentStore.mountLocalDirectory(
-            packageLocation,
-            targetPath,
-            environmentName,
-            packageName,
-         );
-      }
+      await this.environmentStore.downloadPackageInto(
+         environmentName,
+         packageName,
+         packageLocation,
+         targetPath,
+      );
    }
 }

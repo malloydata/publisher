@@ -68,6 +68,11 @@ mock.module("../storage/StorageManager", () => ({
             }),
             listPackages: async () => [],
             getPackageByName: async () => null,
+            // No package here has published versions.
+            listVersions: async () => [],
+            listVersionsByEnvironment: async () => [],
+            hasVersions: async () => false,
+            getVersion: async () => null,
             createPackage: async (data: Record<string, unknown>) => ({
                id: "pkg-id",
                name: data.name,

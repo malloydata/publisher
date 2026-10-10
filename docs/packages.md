@@ -65,8 +65,10 @@ The fields the server reads:
 | `retrieval` | How `get_context` searches and indexes this package: `representation` (`single` or `facets`), `keyphrases` (`auto`, `never`, `always`), `refine`, `rerank`, `sourceMatch` and `sourceSummary` (each `{ "enabled": "auto" \| true \| false }`, with `minLevel` on `refine` and `topSources` on `rerank`), and `prompts` (a file path inside the package for each of `keyphrase`, `refine`, `rerank`, `sourceMatch`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load. See [get-context-pipeline.md](get-context-pipeline.md) and [configuration.md](configuration.md). |
 
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
-package load with a message naming the valid ones. The bundled examples carry a `version` field as a
-convention, but nothing reads it. (One more field, `manifestLocation`, exists for orchestrated
+package load with a message naming the valid ones. `version` is read when the package is published
+from a location (`POST …/packages` with a `location`): it numbers the immutable version that publish
+creates, and a publish without one is refused. A package loaded from `publisher.config.json` ignores
+it. See [package-versions.md](package-versions.md). (One more field, `manifestLocation`, exists for orchestrated
 control-plane deployments; a locally authored package never needs it.)
 
 ## Where the data comes from

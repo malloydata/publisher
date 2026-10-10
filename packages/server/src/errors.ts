@@ -148,7 +148,58 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // On a 424: the model names a connection the environment does not have,
    // usually one deleted after the package was loaded.
-   | "CONNECTION_NOT_FOUND";
+   | "CONNECTION_NOT_FOUND"
+   // Package versions; each is raised only as a PackageVersionError, whose
+   // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
+   | PackageVersionErrorReason;
+
+/**
+ * Why a package-version request was refused. Several share a status code, and
+ * the reason is how a caller tells "bump the version" from "the model is
+ * broken" or "move latest first".
+ */
+export type PackageVersionErrorReason =
+   | "MANIFEST_VERSION_MISSING"
+   | "MANIFEST_VERSION_INVALID"
+   | "VERSION_ID_INVALID"
+   | "VERSION_NOT_FOUND"
+   | "VERSION_CONFLICT"
+   | "PACKAGE_IS_VERSIONED"
+   | "VERSION_IS_LATEST"
+   | "VERSION_IS_LAST_ACTIVE"
+   | "VERSION_BUILDING"
+   | "VERSION_NOT_LATEST"
+   | "VERSION_ARCHIVED";
+
+const PACKAGE_VERSION_ERROR_STATUS: Record<PackageVersionErrorReason, number> =
+   {
+      MANIFEST_VERSION_MISSING: 400,
+      MANIFEST_VERSION_INVALID: 400,
+      VERSION_ID_INVALID: 400,
+      VERSION_NOT_FOUND: 404,
+      VERSION_CONFLICT: 409,
+      PACKAGE_IS_VERSIONED: 409,
+      VERSION_IS_LATEST: 409,
+      VERSION_IS_LAST_ACTIVE: 409,
+      VERSION_BUILDING: 409,
+      VERSION_NOT_LATEST: 400,
+      VERSION_ARCHIVED: 410,
+   };
+
+/** A package-version request refused for `reason`, which decides its status. */
+export class PackageVersionError extends Error {
+   constructor(
+      readonly reason: PackageVersionErrorReason,
+      message: string,
+   ) {
+      super(message);
+      this.name = "PackageVersionError";
+   }
+
+   get status(): number {
+      return PACKAGE_VERSION_ERROR_STATUS[this.reason];
+   }
+}
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
    EACCES: "permission denied",
@@ -422,7 +473,9 @@ export function internalErrorToHttpError(
             `Give the user the server runs as access to it.`,
       );
    }
-   if (error instanceof BadRequestError) {
+   if (error instanceof PackageVersionError) {
+      return httpError(error.status, error.message, error.reason);
+   } else if (error instanceof BadRequestError) {
       return httpError(400, error.message);
    } else if (error instanceof ServerConfigurationError) {
       logInternal("Server configuration error", error, "warn");
@@ -476,6 +529,8 @@ export function internalErrorToHttpError(
    } else if (error instanceof MaterializationEligibilityError) {
       return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
+      return httpError(424, error.message);
+   } else if (error instanceof VersionFilesMissingError) {
       return httpError(424, error.message);
    } else if (error instanceof PackageManifestError) {
       return httpError(424, error.message);
@@ -791,6 +846,18 @@ export class ModelCompilationError extends Error {
    // annotation failed) can reuse this 424 mapping without a separate class.
    constructor(error: { message: string }) {
       super(error.message);
+   }
+}
+
+/**
+ * A published version's files are missing and could not be fetched again
+ * from where it was published (unreachable, or changed since). 424: the
+ * dependency the version needs is what failed, not the request.
+ */
+export class VersionFilesMissingError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "VersionFilesMissingError";
    }
 }
 

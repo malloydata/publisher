@@ -77,6 +77,8 @@ function harness(
          options.loaded?.holder ? { path: options.loaded.holder } : undefined,
    };
    const environment = {
+      // No registry: no package here has published versions.
+      getVersionService: () => null,
       getPackage: sinon.stub().resolves(pkg),
       compileSource: sinon
          .stub()

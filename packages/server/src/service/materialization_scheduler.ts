@@ -6,10 +6,17 @@ import { MaterializationConflictError } from "../errors";
 import { logger } from "../logger";
 import { recordScheduledFire } from "../materialization_metrics";
 import { CronEvaluator } from "./cron_evaluator";
+import type { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
 import type { MaterializationService } from "./materialization_service";
+import { resolvePackageScope } from "./package_manifest";
+import type { Version } from "../storage/DatabaseInterface";
 
-/** Per-package arming state, keyed by `${environmentName}::${packageName}`. */
+/**
+ * Per-schedule arming state, keyed by `${environmentName}::${packageName}`,
+ * or `${environmentName}::${packageName}@${versionId}` for a published
+ * version.
+ */
 interface ScheduleState {
    /** The cron the state was armed from; a change re-arms `nextFireAtMs`. */
    schedule: string;
@@ -40,9 +47,14 @@ interface ScheduleState {
  * only Guard 1 (the opt-in flag, which an orchestrated worker must never set —
  * see {@link getMaterializationSchedulerConfig}) keeps the scheduler off there.
  *
- * It only sweeps **already-loaded** packages (never forces a load), fires the
- * existing `createMaterialization` auto-run path tagged `trigger=SCHEDULER`, and
- * only fires packages whose persistence policy is valid (`scope: version`, no
+ * It sweeps **already-loaded** unversioned packages (never forcing their load)
+ * and every published version in service of a versioned package, each with a
+ * schedule of its own: a version's schedule is read from its publisher.json
+ * without loading it, and the version is loaded (through the memory governor,
+ * like any load) only when its cron comes due. Archiving a version takes it
+ * out of the sweep; unarchiving it arms it again. It fires the existing
+ * `createMaterialization` auto-run path tagged `trigger=SCHEDULER`, and only
+ * fires packages whose persistence policy is valid (`scope: version`, no
  * `freshness` — the same rule a publish enforces). Arming state is in memory,
  * but on the first arm after a (re)start it re-anchors from the newest recorded
  * `SCHEDULER` fire (see {@link arm}), so an occurrence that came due during
@@ -94,57 +106,146 @@ export class MaterializationScheduler {
     */
    public async tick(nowMs: number = Date.now()): Promise<void> {
       const seen = new Set<string>();
-      let fired = 0;
+      const sweep = { fired: 0 };
 
       for (const env of this.environmentStore.getLoadedEnvironments()) {
          const environmentName = env.getEnvironmentName();
          for (const pkg of env.getLoadedPackages()) {
             const packageName = pkg.getPackageName();
-            const key = `${environmentName}::${packageName}`;
-            try {
-               const schedule = this.schedulableCron(pkg);
-               if (schedule === null) {
-                  // Not a standalone-schedulable package (no cron, orchestrated,
-                  // or invalid policy/cron) — drop any stale arming state.
-                  this.state.delete(key);
-                  continue;
-               }
-               seen.add(key);
-
-               const armed = await this.arm(
+            await this.sweepOne(
+               { environmentName, packageName },
+               () => this.schedulableCron(pkg),
+               seen,
+               sweep,
+               nowMs,
+            );
+         }
+         const versions = env.getVersionService();
+         if (!versions) continue;
+         let active: Version[];
+         try {
+            active = await versions.activeVersions();
+         } catch (err) {
+            logger.warn("MaterializationScheduler: could not list versions", {
+               environmentName,
+               error: err instanceof Error ? err.message : String(err),
+            });
+            continue;
+         }
+         for (const version of active) {
+            await this.sweepOne(
+               {
                   environmentName,
-                  packageName,
-                  key,
-                  schedule,
-                  nowMs,
-               );
-               if (nowMs < armed.nextFireAtMs) continue; // not due yet
-
-               if (fired >= this.config.maxFiresPerTick) {
-                  // Stampede guard: leave it due; it fires on a later tick.
-                  continue;
-               }
-               await this.fire(environmentName, packageName);
-               fired++;
-               // Advance regardless of outcome so a persistent failure retries on
-               // the next cron occurrence (cron cadence), never every tick.
-               armed.nextFireAtMs = this.cron
-                  .nextAfter(schedule, new Date(nowMs))
-                  .getTime();
-               armed.lastFiredAtMs = nowMs;
-            } catch (err) {
-               logger.warn("MaterializationScheduler: package sweep failed", {
-                  environmentName,
-                  packageName,
-                  error: err instanceof Error ? err.message : String(err),
-               });
-            }
+                  packageName: version.packageName,
+                  versionId: version.versionId,
+               },
+               () => this.versionCron(env, version),
+               seen,
+               sweep,
+               nowMs,
+            );
          }
       }
 
       for (const key of [...this.state.keys()]) {
          if (!seen.has(key)) this.state.delete(key);
       }
+   }
+
+   /**
+    * Arm one schedule (a package's, or a published version's), and fire it
+    * when it is due. Never throws: a failure is logged and the sweep goes on.
+    */
+   private async sweepOne(
+      target: {
+         environmentName: string;
+         packageName: string;
+         versionId?: string;
+      },
+      cronOf: () => string | null | Promise<string | null>,
+      seen: Set<string>,
+      sweep: { fired: number },
+      nowMs: number,
+   ): Promise<void> {
+      const { environmentName, packageName, versionId } = target;
+      const key =
+         versionId === undefined
+            ? `${environmentName}::${packageName}`
+            : `${environmentName}::${packageName}@${versionId}`;
+      try {
+         const schedule = await cronOf();
+         if (schedule === null) {
+            // Not a standalone-schedulable package (no cron, orchestrated,
+            // or invalid policy/cron) — drop any stale arming state.
+            this.state.delete(key);
+            return;
+         }
+         seen.add(key);
+
+         const armed = await this.arm(
+            environmentName,
+            packageName,
+            key,
+            schedule,
+            nowMs,
+            versionId,
+         );
+         if (nowMs < armed.nextFireAtMs) return; // not due yet
+
+         if (sweep.fired >= this.config.maxFiresPerTick) {
+            // Stampede guard: leave it due; it fires on a later tick.
+            return;
+         }
+         await this.fire(environmentName, packageName, versionId);
+         sweep.fired++;
+         // Advance regardless of outcome so a persistent failure retries on
+         // the next cron occurrence (cron cadence), never every tick.
+         armed.nextFireAtMs = this.cron
+            .nextAfter(schedule, new Date(nowMs))
+            .getTime();
+         armed.lastFiredAtMs = nowMs;
+      } catch (err) {
+         logger.warn("MaterializationScheduler: package sweep failed", {
+            environmentName,
+            packageName,
+            versionId,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
+    * A published version's schedulable cron, or null. Read from the loaded
+    * version when it is in memory (as for a package), otherwise from its
+    * publisher.json, without loading it. A version bound to a host's
+    * manifest is the host's to build (Guard 2). Publishing refuses an invalid
+    * persistence policy, so an unloaded version needs only the schedule's own
+    * conditions: `scope: version`, and a cron that parses.
+    */
+   private async versionCron(
+      env: Environment,
+      version: Version,
+   ): Promise<string | null> {
+      if (version.manifestPath) return null;
+      const loaded = env.peekVersion(version.packageName, version.versionId);
+      if (loaded) return this.schedulableCron(loaded);
+      const manifest = await env
+         .getVersionService()
+         ?.publishedManifestOf(version);
+      const materialization = manifest?.materialization as
+         | { schedule?: unknown }
+         | null
+         | undefined;
+      const schedule = materialization?.schedule;
+      if (typeof schedule !== "string" || schedule === "") return null;
+      let scope: string;
+      try {
+         scope = resolvePackageScope(manifest?.scope, materialization).scope;
+      } catch {
+         return null;
+      }
+      if (scope !== "version" || !this.cron.isValid(schedule)) return null;
+      return schedule;
    }
 
    /**
@@ -209,6 +310,7 @@ export class MaterializationScheduler {
       key: string,
       schedule: string,
       nowMs: number,
+      versionId?: string,
    ): Promise<ScheduleState> {
       const existing = this.state.get(key);
       if (existing && existing.schedule === schedule) {
@@ -217,7 +319,12 @@ export class MaterializationScheduler {
 
       const anchor =
          existing === undefined
-            ? await this.recoveryAnchor(environmentName, packageName, nowMs)
+            ? await this.recoveryAnchor(
+                 environmentName,
+                 packageName,
+                 nowMs,
+                 versionId,
+              )
             : new Date(nowMs);
 
       const armed: ScheduleState = {
@@ -238,12 +345,15 @@ export class MaterializationScheduler {
       environmentName: string,
       packageName: string,
       nowMs: number,
+      // A published version's own fires; undefined, the package's.
+      versionId?: string,
    ): Promise<Date> {
       try {
          const last =
             await this.materializationService.getLatestScheduledFireAt(
                environmentName,
                packageName,
+               versionId,
             );
          return last ?? new Date(nowMs);
       } catch (err) {
@@ -275,24 +385,32 @@ export class MaterializationScheduler {
    private async fire(
       environmentName: string,
       packageName: string,
+      // A published version, built under its own slot; undefined for a
+      // package with no versions.
+      versionId?: string,
    ): Promise<void> {
       try {
          await this.materializationService.createMaterialization(
             environmentName,
             packageName,
-            { forceRefresh: true, trigger: "SCHEDULER" },
+            {
+               forceRefresh: true,
+               trigger: "SCHEDULER",
+               ...(versionId !== undefined ? { versionId } : {}),
+            },
          );
          recordScheduledFire("fired");
          logger.info("MaterializationScheduler: fired scheduled rebuild", {
             environmentName,
             packageName,
+            ...(versionId !== undefined ? { versionId } : {}),
          });
       } catch (err) {
          if (err instanceof MaterializationConflictError) {
             recordScheduledFire("conflict");
             logger.debug(
                "MaterializationScheduler: skipped fire; a materialization is already active",
-               { environmentName, packageName },
+               { environmentName, packageName, versionId },
             );
             return;
          }
@@ -300,6 +418,7 @@ export class MaterializationScheduler {
          logger.warn("MaterializationScheduler: scheduled fire failed", {
             environmentName,
             packageName,
+            versionId,
             error: err instanceof Error ? err.message : String(err),
          });
       }

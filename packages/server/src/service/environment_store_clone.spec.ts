@@ -120,6 +120,11 @@ mock.module("../storage/StorageManager", () => ({
                name: data.name,
             }),
             listConnections: async () => [],
+            // The version registry: no package here has versions.
+            hasVersions: async () => false,
+            getVersion: async () => null,
+            listVersions: async () => [],
+            listVersionsByEnvironment: async () => [],
          };
       }
    },

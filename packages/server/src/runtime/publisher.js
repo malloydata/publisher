@@ -9,7 +9,9 @@
 //   - Publisher.query(model, malloy, opts?)     → Promise<rows[]>
 //   - Publisher.queryFull(model, malloy, opts?) → Promise<MalloyResult>  (envelope for <malloy-render>)
 //       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
-//               bypassFilters?, givens? }. givens is a name→value map bound as
+//               bypassFilters?, givens?, versionId? }. versionId names a published
+//               version; a page opened with `?versionId=` queries its own
+//               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
 //               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
 //   - Publisher.embed(selector, { src, height?, token? })
@@ -63,6 +65,53 @@
       return bearerToken ? { Authorization: "Bearer " + bearerToken } : {};
    }
 
+   // --- Published-version pinning -----------------------------------------
+   // A page opened at a published version (`?versionId=` in its URL) queries
+   // that version, so it keeps answering from the models it shipped with after
+   // the package's `latest` moves on. Only when that version is one the
+   // package has: a proxy may forward a page's query string unchanged, with a
+   // `versionId` of its own, and such a page queries `latest`, as the server
+   // serves its files. One read of the package at the page's version tells.
+   function pageVersionParam() {
+      // Read by hand, not with URLSearchParams, so the runtime also loads where
+      // that is not defined. `+` in a query string is a space.
+      var match = (location.search || "").match(/[?&]versionId=([^&#]*)/);
+      return match && match[1]
+         ? safeDecode(match[1].replace(/\+/g, " "))
+         : undefined;
+   }
+   var pageVersion = pageVersionParam();
+   var pagePin = null;
+   function pinnedVersion() {
+      if (!pageVersion || !ctx.environment || !ctx.package) {
+         return Promise.resolve(undefined);
+      }
+      if (!pagePin) {
+         pagePin = fetch(
+            apiBase +
+               "/environments/" +
+               encodeURIComponent(ctx.environment) +
+               "/packages/" +
+               encodeURIComponent(ctx.package) +
+               "?versionId=" +
+               encodeURIComponent(pageVersion),
+            { credentials: "include", headers: authHeaders() },
+         )
+            .then(function (res) {
+               return res.ok ? res.json() : null;
+            })
+            .then(function (pkg) {
+               return pkg && pkg.versionId === pageVersion
+                  ? pageVersion
+                  : undefined;
+            })
+            .catch(function () {
+               return undefined;
+            });
+      }
+      return pagePin;
+   }
+
    // --- Query helpers -----------------------------------------------------
    function resolveTarget(opts) {
       var env = (opts && opts.environment) || ctx.environment;
@@ -100,6 +149,14 @@
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
       if (opts.givens) body.givens = opts.givens;
+      // The page's own version applies only to its own package; a query aimed
+      // elsewhere gets that package's latest unless it names one.
+      var versionId =
+         opts.versionId ||
+         (target.env === ctx.environment && target.pkg === ctx.package
+            ? await pinnedVersion()
+            : undefined);
+      if (versionId) body.versionId = versionId;
 
       var headers = Object.assign(
          { "content-type": "application/json" },

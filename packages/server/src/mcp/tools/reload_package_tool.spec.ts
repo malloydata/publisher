@@ -45,6 +45,8 @@ function storeReturning(
    return {
       getEnvironment: async () =>
          ({
+            // No registry: this package has no published versions.
+            getVersionService: () => null,
             getPackage: async (_pkg: string, reload: boolean) => {
                calls?.push(reload);
                return { getPackageMetadata: () => metadata } as never;
@@ -67,6 +69,7 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
       store: {
          getEnvironment: async () =>
             ({
+               getVersionService: () => null,
                getPackage: async () =>
                   ({
                      getPackageMetadata: () => ({

@@ -8,6 +8,7 @@ import {
    CompileRefusedError,
    DashboardNotFoundError,
    FrozenConfigError,
+   PackageVersionError,
    WriteConflictError,
    WriteRolledBackError,
    WriteVerifyError,
@@ -92,12 +93,13 @@ export class DashboardController {
    public async listDashboards(
       environmentName: string,
       packageName: string,
+      versionId?: unknown,
    ): Promise<ApiDashboard[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       return p.listDashboards();
    }
 
@@ -105,12 +107,13 @@ export class DashboardController {
       environmentName: string,
       packageName: string,
       dashboardName: string,
+      versionId?: unknown,
    ): Promise<ApiDashboardManifest> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const p = await environment.getPackage(packageName, false);
+      const p = await environment.getPackage(packageName, false, { versionId });
       const dashboard = p.getDashboard(dashboardName);
       if (!dashboard) {
          throw new DashboardNotFoundError(
@@ -147,6 +150,7 @@ export class DashboardController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
+      versionId?: unknown,
    ): Promise<ApiModelSourceWriteResult> {
       // One record per attempt, whichever way it leaves — including the throws,
       // which are most of what is worth knowing here. Classified from the error
@@ -171,6 +175,7 @@ export class DashboardController {
             modelPath,
             body,
             kind,
+            versionId,
          );
          recordDashboardWrite(
             result.created ? "created" : "replaced",
@@ -194,6 +199,7 @@ export class DashboardController {
       modelPath: string,
       body: ApiModelSourceWrite,
       kind: DashboardWriteKind,
+      versionId?: unknown,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
@@ -235,6 +241,17 @@ export class DashboardController {
          environmentName,
          false,
       );
+      // A published version is immutable, so a package that has versions takes
+      // no in-place write whatever version is named; one with none has no
+      // version to name (404).
+      const versions = environment.getVersionService();
+      if (versions && (await versions.isVersioned(packageName))) {
+         throw new PackageVersionError(
+            "PACKAGE_IS_VERSIONED",
+            `Package ${packageName} has published versions, which are immutable. Change the file in the package's source and publish a new version.`,
+         );
+      }
+      await versions?.resolve(packageName, versionId);
       // Loads the package if it is not yet, and is the 404 for one that does
       // not exist.
       await environment.getPackage(packageName, false);
