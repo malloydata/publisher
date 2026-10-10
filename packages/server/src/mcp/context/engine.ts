@@ -38,6 +38,7 @@ import {
    type FindTarget,
 } from "./find";
 import type { FcjIndex } from "./index_build";
+import { connect, type ConnectResult } from "./connect";
 import { routesOf } from "./routes";
 import { toUnit } from "./vectors";
 
@@ -258,22 +259,34 @@ export async function runFcjQuery(args: {
       tokens: { input: 0, output: 0 },
    });
 
-   // Until the connect and judge stages exist, the answer is each target's
-   // best five candidates.
+   // Stage 2.
+   started = performance.now();
+   const connected = connect({ index, found, queries, settings, allow });
+   stages.push({
+      name: "connect",
+      status: "ran",
+      ms: Math.round(performance.now() - started),
+      in: found.reduce((n, r) => n + r.candidates.length, 0),
+      out: connected.clusters.length,
+      llm_calls: 0,
+      tokens: { input: 0, output: 0 },
+   });
+
+   // Until the judge exists, each cluster answers each target it covers with
+   // its best few in-cluster candidates.
    started = performance.now();
    const rows: ResultEntity[] = [];
    const searchTexts = new Map(targets.map((t) => [t.index, t.text]));
-   for (const r of found) {
-      for (const c of r.candidates.slice(0, 5)) {
-         const node = index.catalog.nodes.get(c.key)!;
-         rows.push(
-            resultRowOf(
-               node,
-               request,
-               c.score,
-               new Map([[r.target.index, c.score]]),
-            ),
-         );
+   const typeOf = new Map(targets.map((t) => [t.index, t.type]));
+   for (const cluster of connected.clusters) {
+      for (const t of cluster.covers) {
+         const list = cluster.candidates.get(t) ?? [];
+         for (const c of list.slice(0, unjudgedPicks(typeOf.get(t)))) {
+            const node = index.catalog.nodes.get(c.key)!;
+            rows.push(
+               resultRowOf(node, request, c.score, new Map([[t, c.score]])),
+            );
+         }
       }
    }
    const sources = toSourceResults(
@@ -306,7 +319,67 @@ export async function runFcjQuery(args: {
          ? { retrieval_trace: { engine: "fcj", stages } }
          : {}),
       ...(traceMode === "full"
-         ? { retrieval_trace_full: { fcj: { find: findTrace(index, found) } } }
+         ? {
+              retrieval_trace_full: {
+                 fcj: {
+                    find: findTrace(index, found),
+                    connect: connectTrace(index, connected),
+                 },
+              },
+           }
          : {}),
    });
+}
+
+/** Candidates a cluster returns per covered target when no judge picks. */
+export function unjudgedPicks(type: FindTarget["type"] | undefined): number {
+   if (type === "measure") return 2;
+   if (type === "dimension") return 5;
+   return 3;
+}
+
+/** The connect stage's part of the full trace. */
+export function connectTrace(index: FcjIndex, connected: ConnectResult) {
+   const describe = (key: string) => {
+      const node = index.catalog.nodes.get(key)!;
+      return { id: node.id, key, routes: routesOf(index.catalog, node) };
+   };
+   return {
+      considered: connected.considered.map((s) => ({
+         source: s.source,
+         score: Math.round(s.score * 1e6) / 1e6,
+         covers: s.covers,
+         best: Object.fromEntries(
+            [...s.best].map(([t, b]) => [
+               t,
+               { id: index.catalog.nodes.get(b.key)?.id, hops: b.hops },
+            ]),
+         ),
+      })),
+      unresolved: connected.unresolved,
+      clusters: connected.clusters.map((c) => ({
+         home: c.home,
+         home_source: index.catalog.sources.get(c.home)?.name,
+         score: Math.round(c.score * 1e6) / 1e6,
+         covers: c.covers,
+         newly_covers: c.newlyCovers,
+         twins: c.twins,
+         reach: [...c.reach.values()].map((r) => ({
+            source: r.source,
+            hops: r.hops,
+         })),
+         candidates: [
+            ...[...c.candidates].flatMap(([t, list]) =>
+               list.map((x) => ({
+                  target_index: t,
+                  rank: x.rank,
+                  score: Math.round(x.score * 1e6) / 1e6,
+                  hops: x.hops,
+                  ...describe(x.key),
+               })),
+            ),
+            ...c.extras.map((e) => ({ extra: e.reason, ...describe(e.key) })),
+         ],
+      })),
+   };
 }
