@@ -6,6 +6,7 @@ import {
    DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
 } from "../../service/package_retrieval";
+import { FCJ_PAYMENTS_FILES } from "../../test_helpers/fcj_fixture";
 import {
    buildFcjIndexFixture,
    type FcjIndexFixture,
@@ -53,15 +54,16 @@ async function answer(
    pickFor?: (clusterHome: string) => JudgeVerdict["picks"],
    allow: (n: CatalogNode) => boolean = () => true,
    extra: Partial<Parameters<typeof respond>[0]> = {},
+   fx: FcjIndexFixture = f,
 ) {
    const queries = new Map(
       targets.map((x) => [x.index, toUnit(embedText(x.text))]),
    );
    const req = (extra.request as ResolvedRequest | undefined) ?? request;
    const found = withPinnedDimensions(
-      f.index,
+      fx.index,
       find({
-         index: f.index,
+         index: fx.index,
          targets,
          queries,
          perTarget: 30,
@@ -73,7 +75,7 @@ async function answer(
       allow,
    );
    const connected = connect({
-      index: f.index,
+      index: fx.index,
       found,
       queries,
       settings: DEFAULT_FCJ_SETTINGS,
@@ -87,9 +89,9 @@ async function answer(
         }))
       : unjudged(connected, targets);
    return respond({
-      index: f.index,
+      index: fx.index,
       request,
-      pkgIndex: f.pkgIndex,
+      pkgIndex: fx.pkgIndex,
       connected,
       verdicts,
       targets,
@@ -99,7 +101,10 @@ async function answer(
 }
 
 type Card = {
-   source_info: { resource_id: { source: string; model_path: string } };
+   source_info: {
+      resource_id: { source: string; model_path: string };
+      docs?: string;
+   };
    entities?: Array<{
       entity_id: string;
       join_path?: string;
@@ -324,5 +329,72 @@ describe("respond", () => {
       } finally {
          cities.gated = false;
       }
+   });
+});
+
+describe("respond, a picked source the home reaches by a join", () => {
+   let p: FcjIndexFixture;
+   beforeAll(async () => {
+      p = await buildFcjIndexFixture(DEFAULT_FCJ_SETTINGS, FCJ_PAYMENTS_FILES);
+   });
+   afterAll(async () => p.close());
+
+   it("returns it as its own card and leaves the home card's doc alone", async () => {
+      const out = await answer(
+         [
+            t(0, "source", "merchant account profile"),
+            t(1, "dimension", "account type"),
+            t(2, "measure", "total volume in euros"),
+         ],
+         () => [
+            {
+               target: 0,
+               keys: ["source:merchants@payments.malloy:merchants"],
+            },
+            {
+               target: 1,
+               keys: ["dimension:merchants@payments.malloy:account_kind"],
+            },
+            {
+               target: 2,
+               keys: ["measure:payments@payments.malloy:total_volume_eur"],
+            },
+         ],
+         () => true,
+         {},
+         p,
+      );
+      expect(
+         (out.sources as Card[]).map((c) => [
+            c.source_info.resource_id.source,
+            c.source_info.docs,
+         ]),
+      ).toEqual([
+         ["payments", "One row per payment transaction."],
+         [
+            "merchants",
+            "One row per merchant, 30 in all, carrying the account characteristics.",
+         ],
+      ]);
+      // A field of the joined source still rides on the home's card.
+      expect(ids(out.sources)).toEqual([
+         "dimension:payments:merchant_profile.account_kind",
+         "measure:payments:total_volume_eur",
+      ]);
+      expect(
+         (out.clusters as Array<{ home: unknown; picks: unknown }>).map((c) => [
+            c.home,
+            c.picks,
+         ]),
+      ).toEqual([
+         [
+            { source: "payments", model_path: "payments.malloy" },
+            {
+               0: ["source:merchants:merchants"],
+               1: ["dimension:payments:merchant_profile.account_kind"],
+               2: ["measure:payments:total_volume_eur"],
+            },
+         ],
+      ]);
    });
 });
