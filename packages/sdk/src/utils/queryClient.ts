@@ -17,6 +17,11 @@ export const globalQueryClient = new QueryClient({
          // the warehouse) refetched on each refocus once stale. A query whose
          // data changes while the reader is away opts back in.
          refetchOnWindowFocus: false,
+         // Off for the same reason, and because the "online" event is not
+         // proof of a network. A laptop waking from sleep fires it before
+         // Wi-Fi or a VPN is back, so every stale query on the page refetched
+         // into a network error at once.
+         refetchOnReconnect: false,
       },
       mutations: {
          retry: false,
@@ -29,10 +34,11 @@ export const globalQueryClient = new QueryClient({
 // pure function of the query text + filters, which are already in each query
 // key, so re-executing the query on tab refocus or reconnect only repaints the
 // same result and can cause a visible chart flicker. Treat results as fresh
-// for a few minutes and don't auto-refetch on focus/reconnect. Kept scoped to
-// the result queries (spread into their useQuery options) rather than set on
-// the global client, so other SDK queries (metadata lists, status) keep
-// react-query's default freshness behavior.
+// for a few minutes and don't auto-refetch on focus/reconnect. The staleTime is
+// kept scoped to the result queries (spread into their useQuery options) rather
+// than set on the global client, so other SDK queries (metadata lists, status)
+// are stale at once and re-read on the next mount. Focus and reconnect are off
+// globally as well; they are repeated here so the policy reads whole.
 export const CHART_RESULT_QUERY_OPTIONS = {
    staleTime: 5 * 60 * 1000,
    refetchOnWindowFocus: false,

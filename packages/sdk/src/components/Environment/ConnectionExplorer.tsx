@@ -75,7 +75,7 @@ export default function ConnectionExplorer({
    const [showHiddenSchemas, setShowHiddenSchemas] = React.useState(false);
    const {
       data: schemasData,
-      isError: schemasError,
+      isLoadingError: schemasError,
       isLoading: schemasLoading,
       error: schemasErrorObj,
    } = useQueryWithApiError({
@@ -215,7 +215,7 @@ function SelectedTableDetailPanel({
    const {
       data: tableDetailRes,
       isLoading: tableDetailLoading,
-      isError: tableDetailError,
+      isLoadingError: tableDetailError,
       error: tableDetailErrorObj,
    } = useQueryWithApiError({
       queryKey: [
@@ -325,7 +325,7 @@ function TablesInSchema({
    const { environmentName: environmentName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
    const [searchTerm, setSearchTerm] = useState("");
-   const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
+   const { data, isLoadingError, error, isLoading } = useQueryWithApiError({
       queryKey: ["tablesInSchema", environmentName, connectionName, schemaName],
       queryFn: () =>
          apiClients.connections.listTables(
@@ -339,20 +339,19 @@ function TablesInSchema({
    const getDisplayName = (resource: string) =>
       isAzure ? resource : resource.split(".").pop() || resource;
 
-   const filteredTables =
-      isSuccess && data?.data
-         ? data.data
-              .filter((table: { resource: string }) => {
-                 return getDisplayName(table.resource)
-                    .toLowerCase()
-                    .includes(searchTerm.toLowerCase());
-              })
-              .sort((a: { resource: string }, b: { resource: string }) => {
-                 return getDisplayName(a.resource).localeCompare(
-                    getDisplayName(b.resource),
-                 );
-              })
-         : [];
+   const filteredTables = data?.data
+      ? data.data
+           .filter((table: { resource: string }) => {
+              return getDisplayName(table.resource)
+                 .toLowerCase()
+                 .includes(searchTerm.toLowerCase());
+           })
+           .sort((a: { resource: string }, b: { resource: string }) => {
+              return getDisplayName(a.resource).localeCompare(
+                 getDisplayName(b.resource),
+              );
+           })
+      : [];
 
    return (
       <>
@@ -376,16 +375,16 @@ function TablesInSchema({
          <Divider />
          <Box sx={{ mt: "2px", maxHeight: "600px", overflowY: "auto" }}>
             {isLoading && <Loading text="Fetching Tables..." />}
-            {isError && (
+            {isLoadingError && (
                <ApiErrorDisplay
                   error={error}
                   context={`${environmentName} > ${connectionName} > ${schemaName}`}
                />
             )}
-            {isSuccess && filteredTables.length === 0 && (
+            {data && filteredTables.length === 0 && (
                <Typography variant="body2">No Tables</Typography>
             )}
-            {isSuccess && data?.data && data.data.length > 0 && (
+            {data?.data && data.data.length > 0 && (
                <List dense disablePadding>
                   {filteredTables.map(
                      (table: {

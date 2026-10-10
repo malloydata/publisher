@@ -60,10 +60,12 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       connectionName: selectedConnection,
    });
 
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
+   const { data, isLoadingError, error } = useQueryWithApiError({
       queryKey: ["connections", environmentName],
       queryFn: () => apiClients.connections.listConnections(environmentName),
    });
+   // `data`, not `isSuccess`: a failed refetch keeps the list it already had.
+   const loaded = data !== undefined;
 
    const addConnection = useMutationWithApiError({
       mutationFn: reporting("connection", "create", (payload: ApiConnection) =>
@@ -137,7 +139,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       },
    });
 
-   const connections = isSuccess
+   const connections = loaded
       ? [...data.data].sort((a, b) =>
            (a.name ?? "").localeCompare(b.name ?? ""),
         )
@@ -151,9 +153,9 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
    return (
       <PackageSection
          title="Connections"
-         {...(isSuccess ? { count: connections.length } : {})}
+         {...(loaded ? { count: connections.length } : {})}
          description="Database connections available to packages in this environment"
-         {...(mutable && isSuccess
+         {...(mutable && loaded
             ? {
                  action: (
                     <AddConnectionDialog
@@ -166,23 +168,23 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
               }
             : {})}
       >
-         {!isSuccess && !isError && (
+         {!loaded && !isLoadingError && (
             <Typography variant="body2" color="text.secondary">
                Fetching Connections...
             </Typography>
          )}
-         {isError && (
+         {isLoadingError && (
             <ApiErrorDisplay
                error={error}
                context={`${environmentName} > Connections`}
             />
          )}
-         {isSuccess && connections.length === 0 && (
+         {loaded && connections.length === 0 && (
             <Typography variant="body2" color="text.secondary">
                No connections yet.
             </Typography>
          )}
-         {isSuccess && connections.length > 0 && (
+         {loaded && connections.length > 0 && (
             <Stack>
                {connections.map((conn) => (
                   <ConnectionRow

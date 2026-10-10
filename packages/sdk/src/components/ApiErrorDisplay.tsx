@@ -54,7 +54,36 @@ export function ErrorDetailAlert({
    );
 }
 
+/**
+ * What to say about a failed request. The server's own message when it sent
+ * one. Otherwise the request never got a readable body back (a network error,
+ * a timeout, an aborted request, an empty 502, a token that could not be
+ * fetched), and `useQueryWithApiError` passes the raw error through with no
+ * `data`. Its status and message are then the only facts there are, so they
+ * are what the reader sees.
+ */
+export function apiErrorMessage(error: ApiError): string {
+   const serverMessage = error.data?.message;
+   if (serverMessage) return serverMessage;
+   // `status` is set by `useQueryWithApiError` and, since axios 1.7, by axios
+   // itself; `response.status` covers an error from anything older.
+   const status =
+      error.status ??
+      (error as { response?: { status?: number } }).response?.status;
+   const message = error.message?.trim();
+   // axios already words a bad status as "Request failed with status code
+   // 502"; saying the number twice adds nothing.
+   if (status !== undefined && message)
+      return message.includes(String(status))
+         ? message
+         : `${message} (HTTP ${status})`;
+   if (status !== undefined) return `The request failed with HTTP ${status}.`;
+   if (message) return message;
+   return "The request failed, and the error carried no message or status.";
+}
+
 export function ApiErrorDisplay({ error, context }: ApiErrorDisplayProps) {
-   const errorMessage = error.data?.message || "Unknown error";
-   return <ErrorDetailAlert summary={context} detail={errorMessage} />;
+   return (
+      <ErrorDetailAlert summary={context} detail={apiErrorMessage(error)} />
+   );
 }

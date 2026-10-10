@@ -182,10 +182,12 @@ function CellNotebook({
    // Fetch the raw notebook cells
    const {
       data: notebook,
-      isSuccess,
-      isError,
+      isLoadingError,
       error,
    } = useNotebookQuery(resourceUri);
+   // `notebook`, not `isSuccess`: a failed refetch leaves the notebook that
+   // already loaded in the cache, and the reader keeps seeing it.
+   const loaded = notebook !== undefined;
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -211,7 +213,7 @@ function CellNotebook({
    const autorun = notebook?.autorun !== false;
    const controls = useDocumentControls({
       specs: declaredGivens,
-      loaded: isSuccess,
+      loaded,
       // Where the controls start, from a file-level `## givens { … }`.
       startingValues: notebook?.startingGivens,
       params: givens,
@@ -310,7 +312,7 @@ function CellNotebook({
    );
    const executeCells = useCallback(
       async (givensToApply: Map<string, GivenValue> = new Map()) => {
-         if (!isSuccess || !notebook?.notebookCells) return;
+         if (!loaded || !notebook?.notebookCells) return;
 
          const runId = ++runIdRef.current;
 
@@ -452,7 +454,7 @@ function CellNotebook({
          }
       },
       [
-         isSuccess,
+         loaded,
          notebook,
          buildGivens,
          environmentName,
@@ -506,7 +508,7 @@ function CellNotebook({
       lastDocumentRef.current = documentKey;
 
       const plan = planRun({
-         ready: isSuccess && !!notebook?.notebookCells,
+         ready: loaded && !!notebook?.notebookCells,
          lastRunKey: lastRunRef.current,
          pendingKey: pendingRunRef.current?.key,
          runKey,
@@ -542,7 +544,7 @@ function CellNotebook({
          timer: setTimeout(start, GIVEN_SETTLE_MS),
       };
    }, [
-      isSuccess,
+      loaded,
       notebook,
       notebookGen,
       resourceUri,
@@ -567,12 +569,12 @@ function CellNotebook({
                <GivensPanel {...controls.panel} />
 
                {/* Loading State */}
-               {!isSuccess && !isError && (
+               {!loaded && !isLoadingError && (
                   <Loading text={LOADING_COPY.opening("notebook")} />
                )}
 
                {/* Notebook Cells */}
-               {isSuccess &&
+               {loaded &&
                   shownCells.map((cell, index) => (
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
@@ -598,14 +600,14 @@ function CellNotebook({
                   ))}
 
                {/* Error States */}
-               {isError && error.status === 404 && (
+               {isLoadingError && error.status === 404 && (
                   <Typography variant="body2" sx={{ color: "text.secondary" }}>
                      <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
                      not found.
                   </Typography>
                )}
 
-               {isError && error.status !== 404 && (
+               {isLoadingError && error.status !== 404 && (
                   <ApiErrorDisplay
                      error={error}
                      context={`${environmentName} > ${packageName} > ${notebookPath}`}
