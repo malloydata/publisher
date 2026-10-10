@@ -24,6 +24,8 @@ import type { ModelDef } from "@malloydata/malloy";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import {
    comparePaths,
+   docOnlyText,
+   docText,
    entityId,
    modelPathOfUrl,
    sourceContextKey,
@@ -57,6 +59,13 @@ export interface CatalogNode {
    code?: string;
    /** For a field of an inline-table join: the join path inside its source. */
    joinPath?: string;
+   /**
+    * For a field of a join (`joinPath`): the catalog key of the source the
+    * join is made from, read from the compiled join's `sourceID` (or the
+    * source it extends, for `join_one: x is s extend {...}`). Absent for a
+    * raw table or SQL join, or a source outside the catalog.
+    */
+   joinedSourceKey?: string;
    relationship?: Relationship;
    aliases?: string[];
    /** Keys of the nodes this node's expression reads. */
@@ -174,18 +183,31 @@ interface CompiledLocation {
    };
 }
 
+interface CompiledNotes {
+   blockNotes?: Array<{ text?: string; at?: CompiledLocation }>;
+   inherits?: CompiledNotes;
+}
+
+interface CompiledField {
+   name?: string;
+   as?: string;
+   e?: unknown;
+   location?: CompiledLocation;
+   /** Set on a join entry. */
+   join?: string;
+   sourceID?: string;
+   extends?: string;
+   fields?: CompiledField[];
+}
+
 interface CompiledSource {
    name?: string;
    as?: string;
    sourceID?: string;
    extends?: string;
    location?: CompiledLocation;
-   fields?: Array<{
-      name?: string;
-      as?: string;
-      e?: unknown;
-      location?: CompiledLocation;
-   }>;
+   annotations?: CompiledNotes;
+   fields?: CompiledField[];
 }
 
 /** A location as one comparable string, or undefined when the compiler gave none. */
@@ -229,6 +251,73 @@ function splitSourceId(
    if (typeof id !== "string") return undefined;
    const match = /^(.+)@([a-z][a-z0-9+.-]*:\/\/.*)$/i.exec(id);
    return match ? { source: match[1], url: match[2] } : undefined;
+}
+
+/** Every block note of an annotation and of everything it inherits. */
+function allNotes(
+   notes: CompiledNotes | undefined,
+   depth = 0,
+): Array<{ text?: string; at?: CompiledLocation }> {
+   if (!notes || depth > 32) return [];
+   return [...(notes.blockNotes ?? []), ...allNotes(notes.inherits, depth + 1)];
+}
+
+function noteKey(note: { text?: string; at?: CompiledLocation }): string {
+   return `${locationKey(note.at) ?? ""}\u0000${note.text ?? ""}`;
+}
+
+/**
+ * The `#(doc)` lines an extension writes itself, or undefined when the source
+ * extends nothing or its parent cannot be read (the shipped doc then stands).
+ *
+ * The compiler keeps an extension's own notes apart from its parent's
+ * (`blockNotes` and `inherits.blockNotes`) only when it has notes of its own.
+ * An extension with none carries its parent's annotation unchanged, so its
+ * `blockNotes` are the parent's and read as its own doc. A note is the
+ * extension's own when the parent, or anything the parent inherits, does not
+ * hold the same note at the same place.
+ */
+function ownNotesOf(
+   modelDef: ModelDef | undefined,
+   name: string,
+): string[] | undefined {
+   const compiled = compiledSource(modelDef, name);
+   if (!compiled?.extends) return undefined;
+   const contents = (modelDef as { contents?: Record<string, unknown> })
+      ?.contents;
+   const parent = Object.values(contents ?? {}).find(
+      (c) => (c as CompiledSource).sourceID === compiled.extends,
+   ) as CompiledSource | undefined;
+   if (!parent) return undefined;
+   const inherited = new Set(allNotes(parent.annotations).map(noteKey));
+   return (compiled.annotations?.blockNotes ?? [])
+      .filter((n) => !inherited.has(noteKey(n)))
+      .map((n) => n.text ?? "")
+      .filter(Boolean);
+}
+
+/**
+ * By join path (`a`, `a.b`): the id of the source each compiled join is made
+ * from, `name@url`. A join on a named source carries it as `sourceID`; a join
+ * on `s extend {...}` names `s` in `extends`; a raw table or SQL join has
+ * neither.
+ */
+function joinSourceIds(
+   fields: CompiledField[] | undefined,
+   prefix: readonly string[] = [],
+   out = new Map<string, string>(),
+): Map<string, string> {
+   if (prefix.length >= 10) return out;
+   for (const f of fields ?? []) {
+      if (f.join === undefined) continue;
+      const name = activeName(f);
+      if (!name) continue;
+      const path = [...prefix, name];
+      const id = f.sourceID ?? f.extends;
+      if (id) out.set(path.join("."), id);
+      joinSourceIds(f.fields, path, out);
+   }
+   return out;
 }
 
 /** The catalog key of a source: its name and the file that defines it. */
@@ -332,6 +421,8 @@ export function buildCatalog(input: CatalogInput): Catalog {
          continue;
       }
       if (extendsKey) extendsOf.set(key, extendsKey);
+      // An extension's doc is the notes it writes, never its parent's.
+      const own = ownNotesOf(modelByPath.get(e.modelPath)?.modelDef, e.name);
       const node: CatalogNode = {
          key: nodeKeyOf("source", key, e.name),
          id: entityId("source", e.name, e.name),
@@ -340,8 +431,8 @@ export function buildCatalog(input: CatalogInput): Catalog {
          source: e.name,
          sourceKey: key,
          modelPaths: [e.modelPath],
-         doc: e.embedDoc,
-         displayDoc: e.doc,
+         doc: own ? docOnlyText(own) : e.embedDoc,
+         displayDoc: own ? docText(own) : e.doc,
          dependsOn: [],
          uses: [],
          indexed: false,
@@ -491,6 +582,19 @@ export function buildCatalog(input: CatalogInput): Catalog {
          }
          const compiled = compiledSource(model.modelDef, info.name);
          if (compiled?.location) sourceAt.set(sourceKey, compiled.location);
+         const joinIds = joinSourceIds(compiled?.fields);
+         for (const key of sources.get(sourceKey)?.fields ?? []) {
+            const node = nodes.get(key)!;
+            const id = splitSourceId(
+               node.joinPath ? joinIds.get(node.joinPath) : undefined,
+            );
+            const at = id ? modelPathOfUrl(id.url, modelPaths) : undefined;
+            const joined =
+               id && at !== undefined ? sourceKeyOf(id.source, at) : undefined;
+            if (joined && sources.has(joined) && joined !== sourceKey) {
+               node.joinedSourceKey = joined;
+            }
+         }
          for (const f of compiled?.fields ?? []) {
             const name = activeName(f);
             if (!name) continue;
