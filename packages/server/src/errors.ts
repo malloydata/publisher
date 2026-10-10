@@ -439,7 +439,10 @@ export function internalErrorToHttpError(
       return httpError(404, error.message);
    } else if (error instanceof DashboardNotFoundError) {
       return httpError(404, error.message);
-   } else if (error instanceof SkillNotFoundError) {
+   } else if (
+      error instanceof SkillNotFoundError ||
+      error instanceof AgentNotFoundError
+   ) {
       return httpError(404, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
@@ -657,6 +660,13 @@ export class DashboardNotFoundError extends Error {
  * carries.
  */
 export class SkillNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/** No agent with that name is served for the package, whether undeclared or dropped by validation. */
+export class AgentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

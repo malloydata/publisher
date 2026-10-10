@@ -43,7 +43,7 @@ describe("readSkillsDir", () => {
    it("returns nothing, and no warning, for a package with no skills/", () => {
       expect(readSkillsDir(pkg)).toEqual({
          skills: [],
-         paths: [],
+         files: [],
          warnings: [],
       });
    });
@@ -69,10 +69,22 @@ describe("readSkillsDir", () => {
             path.join(outside, "secret.md"),
             path.join(pkg, "skills", "bad", "SKILL.md"),
          );
-         const { skills, paths, warnings } = readSkillsDir(pkg);
+         const { skills, files, warnings } = readSkillsDir(pkg);
          expect(skills).toEqual([]);
-         expect(paths).toEqual([]);
+         expect(files).toEqual([]);
          expect(warnings.join("\n")).toContain("outside the package");
+      });
+
+      it("does not serve a SKILL.md that is a link to a non-Markdown file in the package", () => {
+         fs.writeFileSync(path.join(pkg, "publisher.json"), '{"name":"x"}');
+         fs.mkdirSync(path.join(pkg, "skills", "bad"), { recursive: true });
+         fs.symlinkSync(
+            path.join(pkg, "publisher.json"),
+            path.join(pkg, "skills", "bad", "SKILL.md"),
+         );
+         const { skills, warnings } = readSkillsDir(pkg);
+         expect(skills).toEqual([]);
+         expect(warnings.join("\n")).toContain("not Markdown");
       });
 
       it("does not serve a reference file that is a link out", () => {
@@ -126,13 +138,13 @@ describe("readSkillsDir", () => {
          "revenue",
          "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n",
       );
-      const { skills, paths, warnings } = readSkillsDir(pkg);
+      const { skills, files, warnings } = readSkillsDir(pkg);
       expect(warnings).toEqual([]);
       expect(skills).toHaveLength(1);
       expect(skills[0]!.name).toBe("revenue-rules");
       expect(skills[0]!.description).toBe("How revenue is defined here.");
       expect(skills[0]!.body).toBe("Use net_revenue, never gross.");
-      expect(paths).toEqual(["skills/revenue/SKILL.md"]);
+      expect(files.map((f) => f.path)).toEqual(["skills/revenue/SKILL.md"]);
    });
 
    it("falls back to the directory name when frontmatter omits name", () => {
@@ -146,7 +158,7 @@ describe("readSkillsDir", () => {
          "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n",
       );
       writeReference("revenue", "margin.md", "# Margin\n\nDetail.\n");
-      const { skills, paths } = readSkillsDir(pkg);
+      const { skills, files } = readSkillsDir(pkg);
       expect(skills.map((s) => s.name)).toEqual([
          "revenue-rules",
          "revenue-rules/margin",
@@ -156,7 +168,7 @@ describe("readSkillsDir", () => {
       // template, and which files are actually there.
       expect(skills[0]!.body).toContain("revenue-rules/<name>");
       expect(skills[0]!.body).toContain("Available: margin.");
-      expect(paths).toEqual([
+      expect(files.map((f) => f.path)).toEqual([
          "skills/revenue/SKILL.md",
          "skills/revenue/reference/margin.md",
       ]);

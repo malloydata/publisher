@@ -447,6 +447,7 @@ describe("generated project serves against a real server", () => {
       expect(tools.map((t) => t.name).sort()).toEqual([
          "compile_model",
          "execute_query",
+         "get_agent",
          "get_context",
          "get_skill",
          "get_status",

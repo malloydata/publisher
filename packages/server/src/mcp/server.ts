@@ -16,6 +16,7 @@ import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,
 } from "./tools/reload_package_tool";
+import { registerGetAgentTool } from "./tools/get_agent_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
@@ -77,6 +78,7 @@ export function initializeMcpServer(
    registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, AGENT_SKILLS);
+   registerGetAgentTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the

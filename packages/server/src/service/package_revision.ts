@@ -24,14 +24,15 @@ const UNREADABLE = "\0<unreadable>\0";
  * order, and each path is hashed alongside its content so a rename moves the
  * digest even when the bytes are unchanged.
  *
- * The caller decides what counts as served content by choosing what to pass.
- * Anything omitted is invisible here: a change to a file outside the set moves
+ * The caller decides what counts as served content by choosing what to pass,
+ * plus `extra` for served text that lives in no file. Anything omitted is invisible here: a change to a file outside the set moves
  * nothing, which is the whole reason the set is a parameter rather than a walk
  * of the package directory.
  */
 export function computeSourceContentSha(
    packagePath: string,
    contentPaths: Iterable<string>,
+   extra?: string,
 ): string {
    const hash = createHash("sha256");
    for (const relativePath of [...contentPaths].sort()) {
@@ -45,7 +46,26 @@ export function computeSourceContentSha(
       }
       hash.update("\0");
    }
+   // Inline manifest content that is served but lives in no file of its own.
+   if (extra !== undefined) hash.update(`\0extra\0${extra}`);
    return hash.digest("hex");
+}
+
+/** JSON with object keys sorted at every depth, so equal values serialize equally. */
+export function canonicalJson(value: unknown): string {
+   return JSON.stringify(value, (_key, v: unknown) =>
+      v !== null && typeof v === "object" && !Array.isArray(v)
+         ? Object.fromEntries(
+              Object.entries(v).sort(([a], [b]) =>
+                 a < b ? -1 : a > b ? 1 : 0,
+              ),
+           )
+         : v,
+   );
+}
+
+export function canonicalSha(value: unknown): string {
+   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 /**

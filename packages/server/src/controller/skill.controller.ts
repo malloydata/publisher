@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { SkillNotFoundError } from "../errors";
+import { AgentNotFoundError, SkillNotFoundError } from "../errors";
 import skillsBundle from "../mcp/skills/skills_bundle.json";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import { resolveSkills } from "../mcp/skills/package_skills";
 import { EnvironmentStore } from "../service/environment_store";
 
+type ApiAgent = components["schemas"]["Agent"];
+type ApiAgentSummary = components["schemas"]["AgentSummary"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
@@ -19,7 +21,9 @@ const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
  * name. The REST half of the `get_skill` MCP tool, for callers running
  * unattended with no MCP client (see docs/ai-agents.md).
  *
- * Serves state the package read at load, so neither route compiles or queries
+ * Also serves the package's declared agents, the REST half of `get_agent`.
+ *
+ * Serves state the package read at load, so no route compiles or queries
  * anything.
  */
 export class SkillController {
@@ -78,5 +82,38 @@ export class SkillController {
          content: match.body,
          origin: match.origin,
       };
+   }
+
+   /** Name, description, model and schedules of every agent the package serves. */
+   public async listAgents(
+      environmentName: string,
+      packageName: string,
+   ): Promise<ApiAgentSummary[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      return (await environment.getPackage(packageName, false)).listAgents();
+   }
+
+   /** One agent resolved to its instructions, skill files and schedules. */
+   public async getAgent(
+      environmentName: string,
+      packageName: string,
+      agentName: string,
+   ): Promise<ApiAgent> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const agent = (await environment.getPackage(packageName, false)).getAgent(
+         agentName,
+      );
+      if (!agent) {
+         throw new AgentNotFoundError(
+            `Agent '${agentName}' not found in package '${packageName}'.`,
+         );
+      }
+      return agent;
    }
 }

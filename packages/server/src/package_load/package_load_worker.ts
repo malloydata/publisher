@@ -495,6 +495,7 @@ async function readPackageMetadata(
    scope?: PackageScope;
    manifestWarnings?: string[];
    retrieval?: PackageRetrievalSettings;
+   agents?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -509,6 +510,7 @@ async function readPackageMetadata(
       scope?: unknown;
       queryMetadata?: unknown;
       retrieval?: unknown;
+      agents?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -595,6 +597,7 @@ async function readPackageMetadata(
       // or an unreadable prompt file stops the load with a message naming it,
       // and read here so a prompt edit takes effect on reload.
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
+      agents: parsed.agents,
    };
 }
 

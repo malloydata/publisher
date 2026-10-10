@@ -1833,6 +1833,43 @@ app.get(
    },
 );
 
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listAgents(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getAgent(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    // A dashboard save compiles the submitted text and then writes it under the

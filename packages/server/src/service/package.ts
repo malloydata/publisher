@@ -64,9 +64,12 @@ import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
+   readPackageAgents,
    readSkillsDir,
+   type PackageAgent,
 } from "../mcp/skills/package_skills";
 import {
+   canonicalJson,
    computeSourceContentSha,
    mintServedRevision,
 } from "./package_revision";
@@ -154,6 +157,8 @@ type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+type ApiAgent = components["schemas"]["Agent"];
+type ApiAgentSummary = components["schemas"]["AgentSummary"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -341,6 +346,14 @@ export class Package {
    private packageSkills: SkillEntry[] = [];
    private packageSkillWarnings: string[] = [];
    /**
+    * The manifest's `agents` value as the worker read it, unvalidated. Held
+    * apart from `packageMetadata` so a metadata PATCH cannot replace it; the
+    * validated agents below are derived from it in refreshServingIdentity.
+    */
+   private rawAgents: unknown;
+   private packageAgents = new Map<string, PackageAgent>();
+   private packageAgentWarnings: string[] = [];
+   /**
     * The manifest's `retrieval` block as read at load (prompt files included).
     * Replaced on reload, which is how an edit to it, or to a prompt file,
     * takes effect.
@@ -394,6 +407,33 @@ export class Package {
       return this.packageSkills;
    }
 
+   /** The agents the manifest declares that passed validation, without their text. */
+   public listAgents(): ApiAgentSummary[] {
+      return [...this.packageAgents.values()].map((a) => ({
+         name: a.name,
+         description: a.description,
+         model: a.model,
+         schedules: a.schedules.map(({ cron, task }) => ({ cron, task })),
+      }));
+   }
+
+   /** One agent resolved, pinned to the load and content it was read from. */
+   public getAgent(name: string): ApiAgent | undefined {
+      const agent = this.packageAgents.get(name);
+      if (!agent) return undefined;
+      const { definitionSha, ...definition } = agent;
+      return {
+         ...definition,
+         source: {
+            environment: this.environmentName,
+            package: this.packageName,
+            sourceContentSha: this.sourceContentSha,
+            definitionSha,
+            servedRevision: this.servedRevision,
+         },
+      };
+   }
+
    /**
     * Re-derive the serving identity, and re-read the package's own skills.
     *
@@ -415,10 +455,21 @@ export class Package {
       const skills = readSkillsDir(this.packagePath, PACKAGE_SKILLS_DIR);
       this.packageSkills = skills.skills;
       this.packageSkillWarnings = skills.warnings;
-      this.sourceContentSha = computeSourceContentSha(this.packagePath, [
-         ...this.models.keys(),
-         ...skills.paths,
-      ]);
+      const agents = readPackageAgents(this.packagePath, this.rawAgents);
+      this.packageAgents = agents.agents;
+      this.packageAgentWarnings = agents.warnings;
+      this.sourceContentSha = computeSourceContentSha(
+         this.packagePath,
+         [
+            ...this.models.keys(),
+            ...skills.files.map((f) => f.path),
+            ...agents.paths,
+         ],
+         // The declaration is hashed whole, so an edit to a dropped agent moves it too.
+         this.rawAgents === undefined
+            ? undefined
+            : canonicalJson(this.rawAgents),
+      );
    }
 
    /**
@@ -1300,6 +1351,7 @@ export class Package {
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+      pkg.rawAgents = outcome.packageMetadata.agents;
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
@@ -1641,6 +1693,8 @@ export class Package {
          buildPlan: this.buildPlan,
          servedRevision: this.servedRevision,
          sourceContentSha: this.sourceContentSha,
+         // Overlaid so a metadata PATCH body can neither set nor wipe it.
+         agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -1657,6 +1711,7 @@ export class Package {
          // package its models, and this is the only non-log signal that a
          // skill the author wrote is not being served.
          ...this.packageSkillWarnings.map((message) => ({ message })),
+         ...this.packageAgentWarnings.map((message) => ({ message })),
          ...this.notebookWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
@@ -2974,6 +3029,8 @@ export class Package {
             "placeholder",
          );
       this.models = nextModels;
+      // Before refreshServingIdentity, which reads the agents it declares.
+      this.rawAgents = outcome.packageMetadata.agents;
       // Before the serve/pre-aggregate re-application below, which does not
       // change what is on disk: the identity describes the source bytes just
       // compiled, and a caller polling it after an edit needs it to move as

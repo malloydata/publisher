@@ -2131,6 +2131,99 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/agents:
+    get:
+      tags:
+        - agents
+      operationId: list-agents
+      summary: List the agents a package declares
+      description: |
+        Lists the agents declared under `agents` in the package's
+        `publisher.json` that passed validation, without instructions or
+        skills. An agent that failed validation is not listed; the package's
+        `warnings` say why. Empty when the manifest declares none.
+
+        The REST half of the `get_agent` MCP tool.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: The agents the package declares
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/agents/{agentName}:
+    get:
+      tags:
+        - agents
+      operationId: get-agent
+      summary: Get one agent, resolved
+      description: |
+        Returns one agent with its instructions, its own skill files and each
+        schedule's task text, plus `source`, which pins the package load and the
+        agent's own content so a runner can prove which bytes ran. Publisher
+        serves the definition and runs nothing: the caller's own harness
+        executes it, and schedules are never fired by the server.
+
+        404 when no agent of that name is served.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: agentName
+          in: path
+          description: Agent name as returned by the listing.
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The resolved agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/dashboards:
     get:
       tags:
@@ -4022,7 +4115,10 @@ components:
           readOnly: true
           description: >-
             Server-computed, read-only: SHA-256 over the package-relative path
-            and bytes of every model file the package is serving.
+            and bytes of every file the package is serving: each model file,
+            each package skill file under `skills/`, and, when the manifest
+            declares `agents`, the canonical form of that `agents` object plus
+            every instructions, task and skill file those agents read.
 
             This is the reload receipt. Publisher serves a COPY of a package
             under `publisher_data/<env>/<pkg>/` unless the environment was
@@ -4034,10 +4130,128 @@ components:
 
             It covers EVERY model path in the package, so an edit to an imported
             file moves it where a hash of one model path would not. It covers
-            nothing else: a data file, a `public/` asset, or a `version` bump in
-            publisher.json all leave it unchanged, because none of them changes
-            what the compiler read.
+            nothing outside the list above: a data file, a `public/` asset, a
+            `version` bump or any other key in publisher.json all leave it
+            unchanged, because none of them changes what is served.
+        agents:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the agents this package's
+            `publisher.json` declares and the server accepted, without their
+            instructions. Absent when the manifest declares no `agents`. An
+            agent that failed validation is left out and named in `warnings`.
+            Fetch one with `GET .../agents/{agentName}`.
+          items:
+            $ref: "#/components/schemas/AgentSummary"
 
+    AgentSchedule:
+      type: object
+      readOnly: true
+      description: >-
+        A cron schedule an agent declares. Validated and exposed only: the
+        server never runs it.
+      properties:
+        cron:
+          type: string
+          description: A 5-field UNIX cron expression, evaluated in UTC.
+        task:
+          type: string
+          description: Package-relative path of the task file, as written in the manifest.
+        taskContent:
+          type: string
+          description: >-
+            The task file's Markdown. Only on the resolved agent, not the
+            listing.
+
+    AgentSummary:
+      type: object
+      readOnly: true
+      description: One agent a package declares, without its instructions or skills.
+      properties:
+        name:
+          type: string
+          description: The agent's name (its key in the manifest's `agents` object).
+        description:
+          type: string
+        model:
+          type: string
+          description: The model the agent asks for; `inherit` when the manifest sets none.
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSchedule"
+
+    AgentSkillFile:
+      type: object
+      readOnly: true
+      properties:
+        relative_filepath:
+          type: string
+          description: >-
+            Path relative to the agent's skills directory, for example
+            `analyst-conventions/SKILL.md` or
+            `analyst-conventions/reference/glossary.md`.
+        file_contents:
+          type: string
+          description: >-
+            A `SKILL.md` is re-emitted with only a quoted `name` and
+            `description` in its frontmatter; reference files are served raw.
+
+    AgentSource:
+      type: object
+      readOnly: true
+      description: What a resolved agent was read from, so a runner can prove which bytes ran.
+      properties:
+        environment:
+          type: string
+        package:
+          type: string
+        sourceContentSha:
+          type: string
+          description: The package's `sourceContentSha` at the load this definition came from.
+        definitionSha:
+          type: string
+          description: >-
+            SHA-256 over this agent's canonical config, instructions, skill
+            files and task files. Editing another agent, or a model, does not
+            move it.
+        servedRevision:
+          type: string
+          description: The package's `servedRevision` at the load this definition came from.
+
+    Agent:
+      type: object
+      readOnly: true
+      description: >-
+        An agent a package declares, resolved to its instructions, skill files
+        and schedules. Adopt it only when the user asks for it by name.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        model:
+          type: string
+          description: The model the agent asks for; `inherit` when the manifest sets none.
+        instructions:
+          type: string
+          description: The instructions file's Markdown, at most 16 KB.
+        skills:
+          type: array
+          description: The agent's own skill files, sorted by `relative_filepath`.
+          items:
+            $ref: "#/components/schemas/AgentSkillFile"
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSchedule"
+        warnings:
+          type: array
+          items:
+            type: string
+        source:
+          $ref: "#/components/schemas/AgentSource"
 
     SkillSummary:
       type: object
