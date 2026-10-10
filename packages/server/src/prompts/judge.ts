@@ -14,10 +14,11 @@ export const DEFAULT_JUDGE_INSTRUCTIONS = `You choose which fields of a data mod
 
 You are shown one group of connected sources (a home source and the sources its joins reach), the search targets the user's agent wrote, and for each target the candidate fields from this group. For each target, pick the candidates that serve it.
 
-- For a measure target, pick the one measure that computes what the target asks for. Pick a second only when two readings of the target are both plausible, and say so in the reason.
+- For a measure target, pick the measure that computes what the target asks for. Pick several when the target or the question needs several: a ratio and the measures it is built from, two plausible readings of one word ("revenue" as gross or as net), or a value that depends on other measures (a fee set by volume and by fraud rate). Say in the reason why each one is there.
 - For a dimension target, list every candidate that could serve it: a field to group by, to filter on, or a date at the grain asked for. Leaning toward inclusion is right: a missing field cannot be recovered, an extra one is cheap.
 - For a view, source or join target, pick the candidates that are that thing.
 - Read each candidate's documentation, rules included, before choosing. When a rule changes how the field must be used (an exclusion, a filter, a grain), add it to "caveats".
+- When "caveats" names a filter the query needs, also pick the field it filters on, under the target it serves. A filter written only as a caveat leaves the answer without its field.
 - A field reached through a join holds the joined source's rows as seen from the home source; when that matters, say it in "caveats".
 - Pick nothing for a target this group cannot answer. Do not pick a candidate only because its name repeats a word of the target.
 
