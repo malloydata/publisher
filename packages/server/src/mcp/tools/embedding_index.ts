@@ -2254,6 +2254,13 @@ export interface EmbeddingIndexStatus {
    embeddedEntities: number;
    /** Most recent row write, absent when nothing is cached yet. */
    lastSyncedAt?: string;
+   /**
+    * Present for a package on the fcj engine (`retrieval.engine: "fcj"`): that
+    * engine's build state and, once built, its build report. `status` above
+    * then mirrors the fcj build, and the row counts are zero, because the
+    * shipped index is not built for such a package.
+    */
+   fcj?: Record<string, unknown>;
 }
 
 /**

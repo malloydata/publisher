@@ -25,6 +25,10 @@ import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import type { PackageIndex } from "../mcp/tools/get_context_tool";
+import {
+   DEFAULT_PACKAGE_RETRIEVAL,
+   type PackageRetrievalSettings,
+} from "../service/package_retrieval";
 import { getPackageIndex } from "../mcp/tools/get_context_tool";
 import {
    buildCatalog,
@@ -118,6 +122,8 @@ export const FCJ_ENVIRONMENT = "env";
 export const FCJ_PACKAGE = "fixture";
 
 export interface FcjFixture {
+   /** The Package stand-in; `retrieval.engine` is `fcj` unless the caller says otherwise. */
+   pkg: unknown;
    pkgIndex: PackageIndex;
    catalog: Catalog;
 }
@@ -148,6 +154,11 @@ export async function compileFcjFixture(
       string,
       Array<{ from: string; source: string }>
    > = FCJ_IMPORTS,
+   /** What the package's publisher.json `retrieval` block resolves to. */
+   retrieval: PackageRetrievalSettings = {
+      ...DEFAULT_PACKAGE_RETRIEVAL,
+      engine: "fcj",
+   },
 ): Promise<FcjFixture> {
    const compiled = await compileModelFiles(files);
    const inner = compiled.pkg as {
@@ -155,6 +166,8 @@ export async function compileFcjFixture(
       getModel: (path: string) => ModelStandIn | undefined;
    };
    const pkg = {
+      getPackageName: () => FCJ_PACKAGE,
+      getRetrievalSettings: () => retrieval,
       listModels: inner.listModels,
       getModel: (path: string) => {
          const model = inner.getModel(path);
@@ -181,5 +194,5 @@ export async function compileFcjFixture(
       FCJ_PACKAGE,
    );
    const catalog = buildCatalog(await catalogInputOf(pkgIndex));
-   return { pkgIndex, catalog };
+   return { pkg, pkgIndex, catalog };
 }

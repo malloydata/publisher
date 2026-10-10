@@ -13,6 +13,8 @@ import {
    getEmbeddingIndexStatus,
    type EmbeddingIndexStatus,
 } from "./embedding_index";
+import { engineOf } from "../../service/package_retrieval";
+import { fcjStatusOf, kickFcjBuild } from "../context/engine_state";
 import { PIPELINE_SETTINGS } from "./get_context_pipeline";
 import {
    embeddedEntitiesOf,
@@ -57,6 +59,16 @@ export async function getPackageEmbeddingStatus(
       environmentName,
       packageName,
    );
+   // An fcj package builds its own index and never runs the shipped sync, so
+   // its state is the fcj build's.
+   if (engineOf(pkgIndex.pkg.getRetrievalSettings?.()) === "fcj") {
+      const fcj = fcjStatusOf(pkgIndex.pkg);
+      return {
+         ...empty,
+         status: fcj.status as EmbeddingIndexStatus["status"],
+         fcj,
+      };
+   }
    return getEmbeddingIndexStatus(
       environmentStore.storageManager.getDuckDbConnection(),
       provider,
@@ -78,6 +90,12 @@ export function startPackageEmbeddingSync(
    pkg: Package,
 ): void {
    const packageName = pkg.getPackageName();
+   // An fcj package needs its own index, not the shipped one: building both
+   // would spend the embedding provider (and the keyphrase LLM) twice.
+   if (engineOf(pkg.getRetrievalSettings?.()) === "fcj") {
+      kickFcjBuild({ environmentStore, environmentName, packageName, pkg });
+      return;
+   }
    enqueuePackageSync({
       pkg,
       environmentName,
