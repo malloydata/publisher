@@ -133,6 +133,13 @@ export interface FcjSettings {
    valueCap: number;
    /** One LLM call per cluster that picks the fields to return. */
    judge: StageEnabled;
+   /**
+    * PROVISIONAL, off (0) by default; a diagnostic of the connect rule. A
+    * source that scores at least this share of the home's score on the same
+    * targets joins the home's cluster (up to three), so the judge chooses
+    * between near-tied sources instead of set cover keeping only the first.
+    */
+   contenderShare: number;
 }
 
 export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
@@ -149,6 +156,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    values: true,
    valueCap: 50_000,
    judge: "auto",
+   contenderShare: 0,
 };
 
 export interface PackageRetrievalSettings {
@@ -454,6 +462,7 @@ function parseFcj(raw: unknown): FcjSettings {
       values: fcjBoolean(obj, "values"),
       valueCap: int("valueCap", 1, 1_000_000),
       judge: parseEnabled(obj.judge, "retrieval.fcj.judge"),
+      contenderShare: real("contenderShare", 0, 1),
    };
 }
 

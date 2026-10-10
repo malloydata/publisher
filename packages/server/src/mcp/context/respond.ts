@@ -213,6 +213,13 @@ export async function respond(args: {
                  ),
               }
             : {}),
+         ...(cluster.contenders.length > 0
+            ? {
+                 contenders: cluster.contenders.map(
+                    (t) => index.catalog.sources.get(t)?.name,
+                 ),
+              }
+            : {}),
          covers: cluster.covers,
          picks: picksOut,
          ...(verdict.caveats.length > 0 ? { caveats: verdict.caveats } : {}),
@@ -299,6 +306,7 @@ async function place(
    const own =
       node.sourceKey === cluster.home ||
       cluster.twins.includes(node.sourceKey) ||
+      cluster.contenders.includes(node.sourceKey) ||
       !entry ||
       entry.hops === 0;
    if (own) {
