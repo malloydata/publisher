@@ -99,6 +99,8 @@ export interface Cluster {
    twins: string[];
    /** Reach of the home (and the twins), by source key. */
    reach: Map<string, ReachEntry>;
+   /** Reach of the home alone: the routes a field has from the home source. */
+   homeReach: Map<string, ReachEntry>;
    /** Per target index: the in-cluster top k. Every target gets a list, covered or not. */
    candidates: Map<number, ClusterCandidate[]>;
    extras: ClusterExtra[];
@@ -382,6 +384,7 @@ export function connect(args: {
          newlyCovers,
          twins,
          reach: pool,
+         homeReach: reach.of(score.source),
          candidates,
          extras,
       };
